@@ -31,7 +31,38 @@ export type IconName =
   | "scope"
   | "windowMin"
   | "windowMax"
-  | "windowClose";
+  | "windowClose"
+  | "close"
+  | "check"
+  | "checkCircle"
+  | "xCircle"
+  | "alert"
+  | "info"
+  | "plus"
+  | "minus"
+  | "chevronLeft"
+  | "chevronUp"
+  | "arrowLeft"
+  | "arrowRight"
+  | "eye"
+  | "eyeOff"
+  | "download"
+  | "upload"
+  | "undo"
+  | "redo"
+  | "play"
+  | "pause"
+  | "sliders"
+  | "edit"
+  | "zoomIn"
+  | "zoomOut"
+  | "refresh"
+  | "filter"
+  | "clock"
+  | "grid"
+  | "layers"
+  | "histogram"
+  | "dot";
 
 interface IconProps {
   name: IconName;
@@ -175,6 +206,172 @@ const PATHS: Record<IconName, ReactElement> = {
       <line x1="18" y1="6" x2="6" y2="18" />
     </>
   ),
+  close: (
+    <>
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </>
+  ),
+  check: <path d="m4.5 12.5 5 5 10-11" />,
+  checkCircle: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12 2.5 2.5 4.5-4.5" />
+    </>
+  ),
+  xCircle: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="9" y1="9" x2="15" y2="15" />
+      <line x1="15" y1="9" x2="9" y2="15" />
+    </>
+  ),
+  alert: (
+    <>
+      <path d="M12 3.2 22.2 20.5H1.8Z" />
+      <line x1="12" y1="10" x2="12" y2="14.5" />
+      <line x1="12" y1="17.6" x2="12" y2="17.6" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16.5" />
+      <line x1="12" y1="7.8" x2="12" y2="7.8" />
+    </>
+  ),
+  plus: (
+    <>
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </>
+  ),
+  minus: <line x1="5" y1="12" x2="19" y2="12" />,
+  chevronLeft: <path d="m15 6-6 6 6 6" />,
+  chevronUp: <path d="m6 15 6-6 6 6" />,
+  arrowLeft: (
+    <>
+      <line x1="20" y1="12" x2="4" y2="12" />
+      <path d="m10 6-6 6 6 6" />
+    </>
+  ),
+  arrowRight: (
+    <>
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <path d="m14 6 6 6-6 6" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  eyeOff: (
+    <>
+      <path d="m3 3 18 18" />
+      <path d="M10.6 6.2A9.9 9.9 0 0 1 12 6c6.4 0 10 6 10 6a17.6 17.6 0 0 1-3.3 3.9M6.2 7.1A17.4 17.4 0 0 0 2 12s3.6 6 10 6a9.7 9.7 0 0 0 3.9-.8" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M12 4v11" />
+      <path d="m7 11 5 5 5-5" />
+      <path d="M5 20h14" />
+    </>
+  ),
+  upload: (
+    <>
+      <path d="M12 20V9" />
+      <path d="m7 12 5-5 5 5" />
+      <path d="M5 4h14" />
+    </>
+  ),
+  undo: (
+    <>
+      <path d="M9 7 4 12l5 5" />
+      <path d="M4 12h11a5 5 0 0 1 0 10h-2.5" />
+    </>
+  ),
+  redo: (
+    <>
+      <path d="m15 7 5 5-5 5" />
+      <path d="M20 12H9a5 5 0 0 0 0 10h2.5" />
+    </>
+  ),
+  play: <path d="M8 5.2v13.6L19 12Z" />,
+  pause: (
+    <>
+      <rect x="7" y="5" width="3.4" height="14" rx="1" />
+      <rect x="13.6" y="5" width="3.4" height="14" rx="1" />
+    </>
+  ),
+  sliders: (
+    <>
+      <line x1="4" y1="8" x2="20" y2="8" />
+      <circle cx="9" cy="8" r="2.3" />
+      <line x1="4" y1="16" x2="20" y2="16" />
+      <circle cx="15" cy="16" r="2.3" />
+    </>
+  ),
+  edit: (
+    <>
+      <path d="M4 20h4L18.6 9.4a2 2 0 0 0-2.8-2.8L5 17.2Z" />
+      <path d="m13.6 6.6 3.8 3.8" />
+    </>
+  ),
+  zoomIn: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      <line x1="11" y1="8.2" x2="11" y2="13.8" />
+      <line x1="8.2" y1="11" x2="13.8" y2="11" />
+    </>
+  ),
+  zoomOut: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      <line x1="8.2" y1="11" x2="13.8" y2="11" />
+    </>
+  ),
+  refresh: (
+    <>
+      <path d="M20 8a8 8 0 1 0 1.5 6" />
+      <path d="M20 3v5h-5" />
+    </>
+  ),
+  filter: <path d="M4 5h16l-6 7.2V19l-4 2v-8.8Z" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5.2l3.4 2" />
+    </>
+  ),
+  grid: (
+    <>
+      <rect x="4" y="4" width="7" height="7" rx="1.5" />
+      <rect x="13" y="4" width="7" height="7" rx="1.5" />
+      <rect x="4" y="13" width="7" height="7" rx="1.5" />
+      <rect x="13" y="13" width="7" height="7" rx="1.5" />
+    </>
+  ),
+  layers: (
+    <>
+      <path d="m12 3 9 5-9 5-9-5Z" />
+      <path d="m3 13 9 5 9-5" />
+    </>
+  ),
+  histogram: (
+    <>
+      <line x1="5" y1="20" x2="5" y2="12" />
+      <line x1="10" y1="20" x2="10" y2="6" />
+      <line x1="15" y1="20" x2="15" y2="14" />
+      <line x1="20" y1="20" x2="20" y2="9" />
+    </>
+  ),
+  dot: <circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none" />,
 };
 
 export function Icon({
