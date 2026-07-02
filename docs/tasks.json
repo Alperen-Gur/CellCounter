@@ -1,0 +1,294 @@
+{
+  "meta": {
+    "project": "CellCounter cross-platform port",
+    "stack": "Tauri v2 + React 19 + TypeScript + Vite 7; Python (Cellpose) sidecar via uv; SQLite in Rust backend",
+    "scaffoldRoot": "desktop/",
+    "v1Scope": "Cellpose cyto3 only; Windows-first; UI kept backend-agnostic for a later WebGPU/onnxruntime-web build",
+    "architecture": "docs/ARCHITECTURE.md",
+    "conventions": {
+      "coordinateSpace": "All cell/annotation geometry is in SOURCE-PIXEL space; Viewport supplies viewScale/viewOffset.",
+      "ipc": "UI ⇄ Rust via @tauri-apps/api invoke() + event listen(); Rust ⇄ Python via argv + stdout(JSON) + stderr(progress).",
+      "freezeBeforeParallel": "All phase:kernel interface files must be frozen before any phase:feature task begins (see ARCHITECTURE.md §6)."
+    },
+    "futureSeam": "train-from-GUI is intentionally NOT a task. The model_versions table (kernel-persistence) and the append-only corrections log + lossless _seg.npy round-trip (seg-npy-io) are the extension points; do not architect them out."
+  },
+  "tasks": [
+    {
+      "id": "kernel-types",
+      "title": "Shared TypeScript domain types",
+      "phase": "kernel",
+      "objective": "Define the canonical DTO vocabulary (Image, Detection, Cell, Calibration, SizeBin, CompareGroup/Result, GroundTruth, F1Score, Batch, EditorMode, OverlayMode) that every page, port, and kernel module imports.",
+      "owns": ["desktop/src/kernel/types.ts"],
+      "uses": [],
+      "output": "types.ts exports all interfaces in ARCHITECTURE.md §3.2 with exact field names/types; compiles with strict TS; no runtime code.",
+      "boundaries": "No React, no I/O, no Tauri. Pure type declarations only. Do not add persistence or transport logic here.",
+      "dependsOn": []
+    },
+    {
+      "id": "kernel-transport",
+      "title": "Inference transport interface + Rust↔Python IPC + sidecar manager",
+      "phase": "kernel",
+      "objective": "Freeze the InferenceTransport TS interface and the Rust command surface (run_detection/cancel_detection/detection_availability), and implement SidecarManager that spawns cellpose_detect.py with the exact Swift argv, drains stdout JSON, streams stderr progress, and cancels via SIGTERM→SIGKILL.",
+      "owns": [
+        "desktop/src/kernel/transport/InferenceTransport.ts",
+        "desktop/src/kernel/transport/TauriSidecarTransport.ts",
+        "desktop/src/kernel/transport/index.ts",
+        "desktop/src-tauri/src/detection/sidecar.rs",
+        "desktop/src-tauri/src/detection/ipc.rs"
+      ],
+      "uses": ["kernel-types"],
+      "output": "detect() resolves to DetectionResultDTO or rejects with a typed DetectionError; progress events {stage,device,weights} delivered per runId; argv order + snake↔camel mapping match Detection/CellposeDetectionService.swift and SidecarSchema.swift; cancel kills the process; orphan sweep on launch.",
+      "boundaries": "Do NOT bootstrap the Python env (that is kernel-env / models page) and do NOT write to the DB. Only the transport contract + process lifecycle. Keep TauriSidecarTransport free of any onnxruntime references (browser impl is a separate future file).",
+      "dependsOn": ["kernel-types"]
+    },
+    {
+      "id": "kernel-persistence",
+      "title": "SQLite schema + PersistencePort + Rust repo",
+      "phase": "kernel",
+      "objective": "Create the 10-table SQLite schema (1:1 with the SwiftData records), the PersistencePort TS interface, and the Rust repo behind #[command]s, plus paths.rs (app-data dir tree) and import_image (decode + whole-file SHA-256 + thumbnail + EXIF probe).",
+      "owns": [
+        "desktop/src/kernel/persistence/PersistencePort.ts",
+        "desktop/src/kernel/persistence/TauriSqlitePort.ts",
+        "desktop/src-tauri/src/db/schema.rs",
+        "desktop/src-tauri/src/db/models.rs",
+        "desktop/src-tauri/src/db/repo.rs",
+        "desktop/src-tauri/src/images/importer.rs",
+        "desktop/src-tauri/src/paths.rs"
+      ],
+      "uses": ["kernel-types"],
+      "output": "All PersistencePort methods in ARCHITECTURE.md §3.8 implemented against store.sqlite; DDL matches §3.8 (cascade rules, unique detection-per-image, hash index); CellPayload JSON round-trips CellDTO incl. flattened contour; import_image returns {image, calibration}; schema readable from the existing macOS store.sqlite.",
+      "boundaries": "No UI. No detection/sidecar logic. Do not embed export formatting here (that is the export task). Keep model_versions table created but unused.",
+      "dependsOn": ["kernel-types"]
+    },
+    {
+      "id": "kernel-env",
+      "title": "uv Python-environment bootstrap",
+      "phase": "kernel",
+      "objective": "Replace install_python.sh/_lib_install.sh with a uv-based bootstrap: create the venv under the app-data python/ dir, sync the cyto3 dependency set, resolve the sidecar interpreter path, and stream install progress; expose availability + install as Rust commands.",
+      "owns": [
+        "desktop/src-tauri/src/env/uv.rs",
+        "desktop/python/pyproject.toml"
+      ],
+      "uses": [],
+      "output": "Commands: env_install (streams uv output lines as events), env_availability(modelId) -> {installed, reason}; pyproject.toml pins cellpose>=3,<4, numpy<2, pillow, scikit-image, torch, torchvision; interpreter path resolved for the sidecar; incomplete-install sentinel handled like CellposeAvailability.swift.",
+      "boundaries": "Do not spawn detection (kernel-transport owns that). Do not copy scripts other than resolving the desktop/python dir. No UI — the Models page consumes these commands.",
+      "dependsOn": []
+    },
+    {
+      "id": "kernel-store",
+      "title": "Global state store (zustand)",
+      "phase": "kernel",
+      "objective": "Port AppState to a zustand store with AnalysisParams/Session/Library/Processing/Error slices, localStorage persistence for analysis params, refreshLibraryStats, and effectiveConfidence.",
+      "owns": ["desktop/src/kernel/store/store.ts"],
+      "uses": ["kernel-types", "kernel-persistence"],
+      "output": "AppStore exposes every slice field + setters in ARCHITECTURE.md §3.3 with the Swift defaults (thresholds [20,30], pxPerUm 2.6, confidence 0.50, activeModelId cp-cyto3, maxParallel 1, useGpu true); refreshLibraryStats() reads counts via PersistencePort; effectiveConfidence(store,image) honours per-image override.",
+      "boundaries": "No components. Store is headless. Do not call the transport directly from the store beyond wiring processing state; pages orchestrate detection.",
+      "dependsOn": ["kernel-types", "kernel-persistence"]
+    },
+    {
+      "id": "kernel-viewport",
+      "title": "Viewport (pan/zoom/render) + transform context",
+      "phase": "kernel",
+      "objective": "Build the canvas Viewport component that renders the source image with pan/zoom and provides a ViewportTransform context (source-px ⇄ view-px) so overlay/edit children share one coordinate system.",
+      "owns": [
+        "desktop/src/kernel/viewport/Viewport.tsx",
+        "desktop/src/kernel/viewport/useViewportTransform.ts"
+      ],
+      "uses": ["kernel-types"],
+      "output": "ViewportProps per ARCHITECTURE.md §3.4 (min/max zoom 0.4/4.0, fit-to-view, controlled zoom/pan); exposes ViewportTransformContext with sourceToView/viewToSource; children render in source-px.",
+      "boundaries": "Rendering + gestures only. No cell drawing (that is kernel-overlay-engine), no editing, no persistence.",
+      "dependsOn": ["kernel-types"]
+    },
+    {
+      "id": "kernel-overlay-engine",
+      "title": "Mask-overlay renderer + mask-editing engine",
+      "phase": "kernel",
+      "objective": "Implement the read-only MaskOverlay renderer (contours/bbox/markers/annotations, opacity, uncertain-dashed) and the pure MaskEditEngine state machine (add/addFromContour/remove/merge/split/resize, hit-testing, 50-deep undo/redo, onCommit).",
+      "owns": [
+        "desktop/src/kernel/overlay/MaskOverlay.tsx",
+        "desktop/src/kernel/overlay/MaskEditEngine.ts"
+      ],
+      "uses": ["kernel-types", "kernel-viewport"],
+      "output": "MaskOverlayProps + MaskEditEngine public API per ARCHITECTURE.md §3.5; EditEvent union incl. split; merge geometry d=√(da²+db²)/√2; undo/redo capped at 50; engine is framework-free and unit-tested; renderer consumes ViewportTransformContext.",
+      "boundaries": "Engine must stay pure (no React/canvas/DB). Do not persist edits here — pages subscribe via onCommit and write corrections. Do not implement _seg.npy here.",
+      "dependsOn": ["kernel-types", "kernel-viewport"]
+    },
+    {
+      "id": "kernel-calibration",
+      "title": "Calibration + size-binning module",
+      "phase": "kernel",
+      "objective": "Port EXIF priority contract, unit conversion, built-in presets/objective mapping, and size-binning (binsFromThresholds/binIndex/sizeClass) to portable TS.",
+      "owns": ["desktop/src/kernel/calibration/calibration.ts"],
+      "uses": ["kernel-types"],
+      "output": "Functions per ARCHITECTURE.md §3.6: CALIBRATION_PRIORITY order (OME→TIFF→ImageJ→Olympus), unitToUm, BUILTIN_PRESETS (Olympus IX73 ladder), objectiveLabel (±25%), binsFromThresholds ([20,30]→<20/20–30/>30), binIndex, sizeClass; pure, no I/O.",
+      "boundaries": "The raw-bytes EXIF probe lives in Rust importer (kernel-persistence); this module owns the contract + binning math only. No React.",
+      "dependsOn": ["kernel-types"]
+    },
+    {
+      "id": "kernel-stats",
+      "title": "Statistics module (Mann-Whitney U + F1), portable",
+      "phase": "kernel",
+      "objective": "Direct port of Statistics.swift (Mann-Whitney U with normal approximation + continuity correction + rank-biserial) and AnnotationMatcher.swift (greedy nearest-neighbour F1), as pure TS with the Swift self-test cases as unit tests.",
+      "owns": ["desktop/src/kernel/stats/stats.ts"],
+      "uses": ["kernel-types"],
+      "output": "mannWhitneyU (null when n<3), median, normalCdf, twoTailedNormalP, evaluateF1 (radius = matchRadiusFactor*max(diameterPx,1), default 1.0) returning F1Score; matches Swift numeric results in tests; runs identically in browser.",
+      "boundaries": "Pure functions only. No React, no plotting, no DOM. Do not read the store or ports.",
+      "dependsOn": ["kernel-types"]
+    },
+
+    {
+      "id": "feat-home-import",
+      "title": "Home page + import/detect drop flow",
+      "phase": "feature",
+      "objective": "Build the Home screen: drop target + Choose-images/folder CTAs + recents; orchestrate import (dedup check) then per-image detection, driving processing state and routing to Results.",
+      "owns": ["desktop/src/pages/home/"],
+      "uses": ["kernel-store", "kernel-persistence", "kernel-transport", "kernel-types"],
+      "output": "Dropping/choosing images creates a batch, imports via import_image, runs detect() per image with progress into the store, saves detections, navigates to /results; duplicate prompt surfaces when hashes match existing records; recents list renders from PersistencePort.",
+      "boundaries": "Own only pages/home/. Do not implement the Processing screen UI (feat-processing), the batch table (feat-batch), or export. Route by store, do not import other pages' internals.",
+      "dependsOn": ["kernel-store", "kernel-persistence", "kernel-transport", "kernel-types"]
+    },
+    {
+      "id": "feat-processing",
+      "title": "Processing screen (progress + live stderr + cancel)",
+      "phase": "feature",
+      "objective": "Determinate progress view showing overall batch progress, the live cellpose stderr stage line, the resolved device, and a Cancel action.",
+      "owns": ["desktop/src/pages/processing/"],
+      "uses": ["kernel-store", "kernel-transport", "kernel-types"],
+      "output": "Reads ProcessingSlice (progress/stageLine/device/lastStageUpdateAt); Cancel calls InferenceTransport.cancel(runId) and returns to the prior view; watchdog treats active stderr as progress.",
+      "boundaries": "Own only pages/processing/. Do not run detection yourself (Home/Results dispatch it); only visualize + cancel.",
+      "dependsOn": ["kernel-store", "kernel-transport", "kernel-types"]
+    },
+    {
+      "id": "feat-results-viewer",
+      "title": "Results page shell + analysis sidebar",
+      "phase": "feature",
+      "objective": "Compose the Results screen: Viewport + MaskOverlay, overlay/opacity toggles, and the right analysis sidebar (count summary, size-bin distribution + histogram, QC badges, colonies, notes, ROI include/exclude, F1-vs-ground-truth). Hosts the editing toolbar and directory nav mount points.",
+      "owns": ["desktop/src/pages/results/"],
+      "uses": ["kernel-viewport", "kernel-overlay-engine", "kernel-calibration", "kernel-stats", "kernel-store", "kernel-persistence", "kernel-types"],
+      "output": "Renders current image with cells; toggles (Space/X/Z) + opacity work; sidebar shows bins (binsFromThresholds), intensity histogram, QC badges (focus/illumination thresholds), colony stats from imageStats, F1 via evaluateF1 when annotations exist, ROI filtering (include→exclude); reads/writes via ports.",
+      "boundaries": "Own only pages/results/. The editing gestures live in feat-mask-editing (also under pages/results but in a clearly separated subfolder pages/results/editing/ owned by that task) — coordinate so files don't overlap: this task owns pages/results/ excluding pages/results/editing/. Do not implement export (feat-export) or seg-npy (feat-seg-npy) beyond mounting their entry points.",
+      "dependsOn": ["kernel-viewport", "kernel-overlay-engine", "kernel-calibration", "kernel-stats", "kernel-store", "kernel-persistence", "kernel-types"]
+    },
+    {
+      "id": "feat-mask-editing",
+      "title": "Manual mask-editing UI (draw/delete/bulk/merge/split + undo/redo)",
+      "phase": "feature",
+      "objective": "Wire the MaskEditEngine to pointer gestures in Results: add-by-click, draw-a-mask (right-drag freeform), delete single, bulk-delete by rectangle, merge, split-by-stroke, resize handles, multi-select (cmd/shift/lasso), and undo/redo; persist each edit as a correction.",
+      "owns": ["desktop/src/pages/results/editing/"],
+      "uses": ["kernel-overlay-engine", "kernel-viewport", "kernel-store", "kernel-persistence", "kernel-types"],
+      "output": "All EditorMode interactions function against source-px via ViewportTransform; edits update cells and call recordCorrection with the right kind (add/remove/move/resize); undo/redo (⌘Z / ⌘⇧Z) work with 50-deep stacks; selection set drives bulk delete.",
+      "boundaries": "Own only pages/results/editing/. Do not re-implement the engine (kernel-overlay-engine) or the renderer. Keep gesture handlers here; the surrounding layout belongs to feat-results-viewer.",
+      "dependsOn": ["kernel-overlay-engine", "kernel-viewport", "kernel-store", "kernel-persistence", "kernel-types"]
+    },
+    {
+      "id": "feat-directory-nav-keyboard",
+      "title": "Directory navigation + global keyboard layer",
+      "phase": "feature",
+      "objective": "Implement the frozen keyboard scheme (keymap) and per-page useKeymap hook, including Results next/prev image (←/→), edit-mode keys (V/A/R/M/C/G), zoom keys, and the global shortcuts sheet.",
+      "owns": ["desktop/src/kernel/shortcuts/keymap.ts", "desktop/src/components/KeyboardShortcutsSheet.tsx", "desktop/src/components/useKeymap.ts"],
+      "uses": ["kernel-store", "kernel-types"],
+      "output": "keymap.ts encodes every mapping from KeyboardShortcutsSheet.swift grouped by scope; useKeymap binds active handlers per page; ←/→ advance store.currentImageIdx within the batch; the shortcuts overlay lists them; no double-binding across scopes.",
+      "boundaries": "Own the three listed files. Do not put editing logic here (call actions exposed by store / feat-mask-editing). keymap.ts is a kernel file but is delivered by this feature task since no other kernel task needs it first; it must not import page internals.",
+      "dependsOn": ["kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-batch",
+      "title": "Batch / folder detection page",
+      "phase": "feature",
+      "objective": "Per-image table for the current batch: filename, status, cell count, mean diameter, size-class mini-distribution, plus aggregate stats and a per-image summary CSV export trigger.",
+      "owns": ["desktop/src/pages/batch/"],
+      "uses": ["kernel-store", "kernel-persistence", "kernel-calibration", "kernel-types"],
+      "output": "Table rows reflect done/queued/running/error status and counts; aggregates (total cells, mean±σ cells/image, mean±σ diameter) computed from saved detections; size-class mini-dist uses binIndex; ⌘E hands off to feat-export.",
+      "boundaries": "Own only pages/batch/. Do not run detection (Home dispatches). Do not implement the CSV writer body (feat-export owns formats); call its command.",
+      "dependsOn": ["kernel-store", "kernel-persistence", "kernel-calibration", "kernel-types"]
+    },
+    {
+      "id": "feat-compare",
+      "title": "Compare view (Mann-Whitney)",
+      "phase": "feature",
+      "objective": "Condition chips (select 1–4), pooled per-condition histograms sharing one Y-axis, size-class breakdown, and a Mann-Whitney U + effect-size panel shown only when exactly two conditions are selected; comparison CSV export.",
+      "owns": ["desktop/src/pages/compare/"],
+      "uses": ["kernel-stats", "kernel-calibration", "kernel-persistence", "kernel-store", "kernel-types"],
+      "output": "Pools cells per condition via batchesMatching; histograms use a shared max for comparability; MannWhitneyPanel renders u/p/effect from mannWhitneyU when 2 selected; CSV columns condition,bin_label,count,percent,total_cells,batches.",
+      "boundaries": "Own only pages/compare/. Do not modify kernel-stats. Do not implement other export formats here beyond the comparison CSV (or delegate to feat-export).",
+      "dependsOn": ["kernel-stats", "kernel-calibration", "kernel-persistence", "kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-models",
+      "title": "Models tab (cyto3 install via uv)",
+      "phase": "feature",
+      "objective": "Model catalog UI with cyto3 active in v1 (others shown 'coming soon'); trigger uv-based install with streamed progress; reflect availability; activate the model.",
+      "owns": ["desktop/src/pages/models/"],
+      "uses": ["kernel-env", "kernel-transport", "kernel-store", "kernel-types"],
+      "output": "Install button calls env_install and streams progress lines; availability from env_availability/detection_availability gates the Run flow; activating sets store.activeModelId; coming-soon models are non-activatable.",
+      "boundaries": "Own only pages/models/. Do not implement the uv bootstrap (kernel-env). Do not add non-cyto3 model runtimes in v1.",
+      "dependsOn": ["kernel-env", "kernel-transport", "kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-library-dedup",
+      "title": "Images Library + SHA-256 duplicate detection",
+      "phase": "feature",
+      "objective": "Grid of all imported images with thumbnails; surface duplicate groups (same fileHash); open in Results / delete; select-all.",
+      "owns": ["desktop/src/pages/library/"],
+      "uses": ["kernel-persistence", "kernel-store", "kernel-types"],
+      "output": "allImages + duplicateGroups render; delete/open actions work; ⌘A select-all, Return open, Delete remove (confirm); dedup groups computed from whole-file SHA-256 stored at import.",
+      "boundaries": "Own only pages/library/. Hashing happens in the Rust importer (kernel-persistence); do not re-hash here. Do not implement export.",
+      "dependsOn": ["kernel-persistence", "kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-review-queue",
+      "title": "Review queue (low-confidence triage)",
+      "phase": "feature",
+      "objective": "Card-stack triage of cells with confidence < 0.65 and no existing correction: Reject/Keep/Edit-diameter/Skip, writing corrections and advancing.",
+      "owns": ["desktop/src/pages/review/"],
+      "uses": ["kernel-persistence", "kernel-store", "kernel-types"],
+      "output": "Queue built from uncorrectedCellCount/cells below 0.65 with no correction; R/K/E/→ actions record correction kinds (remove/accept/resize) and advance; badge count matches store.reviewQueueCount; Esc returns Home.",
+      "boundaries": "Own only pages/review/. The 0.65 cutoff is canonical and independent of the confidence slider. Do not alter the store's slice shape.",
+      "dependsOn": ["kernel-persistence", "kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-calibration-onboarding",
+      "title": "Onboarding + calibration modals + manual diameter",
+      "phase": "feature",
+      "objective": "First-run onboarding flow and the calibration sheet (direct value / draw-on-scale-bar / preset tabs), plus the manual-diameter fallback used when EXIF calibration is absent.",
+      "owns": ["desktop/src/pages/onboarding/"],
+      "uses": ["kernel-calibration", "kernel-store", "kernel-persistence", "kernel-types"],
+      "output": "Onboarding gates on first launch; calibration sheet writes store.pxPerUm and can save/list presets via PersistencePort; draw-on-scale-bar derives px/µm from a drawn segment; manual diameter sets the detection diameter prior when no EXIF; objectiveLabel shown.",
+      "boundaries": "Own only pages/onboarding/. The EXIF auto-apply happens in the importer; this page handles manual/preset override + first-run only.",
+      "dependsOn": ["kernel-calibration", "kernel-store", "kernel-persistence", "kernel-types"]
+    },
+    {
+      "id": "feat-seg-npy-io",
+      "title": "_seg.npy import/export (Cellpose GUI round-trip)",
+      "phase": "feature",
+      "objective": "Round-trip masks with the Cellpose GUI: import a Cellpose _seg.npy into the current image's detection (masks→cells/contours) and export the current cells as a _seg.npy, via a small Python helper invoked from Rust.",
+      "owns": ["desktop/src-tauri/src/detection/seg_npy.rs", "desktop/python/_seg_npy_io.py", "desktop/src/pages/results/segnpy/"],
+      "uses": ["kernel-transport", "kernel-persistence", "kernel-store", "kernel-types"],
+      "output": "Command seg_npy_import(imagePath, npyPath) -> DetectionResultDTO and seg_npy_export(imagePath, cells, outPath); the Python helper reads/writes Cellpose's _seg.npy label map + outlines losslessly; Results exposes import/export actions; edits keep the label map consistent (feeds the future train seam).",
+      "boundaries": "Own only the three listed paths. Reuse cellpose/numpy from the same uv venv. Do not implement training. Keep the export lossless so corrected masks can later train a model.",
+      "dependsOn": ["kernel-transport", "kernel-persistence", "kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-export",
+      "title": "Export: PDF report, CSV (cells/summary/annotations), ImageJ ROI, provenance",
+      "phase": "feature",
+      "objective": "Implement all export formats: annotated PNG, cells.csv, per-image summary.csv, annotations.csv, provenance.json, the PDF report, and the ImageJ RoiSet.zip (via the existing _export_imagej_roi.py), matching the Swift column orders and layout.",
+      "owns": ["desktop/src-tauri/src/export/roi.rs", "desktop/src-tauri/src/export/csv.rs", "desktop/src-tauri/src/export/provenance.rs", "desktop/src-tauri/src/export/report.rs", "desktop/src/components/ExportPanel.tsx"],
+      "uses": ["kernel-persistence", "kernel-calibration", "kernel-stats", "kernel-store", "kernel-types"],
+      "output": "cells.csv header id,cx_px,cy_px,diameter_um,diameter_px,bin_label,confidence,area_um2,perimeter_um,circularity,eccentricity,mean_intensity,integrated_density,image_filename,centroid_um_x,centroid_um_y,aspect_ratio,solidity,size_class,edge_touching,likely_clump,likely_debris,is_manual; summary.csv header image,n_cells,mean_diameter,sd_diameter,n_small,n_intermediate,n_large,pct_clumps,pct_debris,pct_edge,confluency,n_colonies,mean_colony_size,largest_colony,focus_score,illumination_residual,model_used,ran_at; RoiSet.zip via _export_imagej_roi.py (polygon when contour≥3 else oval, names cell_00001…); provenance.json (pretty, sorted); PDF with header/annotated image/count+histogram+bin table/colonies/QC/F1/provenance footer.",
+      "boundaries": "Own only the listed export files + ExportPanel. Pages call these commands; do not embed export logic inside pages. Reuse _export_imagej_roi.py as-is from desktop/python.",
+      "dependsOn": ["kernel-persistence", "kernel-calibration", "kernel-stats", "kernel-store", "kernel-types"]
+    },
+    {
+      "id": "feat-settings",
+      "title": "Settings (analysis params, presets, reset)",
+      "phase": "feature",
+      "objective": "Settings screen for all analysis parameters (thresholds, confidence, channels, background subtract + rolling-ball radius, watershed + min-distance, GPU toggle, max-parallel), calibration/bin presets management, and destructive reset/wipe.",
+      "owns": ["desktop/src/pages/settings/"],
+      "uses": ["kernel-store", "kernel-persistence", "kernel-types"],
+      "output": "Editing any param updates the store (persisted to localStorage) and takes effect on the next detection; presets CRUD via PersistencePort; wipeAllUserData clears batches/images/detections while preserving config; matches AppState defaults.",
+      "boundaries": "Own only pages/settings/. Do not change kernel-store slice shapes (only consume setters). Do not implement the uv reinstall (Models).",
+      "dependsOn": ["kernel-store", "kernel-persistence", "kernel-types"]
+    }
+  ]
+}
