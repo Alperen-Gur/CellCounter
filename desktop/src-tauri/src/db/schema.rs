@@ -58,7 +58,15 @@ CREATE TABLE IF NOT EXISTS detections (
   ran_at            TEXT NOT NULL,
   cells_json        TEXT NOT NULL,             -- JSON [CellPayload] (contour flattened)
   min_confidence    REAL NOT NULL,
-  image_stats_json  TEXT                       -- JSON {focus_score, illumination_residual, …}
+  image_stats_json  TEXT,                      -- JSON {focus_score, illumination_residual, …}
+  -- Denormalised counters maintained by repo.rs so the library-stats refresh
+  -- (SUM over these) never has to decode every cells_json blob. `cell_count` is
+  -- `cells.len()`; `uncorrected_count` is the number of low-confidence cells
+  -- (confidence < REVIEW_QUEUE_CUTOFF) still awaiting triage. Both DEFAULT 0 so
+  -- a row written by the Swift app (which omits them) reads as 0 rather than
+  -- NULL, and the ADD-COLUMN migration below can backfill existing rows.
+  cell_count         INTEGER NOT NULL DEFAULT 0,
+  uncorrected_count  INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detection_image ON detections(image_id);
 
@@ -143,6 +151,77 @@ CREATE TABLE IF NOT EXISTS model_versions (
 /// per-connection pragmas are set.
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)
+}
+
+/// Bring an EXISTING `store.sqlite` up to the current shape. Runs after
+/// `create_schema`, which only `CREATE … IF NOT EXISTS`es and so can never add
+/// a column to a table that predates it. A user (or the Swift app) may hold a
+/// `detections` table without the denormalised `cell_count` /
+/// `uncorrected_count` columns; add them here.
+///
+/// `SQLite` has no `ADD COLUMN IF NOT EXISTS`, so each add is guarded by a
+/// `PRAGMA table_info` presence check (see `column_exists`) — a no-op on a fresh
+/// DB (the CREATE already made the column) and on an already-migrated one. The
+/// columns are added with `DEFAULT 0`, so every pre-existing detection row
+/// backfills to `cell_count = 0` / `uncorrected_count = 0`.
+///
+/// Returns `true` iff at least one counter column was actually added (i.e. an
+/// old store just got upgraded). The caller uses that to run
+/// `repo::backfill_detection_counts` ONLY on upgrade — recomputing the real
+/// values from `cells_json` so the review badge is correct on first launch —
+/// and to skip that O(detections) scan on every subsequent normal open.
+pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<bool> {
+    let added_cell = add_column_if_missing(
+        conn,
+        "detections",
+        "cell_count",
+        "ALTER TABLE detections ADD COLUMN cell_count INTEGER NOT NULL DEFAULT 0",
+    )?;
+    let added_uncorrected = add_column_if_missing(
+        conn,
+        "detections",
+        "uncorrected_count",
+        "ALTER TABLE detections ADD COLUMN uncorrected_count INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(added_cell || added_uncorrected)
+}
+
+/// Add `column` to `table` via `alter_sql`, but only if it is not already
+/// present. Returns `true` if the column was added, `false` if it already
+/// existed — so callers can run it unconditionally yet still learn whether the
+/// DB shape changed.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> rusqlite::Result<bool> {
+    if column_exists(conn, table, column)? {
+        return Ok(false);
+    }
+    conn.execute(alter_sql, [])?;
+    Ok(true)
+}
+
+/// True if `table` has a column named `column`. Uses the classic
+/// `PRAGMA table_info(<table>)` STATEMENT (not the `pragma_table_info(?)`
+/// table-valued function — the bundled/sqlcipher amalgamation this crate links
+/// is NOT built with `SQLITE_ENABLE_PRAGMA_VTAB`, so the TVF form would error).
+///
+/// A `PRAGMA` cannot take a bound parameter, so the table name is interpolated;
+/// every `table` passed here is a compile-time constant (never user input), so
+/// there is no injection surface. `PRAGMA table_info` returns one row per column
+/// as `(cid, name, type, notnull, dflt_value, pk)` — we read `name` (index 1).
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Seed the workflow-config tables the Swift app seeds on first launch

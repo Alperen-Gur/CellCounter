@@ -42,6 +42,13 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # Async command bodies + sidecar process management
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+# Cross-platform process enumeration + kill for the launch orphan sweep
+# (replaces the Unix-only `/bin/ps` scrape; works on macOS/Linux/Windows).
+# We only use the process table (`System::processes()` + `Process::kill()`),
+# which lives under the default `system` feature; default features are kept for
+# maximum build-config robustness (the extra probes are never invoked at runtime
+# — the sweep runs once at launch).
+sysinfo = "0.32"
 # Structured error types
 thiserror = "2"
 # ISO-8601 timestamps (importedAt / ranAt / createdAt)

@@ -28,7 +28,7 @@ import type { RouteId } from "../../components/routes";
 import { Icon } from "../../components/Icon";
 
 import { useLibraryData } from "./useLibraryData";
-import { ImageThumbCell } from "./ImageThumbCell";
+import { LibraryGrid } from "./LibraryGrid";
 
 import "./library.css";
 
@@ -297,21 +297,19 @@ export default function LibraryPage() {
         </button>
       </div>
 
-      <div className="cc-lib__grid">
-        {images.map((image) => (
-          <ImageThumbCell
-            key={image.id}
-            image={image}
-            displayName={displayNames.get(image.id) ?? image.fileName}
-            stats={statsById.get(image.id)}
-            isDuplicate={duplicateIds.has(image.id)}
-            isSelected={selectedIds.has(image.id)}
-            multiSelectMode={multiSelectMode}
-            onTap={() => handleTap(image)}
-            onDelete={() => confirmDeleteSingle(image)}
-          />
-        ))}
-      </div>
+      {/* Windowed grid: only visible cells (+ overscan) mount, so a library of
+          100s of images stays light. Selection / open / delete behaviour and
+          the data hook are unchanged — LibraryGrid only owns the mounting. */}
+      <LibraryGrid
+        images={images}
+        displayNames={displayNames}
+        statsById={statsById}
+        duplicateIds={duplicateIds}
+        selectedIds={selectedIds}
+        multiSelectMode={multiSelectMode}
+        onTap={handleTap}
+        onDelete={confirmDeleteSingle}
+      />
     </div>
   );
 }

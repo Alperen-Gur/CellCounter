@@ -29,6 +29,10 @@ import { getPort } from "../../kernel/persistence";
 import { useAppStore, effectiveConfidence } from "../../kernel/store/store";
 
 import { applyRoiFilter } from "./roiFilter";
+// The seg-npy panel broadcasts this after it replaces an image's detection.
+// Import the canonical constant (rather than re-declaring the string) so the
+// listener below can never drift from the dispatcher.
+import { DETECTION_UPDATED_EVENT } from "./segnpy/SegNpyPanel";
 
 export interface ResultsData {
   /** The open batch, or null while none is selected / still loading. */
@@ -151,6 +155,31 @@ export function useResultsData(): ResultsData {
     () => loadForImage(currentImageId),
     [currentImageId, loadForImage],
   );
+
+  // ---- refresh when another surface replaces this image's detection ----
+  // SegNpyPanel imports a _seg.npy, re-saves the detection, and dispatches a
+  // window `DETECTION_UPDATED_EVENT`. Without this listener the sidebar/overlay
+  // keep showing the pre-import cells until the user switches images. Re-read
+  // through the existing reload path (single source of truth) so counts, bins,
+  // and the overlay all refresh together.
+  //
+  // Stale-closure guard: the effect depends on `currentImageId` (and on
+  // `loadForImage`, which is stable), so it re-subscribes whenever the current
+  // image changes — the handler therefore always compares against, and reloads,
+  // the up-to-date image. The dispatcher tags the event with the affected
+  // `imageId`; we only reload when it matches ours (or when it's absent, to stay
+  // safe against future dispatchers that omit it).
+  useEffect(() => {
+    if (!currentImageId) return;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ imageId?: string }>).detail;
+      const targetId = detail?.imageId;
+      if (targetId && targetId !== currentImageId) return;
+      void loadForImage(currentImageId);
+    };
+    window.addEventListener(DETECTION_UPDATED_EVENT, handler);
+    return () => window.removeEventListener(DETECTION_UPDATED_EVENT, handler);
+  }, [currentImageId, loadForImage]);
 
   const reloadRois = useCallback(async () => {
     if (!currentImageId) return;

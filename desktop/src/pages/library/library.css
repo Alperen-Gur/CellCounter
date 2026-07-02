@@ -9,10 +9,17 @@
 
 .cc-lib {
   max-width: 1120px;
+  width: 100%;
   margin: 0 auto;
-  padding: var(--cc-space-6) var(--cc-space-6) var(--cc-space-8);
+  /* No bottom padding: the windowed grid owns the vertical scroll, so we keep
+     the toolbar padded but let the grid viewport run to the bottom of the pane
+     (its last-row overscan + inner scrollbar replace the old trailing gap). */
+  padding: var(--cc-space-6) var(--cc-space-6) 0;
   display: flex;
   flex-direction: column;
+  /* Claim the full shell pane so the grid viewport below can flex to a real
+     pixel height for react-window (mirrors the Results page pattern). */
+  height: 100%;
   min-height: 0;
   gap: var(--cc-space-4);
 }
@@ -76,13 +83,24 @@
   color: var(--cc-text-on-accent);
 }
 
-/* ---- grid ---- */
+/* ---- grid (windowed) ---- */
 
-.cc-lib__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: var(--cc-space-4);
-  align-content: start;
+/* The measured wrapper: flexes to fill the remaining pane height so
+   react-window can size the FixedSizeGrid in pixels. The grid itself owns the
+   vertical scroll (react-window sets overflow on its own scroll container).
+   A tiny bottom pad preserves breathing room under the last visible row. */
+.cc-lib__grid-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  padding-bottom: var(--cc-space-6);
+}
+
+/* react-window's inner scroll container — keep the scrollbar unobtrusive and
+   consistent with the rest of the shell. Cell spacing is applied per-cell in
+   LibraryGrid (right/bottom gutters) so the old `gap` look is preserved. */
+.cc-lib__grid-inner {
+  scrollbar-width: thin;
 }
 
 /* ---- card ---- */

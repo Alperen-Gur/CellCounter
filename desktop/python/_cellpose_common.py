@@ -380,97 +380,30 @@ def measure_cells(masks, img, args, flows=None) -> list[dict]:
 
     height_px, width_px = int(img.shape[0]), int(img.shape[1])
 
-    if _skimage_ok:
-        try:
-            props_by_label = {p.label: p for p in regionprops(masks)}
-        except Exception:  # noqa: BLE001
-            props_by_label = {}
-    else:
-        props_by_label = {}
-
-    label_ids = np.unique(masks)
-    label_ids = label_ids[label_ids != 0]
-    n_total = len(label_ids)
-    log(f"[cellpose_detect] found {n_total} masks; measuring per-cell properties…")
-
-    progress_every = max(50, n_total // 10) if n_total else 1
-    cells: list[dict] = []
-
     small_t = float(getattr(args, "small_threshold", 20))
     large_t = float(getattr(args, "large_threshold", 30))
     EDGE_MARGIN_PX = 16
 
-    for cell_idx, label in enumerate(label_ids):
-        if cell_idx > 0 and cell_idx % progress_every == 0:
-            log(f"[cellpose_detect] measured {cell_idx}/{n_total} cells…")
-        mask = (masks == label)
-        ys, xs = np.where(mask)
-        area_px = int(mask.sum())
-        if area_px < 4:
-            continue
-        cy = float(ys.mean())
-        cx = float(xs.mean())
+    # -----------------------------------------------------------------------
+    # Shared per-cell dict assembly.
+    #
+    # Both the vectorised (regionprops) path and the skimage-unavailable
+    # fallback funnel their raw scalars through this closure so the emitted
+    # dict — field set, key order, units, flag logic, size-class thresholds —
+    # is byte-for-byte identical regardless of which path produced it. Any
+    # metric skimage cannot supply (perimeter/circularity/eccentricity/
+    # solidity) is passed as None and simply omitted, exactly as before.
+    # -----------------------------------------------------------------------
+    def _build_cell(*, area_px, cx, cy, conf, mean_intensity,
+                    perimeter_um, circularity, eccentricity, solidity,
+                    aspect_ratio, contour_px):
         diameter_px = 2.0 * math.sqrt(area_px / math.pi)
         diameter_um = diameter_px / px_per_um
-
-        if cellprob_map is not None:
-            try:
-                raw = float(cellprob_map[ys, xs].mean())
-                conf = 1.0 / (1.0 + math.exp(-raw))
-            except Exception:  # noqa: BLE001
-                conf = 0.85
-        else:
-            conf = 0.85
-
         area_um2 = area_px / (px_per_um ** 2)
-
-        perimeter_um = None
-        circularity = None
-        if _skimage_ok:
-            try:
-                # scikit-image renamed `neighbourhood` → `neighborhood` in 0.26.
-                # Try the new spelling, fall back to the old one.
-                try:
-                    perim_px = sk_perimeter(mask, neighborhood=8)
-                except TypeError:
-                    perim_px = sk_perimeter(mask, neighbourhood=8)
-                if perim_px > 0:
-                    perimeter_um = perim_px / px_per_um
-                    circularity = min(1.0, max(0.0,
-                        4 * math.pi * area_um2 / (perimeter_um ** 2)))
-            except Exception:  # noqa: BLE001
-                pass
-
-        eccentricity = None
-        if _skimage_ok and int(label) in props_by_label:
-            try:
-                eccentricity = float(props_by_label[int(label)].eccentricity)
-            except Exception:  # noqa: BLE001
-                pass
-
-        mean_intensity = float(img_gray[mask].mean()) if mask.any() else None
         integrated_density = ((area_px * mean_intensity)
                               if mean_intensity is not None else None)
-
         centroid_um_x = cx / px_per_um
         centroid_um_y = cy / px_per_um
-
-        aspect_ratio = 1.0
-        if _skimage_ok and int(label) in props_by_label:
-            try:
-                prop = props_by_label[int(label)]
-                minor = float(prop.minor_axis_length)
-                if minor > 0:
-                    aspect_ratio = float(prop.major_axis_length) / minor
-            except Exception:  # noqa: BLE001
-                pass
-
-        solidity = None
-        if _skimage_ok and int(label) in props_by_label:
-            try:
-                solidity = float(props_by_label[int(label)].solidity)
-            except Exception:  # noqa: BLE001
-                pass
 
         edge_touching = (
             cx < EDGE_MARGIN_PX or cy < EDGE_MARGIN_PX
@@ -521,30 +454,189 @@ def measure_cells(masks, img, args, flows=None) -> list[dict]:
             cell_dict["mean_intensity"] = mean_intensity
         if integrated_density is not None:
             cell_dict["integrated_density"] = integrated_density
+        if contour_px is not None:
+            cell_dict["contour_px"] = contour_px
+        return cell_dict
 
-        # Per-cell polygon contour for filled overlay rendering.
-        # find_contours returns (row, col) pairs at 0.5 iso-level — flip to
-        # (x=col, y=row) and downsample with Ramer–Douglas–Peucker so a
-        # 1000-point boundary collapses to ≤200 points without losing shape.
-        if _skimage_ok and sk_find_contours is not None:
+    def _confidence_from(rows, cols):
+        """Mean cellprob over a region's pixels, squashed through a sigmoid."""
+        if cellprob_map is None:
+            return 0.85
+        try:
+            raw = float(cellprob_map[rows, cols].mean())
+            return 1.0 / (1.0 + math.exp(-raw))
+        except Exception:  # noqa: BLE001
+            return 0.85
+
+    def _perimeter_um_from(bool_crop):
+        """Perimeter (µm) of a boolean object crop, or (None, None).
+
+        ``skimage.measure.perimeter`` is translation-invariant and depends
+        only on the object's boundary pixels, so running it on the tight
+        bbox crop returns the SAME value as the old full-frame ``masks ==
+        label`` call — the surrounding background is False in both. We keep
+        the identical ``neighborhood=8`` connectivity and the old
+        new-vs-old spelling fallback (renamed in scikit-image 0.26).
+        """
+        try:
             try:
-                contours = sk_find_contours(mask.astype(np.uint8), 0.5)
-                if contours:
-                    best = max(contours, key=len)
-                    if sk_approx_polygon is not None and len(best) > 4:
-                        approx = sk_approx_polygon(best, tolerance=0.5)
-                    else:
-                        approx = best
-                    if len(approx) > 200:
-                        stride = int(math.ceil(len(approx) / 200.0))
-                        approx = approx[::stride]
-                    cell_dict["contour_px"] = [
-                        [float(pt[1]), float(pt[0])] for pt in approx
-                    ]
+                perim_px = sk_perimeter(bool_crop, neighborhood=8)
+            except TypeError:
+                perim_px = sk_perimeter(bool_crop, neighbourhood=8)
+            if perim_px > 0:
+                p_um = perim_px / px_per_um
+                circ = min(1.0, max(0.0,
+                    4 * math.pi * (bool_crop.sum() / (px_per_um ** 2))
+                    / (p_um ** 2)))
+                return p_um, circ
+        except Exception:  # noqa: BLE001
+            pass
+        return None, None
+
+    def _contour_from(bool_crop, row0, col0):
+        """Downsampled polygon for a bbox crop, offset back to full-image px.
+
+        find_contours on the small crop yields (row, col) pairs at the 0.5
+        iso-level; adding the bbox origin (row0, col0) reproduces the exact
+        full-frame coordinates the old whole-image call produced. Points are
+        then flipped to (x=col, y=row) and thinned via Ramer–Douglas–Peucker
+        so a ~1000-point boundary collapses to ≤200 points, identical to
+        before.
+        """
+        if sk_find_contours is None:
+            return None
+        try:
+            contours = sk_find_contours(bool_crop.astype(np.uint8), 0.5)
+            if not contours:
+                return None
+            best = max(contours, key=len)
+            if sk_approx_polygon is not None and len(best) > 4:
+                approx = sk_approx_polygon(best, tolerance=0.5)
+            else:
+                approx = best
+            if len(approx) > 200:
+                stride = int(math.ceil(len(approx) / 200.0))
+                approx = approx[::stride]
+            # (row, col) in crop space -> (x=col+col0, y=row+row0) full-image.
+            return [
+                [float(pt[1]) + col0, float(pt[0]) + row0] for pt in approx
+            ]
+        except Exception:  # noqa: BLE001
+            return None
+
+    cells: list[dict] = []
+
+    if _skimage_ok:
+        # -------------------------------------------------------------------
+        # Fast path: ONE labeled traversal via regionprops.
+        #
+        # Passing intensity_image=img_gray gives us area, centroid,
+        # intensity_mean, eccentricity, solidity, and axis lengths in a
+        # single pass — no per-label ``masks == label`` H×W scan. Perimeter
+        # and contours run only on each region's tiny bbox crop (prop.image /
+        # prop.slice) instead of the whole frame. regionprops skips label 0
+        # and returns regions in ascending-label order — the same set and
+        # order the old ``np.unique(masks)`` loop emitted.
+        # -------------------------------------------------------------------
+        try:
+            props = regionprops(masks, intensity_image=img_gray)
+        except Exception:  # noqa: BLE001
+            props = []
+
+        n_total = len(props)
+        log(f"[cellpose_detect] found {n_total} masks; measuring per-cell properties…")
+        progress_every = max(50, n_total // 10) if n_total else 1
+
+        for cell_idx, prop in enumerate(props):
+            if cell_idx > 0 and cell_idx % progress_every == 0:
+                log(f"[cellpose_detect] measured {cell_idx}/{n_total} cells…")
+
+            area_px = int(prop.area)
+            if area_px < 4:
+                continue
+
+            # regionprops centroid is (row_mean, col_mean) == (ys.mean(),
+            # xs.mean()); keep the old cx/cy semantics exactly.
+            cy = float(prop.centroid[0])
+            cx = float(prop.centroid[1])
+
+            # Bounding-box crop for the cheap local ops.
+            row_sl, col_sl = prop.slice
+            row0, col0 = int(row_sl.start), int(col_sl.start)
+            bool_crop = prop.image  # boolean mask over the bbox
+
+            # Confidence: mean cellprob over the region's pixels (prop.coords
+            # are the same (row, col) indices the old np.where(mask) yielded).
+            if cellprob_map is not None:
+                coords = prop.coords
+                conf = _confidence_from(coords[:, 0], coords[:, 1])
+            else:
+                conf = 0.85
+
+            mean_intensity = float(prop.intensity_mean)
+
+            perimeter_um, circularity = _perimeter_um_from(bool_crop)
+
+            try:
+                eccentricity = float(prop.eccentricity)
+            except Exception:  # noqa: BLE001
+                eccentricity = None
+
+            try:
+                solidity = float(prop.solidity)
+            except Exception:  # noqa: BLE001
+                solidity = None
+
+            aspect_ratio = 1.0
+            try:
+                minor = float(prop.minor_axis_length)
+                if minor > 0:
+                    aspect_ratio = float(prop.major_axis_length) / minor
             except Exception:  # noqa: BLE001
                 pass
 
-        cells.append(cell_dict)
+            contour_px = _contour_from(bool_crop, row0, col0)
+
+            cells.append(_build_cell(
+                area_px=area_px, cx=cx, cy=cy, conf=conf,
+                mean_intensity=mean_intensity,
+                perimeter_um=perimeter_um, circularity=circularity,
+                eccentricity=eccentricity, solidity=solidity,
+                aspect_ratio=aspect_ratio, contour_px=contour_px,
+            ))
+    else:
+        # -------------------------------------------------------------------
+        # Fallback: skimage unavailable. Perimeter/eccentricity/solidity/
+        # contours were already omitted in this case, so only geometry +
+        # intensity are produced. We keep the original per-label loop here;
+        # it runs only when regionprops itself cannot be imported.
+        # -------------------------------------------------------------------
+        label_ids = np.unique(masks)
+        label_ids = label_ids[label_ids != 0]
+        n_total = len(label_ids)
+        log(f"[cellpose_detect] found {n_total} masks; measuring per-cell properties…")
+        progress_every = max(50, n_total // 10) if n_total else 1
+
+        for cell_idx, label in enumerate(label_ids):
+            if cell_idx > 0 and cell_idx % progress_every == 0:
+                log(f"[cellpose_detect] measured {cell_idx}/{n_total} cells…")
+            mask = (masks == label)
+            ys, xs = np.where(mask)
+            area_px = int(mask.sum())
+            if area_px < 4:
+                continue
+            cy = float(ys.mean())
+            cx = float(xs.mean())
+            conf = _confidence_from(ys, xs)
+            mean_intensity = float(img_gray[mask].mean()) if mask.any() else None
+
+            cells.append(_build_cell(
+                area_px=area_px, cx=cx, cy=cy, conf=conf,
+                mean_intensity=mean_intensity,
+                perimeter_um=None, circularity=None,
+                eccentricity=None, solidity=None,
+                aspect_ratio=1.0, contour_px=None,
+            ))
 
     log(f"[cellpose_detect] measured {len(cells)}/{n_total} cells; serializing JSON…")
     return cells

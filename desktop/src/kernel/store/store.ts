@@ -13,7 +13,8 @@
  *   thresholds [20,30] · pxPerUm 2.6 (10× preset) · confidence 0.50 ·
  *   activeModelId "cp-cyto3" · channels [0,0] · manualMarkerDiameterUm 20 ·
  *   backgroundSubtract false · rollingBallRadius 50 · watershedSplit false ·
- *   watershedMinDistanceUm 8 · useGpu true · maxParallel 1.
+ *   watershedMinDistanceUm 8 · useGpu true · maxParallel hardware-aware
+ *   (half the logical cores, clamped 1..4 — see `defaultMaxParallel`).
  */
 
 import { create } from "zustand";
@@ -38,7 +39,7 @@ export interface AnalysisParamsSlice {
   watershedSplit: boolean;
   watershedMinDistanceUm: number; // 8
   useGpu: boolean; // default true
-  maxParallel: number; // default 1 (CPU cellpose is CPU-bound)
+  maxParallel: number; // default: half the logical cores, clamped 1..4 (see defaultMaxParallel)
 
   setThresholds(t: number[]): void;
   setPxPerUm(v: number): void;
@@ -127,6 +128,85 @@ export const REVIEW_QUEUE_CONFIDENCE_CUTOFF = 0.65;
 /** localStorage key the persisted analysis-params slice is written under. */
 const PERSIST_KEY = "cc-store";
 
+/**
+ * Trailing-debounce window for `refreshLibraryStats`. During a batch run the
+ * processing pipeline calls it once per completed image; with 100+ images each
+ * completion would otherwise fire four IPC round-trips (counts + batches +
+ * review badge), and the review-badge query fans out over every detection. A
+ * burst of completions collapses into a single refresh this many ms after the
+ * last call, so the library sidebar updates once the storm settles instead of
+ * on every image.
+ */
+const LIBRARY_STATS_DEBOUNCE_MS = 800;
+
+/**
+ * Hardware-aware default for `maxParallel`. Cellpose inference is CPU/GPU-bound,
+ * so we cap concurrency well below the core count: half the logical cores,
+ * clamped to 1..4. This feeds the warm-worker pool without oversubscribing a
+ * modest laptop (the old default of 1 left that pool starved). Kept as a
+ * function so the fallback resolves at store-init time on whatever runtime this
+ * loads in.
+ */
+function defaultMaxParallel(): number {
+  const cores =
+    (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+  return Math.min(4, Math.max(1, cores >> 1));
+}
+
+// ---------------------------------------------------------------------------
+// refreshLibraryStats trailing-debounce controller
+// ---------------------------------------------------------------------------
+//
+// Module-scoped (one controller for the singleton store). `refreshLibraryStats`
+// delegates here: every call (re)arms a trailing timer and returns a Promise
+// that resolves when the NEXT actual refresh finishes, so a burst of callers
+// still each get a Promise they can await while only one refresh runs. The
+// public method signature — `(): Promise<void>` — is unchanged.
+
+/** The real work of one refresh, injected once from inside the store closure. */
+type RefreshRunner = () => Promise<void>;
+
+let statsDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+/** Resolvers of all callers awaiting the pending (not-yet-run) refresh. */
+let statsPendingResolvers: Array<() => void> = [];
+/** Shared promise handed to callers within the current debounce window. */
+let statsPendingPromise: Promise<void> | undefined;
+
+/**
+ * Schedule `run` on a trailing debounce, coalescing a burst of calls into one
+ * execution `LIBRARY_STATS_DEBOUNCE_MS` after the last call. Returns a Promise
+ * that resolves once that execution completes (never rejects — a failed refresh
+ * is swallowed, matching the callers' existing `.catch(() => {})`).
+ */
+function scheduleStatsRefresh(run: RefreshRunner): Promise<void> {
+  // First caller of a window creates the shared promise; later callers within
+  // the same window fold into it (they await the same coalesced refresh).
+  if (!statsPendingPromise) {
+    statsPendingPromise = new Promise<void>((resolve) => {
+      statsPendingResolvers.push(resolve);
+    });
+  }
+
+  if (statsDebounceTimer !== undefined) clearTimeout(statsDebounceTimer);
+  statsDebounceTimer = setTimeout(() => {
+    statsDebounceTimer = undefined;
+    // Snapshot + reset the pending state so calls arriving DURING the run open a
+    // fresh window (and a fresh promise) rather than resolving against this one.
+    const resolvers = statsPendingResolvers;
+    statsPendingResolvers = [];
+    statsPendingPromise = undefined;
+    void run()
+      .catch(() => {
+        /* best-effort: the badge simply stays stale until the next refresh */
+      })
+      .finally(() => {
+        for (const resolve of resolvers) resolve();
+      });
+  }, LIBRARY_STATS_DEBOUNCE_MS);
+
+  return statsPendingPromise;
+}
+
 // ---------------------------------------------------------------------------
 // The store
 // ---------------------------------------------------------------------------
@@ -146,7 +226,7 @@ export const useAppStore = create<AppStore>()(
       watershedSplit: false,
       watershedMinDistanceUm: 8,
       useGpu: true,
-      maxParallel: 1,
+      maxParallel: defaultMaxParallel(),
 
       setThresholds: (t) => set({ thresholds: t }),
       setPxPerUm: (v) => set({ pxPerUm: v }),
@@ -197,22 +277,29 @@ export const useAppStore = create<AppStore>()(
       libraryBatchCount: 0,
       reviewQueueCount: 0,
       recentBatchIds: [],
-      refreshLibraryStats: async () => {
-        const port = getPort();
-        // Mirror AppState.refreshLibraryStats: counts + recent ids + review badge.
-        const [imageCount, batchCount, batches, reviewCount] = await Promise.all([
-          port.totalImageCount(),
-          port.totalBatchCount(),
-          port.allBatches(),
-          port.uncorrectedCellCount(REVIEW_QUEUE_CONFIDENCE_CUTOFF),
-        ]);
-        set({
-          libraryImageCount: imageCount,
-          libraryBatchCount: batchCount,
-          recentBatchIds: batches.map((b) => b.id),
-          reviewQueueCount: reviewCount,
-        });
-      },
+      // Trailing-debounced: the batch pipeline calls this once per completed
+      // image, so a 100-image run would otherwise fire hundreds of stats
+      // round-trips. `scheduleStatsRefresh` coalesces a burst into one refresh
+      // ~800ms after the last call. The signature (`(): Promise<void>`) and the
+      // returned-promise contract are unchanged — callers still await it (e.g.
+      // the Review queue awaits it after each triage to update the badge).
+      refreshLibraryStats: () =>
+        scheduleStatsRefresh(async () => {
+          const port = getPort();
+          // Mirror AppState.refreshLibraryStats: counts + recent ids + review badge.
+          const [imageCount, batchCount, batches, reviewCount] = await Promise.all([
+            port.totalImageCount(),
+            port.totalBatchCount(),
+            port.allBatches(),
+            port.uncorrectedCellCount(REVIEW_QUEUE_CONFIDENCE_CUTOFF),
+          ]);
+          set({
+            libraryImageCount: imageCount,
+            libraryBatchCount: batchCount,
+            recentBatchIds: batches.map((b) => b.id),
+            reviewQueueCount: reviewCount,
+          });
+        }),
 
       // ---- ProcessingSlice (in-memory) ----
       progress: 0,

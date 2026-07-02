@@ -80,6 +80,14 @@ export interface ReviewQueue {
   /** The next item (for the peek card), or null. */
   next: ReviewItem | null;
   loading: boolean;
+  /**
+   * The last triage write that failed, or null. Set when a reject/keep/resize
+   * persistence write throws; in that case the cursor does NOT advance, so the
+   * decision is not lost and the user can retry on the same card. Cleared when
+   * the next action starts and on rebuild. (Additive field — existing consumers
+   * that ignore it keep working.)
+   */
+  error: string | null;
 
   /** Reject the current cell: records "remove" + drops it from the detection. */
   reject(): Promise<void>;
@@ -165,6 +173,8 @@ export function useReviewQueue(): ReviewQueue {
   const [queue, setQueue] = useState<ReviewItem[]>([]);
   const [cursor, setCursor] = useState(0);
   const [loading, setLoading] = useState(true);
+  // Surfaces a failed triage write so the correction isn't silently lost.
+  const [error, setError] = useState<string | null>(null);
 
   // Cells triaged in this session (any action). Filter (2) equivalent for the
   // `keep` path — see the KERNEL GAP note in the file header. A ref so the
@@ -187,6 +197,7 @@ export function useReviewQueue(): ReviewQueue {
   const rebuild = useCallback(async () => {
     const req = ++reqRef.current;
     setLoading(true);
+    setError(null);
     try {
       const items = await buildQueue(triagedRef.current);
       if (req !== reqRef.current) return;
@@ -228,10 +239,19 @@ export function useReviewQueue(): ReviewQueue {
 
   /**
    * Record a correction for `item.cell`, optionally replacing the detection's
-   * cell list (reject removes; resize updates). Marks the cell triaged, then
-   * advances + refreshes the sidebar badge. Optimistic + best-effort: a failed
-   * write is swallowed so the user is never stuck on a card (matches the Swift
-   * `try?` semantics).
+   * cell list (reject removes; resize updates).
+   *
+   * ORDERING (correctness fix): the persistence write is AWAITED first; only on
+   * success do we mark the cell triaged and advance the cursor. If the write
+   * throws we surface it via `error` and DON'T advance — so a Reject/Keep/resize
+   * can never be silently lost (the earlier code advanced + swallowed the error,
+   * dropping the decision). The user stays on the same card and can retry.
+   *
+   * RETRY SAFETY: `reject`/`editDiameter` pre-mutate the in-memory working copy
+   * (`workingCellsRef`) before calling here. On failure we leave that copy as-is
+   * — because we did not advance, `current` is unchanged and a retry re-derives
+   * `nextCells` from the working copy; both the remove-filter and the resize-map
+   * are keyed by `cell.id`, so re-applying them is idempotent.
    */
   const applyCorrection = useCallback(
     async (
@@ -240,10 +260,8 @@ export function useReviewQueue(): ReviewQueue {
       diameter: number,
       nextCells: CellDTO[] | null,
     ) => {
-      // Mark triaged + advance up front so the UI moves immediately and the
-      // rebuild (via refreshLibraryStats' consumers) won't resurface this cell.
-      triagedRef.current.add(item.cell.id);
-      advance();
+      // Clear any prior failure at the start of a fresh attempt.
+      setError(null);
 
       const port = getPort();
       try {
@@ -263,11 +281,22 @@ export function useReviewQueue(): ReviewQueue {
             item.detection.imageStats,
           );
         }
-      } catch {
-        /* best-effort: keep the user moving even if the write failed */
+      } catch (err) {
+        // Surface the failure and stop: do NOT mark triaged, do NOT advance, so
+        // the decision survives and the user can retry on the same card.
+        setError(err instanceof Error ? err.message : String(err));
+        return;
       }
+
+      // Write committed — now it's safe to triage this cell (so a rebuild via
+      // refreshLibraryStats' consumers won't resurface it) and move to the next.
+      triagedRef.current.add(item.cell.id);
+      advance();
+
       // Keep the sidebar Review badge in sync (mirrors the Swift
-      // ccCorrectionsChanged → refreshLibraryStats round-trip).
+      // ccCorrectionsChanged → refreshLibraryStats round-trip). Best-effort: the
+      // triage write already succeeded, so a badge-refresh hiccup must not read
+      // as a lost correction.
       await refreshLibraryStats().catch(() => {});
     },
     [advance, refreshLibraryStats],
@@ -321,11 +350,12 @@ export function useReviewQueue(): ReviewQueue {
       current,
       next,
       loading,
+      error,
       reject,
       keep,
       editDiameter,
       skip,
     }),
-    [queue, cursor, current, next, loading, reject, keep, editDiameter, skip],
+    [queue, cursor, current, next, loading, error, reject, keep, editDiameter, skip],
   );
 }

@@ -15,8 +15,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--cc-space-5);
-  padding: var(--cc-space-6) var(--cc-space-6) var(--cc-space-8);
-  min-height: 100%;
+  /* No bottom padding: the Images section's windowed table owns the vertical
+     scroll and runs to the bottom of the pane. */
+  padding: var(--cc-space-6) var(--cc-space-6) 0;
+  /* Claim the full shell pane so the last section (the table) can flex to a
+     real pixel height for react-window (mirrors the Results page pattern). */
+  height: 100%;
+  min-height: 0;
 }
 
 /* ---- header ---- */
@@ -73,6 +78,14 @@
   display: flex;
   flex-direction: column;
   gap: var(--cc-space-3);
+}
+
+/* The Images section (the one holding the windowed table) flexes to fill the
+   remaining pane height so the table body can be measured for react-window.
+   The aggregate strip / header stay their natural height above it. */
+.cc-batch__section:has(.cc-batch__table-wrap) {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .cc-batch__section-label {
@@ -191,55 +204,68 @@
   color: var(--cc-text-secondary);
 }
 
-/* ---- table ---- */
+/* ---- table (windowed) ----
+ *
+ * react-window can't virtualize <tr>s inside a real <table>, so the table is a
+ * CSS grid: a fixed header row above a windowed body of grid rows (the body
+ * scrolls internally, so the header stays put without position:sticky).
+ * `BatchTable` sets the shared `grid-template-columns` inline on both the
+ * header and each row so columns stay aligned. All the visual language
+ * (hairline borders, hover, focus ring, tabular nums, ellipsis names) is
+ * preserved.
+ */
 
 .cc-batch__table-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
   overflow-x: auto;
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
-}
-
-.cc-batch__table {
-  width: 100%;
-  border-collapse: collapse;
   font-size: var(--cc-text-md);
 }
 
-.cc-batch__table thead th {
-  text-align: left;
+/* header row (grid; template set inline to match the body rows) */
+.cc-batch__thead {
+  display: grid;
+  align-items: center;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--cc-border);
+  background: var(--cc-bg-subtle);
+  border-radius: var(--cc-radius-lg) var(--cc-radius-lg) 0 0;
+}
+
+.cc-batch__th {
   padding: var(--cc-space-3) var(--cc-space-4);
   font-size: var(--cc-text-xs);
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--cc-text-tertiary);
-  border-bottom: 1px solid var(--cc-border);
-  background: var(--cc-bg-subtle);
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  text-align: left;
 }
 
-.cc-batch__col-num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+/* body viewport: flexes to fill the card; react-window owns the scroll */
+.cc-batch__tbody-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.cc-batch__col-dist {
-  width: 220px;
+.cc-batch__tbody-inner {
+  scrollbar-width: thin;
 }
 
-.cc-batch__col-go {
-  width: 40px;
-  text-align: right;
-  color: var(--cc-text-tertiary);
-}
-
+/* one row (grid; template set inline to match the header) */
 .cc-batch__row {
+  display: grid;
+  align-items: center;
   cursor: pointer;
+  border-bottom: 1px solid var(--cc-border);
+  color: var(--cc-text);
   transition: background 0.1s ease;
+  box-sizing: border-box;
 }
 
 .cc-batch__row:hover {
@@ -255,23 +281,56 @@
   box-shadow: inset 0 0 0 2px var(--cc-border-focus);
 }
 
-.cc-batch__table tbody td {
+/* one cell — matches the old <td> padding + vertical centering */
+.cc-batch__cell {
   padding: var(--cc-space-3) var(--cc-space-4);
-  border-bottom: 1px solid var(--cc-border);
-  color: var(--cc-text);
-  vertical-align: middle;
+  min-width: 0;
+  display: flex;
+  align-items: center;
 }
 
-.cc-batch__table tbody tr:last-child td {
-  border-bottom: none;
+.cc-batch__col-num {
+  justify-content: flex-end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
+/* header cells reuse the column modifiers but need block text-align, not flex */
+.cc-batch__th.cc-batch__col-num {
+  display: block;
+  text-align: right;
+}
+
+.cc-batch__th.cc-batch__col-go {
+  display: block;
+}
+
+.cc-batch__col-dist {
+  /* width is governed by the shared grid template; keep the box from shrinking
+     its contents below the mini-chart's needs. */
+  min-width: 0;
+}
+
+.cc-batch__col-go {
+  justify-content: flex-end;
+  text-align: right;
+  color: var(--cc-text-tertiary);
+}
+
+/* body name cell: flex-centered like the others; the inner text node carries
+   the ellipsis (text-overflow needs a block/inline-block, not a flex box). */
 .cc-batch__col-name {
-  max-width: 320px;
+  overflow: hidden;
+  font-weight: 550;
+}
+
+.cc-batch__name-text {
+  display: block;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 550;
 }
 
 /* ---- status pill ---- */

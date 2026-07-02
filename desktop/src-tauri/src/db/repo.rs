@@ -27,6 +27,14 @@ use crate::db::models::{
 use crate::db::schema;
 use crate::paths::FileStore;
 
+/// Confidence cutoff below which a cell counts toward the Review queue. Mirrors
+/// `REVIEW_QUEUE_CONFIDENCE_CUTOFF` in `kernel/store/store.ts` (0.65) and the
+/// Swift `AppState.reviewQueueConfidenceCutoff`. The denormalised
+/// `detections.uncorrected_count` column is maintained against THIS fixed cutoff
+/// (see `uncorrected_for`), which is why `uncorrected_cell_count` can just
+/// `SUM` the column: the only caller passes exactly this value.
+const REVIEW_QUEUE_CUTOFF: f64 = 0.65;
+
 /// Managed SQLite state. A single mutex-guarded connection is sufficient for a
 /// desktop app (all access is short and serialized); no pool needed.
 pub struct Db {
@@ -51,6 +59,19 @@ impl Db {
         conn.pragma_update(None, "busy_timeout", 5000)
             .map_err(|e| format!("set busy_timeout failed: {e}"))?;
         schema::create_schema(&conn).map_err(|e| format!("create schema failed: {e}"))?;
+        // Migrate an existing store BEFORE seeding/serving: adds the denormalised
+        // detection counters to a `detections` table created by an older build
+        // (or the Swift app). No-op on a fresh DB; returns true only on upgrade.
+        let migrated = schema::migrate_schema(&conn)
+            .map_err(|e| format!("migrate schema failed: {e}"))?;
+        // Backfill the denormalised counters for pre-existing detection rows (the
+        // ADD COLUMN … DEFAULT 0 leaves them zeroed) — but ONLY on upgrade, so a
+        // normal open never pays the O(detections) `cells_json` re-decode. Rows
+        // written by the current build already carry correct counters.
+        if migrated {
+            backfill_detection_counts(&conn)
+                .map_err(|e| format!("backfill detection counts failed: {e}"))?;
+        }
         schema::seed_defaults(&conn).map_err(|e| format!("seed defaults failed: {e}"))?;
         Ok(Db {
             conn: Mutex::new(conn),
@@ -97,6 +118,71 @@ fn thresholds_to_json(t: &[f64]) -> String {
 
 fn thresholds_from_json(s: &str) -> Vec<f64> {
     serde_json::from_str(s).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// denormalised detection counters (cell_count / uncorrected_count)
+// ---------------------------------------------------------------------------
+//
+// These keep `detections.cell_count` / `detections.uncorrected_count` in sync so
+// `uncorrected_cell_count` (the Review badge) is a single SUM instead of an
+// N+1 decode of every `cells_json` blob. The invariant, matching the Review
+// queue (`useReviewQueue` filter (1)+(2) and `REVIEW_QUEUE_CUTOFF`):
+//   uncorrected_count = #{ cell : cell.confidence < REVIEW_QUEUE_CUTOFF
+//                                 AND no correction row exists for cell.id }
+
+/// The set of `cell_id`s that already have at least one correction row for this
+/// detection (any kind ⇒ "triaged once is forever"). An empty set for a
+/// detection with no corrections.
+fn corrected_cell_ids(
+    conn: &Connection,
+    detection_id: &str,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT cell_id FROM corrections WHERE detection_id = ?1")?;
+    let set = stmt
+        .query_map(params![detection_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+    Ok(set)
+}
+
+/// Number of low-confidence, un-triaged cells for a detection: cells below the
+/// Review cutoff whose id is NOT in `corrected` (the already-triaged set).
+fn uncorrected_for(cells: &[CellDto], corrected: &std::collections::HashSet<String>) -> i64 {
+    cells
+        .iter()
+        .filter(|c| c.confidence < REVIEW_QUEUE_CUTOFF && !corrected.contains(&c.id))
+        .count() as i64
+}
+
+/// Recompute the denormalised counters for every detection row from its
+/// `cells_json` + correction log. Run once at DB open after the ADD-COLUMN
+/// migration so existing rows (backfilled to 0 by the column default) get their
+/// true counts. No-op on a fresh DB (no detection rows yet).
+fn backfill_detection_counts(conn: &Connection) -> rusqlite::Result<()> {
+    // Read (id, cells_json) for all detections up front; we then re-borrow the
+    // connection per row for the corrections sub-query + the UPDATE.
+    let rows: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT id, cells_json FROM detections")?;
+        // Bind the collected Vec to a named local so the temporary from `?` is
+        // dropped before `stmt` at the end of this block (avoids E0597 — the
+        // same idiom the other query helpers in this file use).
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (det_id, cells_json) in rows {
+        let cells = cells_from_json(&cells_json);
+        let corrected = corrected_cell_ids(conn, &det_id)?;
+        let cell_count = cells.len() as i64;
+        let uncorrected = uncorrected_for(&cells, &corrected);
+        conn.execute(
+            "UPDATE detections SET cell_count = ?2, uncorrected_count = ?3 WHERE id = ?1",
+            params![det_id, cell_count, uncorrected],
+        )?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +652,11 @@ pub fn save_detection(
     // Instead reuse the existing detection id (1:1 per image) and UPDATE the
     // cells in place, so the append-only correction log stays attached (it feeds
     // the future train-from-GUI seam).
+    //
+    // Denormalised counter (kept in sync on both branches below): `cell_count` is
+    // simply the number of cells; `uncorrected_count` is the sub-cutoff cells not
+    // yet triaged (see `uncorrected_for`).
+    let cell_count = cells.len() as i64;
     let existing_id: Option<String> = conn
         .query_row(
             "SELECT id FROM detections WHERE image_id = ?1",
@@ -576,23 +667,54 @@ pub fn save_detection(
         .map_err(|e| e.to_string())?;
     let id = match existing_id {
         Some(existing) => {
+            // Re-detection reuses this detection id, so its correction log is
+            // still attached (that is the whole point of the in-place upsert).
+            // A cell already triaged before the re-run must NOT re-enter the
+            // Review queue, so exclude its id when counting uncorrected cells.
+            let corrected = corrected_cell_ids(&conn, &existing).map_err(|e| e.to_string())?;
+            let uncorrected = uncorrected_for(&cells, &corrected);
             conn.execute(
                 "UPDATE detections
                    SET detector_id = ?2, ran_at = ?3, cells_json = ?4,
-                       min_confidence = ?5, image_stats_json = ?6
+                       min_confidence = ?5, image_stats_json = ?6,
+                       cell_count = ?7, uncorrected_count = ?8
                  WHERE id = ?1",
-                params![existing, detector_id, now, cells_json, min_conf, stats_json],
+                params![
+                    existing,
+                    detector_id,
+                    now,
+                    cells_json,
+                    min_conf,
+                    stats_json,
+                    cell_count,
+                    uncorrected
+                ],
             )
             .map_err(|e| e.to_string())?;
             existing
         }
         None => {
+            // Brand-new detection: no correction rows can exist yet, so every
+            // sub-cutoff cell is uncorrected.
+            let empty = std::collections::HashSet::new();
+            let uncorrected = uncorrected_for(&cells, &empty);
             let id = new_id();
             conn.execute(
                 "INSERT INTO detections
-                   (id, image_id, detector_id, ran_at, cells_json, min_confidence, image_stats_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![id, image_id, detector_id, now, cells_json, min_conf, stats_json],
+                   (id, image_id, detector_id, ran_at, cells_json, min_confidence,
+                    image_stats_json, cell_count, uncorrected_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    image_id,
+                    detector_id,
+                    now,
+                    cells_json,
+                    min_conf,
+                    stats_json,
+                    cell_count,
+                    uncorrected
+                ],
             )
             .map_err(|e| e.to_string())?;
             id
@@ -640,6 +762,20 @@ pub fn record_correction(
     c: CorrectionInput,
 ) -> Result<(), String> {
     let conn = db.lock()?;
+    // Was this cell already triaged (has a prior correction row)? Capture BEFORE
+    // inserting the new row so a repeat correction on the same cell doesn't
+    // double-decrement the denormalised counter.
+    let already_triaged = conn
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM corrections WHERE detection_id = ?1 AND cell_id = ?2
+             )",
+            params![detection_id, c.cell_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())?
+        != 0;
+
     conn.execute(
         "INSERT INTO corrections
            (id, detection_id, kind, cell_id, cx, cy, diameter, created_at)
@@ -656,6 +792,38 @@ pub fn record_correction(
         ],
     )
     .map_err(|e| e.to_string())?;
+
+    // Keep `uncorrected_count` in sync: a first-time correction on a cell that is
+    // currently counted (below the Review cutoff) triages it out of the queue, so
+    // decrement by one. We confirm the cell is actually sub-cutoff by reading the
+    // detection's stored cells (a `remove`/`resize` from the Review queue also
+    // re-saves the cell list via `save_detection`, but that write may land after
+    // this one — so decide from what is on disk NOW, not from ordering). Clamp at
+    // zero so a stray/duplicate correction can never drive the badge negative.
+    if !already_triaged {
+        let cells_json: Option<String> = conn
+            .query_row(
+                "SELECT cells_json FROM detections WHERE id = ?1",
+                params![detection_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(cells_json) = cells_json {
+            let is_low_conf = cells_from_json(&cells_json)
+                .iter()
+                .any(|cell| cell.id == c.cell_id && cell.confidence < REVIEW_QUEUE_CUTOFF);
+            if is_low_conf {
+                conn.execute(
+                    "UPDATE detections
+                       SET uncorrected_count = MAX(uncorrected_count - 1, 0)
+                     WHERE id = ?1",
+                    params![detection_id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -945,42 +1113,39 @@ pub fn total_batch_count(db: State<'_, Db>) -> Result<i64, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Count low-confidence CELLS (not detections) that have not been triaged.
-/// A cell is triaged when a correction row exists for its `cell_id` (any kind),
-/// mirroring `uncorrectedCellCount(below:)`. We pre-filter detections by the
-/// denormalised `min_confidence` column, then decode + subtract corrected ids.
+/// Count low-confidence CELLS (not detections) that have not been triaged — the
+/// Review-queue badge. A cell counts when `confidence < REVIEW_QUEUE_CUTOFF` and
+/// no correction row exists for its `cell_id` (any kind), mirroring
+/// `uncorrectedCellCount(below:)` and the `useReviewQueue` filter.
+///
+/// This value is now DENORMALISED into `detections.uncorrected_count`
+/// (maintained by `save_detection` / `record_correction` / the open-time
+/// backfill), so the badge is a single `SUM` — no per-detection `cells_json`
+/// decode and no N+1 corrections query, which mattered when a batch of 100+
+/// images each holds thousands of cells.
+///
+/// The denormalised column is keyed to the fixed `REVIEW_QUEUE_CUTOFF` (0.65);
+/// the sole caller (`store.refreshLibraryStats`) always passes exactly that. The
+/// `below_confidence` parameter is retained to preserve the command signature /
+/// `PersistencePort` contract. If a caller ever passes a *different* cutoff the
+/// SUM would not reflect it — hence the debug assertion; in release we still
+/// return the (cutoff-0.65) badge rather than regressing to the old O(cells)
+/// scan.
 #[tauri::command]
 pub fn uncorrected_cell_count(db: State<'_, Db>, below_confidence: f64) -> Result<i64, String> {
+    debug_assert!(
+        (below_confidence - REVIEW_QUEUE_CUTOFF).abs() < f64::EPSILON,
+        "uncorrected_cell_count denormalises against REVIEW_QUEUE_CUTOFF ({REVIEW_QUEUE_CUTOFF}); \
+         got below_confidence={below_confidence}"
+    );
+    let _ = below_confidence; // documented above; see the debug_assert.
     let conn = db.lock()?;
-    let mut stmt = conn
-        .prepare("SELECT id, cells_json FROM detections WHERE min_confidence < ?1")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![below_confidence], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-
-    let mut total: i64 = 0;
-    for (det_id, cells_json) in rows {
-        // Corrected cell ids for this detection.
-        let mut cstmt = conn
-            .prepare("SELECT DISTINCT cell_id FROM corrections WHERE detection_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let corrected: std::collections::HashSet<String> = cstmt
-            .query_map(params![det_id], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()
-            .map_err(|e| e.to_string())?;
-        let cells = cells_from_json(&cells_json);
-        total += cells
-            .iter()
-            .filter(|c| c.confidence < below_confidence && !corrected.contains(&c.id))
-            .count() as i64;
-    }
-    Ok(total)
+    conn.query_row(
+        "SELECT COALESCE(SUM(uncorrected_count), 0) FROM detections",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Delete every batch (cascades to images/detections/corrections/rois/annotations)

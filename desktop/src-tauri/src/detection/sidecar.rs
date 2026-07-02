@@ -1,20 +1,59 @@
-//! detection/sidecar.rs — SidecarManager: spawn / stream / cancel (§3.1).
+//! detection/sidecar.rs — SidecarManager: warm-worker pool / stream / cancel (§3.1).
 //!
 //! Rust port of `Detection/CellposeDetectionService.swift` +
 //! `Services/ChildProcessTracker.swift`. Owns the Python sidecar process
 //! lifecycle and exposes the three detection commands registered in `lib.rs`:
-//!   * `run_detection`         — spawn, stream stderr progress, drain stdout JSON
-//!   * `cancel_detection`      — SIGTERM → (300 ms) → SIGKILL, by run_id
+//!   * `run_detection`         — run one image against a warm worker (or a
+//!                               one-shot fallback), stream stderr progress,
+//!                               return the parsed payload
+//!   * `cancel_detection`      — cross-platform `Child::start_kill()`, by run_id
 //!   * `detection_availability`— venv present + `import cellpose` importable?
 //!
-//! Wire details reproduced verbatim from the Swift host:
+//! ## Persistent-worker pool (Pass-24)
+//!
+//! A lab batch is 100+ phase-contrast images. Spawning a fresh Python +
+//! importing torch + building the CellposeModel per image dominates wall time
+//! (seconds of import/model-load for a sub-second inference). This module keeps
+//! a small pool of **warm workers**: `cellpose_detect.py --serve` processes that
+//! import once, build the model once, print `{"type":"ready"}`, then service
+//! NDJSON requests over stdin — one framed `{"type":"result",...}` per image.
+//!
+//! Pool shape:
+//!   * Keyed by a **config signature** (`config_signature`) covering every arg
+//!     that changes model construction: model id, GPU/CPU, channels. Two images
+//!     with the same signature reuse the same warm worker; a different signature
+//!     spawns its own worker(s).
+//!   * Capped at `pool_capacity()` = `min(POOL_CAP_MAX, available_parallelism)`
+//!     workers PER signature. In v1 (single cyto3 config) that is one bucket.
+//!   * A worker services exactly **one in-flight request at a time**: `detect()`
+//!     removes it from the pool for the duration of the request and returns it
+//!     when done. That checkout is the whole concurrency story — no per-worker
+//!     lock is needed on the stdout stream because only the owner reads it.
+//!
+//! ## Fallback (never fully break)
+//!
+//! If a worker fails to emit `ready` within [`READY_TIMEOUT`], or the worker
+//! path errors mid-request (broken pipe, unparseable frame, unexpected EOF),
+//! `detect()` falls back to the original **one-shot** spawn path
+//! (`run_one_shot`) for that request and logs the fallback. Detection therefore
+//! degrades to the pre-pool behaviour rather than failing.
+//!
+//! ## Cancellation + Windows hardening
+//!
+//! * Cancel calls tokio `Child::start_kill()` (TerminateProcess on Windows,
+//!   SIGKILL on Unix) on the **actual child handle** — no pid-reuse race, no
+//!   `taskkill`. A killed worker is dropped from the pool; the next request
+//!   spawns a fresh one.
+//! * The launch orphan sweep uses the cross-platform `sysinfo` crate to find
+//!   stray `*_detect.py` processes from a crashed prior session and kill them.
+//!
+//! Wire details preserved from the Swift host:
 //!   * argv order (see `build_argv`), model-id `cp-` prefix strip
-//!   * stdout = one JSON object drained concurrently (no full-pipe deadlock)
+//!   * one-shot stdout = one JSON object; serve stdout = NDJSON frames
 //!   * stderr = `\n`/`\r`-split, trimmed, non-empty → `{kind:"stage"}` events;
 //!     the `using device: <dev>` line → `{kind:"device"}`; tqdm bars dropped
 //!   * structured `{error,hint}` stdout → `sidecarFailed`
 //!   * exit codes {15,-15,143,9,-9,137} ⇒ `cancelled`
-//!   * orphan sweep at launch kills stray `cellpose_detect.py` (PPID re-parented)
 //!
 //! CUDA: v1 pins CPU torch wheels for portability (see pyproject.toml). GPU
 //! selection still flows through `use_gpu`/`--no-gpu`; wiring a real CUDA build
@@ -22,12 +61,14 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncReadExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::{Mutex, Notify};
 
 use crate::detection::ipc::{
     progress_event_name, Availability, DetectionErrorDto, DetectionParams, DetectionProgress,
@@ -49,19 +90,59 @@ const OWNED_SCRIPTS: &[&str] = &[
 /// Signal-ish exit codes that mean the host terminated us on purpose.
 const SIGNAL_EXIT_CODES: &[i32] = &[15, -15, 143, 9, -9, 137];
 
-/// Registry of in-flight runs so `cancel_detection` can find a run's PID.
-/// Keyed by client-generated `run_id`.
+/// Hard cap on warm workers per config signature. `available_parallelism` is
+/// then applied on top, so a 2-core box gets 2 and an 8-core box still caps at
+/// this. cellpose inference is CPU/MPS-bound; more than a few concurrent
+/// interpreters thrash rather than help, and each holds a full torch + model in
+/// RAM. 3 is a safe default for a batch workstation.
+const POOL_CAP_MAX: usize = 3;
+
+/// How long we wait for a freshly-spawned worker to print `{"type":"ready"}`
+/// before giving up on it and falling back to the one-shot path. Cold start is
+/// torch import + model build; generous so a slow first import doesn't spuriously
+/// trip the fallback.
+const READY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Per-request ceiling on how long we wait for a worker to return the matching
+/// `result`/`error` frame. Guards against a wedged worker holding a request
+/// forever; on timeout we kill that worker and fall back to one-shot.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Registry of in-flight runs (for cancel) + the warm-worker pool.
+/// `running` is keyed by client-generated `run_id`; `pool` by config signature.
 #[derive(Default)]
 pub struct SidecarManager {
     running: Mutex<HashMap<String, RunHandle>>,
+    /// Warm workers available for reuse, bucketed by config signature. A worker
+    /// present here is idle; `detect()` removes it while a request is in flight.
+    pool: Mutex<HashMap<String, Vec<Worker>>>,
 }
 
+/// Per-run cancellation handle. Lets `cancel_detection` terminate whatever
+/// process is servicing the run right now — a warm worker or a one-shot child —
+/// by killing the exact handle (no pid, no reuse race).
 struct RunHandle {
-    /// OS pid of the spawned python process (for signalling on cancel).
-    pid: u32,
     /// Set true by `cancel_detection` so the completion path reports `cancelled`
     /// even if the child raced to a non-signal exit.
-    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+    cancel_flag: Arc<AtomicBool>,
+    /// How to actually terminate this run's process.
+    kill: KillHandle,
+}
+
+/// The cancel mechanism, per path. Both end in a cross-platform
+/// `Child::start_kill()` (TerminateProcess on Windows, SIGKILL on Unix); they
+/// differ only in who owns the `Child` at cancel time.
+#[derive(Clone)]
+enum KillHandle {
+    /// Warm worker: the `Child` lives inside the checked-out worker but is shared
+    /// here via `Arc`. The request owner (`converse`) never locks this mutex, so
+    /// cancel can lock + `start_kill()` instantly; the resulting stdout EOF ends
+    /// the read loop.
+    Worker(Arc<Mutex<Child>>),
+    /// One-shot: the `Child` stays owned by `run_one_shot` (so its `wait()` needs
+    /// no shared lock). Cancel fires this `Notify`; the one-shot body is
+    /// `select!`ing on it and kills the child locally.
+    OneShot(Arc<Notify>),
 }
 
 impl SidecarManager {
@@ -69,6 +150,40 @@ impl SidecarManager {
         Self::default()
     }
 }
+
+/// A warm `--serve` worker: a long-lived Python process that built its model
+/// once and now answers one NDJSON request per line. Removed from the pool while
+/// busy, returned when idle; only the current owner touches `stdin`/`stdout`.
+struct Worker {
+    /// The config signature this worker was built for. Only requests with a
+    /// matching signature may reuse it.
+    config_sig: String,
+    /// The child handle — shared so `cancel_detection` can `start_kill()` it and
+    /// the pump can observe liveness. stdin/stdout/stderr were `take()`n out at
+    /// spawn, so this handle is used only for kill/wait/id.
+    child: Arc<Mutex<Child>>,
+    /// Writer for request lines (NDJSON, one per image).
+    stdin: ChildStdin,
+    /// Buffered line reader over the worker's stdout (result/error frames).
+    stdout: Lines<BufReader<ChildStdout>>,
+    /// Shared "which run is active" slot the stderr pump reads to route progress
+    /// events. `detect()` sets it for the duration of a request.
+    active: Arc<Mutex<Option<ActiveRun>>>,
+    /// Monotonic per-worker request id, echoed back in each frame's `id`.
+    next_req_id: u64,
+}
+
+/// The run a worker is currently servicing — used by the shared stderr pump to
+/// tag progress events with the right `run_id` and event name.
+#[derive(Clone)]
+struct ActiveRun {
+    run_id: String,
+    event_name: String,
+}
+
+// ===========================================================================
+// Resolve + argv (shared by warm-worker and one-shot paths)
+// ===========================================================================
 
 /// Resolve the venv python + staged `cellpose_detect.py`, or report why the
 /// model isn't runnable. Mirrors `CellposeAvailability.detect()` (simplified:
@@ -85,7 +200,7 @@ fn resolve_sidecar(store: &FileStore) -> Result<(std::path::PathBuf, std::path::
     Ok((python, script))
 }
 
-/// Build the EXACT argv from `CellposeDetectionService.swift`.
+/// Build the EXACT one-shot argv from `CellposeDetectionService.swift`.
 ///
 /// `["cellpose_detect.py", "--image", <path>, "--model", <cyto3>,
 ///   "--pxPerUm", <f>, "--conf", <f>]`
@@ -143,6 +258,95 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
     args
 }
 
+/// Build the argv for a persistent `--serve` worker: only the
+/// model-determining args (model, channels, GPU) plus `--pxPerUm` (required by
+/// the parser even though it is overridden per-request). Per-image params
+/// (image / conf / thresholds / bg-subtract / watershed) are NOT here — they
+/// arrive per-request over stdin.
+fn build_serve_argv(script: &std::path::Path, p: &DetectionParams) -> Vec<String> {
+    let model = p
+        .model_id
+        .strip_prefix("cp-")
+        .unwrap_or(&p.model_id)
+        .to_string();
+
+    let mut args: Vec<String> = vec![
+        script.to_string_lossy().into_owned(),
+        "--serve".into(),
+        "--model".into(),
+        model,
+        // `--pxPerUm` is `required=True` on the shared parser; supply the first
+        // request's value as a placeholder. Every request overrides it, so the
+        // exact value here is irrelevant beyond satisfying argparse.
+        "--pxPerUm".into(),
+        p.px_per_um.to_string(),
+    ];
+
+    let is_default_channels = p.channels == [0, 0];
+    if !is_default_channels {
+        args.push("--channels".into());
+        args.push(format!("{},{}", p.channels[0], p.channels[1]));
+    }
+    if !p.use_gpu {
+        args.push("--no-gpu".into());
+    }
+    args
+}
+
+/// The per-image request line written to a warm worker's stdin. Field names
+/// match the Python `_PER_IMAGE_KEYS`; anything omitted keeps the argv default.
+/// This is the serve-mode analogue of the per-image argv flags in `build_argv`.
+fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String {
+    // Assemble via serde_json::Value so escaping (paths with quotes/backslashes,
+    // esp. on Windows) is always correct.
+    let mut map = serde_json::Map::new();
+    map.insert("id".into(), serde_json::json!(id));
+    map.insert("image".into(), serde_json::json!(image_path));
+    map.insert("conf".into(), serde_json::json!(p.confidence_threshold));
+    map.insert("pxPerUm".into(), serde_json::json!(p.px_per_um));
+    map.insert(
+        "small_threshold".into(),
+        serde_json::json!(p.small_threshold_um),
+    );
+    map.insert(
+        "large_threshold".into(),
+        serde_json::json!(p.large_threshold_um),
+    );
+    map.insert("bg_subtract".into(), serde_json::json!(p.background_subtract));
+    map.insert(
+        "rolling_ball_radius".into(),
+        serde_json::json!(p.rolling_ball_radius),
+    );
+    map.insert("watershed".into(), serde_json::json!(p.watershed_split));
+    // Python declares this int; round to match `build_argv`'s integer coercion.
+    map.insert(
+        "watershed_min_distance".into(),
+        serde_json::json!(p.watershed_min_distance_um.round() as i64),
+    );
+    serde_json::Value::Object(map).to_string()
+}
+
+/// Signature that determines model construction. Two requests with the same
+/// signature may share a warm worker; a different one spawns its own. Covers
+/// model id, GPU/CPU, and channels (channels change both model.eval and image
+/// loading). Per-image params are deliberately excluded.
+fn config_signature(p: &DetectionParams) -> String {
+    let model = p.model_id.strip_prefix("cp-").unwrap_or(&p.model_id);
+    format!(
+        "model={model}|gpu={}|channels={},{}",
+        p.use_gpu, p.channels[0], p.channels[1]
+    )
+}
+
+/// Warm-worker pool capacity per signature: `available_parallelism` capped at
+/// [`POOL_CAP_MAX`], floored at 1.
+fn pool_capacity() -> usize {
+    let par = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    par.clamp(1, POOL_CAP_MAX)
+}
+
 /// Parse a stderr line into a progress event. Returns `None` for lines that
 /// should be dropped (tqdm bars). The device line
 /// `"[cellpose_detect] using device: <dev> (torch …)"` becomes `Device`.
@@ -190,14 +394,467 @@ pub async fn run_detection(
         }
     })?;
 
-    // `argv[0]` is the script path; the whole vec becomes the arguments to the
-    // python interpreter (`python <script> --image …`), matching the Swift host
-    // which sets `process.arguments = args` with `args[0] == scriptURL.path`.
-    let argv = build_argv(&script, &image_path, &params);
+    // Each path registers the run in the cancel registry only once it owns a
+    // process, so a cancel that arrives before then is a harmless no-op (the
+    // transport can re-issue it). Try the warm-worker path first; on any
+    // worker-side malfunction fall back to the one-shot spawn so detection never
+    // fully breaks. A structured per-image error from the worker is surfaced
+    // directly (not retried).
+    match run_via_worker(&app, &python, &script, &store, &image_path, &params, &run_id).await {
+        Ok(dto) => Ok(dto),
+        Err(WorkerAttempt::Cancelled) => Err(DetectionErrorDto::Cancelled),
+        Err(WorkerAttempt::SidecarError(dto)) => {
+            // The worker ran the image and reported a structured sidecar error
+            // (bad image, eval-failed, …). That is a real per-image failure, not
+            // a worker malfunction — surface it directly, do NOT retry one-shot
+            // (a retry would just reproduce the same error at higher cost).
+            Err(dto)
+        }
+        Err(WorkerAttempt::Fallback(reason)) => {
+            eprintln!(
+                "[sidecar] warm-worker path unavailable ({reason}); \
+                 falling back to one-shot spawn for run {run_id}"
+            );
+            run_one_shot(&app, &python, &script, &store, &image_path, &params, &run_id).await
+        }
+    }
+}
+
+/// Outcome of an attempt to service a request via the warm-worker pool.
+enum WorkerAttempt {
+    /// The run was cancelled while bound to a worker.
+    Cancelled,
+    /// The worker produced a structured sidecar error for this image — a real
+    /// per-image failure; surface it (do not retry one-shot).
+    SidecarError(DetectionErrorDto),
+    /// The worker path could not be used (no ready worker / broken pipe /
+    /// timeout / unparseable frame). Carries a human reason for the log; the
+    /// caller retries via one-shot.
+    Fallback(String),
+}
+
+/// Acquire (or spawn) a warm worker for this config, send the request, stream
+/// stderr progress, and read frames until the matching `result`/`error`.
+async fn run_via_worker(
+    app: &AppHandle,
+    python: &std::path::Path,
+    script: &std::path::Path,
+    store: &FileStore,
+    image_path: &str,
+    params: &DetectionParams,
+    run_id: &str,
+) -> Result<DetectionResultDto, WorkerAttempt> {
+    let sig = config_signature(params);
+    let event_name = progress_event_name(run_id);
+    // The run the worker's stderr pump should tag progress with. Passed into the
+    // acquisition so it is attached FROM SPAWN — a freshly-spawned worker prints
+    // its cold-start `using device:` line (and other stage lines) DURING the
+    // ready handshake, before this request's read loop begins; attaching now
+    // means those lines still reach the first image's run.
+    let initial_active = ActiveRun {
+        run_id: run_id.to_string(),
+        event_name: event_name.clone(),
+    };
+
+    // 1) Get a warm worker: pop an idle one from the pool (and point its pump at
+    //    this run), else spawn + await ready with the pump already attached. On
+    //    spawn/ready failure, request a one-shot fallback.
+    let mut worker =
+        match take_or_spawn_worker(app, python, script, store, params, &sig, &initial_active).await
+        {
+            Ok(w) => w,
+            Err(reason) => return Err(WorkerAttempt::Fallback(reason)),
+        };
+
+    // 2) Register the run for cancellation, bound to THIS worker's child.
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mgr = app.state::<SidecarManager>();
+        let mut running = mgr.running.lock().await;
+        running.insert(
+            run_id.to_string(),
+            RunHandle {
+                cancel_flag: cancel_flag.clone(),
+                kill: KillHandle::Worker(worker.child.clone()),
+            },
+        );
+    }
+    // If cancel already fired between spawn and registration, honour it.
+    if cancel_flag.load(Ordering::SeqCst) {
+        deregister_run(app, run_id).await;
+        kill_worker(&worker).await;
+        return Err(WorkerAttempt::Cancelled);
+    }
+
+    // 3) Send the request line and read frames until our id comes back.
+    let req_id = worker.next_req_id;
+    worker.next_req_id += 1;
+    let request = build_request_json(req_id, image_path, params);
+
+    let outcome = converse(&mut worker, req_id, &request, &cancel_flag).await;
+
+    // 4) Detach the pump from this run regardless of outcome, and deregister so
+    //    a later cancel for this run_id is a no-op.
+    {
+        let mut active = worker.active.lock().await;
+        *active = None;
+    }
+    deregister_run(app, run_id).await;
+
+    let was_cancelled = cancel_flag.load(Ordering::SeqCst);
+
+    match outcome {
+        Converse::Result(payload) => {
+            // Healthy worker → return it to the pool for reuse.
+            return_worker_to_pool(app, worker).await;
+            Ok(payload.into_result_dto())
+        }
+        Converse::SidecarError { error, hint } => {
+            // Worker itself is fine (it framed a clean error); recycle it.
+            return_worker_to_pool(app, worker).await;
+            let combined = match hint {
+                Some(h) => format!("{error}: {h}"),
+                None => error,
+            };
+            Err(WorkerAttempt::SidecarError(DetectionErrorDto::SidecarFailed {
+                exit_code: 0,
+                stderr: combined,
+            }))
+        }
+        Converse::Cancelled => {
+            kill_worker(&worker).await;
+            Err(WorkerAttempt::Cancelled)
+        }
+        Converse::Broken(reason) => {
+            // Pipe/parse/timeout failure. Kill the worker (it may be wedged) and
+            // ask the caller to fall back — unless a cancel raced in, in which
+            // case report cancelled.
+            kill_worker(&worker).await;
+            if was_cancelled {
+                Err(WorkerAttempt::Cancelled)
+            } else {
+                Err(WorkerAttempt::Fallback(reason))
+            }
+        }
+    }
+}
+
+/// Result of one request/response exchange with a warm worker.
+enum Converse {
+    Result(SidecarPayload),
+    SidecarError { error: String, hint: Option<String> },
+    Cancelled,
+    Broken(String),
+}
+
+/// Write the request line, then read stdout frames until we see our `id`.
+/// stderr progress is handled out-of-band by the worker's pump task.
+async fn converse(
+    worker: &mut Worker,
+    req_id: u64,
+    request_json: &str,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Converse {
+    // Write "<json>\n" and flush. A broken pipe here means the worker died.
+    if let Err(e) = worker.stdin.write_all(request_json.as_bytes()).await {
+        return Converse::Broken(format!("stdin write failed: {e}"));
+    }
+    if let Err(e) = worker.stdin.write_all(b"\n").await {
+        return Converse::Broken(format!("stdin newline write failed: {e}"));
+    }
+    if let Err(e) = worker.stdin.flush().await {
+        return Converse::Broken(format!("stdin flush failed: {e}"));
+    }
+
+    // Read frames until the matching id, honouring cancel + a hard timeout.
+    loop {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return Converse::Cancelled;
+        }
+        let line = match tokio::time::timeout(REQUEST_TIMEOUT, worker.stdout.next_line()).await {
+            Err(_) => return Converse::Broken("request timed out".into()),
+            Ok(Ok(Some(l))) => l,
+            Ok(Ok(None)) => return Converse::Broken("worker closed stdout (EOF)".into()),
+            Ok(Err(e)) => return Converse::Broken(format!("stdout read failed: {e}")),
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Each frame is one JSON object: ready|result|error. We only act on
+        // frames whose id matches this request; stray frames are ignored.
+        let frame: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => {
+                // Non-JSON on stdout should not happen in serve mode, but never
+                // let it wedge us: treat as a broken worker.
+                return Converse::Broken(format!(
+                    "unparseable worker frame: {}",
+                    trimmed.chars().take(200).collect::<String>()
+                ));
+            }
+        };
+        let ftype = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match ftype {
+            "ready" => {
+                // A late duplicate ready (shouldn't happen post-handshake); skip.
+                continue;
+            }
+            "result" => {
+                if frame.get("id").and_then(|v| v.as_u64()) != Some(req_id) {
+                    continue; // not ours
+                }
+                let payload = match frame.get("payload") {
+                    Some(p) => p.clone(),
+                    None => return Converse::Broken("result frame missing payload".into()),
+                };
+                match serde_json::from_value::<SidecarPayload>(payload) {
+                    Ok(pl) => return Converse::Result(pl),
+                    Err(e) => {
+                        return Converse::Broken(format!("payload decode failed: {e}"))
+                    }
+                }
+            }
+            "error" => {
+                if frame.get("id").and_then(|v| v.as_u64()) != Some(req_id) {
+                    continue; // not ours
+                }
+                let error = frame
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("detect-failed")
+                    .to_string();
+                let hint = frame
+                    .get("hint")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                return Converse::SidecarError { error, hint };
+            }
+            _ => continue, // unknown frame type — ignore defensively
+        }
+    }
+}
+
+/// Pop an idle worker matching `sig` from the pool, or spawn a fresh one and
+/// await its `ready` handshake. Either way the returned worker's stderr pump is
+/// already pointed at `initial_active`. On failure returns a human reason.
+async fn take_or_spawn_worker(
+    app: &AppHandle,
+    python: &std::path::Path,
+    script: &std::path::Path,
+    store: &FileStore,
+    params: &DetectionParams,
+    sig: &str,
+    initial_active: &ActiveRun,
+) -> Result<Worker, String> {
+    // Fast path: reuse an idle warm worker. Point its pump at this run before
+    // handing it back (a reused worker prints no cold-start lines, but any stray
+    // stderr should still be attributed to the current run).
+    {
+        let mgr = app.state::<SidecarManager>();
+        let mut pool = mgr.pool.lock().await;
+        if let Some(bucket) = pool.get_mut(sig) {
+            if let Some(worker) = bucket.pop() {
+                {
+                    let mut active = worker.active.lock().await;
+                    *active = Some(initial_active.clone());
+                }
+                return Ok(worker);
+            }
+        }
+    }
+    // Slow path: spawn a new one and await ready. `params` carries the
+    // model-determining args; its signature is asserted to equal `sig`.
+    debug_assert_eq!(&config_signature(params), sig);
+    spawn_worker(app, python, script, store, params, initial_active).await
+}
+
+/// Spawn `cellpose_detect.py --serve …`, wire its pipes, start the stderr pump
+/// (attached to `initial_active` so cold-start lines route to the first run),
+/// and block until it prints `{"type":"ready"}` (or [`READY_TIMEOUT`] elapses).
+/// The worker's signature is derived from `params` (only model-determining args
+/// reach the serve argv).
+async fn spawn_worker(
+    app: &AppHandle,
+    python: &std::path::Path,
+    script: &std::path::Path,
+    store: &FileStore,
+    params: &DetectionParams,
+    initial_active: &ActiveRun,
+) -> Result<Worker, String> {
+    let sig = config_signature(params);
+    let argv = build_serve_argv(script, params);
+
+    let mut cmd = Command::new(python);
+    cmd.args(&argv)
+        .current_dir(store.python_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child: Child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn serve worker: {e}"))?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "serve worker has no stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "serve worker has no stdout".to_string())?;
+    let stderr = child.stderr.take();
+
+    let mut stdout_lines = BufReader::new(stdout).lines();
+    // Start the pump ALREADY attached to the first run so the cold-start
+    // `using device:` / stage lines printed during model build (before `ready`)
+    // are forwarded to that run instead of dropped.
+    let active: Arc<Mutex<Option<ActiveRun>>> =
+        Arc::new(Mutex::new(Some(initial_active.clone())));
+
+    // Start the stderr pump: routes lines to whatever run is active. Lives for
+    // the worker's lifetime, ends on stderr EOF (worker exit).
+    if let Some(stderr) = stderr {
+        let app = app.clone();
+        let active = active.clone();
+        tokio::spawn(async move {
+            pump_worker_stderr(app, active, stderr).await;
+        });
+    }
+
+    // Block on the ready handshake. The pump above is already forwarding any
+    // stderr the worker prints during import/model-build.
+    let ready_line =
+        match tokio::time::timeout(READY_TIMEOUT, stdout_lines.next_line()).await {
+            Err(_) => return Err(format!("worker did not emit ready within {:?}", READY_TIMEOUT)),
+            Ok(Ok(Some(l))) => l,
+            Ok(Ok(None)) => return Err("worker exited before ready".into()),
+            Ok(Err(e)) => return Err(format!("reading ready failed: {e}")),
+        };
+    let trimmed = ready_line.trim();
+    let ok = serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s == "ready"))
+        .unwrap_or(false);
+    if !ok {
+        return Err(format!(
+            "expected ready frame, got: {}",
+            trimmed.chars().take(200).collect::<String>()
+        ));
+    }
+
+    Ok(Worker {
+        config_sig: sig,
+        child: Arc::new(Mutex::new(child)),
+        stdin,
+        stdout: stdout_lines,
+        active,
+        next_req_id: 0,
+    })
+}
+
+/// Continuously forward a worker's stderr lines to the active run's progress
+/// event. Splits on `\n`/`\r` like the one-shot pump. When no run is active the
+/// line is dropped (idle chatter between requests is not attributable to a run).
+async fn pump_worker_stderr(
+    app: AppHandle,
+    active: Arc<Mutex<Option<ActiveRun>>>,
+    stderr: tokio::process::ChildStderr,
+) {
+    let mut reader = BufReader::new(stderr);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte).await {
+            Ok(0) => break, // EOF — worker gone
+            Ok(_) => {
+                let b = byte[0];
+                if b == b'\n' || b == b'\r' {
+                    emit_worker_stderr_line(&app, &active, &buf).await;
+                    buf.clear();
+                } else {
+                    buf.push(b);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !buf.is_empty() {
+        emit_worker_stderr_line(&app, &active, &buf).await;
+    }
+}
+
+/// Emit one trimmed stderr line under the currently-active run (if any).
+async fn emit_worker_stderr_line(
+    app: &AppHandle,
+    active: &Arc<Mutex<Option<ActiveRun>>>,
+    raw: &[u8],
+) {
+    let text = String::from_utf8_lossy(raw);
+    let line = text.trim();
+    if line.is_empty() {
+        return;
+    }
+    let current = { active.lock().await.clone() };
+    if let Some(run) = current {
+        if let Some(progress) = parse_progress_line(&run.run_id, line) {
+            let _ = app.emit(&run.event_name, progress);
+        }
+    }
+}
+
+/// Return a healthy worker to its pool bucket if there is room; otherwise drop
+/// it (which, via `kill_on_drop`, terminates the process).
+async fn return_worker_to_pool(app: &AppHandle, worker: Worker) {
+    let cap = pool_capacity();
+    let mgr = app.state::<SidecarManager>();
+    let mut pool = mgr.pool.lock().await;
+    let bucket = pool.entry(worker.config_sig.clone()).or_default();
+    if bucket.len() < cap {
+        bucket.push(worker);
+    }
+    // else: bucket full — `worker` drops here, `kill_on_drop` reaps the process.
+}
+
+/// Kill a worker's child immediately (cross-platform TerminateProcess/SIGKILL).
+/// Used on cancel or when a worker is deemed broken. The worker is not returned
+/// to the pool afterward.
+async fn kill_worker(worker: &Worker) {
+    let mut child = worker.child.lock().await;
+    let _ = child.start_kill();
+}
+
+/// Remove a run from the cancel registry.
+async fn deregister_run(app: &AppHandle, run_id: &str) {
+    let mgr = app.state::<SidecarManager>();
+    let mut running = mgr.running.lock().await;
+    running.remove(run_id);
+}
+
+// ===========================================================================
+// One-shot fallback path (the original per-image spawn)
+// ===========================================================================
+
+/// The original one-shot detection: spawn `cellpose_detect.py --image …`, stream
+/// stderr progress, drain the single stdout JSON, map exit codes. Kept intact as
+/// the fallback when the warm-worker path is unavailable, so detection never
+/// fully breaks.
+async fn run_one_shot(
+    app: &AppHandle,
+    python: &std::path::Path,
+    script: &std::path::Path,
+    store: &FileStore,
+    image_path: &str,
+    params: &DetectionParams,
+    run_id: &str,
+) -> Result<DetectionResultDto, DetectionErrorDto> {
+    let argv = build_argv(script, image_path, params);
 
     // Spawn: cwd = python dir so `sys.path.insert(0, dirname(__file__))` finds
     // the `_cellpose_common` sibling modules.
-    let mut cmd = Command::new(&python);
+    let mut cmd = Command::new(python);
     cmd.args(&argv)
         .current_dir(store.python_dir())
         .stdin(Stdio::null())
@@ -212,28 +869,33 @@ pub async fn run_detection(
             stderr: format!("failed to spawn sidecar: {e}"),
         })?;
 
-    let pid = child.id().unwrap_or(0);
-    let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Take the pipes out; the `Child` stays owned by this function so its
+    // `wait()` needs no shared lock. Cancel reaches us via a `Notify` instead.
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
 
-    // Register the run so cancel_detection can find the pid.
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_notify = Arc::new(Notify::new());
+
+    // Register the run so cancel_detection can signal this child. The one-shot
+    // body owns the `Child` and `select!`s on `cancel_notify` to kill it.
     {
         let mgr = app.state::<SidecarManager>();
         let mut running = mgr.running.lock().await;
         running.insert(
-            run_id.clone(),
+            run_id.to_string(),
             RunHandle {
-                pid,
                 cancel_flag: cancel_flag.clone(),
+                kill: KillHandle::OneShot(cancel_notify.clone()),
             },
         );
     }
 
     // --- stderr: stream line-by-line as progress events ---
-    let stderr = child.stderr.take();
-    let event_name = progress_event_name(&run_id);
+    let event_name = progress_event_name(run_id);
     let stderr_task = {
         let app = app.clone();
-        let run_id = run_id.clone();
+        let run_id = run_id.to_string();
         let event_name = event_name.clone();
         tokio::spawn(async move {
             let mut collected = String::new();
@@ -267,7 +929,6 @@ pub async fn run_detection(
     };
 
     // --- stdout: drain concurrently into a buffer (avoids full-pipe deadlock) ---
-    let stdout = child.stdout.take();
     let stdout_task = tokio::spawn(async move {
         let mut out = Vec::new();
         if let Some(mut stdout) = stdout {
@@ -276,19 +937,36 @@ pub async fn run_detection(
         out
     });
 
-    // Wait for exit + both drains.
-    let status = child.wait().await;
+    // Wait for exit, racing a cancel. On cancel we `start_kill()` locally
+    // (cross-platform TerminateProcess/SIGKILL) and then reap. Owning the child
+    // here means cancel never contends for a lock held across `wait()`.
+    //
+    // `child.wait()` is written INLINE as a `select!` branch so tokio pins it on
+    // the macro's stack and drops it when the macro returns — releasing its
+    // `&mut child` borrow before we (possibly) call `child.start_kill()` after
+    // the select. Only this one branch borrows `child`; the cancel branch
+    // borrows `cancel_notify`, so there is no double mutable borrow inside the
+    // select.
+    let mut exited: Option<std::io::Result<std::process::ExitStatus>> = None;
+    let cancelled_wait = tokio::select! {
+        biased;
+        _ = cancel_notify.notified() => true,          // cancelled: reap below
+        s = child.wait() => { exited = Some(s); false } // exited on its own
+    };
+    let status = if cancelled_wait {
+        let _ = child.start_kill();
+        child.wait().await
+    } else {
+        // Safe: the `false` arm always sets `exited` before the select returns.
+        exited.expect("wait branch sets exited")
+    };
     let stdout_bytes = stdout_task.await.unwrap_or_default();
     let stderr_text = stderr_task.await.unwrap_or_default();
 
     // Deregister the run.
-    {
-        let mgr = app.state::<SidecarManager>();
-        let mut running = mgr.running.lock().await;
-        running.remove(&run_id);
-    }
+    deregister_run(app, run_id).await;
 
-    let was_cancelled = cancel_flag.load(std::sync::atomic::Ordering::SeqCst);
+    let was_cancelled = cancel_flag.load(Ordering::SeqCst);
 
     let exit_code: i32 = match status {
         Ok(s) => s.code().unwrap_or_else(|| {
@@ -373,65 +1051,44 @@ fn flush_stderr_line(
 }
 
 // ===========================================================================
-// COMMAND: cancel_detection  (SIGTERM → 300ms → SIGKILL)
+// COMMAND: cancel_detection  (cross-platform Child::start_kill())
 // ===========================================================================
 
 #[tauri::command]
 pub async fn cancel_detection(app: AppHandle, run_id: String) -> Result<(), String> {
-    let pid = {
+    // Snapshot the kill handle under the registry lock, then release it before
+    // doing the actual kill so we never hold the registry mutex across a kill.
+    let kill = {
         let mgr = app.state::<SidecarManager>();
         let running = mgr.running.lock().await;
         match running.get(&run_id) {
             Some(handle) => {
-                handle
-                    .cancel_flag
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                handle.pid
+                handle.cancel_flag.store(true, Ordering::SeqCst);
+                handle.kill.clone()
             }
             None => return Ok(()), // already finished — nothing to cancel
         }
     };
-    if pid == 0 {
-        return Ok(());
+    // Cross-platform terminate: TerminateProcess on Windows, SIGKILL on Unix.
+    // No pid, so no reuse race.
+    match kill {
+        KillHandle::Worker(child) => {
+            // `converse` never locks this mutex, so the lock is uncontended and
+            // the kill is immediate; the worker's stdout then hits EOF and its
+            // read loop unwinds to `Cancelled`.
+            let mut guard = child.lock().await;
+            let _ = guard.start_kill();
+        }
+        KillHandle::OneShot(notify) => {
+            // Wake the one-shot body's `select!`, which kills + reaps its own
+            // child locally. `notify_one()` (NOT `notify_waiters()`) stores a
+            // permit if the body has not parked on `notified()` yet, so a cancel
+            // that races ahead of the `select!` is not lost — the body consumes
+            // the permit the instant it awaits.
+            notify.notify_one();
+        }
     }
-    terminate_then_kill(pid).await;
     Ok(())
-}
-
-/// SIGTERM a pid, wait 300 ms, then SIGKILL if it's still alive. On non-Unix
-/// this best-effort no-ops beyond the kill_on_drop path (v1 targets desktop
-/// Unix + Windows; Windows uses TerminateProcess via the tokio kill fallback).
-async fn terminate_then_kill(pid: u32) {
-    #[cfg(unix)]
-    {
-        // SIGTERM
-        unsafe {
-            libc_kill(pid as i32, 15);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        // SIGKILL (harmless if already reaped).
-        unsafe {
-            libc_kill(pid as i32, 9);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows: taskkill /PID <pid> /F. Fire-and-forget.
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F", "/T"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-    }
-}
-
-// Minimal FFI to `kill(2)` so we don't pull in the whole `libc`/`nix` crate
-// just to send two signals. Present only on Unix.
-#[cfg(unix)]
-extern "C" {
-    #[link_name = "kill"]
-    fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
 // ===========================================================================
@@ -498,59 +1155,63 @@ pub async fn detection_availability(
 // ===========================================================================
 
 /// Kill orphaned sidecar processes left by a previous (crashed) session.
-/// PPID == 1 + cmdline contains one of our scripts ⇒ ours (mirrors
-/// `ChildProcessTracker.sweepOrphans`). Best-effort; never blocks startup —
-/// call it from a spawned task in `setup`.
+///
+/// Cross-platform via the `sysinfo` crate (replaces the old Unix-only `/bin/ps`
+/// scrape). We enumerate every process, and any whose command line references
+/// one of our owned `*_detect.py` scripts — and whose pid is not one of our
+/// current live children — is killed. Because a warm/one-shot child from THIS
+/// process is tracked with `kill_on_drop` and reaped on its own path, and the
+/// sweep runs once at launch (before we have spawned anything), in practice
+/// every match is a genuine orphan. Best-effort; never blocks startup — call it
+/// from a spawned thread in `setup`.
 pub fn sweep_orphans() {
-    #[cfg(unix)]
-    {
-        use std::process::Command as StdCommand;
-        let out = match StdCommand::new("/bin/ps")
-            .args(["-ax", "-o", "pid=,ppid=,command="])
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("[sidecar] orphan sweep: failed to run ps: {e}");
-                return;
-            }
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut killed = 0usize;
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // "<pid> <ppid> <command...>"
-            let mut it = trimmed.splitn(3, char::is_whitespace);
-            let pid = it.next().and_then(|s| s.trim().parse::<i32>().ok());
-            let ppid = it.next().and_then(|s| s.trim().parse::<i32>().ok());
-            let command = it.next().unwrap_or("");
-            let (Some(pid), Some(ppid)) = (pid, ppid) else {
-                continue;
-            };
-            if ppid != 1 {
-                continue; // only re-parented orphans are ours to reap
-            }
-            let is_ours = OWNED_SCRIPTS.iter().any(|s| command.contains(s));
-            if !is_ours {
-                continue;
-            }
-            unsafe {
-                if libc_kill(pid, 9) == 0 {
-                    killed += 1;
-                }
-            }
+    use sysinfo::{ProcessesToUpdate, System};
+
+    // Our own pid — never target ourselves even if argv somehow matched.
+    let self_pid = std::process::id();
+
+    // Enumerate every process once. `ProcessesToUpdate::All` refreshes the whole
+    // table; `true` prunes entries for processes that have since died.
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    let mut killed = 0usize;
+    for (pid, process) in sys.processes() {
+        if pid.as_u32() == self_pid {
+            continue;
         }
-        if killed > 0 {
-            eprintln!("[sidecar] reaped {killed} orphan subprocess(es) from prior session");
+
+        // Match against the full command line (interpreter + script + args).
+        // `cmd()` yields the argv vector as `&[OsString]`; join lossily so a
+        // script path shows up regardless of which argv slot it lands in.
+        let cmdline: String = process
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Fall back to the executable name (an `&OsStr`) if cmd() is empty on
+        // this platform.
+        let haystack = if cmdline.is_empty() {
+            process.name().to_string_lossy().into_owned()
+        } else {
+            cmdline
+        };
+
+        let is_ours = OWNED_SCRIPTS.iter().any(|s| haystack.contains(s));
+        if !is_ours {
+            continue;
+        }
+
+        // Kill it. `sysinfo::Process::kill()` sends SIGKILL on Unix and calls
+        // TerminateProcess on Windows — cross-platform, no pid-reuse trickery
+        // beyond what the OS gives us at this instant.
+        if process.kill() {
+            killed += 1;
         }
     }
-    #[cfg(not(unix))]
-    {
-        // Windows orphan sweep: match the image name via WMIC/tasklist is
-        // noisy; kill_on_drop + explicit cancel cover the common cases. Left as
-        // a TODO for the Windows hardening pass.
+
+    if killed > 0 {
+        eprintln!("[sidecar] reaped {killed} orphan subprocess(es) from prior session");
     }
 }
