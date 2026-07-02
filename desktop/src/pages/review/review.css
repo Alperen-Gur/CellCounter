@@ -1,0 +1,391 @@
+/*
+ * pages/review/review.css — Review Queue screen styling.
+ *
+ * Consumes the shell design tokens from styles/theme.css. Everything is scoped
+ * under `.cc-review` so it never collides with another feature page. Feature-
+ * owned by feat-review-queue. Ported in spirit from the Swift `ReviewQueueView`
+ * card-stack layout (centred ~560px card, peek card behind, action row below).
+ */
+
+/*
+ * The shell's `.cc-content` is a flex ITEM (not a flex container) with its own
+ * padding + `overflow:auto`, so a child's `height:100%` doesn't resolve to the
+ * viewport. We size to content like the sibling pages and give the body a
+ * `min-height` so the card sits comfortably centred; the shell pane scrolls.
+ */
+.cc-review {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---- header ---- */
+
+.cc-review__header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--cc-space-3);
+  padding-bottom: var(--cc-space-4);
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.cc-review__title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cc-review__title {
+  margin: 0;
+  font-size: var(--cc-text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cc-text);
+}
+
+.cc-review__subtitle {
+  margin: 0;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-tertiary);
+  max-width: 60ch;
+}
+
+.cc-review__remaining {
+  align-self: center;
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+  white-space: nowrap;
+}
+
+.cc-review__close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: var(--cc-bg-sidebar);
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cc-review__close:hover {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text);
+}
+
+/* ---- body ---- */
+
+.cc-review__body {
+  flex: 1 1 auto;
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: var(--cc-space-5);
+}
+
+.cc-review__stack-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cc-space-4);
+  width: 100%;
+  max-width: 560px;
+}
+
+/* ---- card stack ---- */
+
+.cc-review__stack {
+  position: relative;
+  width: 100%;
+}
+
+.cc-review__peek {
+  position: absolute;
+  inset: 0;
+  transform: scale(0.96) translateY(14px);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.cc-review__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.cc-review__card--peek {
+  box-shadow: none;
+}
+
+/* ---- crop canvas ---- */
+
+.cc-review__crop {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 560 / 320;
+  background: var(--cc-bg-sidebar);
+  border-top-left-radius: var(--cc-radius-lg);
+  border-top-right-radius: var(--cc-radius-lg);
+  overflow: hidden;
+}
+
+.cc-review__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.cc-review__crop-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-sm);
+}
+
+/* ---- card meta ---- */
+
+.cc-review__card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-2);
+  padding: 14px;
+}
+
+.cc-review__card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-3);
+}
+
+.cc-review__bin {
+  padding: 2px 8px;
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: var(--cc-text-xs);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.cc-review__diameter {
+  font-family: var(--cc-font-mono);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--cc-text);
+}
+
+.cc-review__conf {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+}
+
+.cc-review__conf-track {
+  position: relative;
+  width: 80px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cc-bg-sidebar);
+  overflow: hidden;
+}
+
+.cc-review__conf-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.cc-review__conf-fill--danger {
+  background: var(--cc-danger);
+}
+.cc-review__conf-fill--warn {
+  background: var(--cc-warning);
+}
+.cc-review__conf-fill--ok {
+  background: var(--cc-accent);
+}
+
+.cc-review__conf-pct {
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-secondary);
+  min-width: 34px;
+  text-align: right;
+}
+
+/* ---- diameter slider (edit mode) ---- */
+
+.cc-review__slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-3);
+  padding: 6px 10px;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-sidebar);
+}
+
+.cc-review__slider-unit {
+  font-size: 10.5px;
+  font-weight: 550;
+  color: var(--cc-text-tertiary);
+}
+
+.cc-review__slider {
+  flex: 1 1 auto;
+  accent-color: var(--cc-accent);
+}
+
+.cc-review__slider-value {
+  font-family: var(--cc-font-mono);
+  font-size: 11.5px;
+  color: var(--cc-text);
+  min-width: 56px;
+  text-align: right;
+}
+
+.cc-review__filename {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- action row ---- */
+
+.cc-review__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  width: 100%;
+}
+
+.cc-review__actions-spacer {
+  flex: 1 1 auto;
+}
+
+.cc-review__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--cc-space-2) var(--cc-space-4);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.cc-review__btn:hover {
+  border-color: var(--cc-accent);
+}
+
+.cc-review__btn--danger {
+  border-color: var(--cc-danger);
+  color: var(--cc-danger);
+}
+
+.cc-review__btn--danger:hover {
+  background: var(--cc-danger);
+  border-color: var(--cc-danger);
+  color: var(--cc-text-on-accent);
+}
+
+.cc-review__btn--primary {
+  background: var(--cc-accent);
+  border-color: var(--cc-accent);
+  color: var(--cc-text-on-accent);
+}
+
+.cc-review__btn--primary:hover {
+  background: var(--cc-accent-hover);
+  border-color: var(--cc-accent-hover);
+}
+
+.cc-review__btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--cc-text-secondary);
+}
+
+.cc-review__btn--ghost:hover {
+  background: var(--cc-bg-hover);
+  border-color: transparent;
+  color: var(--cc-text);
+}
+
+.cc-review__done-link {
+  border: none;
+  background: transparent;
+  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-xs);
+  cursor: pointer;
+  padding: var(--cc-space-1) var(--cc-space-2);
+}
+
+.cc-review__done-link:hover {
+  color: var(--cc-text-secondary);
+}
+
+/* ---- empty / loading ---- */
+
+.cc-review__loading {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-sm);
+}
+
+.cc-review__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--cc-space-3);
+  max-width: 460px;
+  margin: auto;
+  padding: var(--cc-space-8) var(--cc-space-5);
+}
+
+.cc-review__empty-glyph {
+  font-size: 44px;
+  line-height: 1;
+}
+
+.cc-review__empty-title {
+  font-size: var(--cc-text-xl);
+  font-weight: 650;
+  color: var(--cc-text);
+}
+
+.cc-review__empty-sub {
+  margin: 0;
+  font-size: var(--cc-text-md);
+  color: var(--cc-text-secondary);
+}

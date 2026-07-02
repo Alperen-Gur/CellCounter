@@ -1,0 +1,122 @@
+/**
+ * pages/results/segnpy/segnpy.css — styles for the _seg.npy round-trip toolbar
+ * (feature `feat-seg-npy-io`). Scoped under `.cc-segnpy`; consumes the shared
+ * design tokens from styles/theme.css only. Owns disjoint class names from the
+ * editing toolbar (`.cc-edit-*`) so the two panels sit side-by-side cleanly in
+ * the Results `.rv-toolbar-mount` strip.
+ */
+
+.cc-segnpy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cc-space-2, 8px);
+  padding: var(--cc-space-1, 4px) var(--cc-space-2, 8px);
+  background: var(--cc-bg-elevated, #fff);
+  border: 1px solid var(--cc-border, #d8dce2);
+  border-radius: var(--cc-radius-md, 10px);
+  box-shadow: var(--cc-shadow-1, 0 1px 2px rgba(20, 23, 28, 0.06));
+  font-size: var(--cc-text-sm, 13px);
+  min-width: 0;
+}
+
+.cc-segnpy__label {
+  color: var(--cc-text-tertiary, #868e99);
+  font-family: var(--cc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--cc-text-xs, 11px);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.cc-segnpy__actions {
+  display: inline-flex;
+  gap: var(--cc-space-1, 4px);
+}
+
+.cc-segnpy__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--cc-border, #d8dce2);
+  border-radius: var(--cc-radius-sm, 6px);
+  background: var(--cc-bg, #f6f7f9);
+  color: var(--cc-text, #14171c);
+  font-size: var(--cc-text-sm, 13px);
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.cc-segnpy__btn:hover:not(:disabled) {
+  background: var(--cc-bg-hover, #e4e7ec);
+  border-color: var(--cc-border-strong, #c2c8d0);
+}
+
+.cc-segnpy__btn:active:not(:disabled) {
+  background: var(--cc-bg-active, #dbe2f1);
+}
+
+.cc-segnpy__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cc-segnpy__glyph {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--cc-accent, #396cd8);
+}
+
+.cc-segnpy__btn-label {
+  white-space: nowrap;
+}
+
+/* ---- inline status note (idle → busy → ok/error) ---- */
+
+.cc-segnpy__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--cc-text-xs, 11px);
+}
+
+.cc-segnpy__status--busy {
+  color: var(--cc-text-secondary, #545b66);
+}
+
+.cc-segnpy__status--ok {
+  color: var(--cc-success, #2f9e57);
+}
+
+.cc-segnpy__status--error {
+  color: var(--cc-danger, #d1453b);
+  /* Errors can be long; allow a bit more room + a tooltip via title. */
+  max-width: 32ch;
+}
+
+.cc-segnpy__spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--cc-border-strong, #c2c8d0);
+  border-top-color: var(--cc-accent, #396cd8);
+  border-radius: 50%;
+  animation: cc-segnpy-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes cc-segnpy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-segnpy__spinner {
+    animation: none;
+  }
+}

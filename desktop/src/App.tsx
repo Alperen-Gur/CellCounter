@@ -21,6 +21,7 @@ import { Sidebar } from "./components/Sidebar";
 import { KeyboardShortcutsSheet } from "./components/KeyboardShortcutsSheet";
 import { useHashRoute } from "./components/useHashRoute";
 import { initAppData } from "./components/appInit";
+import { OnboardingRoot } from "./pages/onboarding/OnboardingRoot";
 
 import "./styles/theme.css";
 import "./styles/shell.css";
@@ -79,6 +80,13 @@ function App() {
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
       />
+
+      {/* Global onboarding/calibration modal host. Mounted once here so
+          first-run onboarding auto-launches app-wide (not only when the
+          /onboarding route is visited) and any page's openCalibration()/
+          openOnboarding() has a host. OnboardingPage's own OnboardingRoot
+          drops autoLaunchOnboarding to avoid a double-open. */}
+      <OnboardingRoot autoLaunchOnboarding />
     </div>
   );
 }

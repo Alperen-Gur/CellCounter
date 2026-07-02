@@ -1,0 +1,587 @@
+/*
+ * pages/settings/settings.css — styles for the Settings screen (feat-settings).
+ *
+ * Page-scoped; consumes the shared design tokens in styles/theme.css. Only the
+ * Settings page imports this file. Class prefix `cc-set` keeps it isolated from
+ * the shell + sibling pages (mirrors the `cc-models` / `cc-cal` pattern).
+ *
+ * Layout ports the Swift `SettingsView`: a left section rail + a scrolling body
+ * of `SetRow`s (label + description on the left, control on the right, hairline
+ * divider under each row). Colors/spacing come entirely from CSS variables so
+ * light/dark just work.
+ */
+
+.cc-set {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  /* Cancel the shell's content padding so the rail can run edge-to-edge; the
+     body re-adds its own inner padding. */
+  margin: calc(-1 * var(--cc-space-5));
+}
+
+/* ---- section rail ---- */
+
+.cc-set__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--cc-space-3);
+  border-right: 1px solid var(--cc-border);
+  background: var(--cc-bg-sidebar);
+  overflow-y: auto;
+}
+
+.cc-set__rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  width: 100%;
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: none;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-sm);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.cc-set__rail-item:hover {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text);
+}
+
+.cc-set__rail-item--active,
+.cc-set__rail-item--active:hover {
+  background: var(--cc-bg-active);
+  color: var(--cc-text);
+  font-weight: 600;
+}
+
+.cc-set__rail-icon {
+  width: 16px;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* ---- body ---- */
+
+.cc-set__body {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--cc-bg);
+}
+
+.cc-set__section {
+  max-width: 720px;
+  padding: var(--cc-space-5) var(--cc-space-6);
+}
+
+.cc-set__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-1);
+  padding-bottom: var(--cc-space-4);
+}
+
+.cc-set__title {
+  font-size: var(--cc-text-xl);
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: var(--cc-text);
+  margin: 0;
+}
+
+.cc-set__subtitle {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-tertiary);
+  margin: 0;
+}
+
+/* ---- rows ---- */
+
+.cc-set__row {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-4);
+  padding: var(--cc-space-3) 0;
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.cc-set__row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cc-set__row-label {
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  color: var(--cc-text);
+}
+
+.cc-set__row-desc {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+}
+
+.cc-set__row-control {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  flex: 0 0 auto;
+}
+
+/* ---- group subheading ("SAVED PRESETS", "STORAGE" style caps) ---- */
+
+.cc-set__group-title {
+  font-size: var(--cc-text-xs);
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--cc-text-secondary);
+  padding-top: var(--cc-space-5);
+  padding-bottom: var(--cc-space-3);
+}
+
+/* ---- controls ---- */
+
+.cc-set__num {
+  width: 68px;
+  padding: var(--cc-space-1) var(--cc-space-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+  text-align: right;
+}
+
+.cc-set__num:focus {
+  outline: none;
+  border-color: var(--cc-accent);
+}
+
+.cc-set__num--wide {
+  width: 84px;
+}
+
+.cc-set__unit {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+  min-width: 40px;
+}
+
+.cc-set__slider {
+  width: 130px;
+  accent-color: var(--cc-accent);
+}
+
+.cc-set__slider-val {
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-secondary);
+  min-width: 52px;
+  text-align: right;
+}
+
+.cc-set__select {
+  padding: var(--cc-space-1) var(--cc-space-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cc-set__select:focus {
+  outline: none;
+  border-color: var(--cc-accent);
+}
+
+/* ---- toggle switch (port of CustomToggle) ---- */
+
+.cc-set__toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cc-border-strong);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.14s ease;
+  flex: 0 0 auto;
+}
+
+.cc-set__toggle--on {
+  background: var(--cc-accent);
+}
+
+.cc-set__toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.28);
+  transition: transform 0.14s ease;
+}
+
+.cc-set__toggle--on .cc-set__toggle-knob {
+  transform: translateX(16px);
+}
+
+/* ---- segmented control (channels cyto/nuclei) ---- */
+
+.cc-set__seg {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg);
+  gap: 2px;
+}
+
+.cc-set__seg-btn {
+  min-width: 30px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-xs);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.cc-set__seg-btn--active {
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  box-shadow: var(--cc-shadow-1);
+}
+
+/* ---- buttons ---- */
+
+.cc-set__btn {
+  padding: var(--cc-space-1) var(--cc-space-3);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-xs);
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.cc-set__btn:hover:not(:disabled) {
+  border-color: var(--cc-accent);
+}
+
+.cc-set__btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.cc-set__btn--primary {
+  background: var(--cc-accent);
+  border-color: var(--cc-accent);
+  color: var(--cc-text-on-accent);
+}
+
+.cc-set__btn--primary:hover:not(:disabled) {
+  background: var(--cc-accent-hover);
+  border-color: var(--cc-accent-hover);
+}
+
+.cc-set__btn--danger {
+  color: var(--cc-danger);
+  border-color: color-mix(in srgb, var(--cc-danger) 45%, transparent);
+}
+
+.cc-set__btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cc-danger) 12%, transparent);
+  border-color: var(--cc-danger);
+}
+
+.cc-set__btn--icon {
+  padding: var(--cc-space-1);
+  min-width: 26px;
+  text-align: center;
+}
+
+/* ---- threshold editor ---- */
+
+.cc-set__thresholds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-1);
+  padding: var(--cc-space-2) 0 var(--cc-space-3);
+}
+
+.cc-set__threshold-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  padding: var(--cc-space-1) 0;
+}
+
+.cc-set__bin-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.cc-set__thresholds-preview {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+  font-family: var(--cc-font-mono);
+  padding-top: var(--cc-space-1);
+}
+
+.cc-set__add-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cc-space-1);
+  align-self: flex-start;
+  margin-top: var(--cc-space-1);
+  padding: var(--cc-space-1) 0;
+  border: none;
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-sm);
+  cursor: pointer;
+}
+
+.cc-set__add-link:hover:not(:disabled) {
+  color: var(--cc-accent);
+}
+
+.cc-set__add-link:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ---- list card (presets) ---- */
+
+.cc-set__list {
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  overflow: hidden;
+}
+
+.cc-set__list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-3);
+  padding: var(--cc-space-3) var(--cc-space-4);
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.cc-set__list-row:last-child {
+  border-bottom: none;
+}
+
+.cc-set__list-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cc-set__list-name {
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  color: var(--cc-text);
+}
+
+.cc-set__list-sub {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+  font-family: var(--cc-font-mono);
+}
+
+.cc-set__list-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  flex: 0 0 auto;
+}
+
+.cc-set__badge {
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
+  color: var(--cc-accent);
+  background: var(--cc-accent-soft);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.cc-set__empty {
+  padding: var(--cc-space-4);
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-tertiary);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+}
+
+/* ---- inline preset editor ---- */
+
+.cc-set__editor {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  margin-top: var(--cc-space-3);
+  padding: var(--cc-space-3);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
+  flex-wrap: wrap;
+}
+
+.cc-set__text-input {
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: var(--cc-space-1) var(--cc-space-2);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg);
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+}
+
+.cc-set__text-input:focus {
+  outline: none;
+  border-color: var(--cc-accent);
+}
+
+/* ---- danger zone ---- */
+
+.cc-set__danger-card {
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  overflow: hidden;
+}
+
+.cc-set__danger-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-4);
+  padding: var(--cc-space-3) var(--cc-space-4);
+  border-bottom: 1px solid var(--cc-border);
+}
+
+.cc-set__danger-row:last-child {
+  border-bottom: none;
+}
+
+.cc-set__danger-note {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-secondary);
+  padding: var(--cc-space-2) 0 var(--cc-space-4);
+}
+
+.cc-set__result {
+  font-size: var(--cc-text-sm);
+  padding-top: var(--cc-space-3);
+}
+
+.cc-set__result--ok {
+  color: var(--cc-success);
+}
+
+.cc-set__result--err {
+  color: var(--cc-danger);
+}
+
+/* ---- confirm dialog ---- */
+
+.cc-set__confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 14, 0.5);
+}
+
+.cc-set__confirm {
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-3);
+  padding: var(--cc-space-5);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  box-shadow: var(--cc-shadow-2);
+}
+
+.cc-set__confirm-title {
+  font-size: var(--cc-text-lg);
+  font-weight: 650;
+  color: var(--cc-text);
+}
+
+.cc-set__confirm-body {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-secondary);
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.cc-set__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--cc-space-2);
+  padding-top: var(--cc-space-2);
+}
+
+.cc-set__confirm-btn {
+  padding: var(--cc-space-2) var(--cc-space-4);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.cc-set__confirm-btn:hover {
+  border-color: var(--cc-accent);
+}
+
+.cc-set__confirm-btn--danger {
+  background: var(--cc-danger);
+  border-color: var(--cc-danger);
+  color: #fff;
+}
+
+.cc-set__confirm-btn--danger:hover {
+  filter: brightness(1.05);
+  border-color: var(--cc-danger);
+}

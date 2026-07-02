@@ -1,0 +1,261 @@
+/*
+ * pages/models/models.css — styles for the Models tab (feat-models).
+ *
+ * Page-scoped; consumes the shared design tokens in styles/theme.css. Only the
+ * Models page imports this file. Class prefix `cc-models` keeps it isolated
+ * from the shell + sibling pages.
+ */
+
+.cc-models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-5);
+  max-width: 860px;
+}
+
+.cc-models__intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-1);
+}
+
+.cc-models__title {
+  font-size: var(--cc-text-xl);
+  font-weight: 650;
+  color: var(--cc-text);
+}
+
+.cc-models__subtitle {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-secondary);
+  max-width: 620px;
+}
+
+/* ---- model list ---- */
+
+.cc-models__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cc-model-card {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  grid-template-areas:
+    "glyph head   actions"
+    "glyph body   actions"
+    "glyph status status";
+  gap: var(--cc-space-1) var(--cc-space-4);
+  padding: var(--cc-space-4) var(--cc-space-5);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-elevated);
+  box-shadow: var(--cc-shadow-1);
+}
+
+.cc-model-card--active {
+  border-color: var(--cc-accent);
+  box-shadow: var(--cc-shadow-1), 0 0 0 1px var(--cc-accent);
+}
+
+.cc-model-card--soon {
+  opacity: 0.72;
+}
+
+.cc-model-card__glyph {
+  grid-area: glyph;
+  font-size: 30px;
+  line-height: 1;
+  align-self: start;
+}
+
+.cc-model-card__head {
+  grid-area: head;
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  flex-wrap: wrap;
+}
+
+.cc-model-card__name {
+  font-size: var(--cc-text-lg);
+  font-weight: 620;
+  color: var(--cc-text);
+}
+
+.cc-model-card__meta {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+}
+
+.cc-model-card__body {
+  grid-area: body;
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-secondary);
+  margin: 0;
+}
+
+.cc-model-card__actions {
+  grid-area: actions;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: var(--cc-space-2);
+}
+
+.cc-model-card__status {
+  grid-area: status;
+  margin-top: var(--cc-space-2);
+}
+
+/* ---- badges / pills ---- */
+
+.cc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.cc-pill--active {
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent);
+}
+
+.cc-pill--installed {
+  background: color-mix(in srgb, var(--cc-success) 16%, transparent);
+  color: var(--cc-success);
+}
+
+.cc-pill--missing {
+  background: color-mix(in srgb, var(--cc-warning) 18%, transparent);
+  color: var(--cc-warning);
+}
+
+.cc-pill--soon {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text-tertiary);
+}
+
+.cc-pill__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ---- buttons ---- */
+
+.cc-models__btn {
+  padding: var(--cc-space-2) var(--cc-space-4);
+  border-radius: var(--cc-radius-sm);
+  border: 1px solid var(--cc-border-strong);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.cc-models__btn:hover:not(:disabled) {
+  border-color: var(--cc-accent);
+}
+
+.cc-models__btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.cc-models__btn--primary {
+  background: var(--cc-accent);
+  border-color: var(--cc-accent);
+  color: var(--cc-text-on-accent);
+}
+
+.cc-models__btn--primary:hover:not(:disabled) {
+  background: var(--cc-accent-hover);
+  border-color: var(--cc-accent-hover);
+}
+
+/* ---- install log ---- */
+
+.cc-install-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-2);
+}
+
+.cc-install-status__reason {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-secondary);
+}
+
+.cc-install-status__error {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-danger);
+}
+
+.cc-install-log {
+  margin: 0;
+  padding: var(--cc-space-3);
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg);
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-xs);
+  line-height: 1.55;
+  color: var(--cc-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cc-install-log__line {
+  display: block;
+}
+
+.cc-install-log__empty {
+  color: var(--cc-text-tertiary);
+}
+
+/* subtle indeterminate shimmer on the installing bar */
+.cc-install-bar {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--cc-bg-hover);
+  overflow: hidden;
+}
+
+.cc-install-bar__fill {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--cc-accent);
+  animation: cc-install-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes cc-install-slide {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}

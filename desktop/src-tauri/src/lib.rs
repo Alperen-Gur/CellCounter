@@ -26,6 +26,11 @@ use detection::sidecar::SidecarManager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Native file dialogs + fs access for the Home / seg-npy "Choose…" CTAs.
+        // The frontend loads the matching JS plugins lazily and degrades to
+        // drag-and-drop when absent; these init the backend halves.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(SidecarManager::new())
         .setup(|app| {
             let handle = app.handle().clone();

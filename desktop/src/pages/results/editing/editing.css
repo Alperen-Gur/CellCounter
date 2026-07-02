@@ -1,0 +1,155 @@
+/*
+ * pages/results/editing/editing.css — chrome for the mask-editing UI
+ * (feature task `feat-mask-editing`).
+ *
+ * Styles only the toolbar + panel scaffolding this feature owns. Consumes the
+ * shared design tokens from styles/theme.css (--cc-*). The canvas/overlay
+ * visuals live in the kernel (Viewport / MaskOverlay); the interactive
+ * affordances (drag rects, handles, delete floater) are drawn inline as SVG in
+ * EditingSurface and need no CSS here.
+ */
+
+.cc-edit-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: var(--cc-space-2);
+}
+
+.cc-edit-canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  overflow: hidden;
+  background: var(--cc-bg-sidebar);
+}
+
+.cc-edit-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-sm);
+}
+
+/* ---- toolbar ---- */
+
+.cc-edit-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cc-space-2);
+  padding: var(--cc-space-1);
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  box-shadow: var(--cc-shadow-1);
+}
+
+.cc-edit-toolbar__modes,
+.cc-edit-toolbar__history {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cc-edit-toolbar__sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px var(--cc-space-1);
+  background: var(--cc-border);
+}
+
+.cc-edit-toolbar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cc-space-1);
+  height: 28px;
+  padding: 0 var(--cc-space-2);
+  border: none;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-family: var(--cc-font);
+  font-size: var(--cc-text-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+  white-space: nowrap;
+}
+
+.cc-edit-toolbar__btn:hover:not(:disabled) {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text);
+}
+
+.cc-edit-toolbar__btn--active {
+  background: var(--cc-accent);
+  color: var(--cc-text-on-accent);
+}
+
+.cc-edit-toolbar__btn--active:hover {
+  background: var(--cc-accent-hover);
+  color: var(--cc-text-on-accent);
+}
+
+.cc-edit-toolbar__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cc-edit-toolbar__glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Collapse labels to just glyphs on narrow layouts. */
+@media (max-width: 720px) {
+  .cc-edit-toolbar__label {
+    display: none;
+  }
+}
+
+/* ---- manual-diameter stepper ---- */
+
+.cc-edit-toolbar__stepper {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-sidebar);
+  overflow: hidden;
+}
+
+.cc-edit-toolbar__step {
+  width: 26px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--cc-text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cc-edit-toolbar__step:hover:not(:disabled) {
+  background: var(--cc-bg-hover);
+}
+
+.cc-edit-toolbar__step:disabled {
+  color: var(--cc-text-tertiary);
+  cursor: default;
+}
+
+.cc-edit-toolbar__value {
+  min-width: 52px;
+  text-align: center;
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text);
+}
