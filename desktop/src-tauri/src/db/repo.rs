@@ -46,6 +46,10 @@ impl Db {
             .map_err(|e| format!("set WAL failed: {e}"))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(|e| format!("set synchronous failed: {e}"))?;
+        // Wait up to 5s for a busy lock instead of erroring immediately (a
+        // reader/writer overlap under WAL should retry, not fail).
+        conn.pragma_update(None, "busy_timeout", 5000)
+            .map_err(|e| format!("set busy_timeout failed: {e}"))?;
         schema::create_schema(&conn).map_err(|e| format!("create schema failed: {e}"))?;
         schema::seed_defaults(&conn).map_err(|e| format!("seed defaults failed: {e}"))?;
         Ok(Db {
@@ -555,18 +559,45 @@ pub fn save_detection(
         Some(m) if !m.is_empty() => Some(serde_json::to_string(m).map_err(|e| e.to_string())?),
         _ => None,
     };
-    let id = new_id();
     let now = now_iso8601();
-    // Replace any existing detection for this image (1:1), then insert fresh.
-    conn.execute("DELETE FROM detections WHERE image_id = ?1", params![image_id])
+    // Preserve the correction log across re-detection. `corrections` FKs on
+    // `detections.id` (ON DELETE CASCADE), so the old DELETE+INSERT-with-a-new-id
+    // silently wiped every hand-correction whenever the user re-ran detection.
+    // Instead reuse the existing detection id (1:1 per image) and UPDATE the
+    // cells in place, so the append-only correction log stays attached (it feeds
+    // the future train-from-GUI seam).
+    let existing_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM detections WHERE image_id = ?1",
+            params![image_id],
+            |r| r.get(0),
+        )
+        .optional()
         .map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO detections
-           (id, image_id, detector_id, ran_at, cells_json, min_confidence, image_stats_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, image_id, detector_id, now, cells_json, min_conf, stats_json],
-    )
-    .map_err(|e| e.to_string())?;
+    let id = match existing_id {
+        Some(existing) => {
+            conn.execute(
+                "UPDATE detections
+                   SET detector_id = ?2, ran_at = ?3, cells_json = ?4,
+                       min_confidence = ?5, image_stats_json = ?6
+                 WHERE id = ?1",
+                params![existing, detector_id, now, cells_json, min_conf, stats_json],
+            )
+            .map_err(|e| e.to_string())?;
+            existing
+        }
+        None => {
+            let id = new_id();
+            conn.execute(
+                "INSERT INTO detections
+                   (id, image_id, detector_id, ran_at, cells_json, min_confidence, image_stats_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, image_id, detector_id, now, cells_json, min_conf, stats_json],
+            )
+            .map_err(|e| e.to_string())?;
+            id
+        }
+    };
     Ok(DetectionDto {
         id,
         image_id,

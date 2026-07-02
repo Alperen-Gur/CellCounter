@@ -86,7 +86,9 @@ pub fn import_image(db: State<'_, Db>, source_path: String) -> Result<ImportResu
     let store = db.store();
     let dest = store.image_path(&id, &ext);
     let _ = std::fs::remove_file(&dest);
-    std::fs::copy(src, &dest).map_err(|e| format!("File read error: {e}"))?;
+    // Write the bytes we already read into memory instead of re-reading the
+    // source from disk (fs::copy would read the whole file a second time).
+    std::fs::write(&dest, &bytes).map_err(|e| format!("File write error: {e}"))?;
 
     // --- 4. thumbnail (non-fatal) -----------------------------------------
     if let Err(e) = write_thumbnail(&decoded, &store.thumb_path(&id), 256) {

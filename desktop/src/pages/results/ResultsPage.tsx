@@ -328,7 +328,7 @@ export default function ResultsPage() {
         batch={batch}
         image={currentImage}
         imageSrc={imageSrc}
-        cells={cells}
+        cells={displayCells}
         annotations={annotations}
         rois={rois}
         imageStats={detection?.imageStats}

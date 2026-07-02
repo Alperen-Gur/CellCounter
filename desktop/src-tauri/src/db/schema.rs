@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS images (
   batch_id            TEXT REFERENCES batches(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_images_hash ON images(file_hash);
+CREATE INDEX IF NOT EXISTS idx_images_batch_id ON images(batch_id);
 
 -- ── detections (1:1 per image, enforced by unique index) ───────────────────
 CREATE TABLE IF NOT EXISTS detections (
