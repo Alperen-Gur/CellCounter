@@ -63,6 +63,8 @@ pub fn run() {
             db::repo::duplicate_groups,
             db::repo::delete_image,
             db::repo::attach_image_to_batch,
+            db::repo::set_image_notes,
+            db::repo::set_image_confidence_override,
             // ── persistence: detections & corrections ──
             db::repo::save_detection,
             db::repo::get_detection,

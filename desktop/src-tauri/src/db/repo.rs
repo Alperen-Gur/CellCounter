@@ -498,6 +498,41 @@ pub fn attach_image_to_batch(
     Ok(())
 }
 
+/// Per-image freeform notes (mirrors the Swift `ImageRecord.notes` / NotesPanel).
+/// Off the `PersistencePort` interface (like `import_image`) — a standalone
+/// command the Results sidebar calls directly. `notes = None` clears the field.
+#[tauri::command]
+pub fn set_image_notes(
+    db: State<'_, Db>,
+    image_id: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    let conn = db.lock()?;
+    conn.execute(
+        "UPDATE images SET notes = ?1 WHERE id = ?2",
+        params![notes, image_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Per-image confidence-cutoff override (mirrors Swift `AppState.setConfidenceOverride`).
+/// `value = None` clears the override so the global confidence applies again.
+#[tauri::command]
+pub fn set_image_confidence_override(
+    db: State<'_, Db>,
+    image_id: String,
+    value: Option<f64>,
+) -> Result<(), String> {
+    let conn = db.lock()?;
+    conn.execute(
+        "UPDATE images SET confidence_override = ?1 WHERE id = ?2",
+        params![value, image_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ===========================================================================
 // COMMANDS — detections & corrections
 // ===========================================================================
