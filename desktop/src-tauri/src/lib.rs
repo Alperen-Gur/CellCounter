@@ -96,6 +96,7 @@ pub fn run() {
             db::repo::wipe_all_user_data,
             // ── image import ──
             images::importer::import_image,
+            images::importer::list_images_in_dir,
             // ── detection transport ──
             detection::sidecar::run_detection,
             detection::sidecar::cancel_detection,

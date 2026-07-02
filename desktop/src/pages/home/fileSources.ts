@@ -121,12 +121,14 @@ interface DialogModule {
 async function loadDialog(): Promise<DialogModule | null> {
   if (!isTauri()) return null;
   try {
-    // Non-literal specifier so bundlers/type-checkers don't hard-require the
-    // (optional) plugin. Present at runtime once the plugin is installed.
-    const spec = "@tauri-apps/plugin-dialog";
-    const mod = (await import(/* @vite-ignore */ spec)) as unknown as DialogModule;
+    // LITERAL specifier so Vite bundles the plugin. (A variable specifier with
+    // `@vite-ignore` leaves a bare `import()` that can't resolve at runtime —
+    // that was the bug that left the picker buttons dead.) The dialog plugin is
+    // a hard dependency of the app now.
+    const mod = (await import("@tauri-apps/plugin-dialog")) as unknown as DialogModule;
     return typeof mod.open === "function" ? mod : null;
-  } catch {
+  } catch (err) {
+    console.warn("[home] dialog plugin unavailable:", err);
     return null;
   }
 }
@@ -188,38 +190,12 @@ function normalizePicked(picked: string | string[] | null): string[] {
  */
 async function enumerateImages(dir: string): Promise<string[]> {
   try {
-    const spec = "@tauri-apps/plugin-fs";
-    const fs = (await import(/* @vite-ignore */ spec)) as unknown as {
-      readDir(
-        path: string,
-      ): Promise<{ name: string; isDirectory: boolean; isFile: boolean }[]>;
-    };
-    const out: string[] = [];
-    const walk = async (path: string): Promise<void> => {
-      const entries = await fs.readDir(path);
-      for (const entry of entries) {
-        const child = joinPath(path, entry.name);
-        if (entry.isDirectory) {
-          await walk(child);
-        } else if (isSupportedImage(entry.name)) {
-          out.push(child);
-        }
-      }
-    };
-    await walk(dir);
-    return out;
-  } catch {
+    // Walk the chosen directory in Rust (reliable; not subject to the fs
+    // plugin's path scoping). Returns absolute paths to supported images.
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string[]>("list_images_in_dir", { dir });
+  } catch (err) {
+    console.warn("[home] folder enumeration failed:", err);
     return [];
   }
-}
-
-function joinPath(dir: string, name: string): string {
-  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
-  return dir.endsWith(sep) ? dir + name : dir + sep + name;
-}
-
-function isSupportedImage(name: string): boolean {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return IMAGE_EXT_FILTER.includes(name.slice(dot + 1).toLowerCase());
 }

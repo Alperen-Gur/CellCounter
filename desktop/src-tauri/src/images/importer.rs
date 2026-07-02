@@ -37,6 +37,34 @@ use crate::db::repo::{self, Db};
 /// Accepted extensions, lowercased (mirrors `ImageLoader.supported`).
 const SUPPORTED: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "bmp"];
 
+/// Recursively list supported image files under a directory. Backs the
+/// "Choose folder…" flow: directory walking happens in Rust (reliable, and
+/// unaffected by the fs plugin's path scoping). Returns sorted absolute paths.
+#[tauri::command]
+pub fn list_images_in_dir(dir: String) -> Result<Vec<String>, String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if SUPPORTED.contains(&ext.to_ascii_lowercase().as_str()) {
+                    if let Some(s) = path.to_str() {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(std::path::Path::new(&dir), &mut out);
+    out.sort();
+    Ok(out)
+}
+
 /// Return shape for `import_image`.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
