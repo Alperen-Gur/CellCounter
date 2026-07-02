@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../kernel/store/store";
 import { navigate as shellNavigate } from "../../components/useHashRoute";
 import type { RouteId } from "../../components/routes";
+import { Icon } from "../../components/Icon";
 
 import {
   importAndAnalyze,
@@ -218,10 +219,6 @@ export default function HomePage() {
           </button>
         </div>
 
-        <div className="home-drop__model">
-          Active model: <span className="home-drop__model-id">{activeModelId}</span>
-        </div>
-
         {!isTauri() && (
           <div className="home-drop__hint">
             Running in preview — drag-and-drop and detection are available inside
@@ -230,9 +227,43 @@ export default function HomePage() {
         )}
       </section>
 
+      <section className="home-actions" aria-label="Quick actions">
+        <button type="button" className="home-card" onClick={() => shellNavigate("onboarding" as RouteId)}>
+          <span className="home-card__icon"><Icon name="calibrate" size={20} /></span>
+          <span className="home-card__title">Calibrate scale</span>
+          <span className="home-card__sub">px · µm</span>
+        </button>
+        <button type="button" className="home-card" onClick={() => shellNavigate("models" as RouteId)}>
+          <span className="home-card__icon"><Icon name="models" size={20} /></span>
+          <span className="home-card__title">
+            {activeModelId === "cp-cyto3" ? "Cellpose cyto3" : activeModelId}
+          </span>
+          <span className="home-card__sub">Active model</span>
+        </button>
+        <button type="button" className="home-card" onClick={() => shellNavigate("finetune" as RouteId)}>
+          <span className="home-card__icon"><Icon name="finetune" size={20} /></span>
+          <span className="home-card__title">Fine-tune…</span>
+          <span className="home-card__sub">Train on your cells</span>
+        </button>
+        <button type="button" className="home-card" onClick={() => shellNavigate("settings" as RouteId)}>
+          <span className="home-card__icon"><Icon name="settings" size={20} /></span>
+          <span className="home-card__title">Settings</span>
+          <span className="home-card__sub">Bins, palette, paths</span>
+        </button>
+      </section>
+
       <section className="home-recent" aria-label="Recent analyses">
         <div className="home-recent__head">
           <span className="home-recent__title">RECENT</span>
+          {rows.length > 0 && (
+            <button
+              type="button"
+              className="home-recent__all"
+              onClick={() => shellNavigate("library" as RouteId)}
+            >
+              Show all
+            </button>
+          )}
         </div>
 
         {rows.length === 0 ? (
@@ -259,7 +290,7 @@ export default function HomePage() {
                         className="home-recent__thumb-fallback"
                         aria-hidden="true"
                       >
-                        🧫
+                        <Icon name="scope" size={20} />
                       </span>
                     )}
                   </span>

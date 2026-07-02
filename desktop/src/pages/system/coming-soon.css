@@ -1,0 +1,45 @@
+.cs-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: var(--cc-space-8);
+}
+.cs-card {
+  max-width: 440px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cc-space-3);
+}
+.cs-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-secondary);
+}
+.cs-tag {
+  font-size: var(--cc-text-xs);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cc-text-tertiary);
+}
+.cs-title {
+  margin: 0;
+  font-family: var(--cc-font-display);
+  font-size: var(--cc-text-2xl);
+  font-weight: 650;
+}
+.cs-blurb {
+  margin: 0;
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-md);
+  line-height: 1.6;
+}

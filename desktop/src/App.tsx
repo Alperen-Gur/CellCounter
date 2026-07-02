@@ -1,43 +1,51 @@
 /**
  * App.tsx — the CellCounter application shell.
  *
- * Composes the persistent chrome (Sidebar + top bar) around a hash-routed
- * content pane that renders exactly one feature page. Routing is driven by the
- * dependency-free `useHashRoute` hook + the `ROUTES` registry, so:
- *   - no client-router package is added, and
- *   - route state lives in the URL hash, never in the FROZEN kernel store.
+ * Draws the custom Windows-native chrome (TitleBar) + left Sidebar + a content
+ * top bar (breadcrumb · model selector · Calibrate · settings) around a
+ * hash-routed content pane that renders exactly one feature page. Routing is the
+ * dependency-free `useHashRoute` + `ROUTES` registry, so route state lives in
+ * the URL hash, never in the FROZEN kernel store.
  *
- * On mount it runs launch-time app-data init (persistence + env probe) via
- * `initAppData`. Each page is lazy-loaded from its own directory behind a
- * <Suspense> boundary, keeping the 14 feature directories physically disjoint.
- *
- * This file is shell-owned. Feature engineers fill their `pages/<name>/`
- * directory and never edit App.tsx, the router, the Sidebar, or the theme.
+ * Shell-owned: feature engineers fill their `pages/<name>/` directory and never
+ * edit App.tsx, the router, the Sidebar, the TitleBar, or the theme.
  */
 
 import { Suspense, useEffect, useState } from "react";
 
+import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
+import { Icon } from "./components/Icon";
 import { KeyboardShortcutsSheet } from "./components/KeyboardShortcutsSheet";
 import { useHashRoute } from "./components/useHashRoute";
 import { initAppData } from "./components/appInit";
 import { OnboardingRoot } from "./pages/onboarding/OnboardingRoot";
+import { useAppStore } from "./kernel/store/store";
 
 import "./styles/theme.css";
 import "./styles/shell.css";
 
+/** Human-friendly label for a model id shown in the top-bar selector. */
+function modelLabel(id: string): string {
+  const map: Record<string, string> = {
+    "cp-cyto3": "Cellpose cyto3",
+    "cp-cyto2": "Cellpose cyto2",
+    "cp-nuclei": "Cellpose nuclei",
+    cpsam: "Cellpose-SAM",
+  };
+  return map[id] ?? id;
+}
+
 function App() {
   const { route, navigate } = useHashRoute();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const activeModelId = useAppStore((s) => s.activeModelId);
 
-  // Launch-time app-data init: persistence read + env availability probe.
-  // Guarded internally against StrictMode's double-invoke.
   useEffect(() => {
     void initAppData();
   }, []);
 
-  // Global "?" opens the (stubbed) shortcuts sheet — a shell affordance the
-  // keyboard feature later replaces with the real per-scope keymap.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -60,20 +68,69 @@ function App() {
 
   return (
     <div className="cc-app">
-      <Sidebar activeId={route.id} onNavigate={navigate} />
+      <TitleBar />
 
-      <div className="cc-main">
-        <header className="cc-topbar">
-          <span className="cc-topbar__title">{route.label}</span>
-          <span className="cc-topbar__spacer" />
-          <span className="cc-topbar__hint">Press ? for shortcuts</span>
-        </header>
+      <div className="cc-body">
+        <Sidebar activeId={route.id} collapsed={collapsed} onNavigate={navigate} />
 
-        <main className="cc-content">
-          <Suspense fallback={<div className="cc-loading">Loading…</div>}>
-            <PageComponent />
-          </Suspense>
-        </main>
+        <div className="cc-main">
+          <header className="cc-topbar">
+            <button
+              type="button"
+              className="cc-iconbtn"
+              onClick={() => setCollapsed((v) => !v)}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title="Toggle sidebar"
+            >
+              <Icon name="menu" size={18} />
+            </button>
+
+            <nav className="cc-breadcrumb" aria-label="Breadcrumb">
+              <span className="cc-breadcrumb__root">CellCounter</span>
+              <Icon name="chevronRight" size={15} className="cc-breadcrumb__sep" />
+              <span className="cc-breadcrumb__here">{route.label}</span>
+            </nav>
+
+            <span className="cc-topbar__spacer" />
+
+            <button
+              type="button"
+              className="cc-model"
+              onClick={() => navigate("models")}
+              title="Choose detection model"
+            >
+              <span className="cc-model__label">MODEL</span>
+              <span className="cc-model__value">{modelLabel(activeModelId)}</span>
+              <Icon name="chevronDown" size={15} className="cc-model__chev" />
+            </button>
+
+            <button
+              type="button"
+              className="cc-btn"
+              onClick={() => navigate("onboarding")}
+              title="Set the pixel scale"
+            >
+              <Icon name="calibrate" size={16} />
+              Calibrate
+            </button>
+
+            <button
+              type="button"
+              className="cc-iconbtn"
+              onClick={() => navigate("settings")}
+              aria-label="Settings"
+              title="Settings"
+            >
+              <Icon name="settings" size={18} />
+            </button>
+          </header>
+
+          <main className="cc-content">
+            <Suspense fallback={<div className="cc-loading">Loading…</div>}>
+              <PageComponent />
+            </Suspense>
+          </main>
+        </div>
       </div>
 
       <KeyboardShortcutsSheet
@@ -81,12 +138,9 @@ function App() {
         onClose={() => setShortcutsOpen(false)}
       />
 
-      {/* Global onboarding/calibration modal host. Mounted once here so
-          first-run onboarding auto-launches app-wide (not only when the
-          /onboarding route is visited) and any page's openCalibration()/
-          openOnboarding() has a host. OnboardingPage's own OnboardingRoot
-          drops autoLaunchOnboarding to avoid a double-open. */}
-      <OnboardingRoot autoLaunchOnboarding />
+      {/* Modal host for calibration/onboarding (reached via Calibrate or first
+          run). Auto-launch is off until the tour UI is restyled to match. */}
+      <OnboardingRoot />
     </div>
   );
 }

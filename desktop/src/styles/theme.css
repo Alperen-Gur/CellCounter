@@ -1,45 +1,49 @@
 /*
- * styles/theme.css — design-token baseline for the CellCounter shell.
+ * styles/theme.css — CellCounter design tokens.
  *
- * A small, dependency-free token layer ported in spirit from the macOS app's
- * `Theme/Tokens.swift`. Feature pages consume these CSS custom properties so the
- * whole app shares one palette / spacing scale / typography ramp. A dedicated
- * `styles/` design-token task can later expand this file; the shell only needs a
- * coherent baseline so the 14 stub pages render legibly on day one.
- *
- * Everything is expressed as CSS variables on :root with a dark override via
- * prefers-color-scheme, so no page has to branch on theme.
+ * A modern, Windows-native (Fluent-leaning) light theme: near-monochrome
+ * palette, hairline borders, a black primary action, and a native system-font
+ * ramp. Every page consumes these CSS variables, so the whole app shares one
+ * language. Light only — no dark override (the app is designed light, matching
+ * the reference), so a machine set to dark mode still renders as intended.
  */
 
 :root {
-  /* ---- palette (light) ---- */
-  --cc-bg: #f6f7f9;
-  --cc-bg-elevated: #ffffff;
-  --cc-bg-sidebar: #eef0f3;
-  --cc-bg-hover: #e4e7ec;
-  --cc-bg-active: #dbe2f1;
-  --cc-border: #d8dce2;
-  --cc-border-strong: #c2c8d0;
+  /* ---- surfaces ---- */
+  --cc-bg-app: #f3f3f4;        /* behind the window / titlebar */
+  --cc-bg: #ffffff;            /* content pane */
+  --cc-bg-elevated: #ffffff;   /* cards, popovers */
+  --cc-bg-sidebar: #fafafa;    /* left rail */
+  --cc-bg-subtle: #f7f7f8;     /* inset wells, empty states */
+  --cc-bg-hover: #f2f2f3;
+  --cc-bg-active: #ededee;     /* selected nav pill */
 
-  --cc-text: #14171c;
-  --cc-text-secondary: #545b66;
-  --cc-text-tertiary: #868e99;
+  --cc-border: #e8e8ea;
+  --cc-border-strong: #d9d9dd;
+  --cc-border-focus: #a1a1aa;
+
+  /* ---- text ---- */
+  --cc-text: #18181b;
+  --cc-text-secondary: #5c5c66;
+  --cc-text-tertiary: #9a9aa3;
   --cc-text-on-accent: #ffffff;
 
-  --cc-accent: #396cd8;
-  --cc-accent-hover: #2f5cc0;
-  --cc-accent-soft: #e6edfb;
+  /* ---- accent (monochrome primary, à la the reference) ---- */
+  --cc-accent: #18181b;
+  --cc-accent-hover: #000000;
+  --cc-accent-soft: #ededee;
+  --cc-focus-ring: rgba(24, 24, 27, 0.35);
 
   --cc-danger: #d1453b;
-  --cc-warning: #c8860b;
+  --cc-warning: #b5730a;
   --cc-success: #2f9e57;
 
-  /* size-bin colors (mirror the Swift bin palette: small / mid / large) */
-  --cc-bin-small: #4c9be8;
-  --cc-bin-mid: #7bc86c;
-  --cc-bin-large: #e8a04c;
+  /* size-bin colors (data viz — kept vivid on purpose) */
+  --cc-bin-small: #4c8bf5;
+  --cc-bin-mid: #4aa96c;
+  --cc-bin-large: #e08a3c;
 
-  /* ---- spacing scale ---- */
+  /* ---- spacing ---- */
   --cc-space-1: 4px;
   --cc-space-2: 8px;
   --cc-space-3: 12px;
@@ -50,53 +54,39 @@
 
   /* ---- radii ---- */
   --cc-radius-sm: 6px;
-  --cc-radius-md: 10px;
-  --cc-radius-lg: 14px;
+  --cc-radius-md: 8px;
+  --cc-radius-lg: 12px;
+  --cc-radius-xl: 16px;
 
-  /* ---- typography ---- */
-  --cc-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Avenir,
-    Helvetica, Arial, sans-serif;
-  --cc-font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  /* ---- typography (Windows-native first, then Apple, then Inter) ---- */
+  --cc-font: "Segoe UI Variable Text", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, "Helvetica Neue",
+    Arial, sans-serif;
+  --cc-font-display: "Segoe UI Variable Display", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, "SF Pro Display", Inter, system-ui, sans-serif;
+  --cc-font-mono: "Cascadia Code", "SF Mono", "JetBrains Mono", Consolas,
+    Menlo, monospace;
   --cc-text-xs: 11px;
-  --cc-text-sm: 13px;
-  --cc-text-md: 15px;
-  --cc-text-lg: 18px;
-  --cc-text-xl: 22px;
-  --cc-text-2xl: 28px;
+  --cc-text-sm: 12.5px;
+  --cc-text-md: 14px;
+  --cc-text-lg: 16px;
+  --cc-text-xl: 20px;
+  --cc-text-2xl: 26px;
+  --cc-text-3xl: 32px;
 
   /* ---- chrome ---- */
-  --cc-sidebar-width: 236px;
-  --cc-toolbar-height: 52px;
-  --cc-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06),
-    0 1px 3px rgba(15, 23, 42, 0.1);
-  --cc-shadow-2: 0 4px 12px rgba(15, 23, 42, 0.12);
+  --cc-titlebar-height: 40px;
+  --cc-sidebar-width: 264px;
+  --cc-topbar-height: 60px;
 
-  color-scheme: light dark;
-}
+  --cc-shadow-1: 0 1px 2px rgba(24, 24, 27, 0.04),
+    0 1px 1px rgba(24, 24, 27, 0.06);
+  --cc-shadow-2: 0 2px 8px rgba(24, 24, 27, 0.08),
+    0 1px 2px rgba(24, 24, 27, 0.06);
+  --cc-shadow-3: 0 8px 28px rgba(24, 24, 27, 0.14);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --cc-bg: #1a1d21;
-    --cc-bg-elevated: #24282e;
-    --cc-bg-sidebar: #15181c;
-    --cc-bg-hover: #2c313a;
-    --cc-bg-active: #33405c;
-    --cc-border: #333941;
-    --cc-border-strong: #454c56;
-
-    --cc-text: #eef1f5;
-    --cc-text-secondary: #a9b1bd;
-    --cc-text-tertiary: #737b87;
-    --cc-text-on-accent: #ffffff;
-
-    --cc-accent: #5b86e0;
-    --cc-accent-hover: #6f96e8;
-    --cc-accent-soft: #26324b;
-
-    --cc-danger: #e5675d;
-    --cc-warning: #e0a83a;
-    --cc-success: #52b877;
-  }
+  color-scheme: light;
+  accent-color: var(--cc-accent);
 }
 
 /* ---- global baseline ---- */
@@ -113,7 +103,7 @@ body {
   font-size: var(--cc-text-md);
   line-height: 1.5;
   color: var(--cc-text);
-  background: var(--cc-bg);
+  background: var(--cc-bg-app);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -124,10 +114,9 @@ body {
 }
 
 a {
-  color: var(--cc-accent);
+  color: var(--cc-text);
   text-decoration: none;
 }
-
 a:hover {
   color: var(--cc-accent-hover);
 }
@@ -136,15 +125,74 @@ button {
   font-family: inherit;
 }
 
-/* thin, unobtrusive scrollbars for the content panes */
+/* ---- shared button primitive (used across pages) ---- */
+.cc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cc-space-2);
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-md);
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease,
+    box-shadow 0.12s ease, opacity 0.12s ease;
+}
+.cc-btn:hover {
+  background: var(--cc-bg-hover);
+  border-color: var(--cc-border-focus);
+}
+.cc-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
+}
+.cc-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cc-btn--primary {
+  background: var(--cc-accent);
+  border-color: var(--cc-accent);
+  color: var(--cc-text-on-accent);
+}
+.cc-btn--primary:hover {
+  background: var(--cc-accent-hover);
+  border-color: var(--cc-accent-hover);
+}
+.cc-btn--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.cc-btn--ghost:hover {
+  background: var(--cc-bg-hover);
+  border-color: transparent;
+}
+
+/* icon sizing helper */
+.cc-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* thin, unobtrusive scrollbars */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--cc-border-strong);
+  background: #d4d4d8;
   border-radius: 999px;
-  border: 2px solid transparent;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b8b8bf;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
