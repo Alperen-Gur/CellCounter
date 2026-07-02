@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: "CellCounter: a desktop app for counting and size-classifying cells in microscopy images"
+message: "If you use this software, please cite it and the segmentation model you ran (e.g. Cellpose)."
+type: software
+authors:
+  - given-names: Alperen
+    family-names: Gur
+    email: alguer@ethz.ch
+    affiliation: ETH Zürich
+repository-code: "https://github.com/Alperen-Gur/CellCounter"
+license: MIT
+keywords:
+  - microscopy
+  - cell counting
+  - image segmentation
+  - cellpose
+  - keratinocytes
+  - bioimage analysis

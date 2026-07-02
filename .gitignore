@@ -1,0 +1,60 @@
+# ── macOS ──
+.DS_Store
+*.swp
+._*
+
+# ── Xcode / Swift ──
+build/
+DerivedData/
+*.xcarchive
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+.swiftpm/
+
+# ── Python sidecar ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+**/python/venv/
+
+# ── Node / React ──
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+.eslintcache
+
+# ── Rust / Tauri ──
+target/
+# Cargo.lock IS committed for the app binary (reproducible builds) — do not ignore.
+
+# ── Model weights (large, downloaded at runtime, not vendored) ──
+*.pth
+*.pt
+*.onnx
+*.safetensors
+**/weights/
+
+# ── Data safety: never publish microscope / patient images ──
+# Public example images are force-added under docs/examples/ with `git add -f`.
+*.tif
+*.tiff
+*.nd2
+*.czi
+*.lif
+sample_data/private/
+
+# ── AGPL firewall: Ultralytics YOLO sidecar is excluded from this MIT repo ──
+**/yolo_detect.py
+
+# ── Secrets ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*

@@ -1,0 +1,631 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		03CDA9682FC5E31F008B70EB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 03CDA94D2FC5E31D008B70EB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 03CDA9542FC5E31D008B70EB;
+			remoteInfo = CellCounting;
+		};
+		03CDA9722FC5E31F008B70EB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 03CDA94D2FC5E31D008B70EB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 03CDA9542FC5E31D008B70EB;
+			remoteInfo = CellCounting;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		03CDA9552FC5E31D008B70EB /* CellCounting.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CellCounting.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		03CDA9672FC5E31F008B70EB /* CellCountingTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CellCountingTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		03CDA9712FC5E31F008B70EB /* CellCountingUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CellCountingUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		03CDA9572FC5E31D008B70EB /* CellCounting */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CellCounting;
+			sourceTree = "<group>";
+		};
+		03CDA96A2FC5E31F008B70EB /* CellCountingTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CellCountingTests;
+			sourceTree = "<group>";
+		};
+		03CDA9742FC5E31F008B70EB /* CellCountingUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CellCountingUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		03CDA9522FC5E31D008B70EB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		03CDA9642FC5E31F008B70EB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		03CDA96E2FC5E31F008B70EB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		03CDA94C2FC5E31D008B70EB = {
+			isa = PBXGroup;
+			children = (
+				03CDA9572FC5E31D008B70EB /* CellCounting */,
+				03CDA96A2FC5E31F008B70EB /* CellCountingTests */,
+				03CDA9742FC5E31F008B70EB /* CellCountingUITests */,
+				03CDA9562FC5E31D008B70EB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		03CDA9562FC5E31D008B70EB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				03CDA9552FC5E31D008B70EB /* CellCounting.app */,
+				03CDA9672FC5E31F008B70EB /* CellCountingTests.xctest */,
+				03CDA9712FC5E31F008B70EB /* CellCountingUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		03CDA9542FC5E31D008B70EB /* CellCounting */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 03CDA97B2FC5E31F008B70EB /* Build configuration list for PBXNativeTarget "CellCounting" */;
+			buildPhases = (
+				03CDA9512FC5E31D008B70EB /* Sources */,
+				03CDA9522FC5E31D008B70EB /* Frameworks */,
+				03CDA9532FC5E31D008B70EB /* Resources */,
+				03CDAA012FC5E31F008B70EB /* CopyPythonSidecar */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				03CDA9572FC5E31D008B70EB /* CellCounting */,
+			);
+			name = CellCounting;
+			packageProductDependencies = (
+			);
+			productName = CellCounting;
+			productReference = 03CDA9552FC5E31D008B70EB /* CellCounting.app */;
+			productType = "com.apple.product-type.application";
+		};
+		03CDA9662FC5E31F008B70EB /* CellCountingTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 03CDA97E2FC5E31F008B70EB /* Build configuration list for PBXNativeTarget "CellCountingTests" */;
+			buildPhases = (
+				03CDA9632FC5E31F008B70EB /* Sources */,
+				03CDA9642FC5E31F008B70EB /* Frameworks */,
+				03CDA9652FC5E31F008B70EB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				03CDA9692FC5E31F008B70EB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				03CDA96A2FC5E31F008B70EB /* CellCountingTests */,
+			);
+			name = CellCountingTests;
+			packageProductDependencies = (
+			);
+			productName = CellCountingTests;
+			productReference = 03CDA9672FC5E31F008B70EB /* CellCountingTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		03CDA9702FC5E31F008B70EB /* CellCountingUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 03CDA9812FC5E31F008B70EB /* Build configuration list for PBXNativeTarget "CellCountingUITests" */;
+			buildPhases = (
+				03CDA96D2FC5E31F008B70EB /* Sources */,
+				03CDA96E2FC5E31F008B70EB /* Frameworks */,
+				03CDA96F2FC5E31F008B70EB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				03CDA9732FC5E31F008B70EB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				03CDA9742FC5E31F008B70EB /* CellCountingUITests */,
+			);
+			name = CellCountingUITests;
+			packageProductDependencies = (
+			);
+			productName = CellCountingUITests;
+			productReference = 03CDA9712FC5E31F008B70EB /* CellCountingUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		03CDA94D2FC5E31D008B70EB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					03CDA9542FC5E31D008B70EB = {
+						CreatedOnToolsVersion = 26.4;
+					};
+					03CDA9662FC5E31F008B70EB = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = 03CDA9542FC5E31D008B70EB;
+					};
+					03CDA9702FC5E31F008B70EB = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = 03CDA9542FC5E31D008B70EB;
+					};
+				};
+			};
+			buildConfigurationList = 03CDA9502FC5E31D008B70EB /* Build configuration list for PBXProject "CellCounting" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 03CDA94C2FC5E31D008B70EB;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 03CDA9562FC5E31D008B70EB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				03CDA9542FC5E31D008B70EB /* CellCounting */,
+				03CDA9662FC5E31F008B70EB /* CellCountingTests */,
+				03CDA9702FC5E31F008B70EB /* CellCountingUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		03CDA9532FC5E31D008B70EB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		03CDA9652FC5E31F008B70EB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		03CDA96F2FC5E31F008B70EB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		03CDAA012FC5E31F008B70EB /* CopyPythonSidecar */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/CellCounting/python/cellpose_detect.py",
+				"$(SRCROOT)/CellCounting/python/cellpose4_detect.py",
+				"$(SRCROOT)/CellCounting/python/cellpose_train.py",
+				"$(SRCROOT)/CellCounting/python/_cellpose_common.py",
+				"$(SRCROOT)/CellCounting/python/_preprocessing.py",
+				"$(SRCROOT)/CellCounting/python/_watershed.py",
+				"$(SRCROOT)/CellCounting/python/_colony.py",
+				"$(SRCROOT)/CellCounting/python/stardist_detect.py",
+				"$(SRCROOT)/CellCounting/python/yolo_detect.py",
+				"$(SRCROOT)/CellCounting/python/sam_detect.py",
+				"$(SRCROOT)/CellCounting/python/_export_imagej_roi.py",
+				"$(SRCROOT)/CellCounting/scripts/install_python.sh",
+				"$(SRCROOT)/CellCounting/scripts/install_python_cp4.sh",
+				"$(SRCROOT)/CellCounting/scripts/_lib_install.sh",
+			);
+			name = CopyPythonSidecar;
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/cellpose_detect.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/cellpose4_detect.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/cellpose_train.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/_cellpose_common.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/_preprocessing.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/_watershed.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/_colony.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/stardist_detect.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/yolo_detect.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/sam_detect.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/python/_export_imagej_roi.py",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/scripts/install_python.sh",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/scripts/install_python_cp4.sh",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/scripts/_lib_install.sh",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\n# Synced Xcode groups silently skip .py / .sh files from the Resources\n# build phase, so we copy them in manually. Must stay in sync with\n# Services/PythonRuntime.swift's bundle-lookup paths.\n#\n# Plain `cp` is used (not rsync) because the user-script sandbox blocks\n# rsync's `._tempXXX` temp files — they're not in the declared outputs.\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"${RESOURCES_DIR}/python\" \"${RESOURCES_DIR}/scripts\"\nfor f in \"${SRCROOT}/CellCounting/python/\"*.py; do\n  [ -f \"$f\" ] && /bin/cp -f \"$f\" \"${RESOURCES_DIR}/python/$(basename \"$f\")\"\ndone\nfor f in \"${SRCROOT}/CellCounting/scripts/\"*.sh; do\n  [ -f \"$f\" ] && /bin/cp -f \"$f\" \"${RESOURCES_DIR}/scripts/$(basename \"$f\")\"\ndone\nchmod +x \"${RESOURCES_DIR}/scripts/\"*.sh 2>/dev/null || true\necho \"==> Python sidecar copied to ${RESOURCES_DIR}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		03CDA9512FC5E31D008B70EB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		03CDA9632FC5E31F008B70EB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		03CDA96D2FC5E31F008B70EB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		03CDA9692FC5E31F008B70EB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 03CDA9542FC5E31D008B70EB /* CellCounting */;
+			targetProxy = 03CDA9682FC5E31F008B70EB /* PBXContainerItemProxy */;
+		};
+		03CDA9732FC5E31F008B70EB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 03CDA9542FC5E31D008B70EB /* CellCounting */;
+			targetProxy = 03CDA9722FC5E31F008B70EB /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		03CDA9792FC5E31F008B70EB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		03CDA97A2FC5E31F008B70EB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		03CDA97C2FC5E31F008B70EB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CellCounting/CellCounting.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCounting;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		03CDA97D2FC5E31F008B70EB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CellCounting/CellCounting.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCounting;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		03CDA97F2FC5E31F008B70EB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CellCounting.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CellCounting";
+			};
+			name = Debug;
+		};
+		03CDA9802FC5E31F008B70EB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CellCounting.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CellCounting";
+			};
+			name = Release;
+		};
+		03CDA9822FC5E31F008B70EB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = CellCounting;
+			};
+			name = Debug;
+		};
+		03CDA9832FC5E31F008B70EB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 23YC28D6K8;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = CellCounting;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		03CDA9502FC5E31D008B70EB /* Build configuration list for PBXProject "CellCounting" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				03CDA9792FC5E31F008B70EB /* Debug */,
+				03CDA97A2FC5E31F008B70EB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		03CDA97B2FC5E31F008B70EB /* Build configuration list for PBXNativeTarget "CellCounting" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				03CDA97C2FC5E31F008B70EB /* Debug */,
+				03CDA97D2FC5E31F008B70EB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		03CDA97E2FC5E31F008B70EB /* Build configuration list for PBXNativeTarget "CellCountingTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				03CDA97F2FC5E31F008B70EB /* Debug */,
+				03CDA9802FC5E31F008B70EB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		03CDA9812FC5E31F008B70EB /* Build configuration list for PBXNativeTarget "CellCountingUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				03CDA9822FC5E31F008B70EB /* Debug */,
+				03CDA9832FC5E31F008B70EB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 03CDA94D2FC5E31D008B70EB /* Project object */;
+}

@@ -1,0 +1,254 @@
+import Foundation
+import ImageIO
+
+/// Pass-17 (Lane C): reads embedded physical pixel-size metadata from microscope
+/// TIFF files and returns a px/µm calibration value without any 3rd-party deps.
+///
+/// Parser priority:
+///   1. OME-XML inside TIFF tag 270 (ImageDescription) — high confidence.
+///   2. TIFF baseline XResolution/YResolution + ResolutionUnit — medium confidence.
+///   3. Olympus vendor tag (OlympusIni / ImageDescription "Calibration Value") — low confidence.
+///
+/// All parsers are defensive: malformed XML / missing fields → nil, not a crash.
+enum EXIFCalibration {
+
+    struct Result {
+        let pxPerUm: Double
+        let source: Source
+        let confidence: Confidence
+    }
+
+    enum Source: CustomStringConvertible {
+        case omeXML
+        case tiffBaseline
+        case olympus
+        case zeiss
+        case imagej
+
+        var description: String {
+            switch self {
+            case .omeXML:       return "OME-XML"
+            case .tiffBaseline: return "TIFF baseline tags"
+            case .olympus:      return "Olympus vendor tag"
+            case .zeiss:        return "Zeiss vendor tag"
+            case .imagej:       return "ImageJ metadata"
+            }
+        }
+    }
+
+    enum Confidence {
+        case high, medium, low
+    }
+
+    /// Read embedded calibration. Returns nil if no recognizable metadata is found.
+    /// Safe to call from any thread. Does NOT throw — all failures return nil.
+    static func detectPxPerUm(at url: URL) -> Result? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary) else { return nil }
+
+        guard let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else {
+            return nil
+        }
+
+        // --- 1. Pull the raw image description string for text-based parsers ---
+        let tiffDict = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        let imageDescription = tiffDict?[kCGImagePropertyTIFFImageDescription] as? String
+
+        // --- 2. OME-XML in ImageDescription (highest confidence) ---
+        if let desc = imageDescription, desc.contains("<OME") || desc.contains("<Pixels") {
+            if let r = parseOMEXML(desc) { return r }
+        }
+
+        // --- 3. TIFF baseline XResolution/YResolution + ResolutionUnit ---
+        if let r = parseTIFFBaseline(props: props, tiffDict: tiffDict) { return r }
+
+        // --- 4. ImageJ metadata in ImageDescription (medium confidence) ---
+        if let desc = imageDescription, desc.hasPrefix("ImageJ=") {
+            if let r = parseImageJDescription(desc) { return r }
+        }
+
+        // --- 5. Olympus-style "Calibration Value" in ImageDescription (low confidence) ---
+        if let desc = imageDescription {
+            if let r = parseOlympusDescription(desc) { return r }
+        }
+
+        return nil
+    }
+
+    // MARK: — OME-XML parser
+
+    /// Extracts `PhysicalSizeX` and `PhysicalSizeXUnit` from an OME-XML string.
+    /// Uses regex first (fast path), falls back to XMLParser. Both are guarded
+    /// with try? so malformed XML never crashes.
+    private static func parseOMEXML(_ xml: String) -> Result? {
+        // Fast path: regex for <Pixels … PhysicalSizeX="0.385" PhysicalSizeXUnit="µm" …>
+        // The attributes may appear in any order and with any whitespace.
+        let sizePattern = #"PhysicalSizeX\s*=\s*"([0-9]*\.?[0-9]+)""#
+        let unitPattern = #"PhysicalSizeXUnit\s*=\s*"([^"]+)""#
+
+        guard let sizeMatch = xml.range(of: sizePattern, options: .regularExpression),
+              let sizeStr = String(xml[sizeMatch]).firstMatch(for: #"[0-9]*\.?[0-9]+"#),
+              let physicalSizeX = Double(sizeStr)
+        else { return nil }
+
+        let unit: String
+        if let unitMatch = xml.range(of: unitPattern, options: .regularExpression),
+           let u = String(xml[unitMatch]).firstMatch(for: #"(?<=\")[^"]+(?=\")"#) {
+            unit = u
+        } else {
+            unit = "µm"   // OME spec default
+        }
+
+        guard let pxPerUm = convertToMicrons(value: physicalSizeX, unit: unit).map({ 1.0 / $0 }) else {
+            return nil
+        }
+        guard pxPerUm > 0, pxPerUm < 1000 else { return nil }
+
+        return Result(pxPerUm: pxPerUm, source: .omeXML, confidence: .high)
+    }
+
+    // MARK: — TIFF baseline parser
+
+    private static func parseTIFFBaseline(props: [CFString: Any],
+                                          tiffDict: [CFString: Any]?) -> Result? {
+        guard let tiff = tiffDict else { return nil }
+
+        // ResolutionUnit: 1=no unit, 2=inch, 3=cm
+        let unitRaw = tiff[kCGImagePropertyTIFFResolutionUnit] as? Int ?? 2
+
+        // ImageIO gives XResolution as a Double (pixels per resolution-unit).
+        guard let xRes = tiff[kCGImagePropertyTIFFXResolution] as? Double,
+              xRes > 0 else { return nil }
+
+        let pxPerUm: Double
+        switch unitRaw {
+        case 2: // inch → µm: 1 inch = 25400 µm
+            pxPerUm = xRes / 25400.0
+        case 3: // cm → µm: 1 cm = 10000 µm
+            pxPerUm = xRes / 10000.0
+        default:
+            return nil   // no unit → unusable
+        }
+
+        guard pxPerUm > 0.001, pxPerUm < 1000 else { return nil }
+
+        // Heuristic sanity: very round numbers like exactly 72 or 96 dpi
+        // are default DPI values written by scanners without real calibration.
+        let pxPerInch = unitRaw == 2 ? xRes : xRes * 2.54
+        if pxPerInch == 72 || pxPerInch == 96 || pxPerInch == 300 {
+            // These are almost certainly scanner/printer defaults, not real calibration.
+            return nil
+        }
+
+        return Result(pxPerUm: pxPerUm, source: .tiffBaseline, confidence: .medium)
+    }
+
+    // MARK: — ImageJ metadata parser
+
+    /// Parses lines like:
+    ///   unit=micron
+    ///   finterval=0.385
+    ///   pixelWidth=0.385
+    ///   pixelHeight=0.385
+    private static func parseImageJDescription(_ desc: String) -> Result? {
+        let lines = desc.components(separatedBy: "\n")
+        var pixelWidth: Double? = nil
+        var unit: String = "µm"
+
+        for line in lines {
+            let kv = line.trimmingCharacters(in: .whitespaces)
+            if kv.lowercased().hasPrefix("pixelwidth="),
+               let v = Double(kv.dropFirst("pixelwidth=".count).trimmingCharacters(in: .whitespaces)) {
+                pixelWidth = v
+            }
+            if kv.lowercased().hasPrefix("unit=") {
+                unit = String(kv.dropFirst("unit=".count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+
+        guard let pw = pixelWidth, pw > 0 else { return nil }
+
+        // pw is µm-per-pixel; we want px/µm
+        let umPerPx: Double
+        switch unit.lowercased() {
+        case "um", "µm", "micron", "microns": umPerPx = pw
+        case "nm":                             umPerPx = pw / 1000.0
+        case "mm":                             umPerPx = pw * 1000.0
+        case "cm":                             umPerPx = pw * 10000.0
+        case "m":                              umPerPx = pw * 1_000_000.0
+        default:                               return nil
+        }
+
+        guard umPerPx > 0 else { return nil }
+        let pxPerUm = 1.0 / umPerPx
+        guard pxPerUm > 0.001, pxPerUm < 1000 else { return nil }
+
+        return Result(pxPerUm: pxPerUm, source: .imagej, confidence: .medium)
+    }
+
+    // MARK: — Olympus description parser
+
+    /// Olympus CellSens / BDP export puts lines like:
+    ///   Calibration Unit=µm
+    ///   Calibration Value=0.385
+    private static func parseOlympusDescription(_ desc: String) -> Result? {
+        let lines = desc.components(separatedBy: "\n")
+        var calValue: Double? = nil
+        var calUnit: String = "µm"
+
+        for line in lines {
+            let kv = line.trimmingCharacters(in: .whitespaces)
+            if kv.lowercased().hasPrefix("calibration value="),
+               let v = Double(kv.dropFirst("calibration value=".count).trimmingCharacters(in: .whitespaces)) {
+                calValue = v
+            }
+            if kv.lowercased().hasPrefix("calibration unit=") {
+                calUnit = String(kv.dropFirst("calibration unit=".count)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+
+        guard let cv = calValue, cv > 0 else { return nil }
+
+        // Calibration Value is µm/pixel; convert to px/µm
+        guard let umPerPx = convertToMicrons(value: cv, unit: calUnit),
+              umPerPx > 0 else { return nil }
+        let pxPerUm = 1.0 / umPerPx
+        guard pxPerUm > 0.001, pxPerUm < 1000 else { return nil }
+
+        return Result(pxPerUm: pxPerUm, source: .olympus, confidence: .low)
+    }
+
+    // MARK: — Unit conversion helper
+
+    /// Converts a physical size value + unit string into µm.
+    /// Returns nil for unrecognised units.
+    private static func convertToMicrons(value: Double, unit: String) -> Double? {
+        switch unit.lowercased().trimmingCharacters(in: .whitespaces) {
+        case "µm", "um", "micron", "microns":
+            return value
+        case "nm":
+            return value / 1000.0
+        case "pm":
+            return value / 1_000_000.0
+        case "mm":
+            return value * 1000.0
+        case "cm":
+            return value * 10000.0
+        case "m":
+            return value * 1_000_000.0
+        default:
+            return nil
+        }
+    }
+}
+
+// MARK: — String helpers
+
+private extension String {
+    /// Returns the first match for `pattern` in self, or nil.
+    func firstMatch(for pattern: String) -> String? {
+        guard let r = range(of: pattern, options: .regularExpression) else { return nil }
+        return String(self[r])
+    }
+}
