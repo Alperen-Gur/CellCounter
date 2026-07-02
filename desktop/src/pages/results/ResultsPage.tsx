@@ -32,12 +32,17 @@ import { AnalysisSidebar } from "./AnalysisSidebar";
 import { OverlayControls } from "./OverlayControls";
 import { QCBadges } from "./QCBadges";
 
+// Mask-editing (feat-mask-editing): one shared editor drives the toolbar, the
+// live overlay cells, and the in-Viewport gesture surface.
+import { useMaskEditor } from "./editing/useMaskEditor";
+import { useEditingKeymap } from "./editing/useEditingKeymap";
+import { EditingToolbar } from "./editing/EditingToolbar";
+import { EditingSurface } from "./editing/EditingSurface";
+
 import "./results.css";
 
-// The editing gestures + _seg.npy round-trip live in physically-disjoint
-// directories owned by other feature tasks. We only MOUNT their entry points
-// here (lazy, so a not-yet-filled stub doesn't block this page's chunk).
-const EditingPanel = lazy(() => import("./editing/EditingPanel"));
+// _seg.npy round-trip lives in a physically-disjoint directory owned by
+// feat-seg-npy-io; lazy-mounted as an entry point only.
 const SegNpyPanel = lazy(() => import("./segnpy/SegNpyPanel"));
 
 export default function ResultsPage() {
@@ -75,6 +80,18 @@ export default function ResultsPage() {
   const setCurrentImageIdx = useAppStore((s) => s.setCurrentImageIdx);
   const nextImage = useAppStore((s) => s.nextImage);
   const prevImage = useAppStore((s) => s.prevImage);
+
+  // ---- shared mask-editing engine (feat-mask-editing) ----
+  // One editor instance for the current image drives the toolbar, the live
+  // overlay cells, and the gesture surface; its commits persist + record
+  // corrections. Until it loads we render the read-only detection cells.
+  const editor = useMaskEditor({
+    imageId: currentImage?.id,
+    sourceWidth: currentImage?.widthPx,
+    sourceHeight: currentImage?.heightPx,
+  });
+  useEditingKeymap({ editor, enabled: !!currentImage });
+  const displayCells = editor.engine ? editor.cells : cells;
 
   // Resolve the on-disk image path to a webview-loadable URL. Recomputed only
   // when the stored path changes.
@@ -195,9 +212,7 @@ export default function ResultsPage() {
             cell list + edit context so the gestures can drive the engine and
             persist corrections; this task only provides the mount + props. */}
         <div className="rv-toolbar-mount">
-          <Suspense fallback={null}>
-            <EditingPanel />
-          </Suspense>
+          {currentImage && <EditingToolbar editor={editor} />}
           <Suspense fallback={null}>
             <SegNpyPanel />
           </Suspense>
@@ -217,7 +232,7 @@ export default function ResultsPage() {
             >
               {(showMaskFills || showOutlines) && (
                 <MaskOverlay
-                  cells={cells}
+                  cells={displayCells}
                   annotations={annotations}
                   thresholds={thresholds}
                   overlayMode={overlayMode}
@@ -228,6 +243,9 @@ export default function ResultsPage() {
                   selectedCellIds={selectedCellIds}
                 />
               )}
+              {/* Gesture layer — shares the editor with the toolbar; must live
+                  INSIDE Viewport to read the source-px transform via context. */}
+              <EditingSurface editor={editor} />
             </Viewport>
           ) : (
             <div className="rv-canvas__placeholder">Loading image…</div>
