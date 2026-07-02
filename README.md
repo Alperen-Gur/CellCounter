@@ -6,7 +6,7 @@ CellCounter is a desktop app for counting cells in phase-contrast (and fluoresce
 
 It was built for one concrete job: counting patient-derived oral keratinocytes and comparing their size distributions across conditions. But nothing in it is tied to that cell type. If Cellpose can segment your cells, CellCounter can count and measure them.
 
-> **Status — July 2026.** v1.0 ships as a native **macOS** app. A cross-platform rebuild (Windows, Linux, and an in-browser WebGPU version that needs no install at all) is underway — see [Roadmap](#roadmap).
+> **Status — July 2026.** The current download is **CellCounter 1.0.1 for macOS** — a native, verified app (Apple-silicon + Intel universal build). A cross-platform rebuild (Windows, Linux, and an in-browser WebGPU version) is built and green in CI, but is still in preview pending real-world verification — see [Roadmap](#roadmap).
 
 _Screenshot: to be added using public / synthetic images (never patient data)._
 
@@ -48,9 +48,9 @@ Cellpose already has an excellent GUI, and CellCounter isn't trying to replace i
 
 ## Install
 
-### macOS (v1.0)
+### macOS (v1.0.1 — current release)
 
-1. Download the latest release from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
+1. Download `CellCounter-v1.0.1.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
 2. Unzip it and drag **CellCounter** into your Applications folder.
 3. The first launch is blocked by Gatekeeper because the app isn't yet notarized. To allow it:
    open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough in [docs/INSTALL.md](docs/INSTALL.md).
@@ -81,11 +81,18 @@ CellCounter is a native GUI that drives Cellpose in a local Python "sidecar" pro
 
 ## Roadmap
 
-- [ ] **Windows & Linux desktop** — cross-platform rebuild on Tauri + React
-- [ ] **In-browser version** — Cellpose `cyto3` running client-side on WebGPU, no install at all
-- [ ] **One-command environment setup** via [`uv`](https://github.com/astral-sh/uv), replacing the current shell installer
-- [ ] **Cellpose-GUI parity** for manual editing — draw / merge / split masks, undo/redo, keyboard shortcuts, `_seg.npy` interchange with Cellpose
-- [ ] **Train-from-GUI** — fine-tune a model on your own corrected cells (planned; not in v1)
+The cross-platform rebuild (Tauri + React, in `desktop/`) is well underway. Done and green in CI, **in preview** pending end-to-end verification before release:
+
+- [x] **Windows / Linux / macOS desktop** — one Tauri + React codebase, compiling on all three OSes in CI
+- [x] **One-command environment setup** via [`uv`](https://github.com/astral-sh/uv), replacing the shell installer
+- [x] **Cellpose-GUI parity** — manual editing (draw / merge / split), undo/redo, keyboard shortcuts, `_seg.npy` interchange
+- [x] **Persistent-worker detection engine** — model stays warm across a batch instead of reloading per image
+
+Still ahead:
+
+- [ ] **Public cross-platform release** — after the detection pipeline is verified on real batches
+- [ ] **In-browser version** — Cellpose `cyto3` client-side on WebGPU, no install at all
+- [ ] **Train-from-GUI** — fine-tune a model on your own corrected cells
 
 ## Citing
 

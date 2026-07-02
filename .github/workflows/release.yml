@@ -1,11 +1,13 @@
 name: Release
 
 # Build installable binaries and attach them to a GitHub Release.
-# Trigger by pushing a version tag (e.g. `git tag v1.0.0 && git push --tags`),
-# or run manually from the Actions tab.
+# Builds the cross-platform Tauri app. Trigger by pushing a `desktop-v*` tag
+# (e.g. `git tag desktop-v0.1.0 && git push --tags`) or from the Actions tab.
+# NOTE: plain `v*` tags are reserved for the native macOS (Swift) releases, which
+# are published manually — they must NOT trigger this Tauri build.
 on:
   push:
-    tags: ["v*"]
+    tags: ["desktop-v*"]
   workflow_dispatch:
 
 permissions:
