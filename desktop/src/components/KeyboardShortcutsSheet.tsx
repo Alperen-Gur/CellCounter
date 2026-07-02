@@ -18,6 +18,7 @@ import {
   bindingDisplay,
   type KeyBinding,
 } from "../kernel/shortcuts/keymap";
+import { Icon } from "./Icon";
 
 interface KeyboardShortcutsSheetProps {
   open: boolean;
@@ -91,7 +92,7 @@ export function KeyboardShortcutsSheet({
             aria-label="Close"
             onClick={onClose}
           >
-            ✕
+            <Icon name="close" size={16} />
           </button>
         </header>
 
@@ -118,7 +119,11 @@ export function KeyboardShortcutsSheet({
         </div>
 
         <footer className="cc-ksh__footer">
-          <button type="button" className="cc-btn cc-ksh__done" onClick={onClose}>
+          <button
+            type="button"
+            className="cc-btn cc-btn--primary cc-ksh__done"
+            onClick={onClose}
+          >
             Close
           </button>
         </footer>
@@ -134,6 +139,24 @@ export default KeyboardShortcutsSheet;
 // ---------------------------------------------------------------------------
 
 const SHEET_STYLES = `
+.cc-shortcuts-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cc-space-5);
+  background: rgba(24, 24, 27, 0.28);
+}
+.cc-shortcuts-sheet {
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  box-shadow: var(--cc-shadow-3);
+}
 .cc-ksh {
   width: min(600px, calc(100vw - 32px));
   max-width: none;
@@ -151,10 +174,11 @@ const SHEET_STYLES = `
   padding: var(--cc-space-5) var(--cc-space-5) var(--cc-space-4);
 }
 .cc-ksh__title {
+  font-family: var(--cc-font-display);
   font-size: var(--cc-text-lg);
-  font-weight: 700;
+  font-weight: 650;
   color: var(--cc-text);
-  letter-spacing: -0.2px;
+  letter-spacing: -0.01em;
 }
 .cc-ksh__subtitle {
   margin-top: 2px;
@@ -163,22 +187,25 @@ const SHEET_STYLES = `
 }
 .cc-ksh__close {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg-hover);
+  border-radius: var(--cc-radius-md);
+  background: transparent;
   color: var(--cc-text-secondary);
-  font-size: 13px;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .cc-ksh__close:hover {
-  background: var(--cc-bg-active);
+  background: var(--cc-bg-hover);
   color: var(--cc-text);
+}
+.cc-ksh__close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
 }
 .cc-ksh__body {
   flex: 1 1 auto;
@@ -192,9 +219,9 @@ const SHEET_STYLES = `
 .cc-ksh__group-title {
   margin: 0 0 var(--cc-space-2);
   font-size: var(--cc-text-xs);
-  font-weight: 600;
+  font-weight: 650;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.06em;
   color: var(--cc-text-tertiary);
 }
 .cc-ksh__rows {

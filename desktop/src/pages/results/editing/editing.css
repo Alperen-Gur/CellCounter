@@ -2,11 +2,13 @@
  * pages/results/editing/editing.css — chrome for the mask-editing UI
  * (feature task `feat-mask-editing`).
  *
- * Styles only the toolbar + panel scaffolding this feature owns. Consumes the
- * shared design tokens from styles/theme.css (--cc-*). The canvas/overlay
- * visuals live in the kernel (Viewport / MaskOverlay); the interactive
- * affordances (drag rects, handles, delete floater) are drawn inline as SVG in
- * EditingSurface and need no CSS here.
+ * Styles only the toolbar + panel scaffolding this feature owns. Light,
+ * Windows-native (Fluent-leaning): white surface, hairline border, near-black
+ * active state, icon glyphs (components/Icon.tsx). Consumes the shared design
+ * tokens from styles/theme.css (--cc-*). The canvas/overlay visuals live in the
+ * kernel (Viewport / MaskOverlay); the interactive affordances (drag rects,
+ * handles, delete floater) are drawn inline as SVG in EditingSurface and need no
+ * CSS here.
  */
 
 .cc-edit-root {
@@ -24,7 +26,7 @@
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-md);
   overflow: hidden;
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-subtle);
 }
 
 .cc-edit-empty {
@@ -42,8 +44,8 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--cc-space-2);
-  padding: var(--cc-space-1);
+  gap: 2px;
+  padding: 4px;
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-md);
@@ -60,25 +62,25 @@
 .cc-edit-toolbar__sep {
   width: 1px;
   align-self: stretch;
-  margin: 2px var(--cc-space-1);
+  margin: 3px var(--cc-space-1);
   background: var(--cc-border);
 }
 
 .cc-edit-toolbar__btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--cc-space-1);
-  height: 28px;
-  padding: 0 var(--cc-space-2);
-  border: none;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
   border-radius: var(--cc-radius-sm);
   background: transparent;
   color: var(--cc-text-secondary);
   font-family: var(--cc-font);
   font-size: var(--cc-text-xs);
-  font-weight: 500;
+  font-weight: 550;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   white-space: nowrap;
 }
 
@@ -89,11 +91,13 @@
 
 .cc-edit-toolbar__btn--active {
   background: var(--cc-accent);
+  border-color: var(--cc-accent);
   color: var(--cc-text-on-accent);
 }
 
 .cc-edit-toolbar__btn--active:hover {
   background: var(--cc-accent-hover);
+  border-color: var(--cc-accent-hover);
   color: var(--cc-text-on-accent);
 }
 
@@ -103,7 +107,10 @@
 }
 
 .cc-edit-toolbar__glyph {
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   line-height: 1;
 }
 
@@ -112,6 +119,9 @@
   .cc-edit-toolbar__label {
     display: none;
   }
+  .cc-edit-toolbar__btn {
+    padding: 0 8px;
+  }
 }
 
 /* ---- manual-diameter stepper ---- */
@@ -119,26 +129,30 @@
 .cc-edit-toolbar__stepper {
   display: inline-flex;
   align-items: center;
-  height: 28px;
+  height: 30px;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-subtle);
   overflow: hidden;
 }
 
 .cc-edit-toolbar__step {
-  width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
   height: 100%;
   border: none;
   background: transparent;
-  color: var(--cc-text);
-  font-size: 15px;
+  color: var(--cc-text-secondary);
   line-height: 1;
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
 .cc-edit-toolbar__step:hover:not(:disabled) {
   background: var(--cc-bg-hover);
+  color: var(--cc-text);
 }
 
 .cc-edit-toolbar__step:disabled {

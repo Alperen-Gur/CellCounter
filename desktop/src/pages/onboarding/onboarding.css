@@ -2,9 +2,13 @@
  * pages/onboarding/onboarding.css — styling for the Onboarding & Calibration
  * feature (feat-calibration-onboarding).
  *
- * Consumes the shell design tokens from styles/theme.css. Three scoped
- * namespaces so nothing collides with sibling pages:
- *   .cc-ob-*  — onboarding carousel + the hub page
+ * Light, Windows-native (Fluent-leaning) language — consumes the shared tokens
+ * in styles/theme.css exclusively. Both surfaces are proper centered modal
+ * cards: a dimmed backdrop, a contained card (~520px, rounded, elevated with
+ * --cc-shadow-3) and a tidy header / body / footer rhythm that mirrors the
+ * exemplar Home screen. Three scoped namespaces so nothing collides with
+ * sibling pages:
+ *   .cc-ob-*  — onboarding tour carousel + the hub page
  *   .cc-cal-* — the calibration sheet (all three tabs) + shared numeric boxes
  *   .cc-md    — the manual-diameter fallback control
  */
@@ -22,29 +26,15 @@
   align-items: center;
   justify-content: center;
   padding: var(--cc-space-5);
-  background: rgba(6, 9, 14, 0.5);
+  background: rgba(24, 24, 27, 0.32);
   backdrop-filter: blur(2px);
 }
 
-/* =========================================================================
- * Onboarding carousel
- * ========================================================================= */
-
-.cc-ob-sheet {
-  width: 520px;
-  max-width: 100%;
-  background: var(--cc-bg-elevated);
-  border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-lg);
-  box-shadow: var(--cc-shadow-2);
-  overflow: hidden;
-  animation: cc-ob-pop 0.24s ease;
-}
-
+/* Shared card entrance — a small, calm pop. */
 @keyframes cc-ob-pop {
   from {
     opacity: 0;
-    transform: translateY(-12px) scale(0.98);
+    transform: translateY(8px) scale(0.99);
   }
   to {
     opacity: 1;
@@ -52,121 +42,127 @@
   }
 }
 
-.cc-ob-hero {
-  position: relative;
-  height: 220px;
-  background: var(--cc-bg-sidebar);
-  background-image: radial-gradient(
-    circle at 30% 40%,
-    var(--cc-accent-soft),
-    transparent 60%
-  );
-  display: flex;
+/* Shared close affordance for both modal headers. */
+.cc-ob-close {
+  flex: 0 0 auto;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: var(--cc-space-5);
-}
-
-.cc-ob-hero__art {
-  width: 100%;
-  max-width: 400px;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.cc-ob-hero__close {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 30px;
+  height: 30px;
   border: none;
   border-radius: var(--cc-radius-md);
-  background: rgba(0, 0, 0, 0.3);
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 12px;
+  background: transparent;
+  color: var(--cc-text-tertiary);
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cc-ob-close:hover {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text);
+}
+.cc-ob-close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
 }
 
-.cc-ob-hero__close:hover {
-  background: rgba(0, 0, 0, 0.45);
+/* =========================================================================
+ * Onboarding tour carousel
+ * ========================================================================= */
+
+.cc-ob-sheet {
+  position: relative;
+  width: 520px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  box-shadow: var(--cc-shadow-3);
+  overflow: hidden;
+  animation: cc-ob-pop 0.2s ease;
+}
+
+.cc-ob-sheet__close {
+  position: absolute;
+  top: var(--cc-space-3);
+  right: var(--cc-space-3);
+  z-index: 1;
+}
+
+/* Header — a compact Icon badge instead of sprawling full-width art. */
+.cc-ob-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--cc-space-4);
+  padding: var(--cc-space-8) var(--cc-space-6) var(--cc-space-4);
+}
+
+.cc-ob-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text);
 }
 
 .cc-ob-body {
-  padding: var(--cc-space-5) var(--cc-space-6) var(--cc-space-5);
+  padding: 0 var(--cc-space-6) var(--cc-space-5);
+  text-align: center;
 }
 
 .cc-ob-body__title {
   margin: 0 0 var(--cc-space-2);
+  font-family: var(--cc-font-display);
   font-size: var(--cc-text-xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
 }
 
 .cc-ob-body__desc {
-  margin: 0 0 var(--cc-space-4);
-  font-size: var(--cc-text-sm);
+  margin: 0 auto;
+  max-width: 400px;
+  font-size: var(--cc-text-md);
   line-height: 1.55;
   color: var(--cc-text-secondary);
 }
 
-.cc-ob-body__foot {
+/* Footer — pagination dots left, navigation buttons right. */
+.cc-ob-foot {
   display: flex;
   align-items: center;
   gap: var(--cc-space-2);
+  padding: var(--cc-space-4) var(--cc-space-6);
+  border-top: 1px solid var(--cc-border);
+  background: var(--cc-bg-subtle);
 }
 
 .cc-ob-dots {
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
 }
 
 .cc-ob-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
   background: var(--cc-border-strong);
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, width 0.12s ease;
 }
 
 .cc-ob-dot--on {
+  width: 18px;
   background: var(--cc-accent);
-}
-
-.cc-ob-btn {
-  padding: var(--cc-space-2) var(--cc-space-4);
-  border: 1px solid var(--cc-border-strong);
-  border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg-elevated);
-  color: var(--cc-text);
-  font-size: var(--cc-text-sm);
-  font-weight: 550;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
-}
-
-.cc-ob-btn:hover {
-  border-color: var(--cc-accent);
-}
-
-.cc-ob-btn--primary {
-  background: var(--cc-accent);
-  border-color: var(--cc-accent);
-  color: var(--cc-text-on-accent);
-}
-
-.cc-ob-btn--primary:hover {
-  background: var(--cc-accent-hover);
-  border-color: var(--cc-accent-hover);
 }
 
 /* =========================================================================
@@ -181,16 +177,16 @@
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
-  box-shadow: var(--cc-shadow-2);
+  box-shadow: var(--cc-shadow-3);
   overflow: hidden;
-  animation: cc-ob-pop 0.24s ease;
+  animation: cc-ob-pop 0.2s ease;
 }
 
 .cc-cal-head {
   display: flex;
   align-items: flex-start;
   gap: var(--cc-space-3);
-  padding: var(--cc-space-5) var(--cc-space-5) var(--cc-space-3);
+  padding: var(--cc-space-5) var(--cc-space-5) var(--cc-space-4);
 }
 
 .cc-cal-head__text {
@@ -200,58 +196,41 @@
 
 .cc-cal-head__title {
   margin: 0 0 4px;
+  font-family: var(--cc-font-display);
   font-size: var(--cc-text-lg);
-  font-weight: 700;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
 }
 
 .cc-cal-head__sub {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--cc-text-sm);
   line-height: 1.45;
-  color: var(--cc-text-tertiary);
-}
-
-.cc-cal-head__close {
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-sidebar);
   color: var(--cc-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 0.12s ease;
 }
 
-.cc-cal-head__close:hover {
-  background: var(--cc-bg-hover);
-}
-
-/* ---- tab bar ---- */
+/* ---- tab bar (segmented control) ---- */
 
 .cc-cal-tabs {
   display: flex;
-  gap: 4px;
+  gap: 3px;
   margin: 0 var(--cc-space-5) var(--cc-space-4);
-  padding: 4px;
+  padding: 3px;
   border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
 }
 
 .cc-cal-tab {
   flex: 1 1 0;
   padding: var(--cc-space-2) var(--cc-space-3);
   border: none;
-  border-radius: 5px;
+  border-radius: var(--cc-radius-sm);
   background: transparent;
   color: var(--cc-text-secondary);
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
@@ -270,20 +249,25 @@
 /* ---- body ---- */
 
 .cc-cal-body {
-  padding: 0 var(--cc-space-5) var(--cc-space-3);
+  padding: 0 var(--cc-space-5) var(--cc-space-4);
   min-height: 120px;
 }
 
 .cc-cal-hint {
-  margin: var(--cc-space-2) 0 0;
-  font-size: 12px;
+  margin: var(--cc-space-3) 0 0;
+  font-size: var(--cc-text-sm);
   line-height: 1.5;
   color: var(--cc-text-tertiary);
 }
 
 .cc-cal-hint code {
   font-family: var(--cc-font-mono);
-  font-size: 11.5px;
+  font-size: var(--cc-text-xs);
+  padding: 1px 5px;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-secondary);
 }
 
 /* ---- numeric box (shared) ---- */
@@ -293,15 +277,16 @@
   align-items: center;
   gap: var(--cc-space-2);
   flex: 1 1 auto;
-  padding: 10px 14px;
+  padding: 9px 12px;
   border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-sidebar);
-  border: 1px solid transparent;
-  transition: border-color 0.12s ease;
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border-strong);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .cc-cal-numbox:focus-within {
-  border-color: var(--cc-accent);
+  border-color: var(--cc-border-focus);
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
 }
 
 .cc-cal-numbox__input {
@@ -311,18 +296,18 @@
   background: transparent;
   color: var(--cc-text);
   font-family: var(--cc-font-mono);
-  font-size: 14px;
+  font-size: var(--cc-text-md);
   font-weight: 600;
   outline: none;
 }
 
 .cc-cal-numbox--big .cc-cal-numbox__input {
-  font-size: 18px;
+  font-size: var(--cc-text-xl);
 }
 
 .cc-cal-numbox__unit {
   flex: 0 0 auto;
-  font-size: 12.5px;
+  font-size: var(--cc-text-sm);
   color: var(--cc-text-tertiary);
 }
 
@@ -345,7 +330,7 @@
   aspect-ratio: 16 / 9;
   width: 100%;
   border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-subtle);
   border: 1px solid var(--cc-border);
   overflow: hidden;
   touch-action: none;
@@ -375,12 +360,14 @@
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  padding: 5px 10px;
-  border-radius: var(--cc-radius-sm);
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 11.5px;
-  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  box-shadow: var(--cc-shadow-1);
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
   white-space: nowrap;
   pointer-events: none;
 }
@@ -393,7 +380,7 @@
 .cc-cal-draw__derived {
   display: flex;
   align-items: center;
-  gap: var(--cc-space-1);
+  gap: var(--cc-space-2);
 }
 
 /* ---- preset tab ---- */
@@ -406,7 +393,8 @@
 
 .cc-cal-presets__list {
   border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
   overflow: hidden;
 }
 
@@ -437,33 +425,33 @@
 }
 
 .cc-cal-preset-row__name {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--cc-text-md);
+  font-weight: 550;
   color: var(--cc-text);
 }
 
 .cc-cal-preset-row__px {
   font-family: var(--cc-font-mono);
-  font-size: 11.5px;
+  font-size: var(--cc-text-xs);
   color: var(--cc-text-tertiary);
 }
 
 .cc-cal-preset-row__del {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  display: flex;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--cc-radius-sm);
-  font-size: 12px;
   color: var(--cc-text-tertiary);
   opacity: 0;
   cursor: pointer;
-  transition: opacity 0.12s ease, background 0.12s ease;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 
-.cc-cal-preset-row:hover .cc-cal-preset-row__del {
+.cc-cal-preset-row:hover .cc-cal-preset-row__del,
+.cc-cal-preset-row__del:focus-visible {
   opacity: 1;
 }
 
@@ -472,15 +460,20 @@
   color: var(--cc-danger);
 }
 
+.cc-cal-preset-row__del:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
+}
+
 .cc-cal-preset-row__check {
   flex: 0 0 auto;
+  display: inline-flex;
   color: var(--cc-accent);
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .cc-cal-preset-row--sel .cc-cal-preset-row__name {
   color: var(--cc-accent);
+  font-weight: 650;
 }
 
 .cc-cal-preset-div {
@@ -491,25 +484,29 @@
 
 .cc-cal-presets__addbtn {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cc-space-2);
   padding: var(--cc-space-2) var(--cc-space-3);
   border: 1px dashed var(--cc-border-strong);
-  border-radius: var(--cc-radius-sm);
+  border-radius: var(--cc-radius-md);
   background: transparent;
   color: var(--cc-text-secondary);
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
   cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 
 .cc-cal-presets__addbtn:hover:not(:disabled) {
-  border-color: var(--cc-accent);
-  color: var(--cc-accent);
+  border-color: var(--cc-border-focus);
+  color: var(--cc-text);
+  background: var(--cc-bg-hover);
 }
 
 .cc-cal-presets__addbtn:disabled {
   opacity: 0.5;
-  cursor: not-allowed;
+  cursor: default;
 }
 
 .cc-cal-presets__add {
@@ -521,25 +518,27 @@
 
 .cc-cal-presets__addval {
   font-family: var(--cc-font-mono);
-  font-size: 11.5px;
+  font-size: var(--cc-text-xs);
   color: var(--cc-text-tertiary);
 }
 
 .cc-cal-input {
   flex: 1 1 160px;
   min-width: 0;
-  padding: 6px 10px;
+  height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--cc-border-strong);
-  border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg-sidebar);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
   color: var(--cc-text);
-  font-size: 12.5px;
+  font-size: var(--cc-text-md);
   outline: none;
-  transition: border-color 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .cc-cal-input:focus {
-  border-color: var(--cc-accent);
+  border-color: var(--cc-border-focus);
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
 }
 
 /* ---- derived px/µm preview line ---- */
@@ -549,26 +548,28 @@
   align-items: center;
   gap: var(--cc-space-2);
   padding: var(--cc-space-3) var(--cc-space-5);
+  border-top: 1px solid var(--cc-border);
 }
 
 .cc-cal-preview-line__eq {
-  font-size: 12.5px;
-  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-tertiary);
 }
 
 .cc-cal-preview-line__val {
   font-family: var(--cc-font-mono);
-  font-size: 12.5px;
+  font-size: var(--cc-text-sm);
   font-weight: 600;
-  color: var(--cc-text-secondary);
+  color: var(--cc-text);
 }
 
 .cc-cal-preview-line__obj {
-  font-size: 11.5px;
+  font-size: var(--cc-text-xs);
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--cc-accent-soft);
-  color: var(--cc-accent);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-secondary);
   font-weight: 600;
 }
 
@@ -578,41 +579,63 @@
   display: flex;
   justify-content: flex-end;
   gap: var(--cc-space-2);
-  padding: var(--cc-space-3) var(--cc-space-5);
-  background: var(--cc-bg-sidebar);
+  padding: var(--cc-space-4) var(--cc-space-5);
+  background: var(--cc-bg-subtle);
   border-top: 1px solid var(--cc-border);
 }
 
+/* ---- shared modal buttons (calibration + tour) ----
+ * Mirror the shell .cc-btn primitive so the modals speak the same button
+ * language as the rest of the app. */
+
+.cc-ob-btn,
 .cc-cal-btn {
-  padding: var(--cc-space-2) var(--cc-space-4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cc-space-2);
+  height: 34px;
+  padding: 0 14px;
   border: 1px solid var(--cc-border-strong);
-  border-radius: var(--cc-radius-sm);
+  border-radius: var(--cc-radius-md);
   background: var(--cc-bg-elevated);
   color: var(--cc-text);
-  font-size: var(--cc-text-sm);
+  font-size: var(--cc-text-md);
   font-weight: 550;
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease,
+    box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
+.cc-ob-btn:hover:not(:disabled),
 .cc-cal-btn:hover:not(:disabled) {
-  border-color: var(--cc-accent);
+  background: var(--cc-bg-hover);
+  border-color: var(--cc-border-focus);
 }
 
+.cc-ob-btn:focus-visible,
+.cc-cal-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
+}
+
+.cc-ob-btn--primary,
 .cc-cal-btn--primary {
   background: var(--cc-accent);
   border-color: var(--cc-accent);
   color: var(--cc-text-on-accent);
 }
 
+.cc-ob-btn--primary:hover:not(:disabled),
 .cc-cal-btn--primary:hover:not(:disabled) {
   background: var(--cc-accent-hover);
   border-color: var(--cc-accent-hover);
 }
 
+.cc-ob-btn:disabled,
 .cc-cal-btn:disabled {
   opacity: 0.5;
-  cursor: not-allowed;
+  cursor: default;
 }
 
 /* =========================================================================
@@ -635,13 +658,13 @@
 }
 
 .cc-md__title {
-  font-size: var(--cc-text-sm);
+  font-size: var(--cc-text-md);
   font-weight: 600;
   color: var(--cc-text);
 }
 
 .cc-md__hint {
-  font-size: 12px;
+  font-size: var(--cc-text-sm);
   color: var(--cc-text-tertiary);
 }
 
@@ -658,7 +681,7 @@
 
 .cc-md__px {
   font-family: var(--cc-font-mono);
-  font-size: 12px;
+  font-size: var(--cc-text-sm);
   color: var(--cc-text-tertiary);
   min-width: 56px;
 }
@@ -676,6 +699,8 @@
   flex-direction: column;
   gap: var(--cc-space-4);
   max-width: 760px;
+  margin: 0 auto;
+  padding: var(--cc-space-6) var(--cc-space-6) var(--cc-space-8);
 }
 
 .cc-ob-page__head {
@@ -684,14 +709,16 @@
 
 .cc-ob-page__title {
   margin: 0 0 var(--cc-space-2);
-  font-size: var(--cc-text-xl);
-  font-weight: 700;
+  font-family: var(--cc-font-display);
+  font-size: var(--cc-text-2xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
 }
 
 .cc-ob-page__sub {
   margin: 0;
-  font-size: var(--cc-text-sm);
+  font-size: var(--cc-text-md);
   line-height: 1.5;
   color: var(--cc-text-secondary);
   max-width: 560px;
@@ -724,9 +751,9 @@
 
 .cc-ob-card__label {
   font-size: var(--cc-text-xs);
-  font-weight: 600;
+  font-weight: 650;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.06em;
   color: var(--cc-text-tertiary);
   margin-bottom: 4px;
 }
@@ -745,27 +772,28 @@
 }
 
 .cc-ob-card__unit {
-  font-size: 12.5px;
+  font-size: var(--cc-text-sm);
   color: var(--cc-text-tertiary);
 }
 
 .cc-ob-card__obj {
-  font-size: 11.5px;
+  font-size: var(--cc-text-xs);
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--cc-accent-soft);
-  color: var(--cc-accent);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-secondary);
   font-weight: 600;
 }
 
 .cc-ob-card__note {
   margin-top: var(--cc-space-1);
-  font-size: 12px;
+  font-size: var(--cc-text-sm);
   color: var(--cc-text-secondary);
 }
 
 .cc-ob-card__foot {
   margin: var(--cc-space-3) 0 0;
-  font-size: 12px;
+  font-size: var(--cc-text-sm);
   color: var(--cc-text-tertiary);
 }

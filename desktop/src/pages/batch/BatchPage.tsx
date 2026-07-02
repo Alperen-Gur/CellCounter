@@ -22,6 +22,7 @@
 import { useEffect, useState } from "react";
 
 import { ExportPanel } from "../../components/ExportPanel";
+import { Icon } from "../../components/Icon";
 import { navigate } from "../../components/useHashRoute";
 import { useAppStore } from "../../kernel/store/store";
 import { BatchTable } from "./BatchTable";
@@ -86,9 +87,9 @@ export default function BatchPage() {
     return (
       <section className="cc-batch cc-batch--empty" aria-label="Batch">
         <div className="cc-batch__empty">
-          <div className="cc-batch__empty-glyph" aria-hidden="true">
-            🗂️
-          </div>
+          <span className="cc-batch__empty-glyph" aria-hidden="true">
+            <Icon name="batches" size={26} />
+          </span>
           <div className="cc-batch__empty-title">No batch open</div>
           <p className="cc-batch__empty-msg">
             Import images from Home to create a batch, then return here to see
@@ -130,6 +131,7 @@ export default function BatchPage() {
             disabled={loading}
             title="Reload saved detections"
           >
+            <Icon name="refresh" size={16} />
             Refresh
           </button>
           <button
@@ -139,6 +141,7 @@ export default function BatchPage() {
             disabled={!canExport}
             title="Export per-image summary CSV (⌘E)"
           >
+            <Icon name="download" size={16} />
             Export summary CSV
             <span className="cc-batch__kbd">⌘E</span>
           </button>
@@ -146,43 +149,59 @@ export default function BatchPage() {
       </header>
 
       {aggregates ? (
-        <div className="cc-batch__stats">
-          <AggregateCard
-            label="Total cells"
-            value={String(aggregates.totalCells)}
-            hint={`across ${aggregates.analyzedImages} image${
-              aggregates.analyzedImages === 1 ? "" : "s"
-            }`}
-          />
-          <AggregateCard
-            label="Cells / image"
-            value={meanPmSd(
-              aggregates.meanCellsPerImage,
-              aggregates.sdCellsPerImage,
-            )}
-            hint="mean ± σ"
-          />
-          <AggregateCard
-            label="Diameter (µm)"
-            value={meanPmSd(aggregates.meanDiameterUm, aggregates.sdDiameterUm)}
-            hint="mean ± σ"
-          />
+        <div className="cc-batch__section">
+          <div className="cc-batch__section-label">Aggregate</div>
+          <div className="cc-batch__stats">
+            <AggregateCard
+              label="Total cells"
+              value={String(aggregates.totalCells)}
+              hint={`across ${aggregates.analyzedImages} image${
+                aggregates.analyzedImages === 1 ? "" : "s"
+              }`}
+            />
+            <AggregateCard
+              label="Cells / image"
+              value={meanPmSd(
+                aggregates.meanCellsPerImage,
+                aggregates.sdCellsPerImage,
+              )}
+              hint="mean ± σ"
+            />
+            <AggregateCard
+              label="Diameter (µm)"
+              value={meanPmSd(
+                aggregates.meanDiameterUm,
+                aggregates.sdDiameterUm,
+              )}
+              hint="mean ± σ"
+            />
+          </div>
         </div>
       ) : null}
 
       {error ? (
         <div className="cc-batch__error" role="alert">
-          Failed to load batch: {error}
+          <Icon name="alert" size={16} />
+          <span>Failed to load batch: {error}</span>
         </div>
       ) : null}
 
-      {loading && rows.length === 0 ? (
-        <div className="cc-batch__loading">Loading batch…</div>
-      ) : rows.length === 0 && !error ? (
-        <div className="cc-batch__loading">This batch has no images yet.</div>
-      ) : (
-        <BatchTable rows={rows} thresholds={batch?.thresholds ?? []} />
-      )}
+      <div className="cc-batch__section">
+        <div className="cc-batch__section-label">Images</div>
+        {loading && rows.length === 0 ? (
+          <div className="cc-batch__loading">
+            <Icon name="clock" size={16} />
+            Loading batch…
+          </div>
+        ) : rows.length === 0 && !error ? (
+          <div className="cc-batch__loading">
+            <Icon name="image" size={16} />
+            This batch has no images yet.
+          </div>
+        ) : (
+          <BatchTable rows={rows} thresholds={batch?.thresholds ?? []} />
+        )}
+      </div>
 
       {exportOpen ? (
         <div
@@ -195,13 +214,17 @@ export default function BatchPage() {
         >
           <div className="cc-batch__export-sheet">
             <div className="cc-batch__export-head">
-              <span>Export — {batch ? batchLabel(batch) : "batch"}</span>
+              <span className="cc-batch__export-title">
+                Export — {batch ? batchLabel(batch) : "batch"}
+              </span>
               <button
                 type="button"
-                className="cc-btn"
+                className="cc-iconbtn"
                 onClick={() => setExportOpen(false)}
+                title="Close"
+                aria-label="Close"
               >
-                Close
+                <Icon name="close" size={18} />
               </button>
             </div>
             {/* The export feature (feat-export) owns the actual per-image

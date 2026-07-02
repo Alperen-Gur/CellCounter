@@ -26,6 +26,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { Viewport } from "../../kernel/viewport/Viewport";
 import { MaskOverlay } from "../../kernel/overlay/MaskOverlay";
 import { useAppStore } from "../../kernel/store/store";
+import { Icon } from "../../components/Icon";
 
 import { useResultsData } from "./useResultsData";
 import { AnalysisSidebar } from "./AnalysisSidebar";
@@ -184,7 +185,9 @@ export default function ResultsPage() {
   if (!batch && !loading) {
     return (
       <div className="rv-empty">
-        <div className="rv-empty__glyph">🔬</div>
+        <div className="rv-empty__glyph" aria-hidden="true">
+          <Icon name="scope" size={40} />
+        </div>
         <div className="rv-empty__title">No analysis open</div>
         <p className="rv-empty__msg">
           Drop a microscope image on the Home screen to start a new analysis.
@@ -196,7 +199,9 @@ export default function ResultsPage() {
   if (batch && images.length === 0 && !loading) {
     return (
       <div className="rv-empty">
-        <div className="rv-empty__glyph">🗃️</div>
+        <div className="rv-empty__glyph" aria-hidden="true">
+          <Icon name="batches" size={40} />
+        </div>
         <div className="rv-empty__title">Batch has no images yet</div>
         <p className="rv-empty__msg">
           Drop new microscope images on Home to add to this batch.
@@ -259,7 +264,9 @@ export default function ResultsPage() {
 
           {currentImage && detection == null && !loading && (
             <div className="rv-detbanner">
-              <span className="rv-detbanner__icon">⚠️</span>
+              <span className="rv-detbanner__icon" aria-hidden="true">
+                <Icon name="alert" size={18} />
+              </span>
               <div className="rv-detbanner__text">
                 <strong>No detection for this image</strong>
                 <span>
@@ -280,8 +287,9 @@ export default function ResultsPage() {
               disabled={imageIdx <= 0}
               onClick={() => prevImage()}
               title="Previous image (←)"
+              aria-label="Previous image"
             >
-              ‹
+              <Icon name="chevronLeft" size={18} />
             </button>
             <div className="rv-nav__strip">
               {images.map((im, i) => (
@@ -303,8 +311,9 @@ export default function ResultsPage() {
               disabled={imageIdx >= images.length - 1}
               onClick={() => nextImage()}
               title="Next image (→)"
+              aria-label="Next image"
             >
-              ›
+              <Icon name="chevronRight" size={18} />
             </button>
             <span className="rv-nav__counter">
               {imageIdx + 1} / {images.length}

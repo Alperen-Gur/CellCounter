@@ -1,21 +1,27 @@
 /*
- * pages/review/review.css — Review Queue screen styling.
+ * pages/review/review.css — Review Queue ("Queue") screen styling.
  *
- * Consumes the shell design tokens from styles/theme.css. Everything is scoped
- * under `.cc-review` so it never collides with another feature page. Feature-
- * owned by feat-review-queue. Ported in spirit from the Swift `ReviewQueueView`
- * card-stack layout (centred ~560px card, peek card behind, action row below).
+ * Light, Windows-native (Fluent-leaning) language: white surfaces, hairline
+ * borders, a near-black primary action, calm greys, and the shared spacing
+ * rhythm from styles/theme.css. Everything is scoped under `.cc-review` so it
+ * never collides with another feature page. Feature-owned by feat-review-queue.
+ * A centred card-stack (~560px card, dimmed peek card behind) with a clear
+ * action row below (Reject / Keep / Edit diameter).
  */
 
 /*
- * The shell's `.cc-content` is a flex ITEM (not a flex container) with its own
- * padding + `overflow:auto`, so a child's `height:100%` doesn't resolve to the
- * viewport. We size to content like the sibling pages and give the body a
- * `min-height` so the card sits comfortably centred; the shell pane scrolls.
+ * The shell's `.cc-content` is a scrolling flex ITEM with no padding, so — like
+ * the exemplar Home screen — this page owns its own outer padding and max-width
+ * and centres itself. The body gets a min-height so the card sits comfortably
+ * centred while the shell pane scrolls.
  */
 .cc-review {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--cc-space-6) var(--cc-space-6) var(--cc-space-8);
   display: flex;
   flex-direction: column;
+  gap: var(--cc-space-5);
   min-height: 0;
 }
 
@@ -24,7 +30,7 @@
 .cc-review__header {
   display: flex;
   align-items: flex-start;
-  gap: var(--cc-space-3);
+  gap: var(--cc-space-4);
   padding-bottom: var(--cc-space-4);
   border-bottom: 1px solid var(--cc-border);
 }
@@ -32,53 +38,76 @@
 .cc-review__title-group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   flex: 1 1 auto;
   min-width: 0;
 }
 
+.cc-review__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  font-size: var(--cc-text-xs);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cc-text-tertiary);
+}
+
 .cc-review__title {
   margin: 0;
-  font-size: var(--cc-text-xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-family: var(--cc-font-display);
+  font-size: var(--cc-text-2xl);
+  font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
 }
 
 .cc-review__subtitle {
   margin: 0;
-  font-size: var(--cc-text-sm);
-  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-md);
+  color: var(--cc-text-secondary);
   max-width: 60ch;
+  line-height: 1.5;
 }
 
 .cc-review__remaining {
   align-self: center;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+  background: var(--cc-bg-subtle);
   font-family: var(--cc-font-mono);
   font-size: var(--cc-text-xs);
-  color: var(--cc-text-tertiary);
+  font-weight: 600;
+  color: var(--cc-text-secondary);
   white-space: nowrap;
 }
 
 .cc-review__close {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  display: flex;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 999px;
-  background: var(--cc-bg-sidebar);
+  border-radius: var(--cc-radius-md);
+  background: transparent;
   color: var(--cc-text-secondary);
-  font-size: 12px;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.1s ease, color 0.1s ease;
 }
 
 .cc-review__close:hover {
   background: var(--cc-bg-hover);
   color: var(--cc-text);
+}
+
+.cc-review__close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
 }
 
 /* ---- body ---- */
@@ -89,7 +118,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: var(--cc-space-5);
+  justify-content: center;
 }
 
 .cc-review__stack-wrap {
@@ -112,7 +141,7 @@
   position: absolute;
   inset: 0;
   transform: scale(0.96) translateY(14px);
-  opacity: 0.4;
+  opacity: 0.5;
   pointer-events: none;
 }
 
@@ -123,12 +152,13 @@
   border-radius: var(--cc-radius-lg);
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--cc-shadow-2);
   overflow: hidden;
 }
 
 .cc-review__card--peek {
   box-shadow: none;
+  border-color: var(--cc-border);
 }
 
 /* ---- crop canvas ---- */
@@ -137,9 +167,8 @@
   position: relative;
   width: 100%;
   aspect-ratio: 560 / 320;
-  background: var(--cc-bg-sidebar);
-  border-top-left-radius: var(--cc-radius-lg);
-  border-top-right-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-subtle);
+  border-bottom: 1px solid var(--cc-border);
   overflow: hidden;
 }
 
@@ -164,8 +193,8 @@
 .cc-review__card-meta {
   display: flex;
   flex-direction: column;
-  gap: var(--cc-space-2);
-  padding: 14px;
+  gap: var(--cc-space-3);
+  padding: var(--cc-space-4);
 }
 
 .cc-review__card-row {
@@ -175,17 +204,18 @@
 }
 
 .cc-review__bin {
-  padding: 2px 8px;
+  padding: 2px 9px;
   border: 1px solid;
   border-radius: 999px;
   font-size: var(--cc-text-xs);
   font-weight: 650;
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
 
 .cc-review__diameter {
   font-family: var(--cc-font-mono);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--cc-text);
 }
@@ -199,10 +229,10 @@
 
 .cc-review__conf-track {
   position: relative;
-  width: 80px;
+  width: 84px;
   height: 6px;
   border-radius: 999px;
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-active);
   overflow: hidden;
 }
 
@@ -221,15 +251,17 @@
   background: var(--cc-warning);
 }
 .cc-review__conf-fill--ok {
-  background: var(--cc-accent);
+  background: var(--cc-success);
 }
 
 .cc-review__conf-pct {
   font-family: var(--cc-font-mono);
   font-size: var(--cc-text-xs);
+  font-weight: 600;
   color: var(--cc-text-secondary);
   min-width: 34px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- diameter slider (edit mode) ---- */
@@ -238,28 +270,32 @@
   display: flex;
   align-items: center;
   gap: var(--cc-space-3);
-  padding: 6px 10px;
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-sidebar);
+  background: var(--cc-bg-subtle);
 }
 
 .cc-review__slider-unit {
-  font-size: 10.5px;
-  font-weight: 550;
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
   color: var(--cc-text-tertiary);
 }
 
 .cc-review__slider {
   flex: 1 1 auto;
   accent-color: var(--cc-accent);
+  cursor: pointer;
 }
 
 .cc-review__slider-value {
   font-family: var(--cc-font-mono);
-  font-size: 11.5px;
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
   color: var(--cc-text);
-  min-width: 56px;
+  min-width: 60px;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .cc-review__filename {
@@ -283,27 +319,16 @@
   flex: 1 1 auto;
 }
 
+/*
+ * Buttons build on the shared `.cc-btn` primitive (shell.css) — this only adds
+ * the review-specific danger accent and the inline keyboard-hint chip. The base
+ * primitive supplies the height, radius, hover, focus ring, and disabled state.
+ */
 .cc-review__btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: var(--cc-space-2) var(--cc-space-4);
-  border: 1px solid var(--cc-border-strong);
-  border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg-elevated);
-  color: var(--cc-text);
-  font-size: var(--cc-text-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
-}
-
-.cc-review__btn:hover {
-  border-color: var(--cc-accent);
+  font-size: var(--cc-text-md);
 }
 
 .cc-review__btn--danger {
-  border-color: var(--cc-danger);
   color: var(--cc-danger);
 }
 
@@ -313,40 +338,49 @@
   color: var(--cc-text-on-accent);
 }
 
-.cc-review__btn--primary {
-  background: var(--cc-accent);
-  border-color: var(--cc-accent);
+.cc-review__kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-subtle);
+  color: var(--cc-text-tertiary);
+  font-family: var(--cc-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Keep the hint chip legible when the danger button fills on hover. */
+.cc-review__btn--danger:hover .cc-review__kbd {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.16);
   color: var(--cc-text-on-accent);
 }
 
-.cc-review__btn--primary:hover {
-  background: var(--cc-accent-hover);
-  border-color: var(--cc-accent-hover);
-}
-
-.cc-review__btn--ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--cc-text-secondary);
-}
-
-.cc-review__btn--ghost:hover {
-  background: var(--cc-bg-hover);
-  border-color: transparent;
-  color: var(--cc-text);
-}
-
 .cc-review__done-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: none;
   background: transparent;
   color: var(--cc-text-tertiary);
-  font-size: var(--cc-text-xs);
+  font-size: var(--cc-text-sm);
+  font-weight: 500;
   cursor: pointer;
   padding: var(--cc-space-1) var(--cc-space-2);
+  border-radius: var(--cc-radius-sm);
+  transition: color 0.1s ease, background 0.1s ease;
 }
 
 .cc-review__done-link:hover {
-  color: var(--cc-text-secondary);
+  color: var(--cc-text);
+  background: var(--cc-bg-hover);
 }
 
 /* ---- empty / loading ---- */
@@ -368,14 +402,25 @@
   justify-content: center;
   text-align: center;
   gap: var(--cc-space-3);
-  max-width: 460px;
+  max-width: 440px;
   margin: auto;
   padding: var(--cc-space-8) var(--cc-space-5);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-subtle);
 }
 
 .cc-review__empty-glyph {
-  font-size: 44px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--cc-space-1);
+  border-radius: 999px;
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-success);
 }
 
 .cc-review__empty-title {
@@ -388,4 +433,9 @@
   margin: 0;
   font-size: var(--cc-text-md);
   color: var(--cc-text-secondary);
+  line-height: 1.5;
+}
+
+.cc-review__empty-btn {
+  margin-top: var(--cc-space-2);
 }

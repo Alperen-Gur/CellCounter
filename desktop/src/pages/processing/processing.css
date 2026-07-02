@@ -1,7 +1,8 @@
 /*
  * pages/processing/processing.css — styles for the Processing screen
  * (feature task `feat-processing`). Consumes the design tokens from
- * styles/theme.css; owns only this page's internals.
+ * styles/theme.css; owns only this page's internals. Light, Fluent-leaning —
+ * mirrors the card / section-header / empty-state rhythm of pages/home.
  */
 
 .cc-processing {
@@ -10,12 +11,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--cc-space-6) var(--cc-space-5);
+  padding: var(--cc-space-8) var(--cc-space-6);
 }
 
 .cc-processing__card {
   width: 100%;
-  max-width: 560px;
+  max-width: 520px;
   display: flex;
   flex-direction: column;
   gap: var(--cc-space-5);
@@ -30,25 +31,45 @@
 
 .cc-processing__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--cc-space-3);
 }
 
+.cc-processing__head-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-secondary);
+}
+
+.cc-processing__titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
 .cc-processing__title {
-  font-size: var(--cc-text-xl);
+  font-family: var(--cc-font-display);
+  font-size: var(--cc-text-lg);
   font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
 }
 
 .cc-processing__label {
-  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--cc-text-sm);
-  color: var(--cc-text-secondary);
-  text-align: right;
+  color: var(--cc-text-tertiary);
 }
 
 /* ---- progress bar ---- */
@@ -61,9 +82,9 @@
 
 .cc-processing__bar {
   position: relative;
-  height: 10px;
+  height: 8px;
   border-radius: 999px;
-  background: var(--cc-bg-hover);
+  background: var(--cc-bg-active);
   overflow: hidden;
 }
 
@@ -113,7 +134,7 @@
 
 .cc-processing__percent {
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 650;
   font-size: var(--cc-text-sm);
   color: var(--cc-text);
 }
@@ -130,8 +151,9 @@
   gap: 6px;
   padding: 2px 10px;
   border-radius: 999px;
-  background: var(--cc-accent-soft);
-  color: var(--cc-accent);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-secondary);
   font-family: var(--cc-font-mono);
   font-size: var(--cc-text-xs);
   font-weight: 600;
@@ -142,7 +164,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--cc-success);
 }
 
 /* ---- live stderr stage line ---- */
@@ -150,14 +172,20 @@
 .cc-processing__stage {
   display: flex;
   flex-direction: column;
-  gap: var(--cc-space-1);
+  gap: var(--cc-space-2);
 }
 
 .cc-processing__stage-label {
+  display: flex;
+  align-items: center;
+  min-height: 16px;
+}
+
+.cc-processing__stage-heading {
   font-size: var(--cc-text-xs);
-  font-weight: 600;
+  font-weight: 650;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.06em;
   color: var(--cc-text-tertiary);
 }
 
@@ -166,8 +194,8 @@
   max-height: 96px;
   overflow-y: auto;
   padding: var(--cc-space-3);
-  border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-subtle);
   border: 1px solid var(--cc-border);
   font-family: var(--cc-font-mono);
   font-size: var(--cc-text-xs);
@@ -190,7 +218,8 @@
   font-family: var(--cc-font);
   font-style: normal;
   font-size: var(--cc-text-xs);
-  font-weight: 600;
+  font-weight: 650;
+  letter-spacing: 0.02em;
   color: var(--cc-success);
 }
 
@@ -204,10 +233,6 @@
 
 .cc-processing__live--stalled {
   color: var(--cc-warning);
-}
-
-.cc-processing__live--stalled .cc-processing__live-dot {
-  animation: none;
 }
 
 @keyframes cc-processing-pulse {
@@ -240,29 +265,34 @@
   flex: 1 1 auto;
 }
 
+/* Cancel is built on the shared .cc-btn primitive; this only recolors it to a
+   restrained danger affordance (calm by default, solid red on hover). */
 .cc-processing__cancel {
-  padding: var(--cc-space-2) var(--cc-space-5);
-  border: 1px solid var(--cc-danger);
-  border-radius: var(--cc-radius-sm);
-  background: transparent;
   color: var(--cc-danger);
-  font-size: var(--cc-text-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  border-color: var(--cc-border-strong);
 }
 
 .cc-processing__cancel:hover:not(:disabled) {
   background: var(--cc-danger);
+  border-color: var(--cc-danger);
   color: var(--cc-text-on-accent);
 }
 
-.cc-processing__cancel:disabled {
-  opacity: 0.5;
-  cursor: default;
+/* ---- idle empty state ---- */
+
+.cc-processing__idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cc-space-4);
+  padding: var(--cc-space-6) var(--cc-space-4);
+  text-align: center;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-subtle);
 }
 
 .cc-processing__idle-note {
   font-size: var(--cc-text-sm);
-  color: var(--cc-text-tertiary);
+  color: var(--cc-text-secondary);
 }

@@ -19,7 +19,11 @@ export interface ModelCatalogEntry {
   name: string;
   /** One-line description of what the model is for. */
   description: string;
-  /** Emoji glyph used as a lightweight per-model icon (no icon dep yet). */
+  /**
+   * Name of the line-icon (see components/Icon.tsx `IconName`) used as a
+   * lightweight per-model glyph. Kept a plain string so this data module stays
+   * free of a render-layer import; the page renders it via `<Icon name={…} />`.
+   */
   glyph: string;
   /**
    * Whether this model can be installed/activated in v1. Exactly one entry
@@ -44,7 +48,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     name: "Cellpose cyto3",
     description:
       "General cytoplasm segmentation. The default detector for v1 — runs locally via the uv-managed Python sidecar on CPU (MPS on Apple silicon).",
-    glyph: "🧫",
+    glyph: "scope",
     available: true,
     backend: "Cellpose · Python sidecar",
     sizeLabel: "~26 MB weights",
@@ -54,7 +58,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     name: "Cellpose cyto3 (restore)",
     description:
       "cyto3 with the image-restoration pass for noisy / low-contrast fields. Planned for a later release.",
-    glyph: "✨",
+    glyph: "sliders",
     available: false,
     backend: "Cellpose · Python sidecar",
     sizeLabel: "coming soon",
@@ -64,7 +68,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     name: "Cellpose-SAM",
     description:
       "Promptable SAM-backed segmentation for the future WebGPU / in-browser build. Not part of the desktop v1 runtime.",
-    glyph: "🧠",
+    glyph: "layers",
     available: false,
     backend: "onnxruntime-web · WebGPU",
     sizeLabel: "coming soon",

@@ -1,12 +1,16 @@
 /*
  * pages/library/library.css — Images Library screen styling.
  *
- * Consumes the shell design tokens from styles/theme.css. Scoped under
- * `.cc-lib` so it never collides with other feature pages. Feature-owned by
- * feat-library-dedup.
+ * Light, Windows-native (Fluent-leaning) language: hairline cards on a calm
+ * grid, monochrome primary accents, and small icon+text overlay badges. Consumes
+ * the shell design tokens from styles/theme.css. Scoped under `.cc-lib` so it
+ * never collides with other feature pages. Feature-owned by feat-library-dedup.
  */
 
 .cc-lib {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: var(--cc-space-6) var(--cc-space-6) var(--cc-space-8);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -25,7 +29,7 @@
 
 .cc-lib__toolbar-info {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--cc-space-3);
 }
 
@@ -40,35 +44,29 @@
 }
 
 .cc-lib__stat--dupe {
-  color: var(--cc-warning);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--cc-border);
+  background: var(--cc-bg-subtle);
+  color: var(--cc-text-secondary);
   cursor: help;
 }
 
-.cc-lib__btn {
-  padding: var(--cc-space-2) var(--cc-space-3);
-  border: 1px solid var(--cc-border-strong);
-  border-radius: var(--cc-radius-sm);
-  background: var(--cc-bg-elevated);
-  color: var(--cc-text);
-  font-size: var(--cc-text-sm);
-  font-weight: 550;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
-}
-
-.cc-lib__btn:hover {
-  border-color: var(--cc-accent);
-}
+/* toolbar buttons reuse the shared .cc-btn primitive; only state variants live
+   here so behaviour + geometry stay identical to the rest of the shell. */
 
 .cc-lib__btn--active,
 .cc-lib__btn--active:hover {
-  background: var(--cc-accent-soft);
+  background: var(--cc-accent);
   border-color: var(--cc-accent);
-  color: var(--cc-accent);
+  color: var(--cc-text-on-accent);
 }
 
 .cc-lib__btn--danger {
-  border-color: var(--cc-danger);
+  border-color: var(--cc-border-strong);
   color: var(--cc-danger);
 }
 
@@ -95,11 +93,12 @@
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
   overflow: hidden;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease,
+    transform 0.06s ease;
 }
 
 .cc-lib__cell:hover {
-  border-color: var(--cc-border-strong);
+  border-color: var(--cc-border-focus);
   box-shadow: var(--cc-shadow-1);
 }
 
@@ -107,7 +106,6 @@
 .cc-lib__cell--selected:hover {
   border-color: var(--cc-accent);
   box-shadow: 0 0 0 1px var(--cc-accent);
-  background: var(--cc-accent-soft);
 }
 
 .cc-lib__cell-btn {
@@ -120,13 +118,18 @@
   text-align: left;
   cursor: pointer;
 }
+.cc-lib__cell-btn:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--cc-focus-ring);
+}
 
 /* ---- thumbnail ---- */
 
 .cc-lib__thumb {
   position: relative;
-  height: 140px;
-  background: var(--cc-bg-sidebar);
+  aspect-ratio: 4 / 3;
+  background: var(--cc-bg-subtle);
+  border-bottom: 1px solid var(--cc-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -141,53 +144,59 @@
 }
 
 .cc-lib__thumb-fallback {
-  font-size: 32px;
-  opacity: 0.4;
+  display: inline-flex;
+  color: var(--cc-text-tertiary);
 }
+
+/* overlay badges — small, high-contrast pills that read over any thumbnail. */
 
 .cc-lib__count-badge {
   position: absolute;
-  right: 6px;
-  bottom: 6px;
-  padding: 3px 7px;
+  right: var(--cc-space-2);
+  bottom: var(--cc-space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(24, 24, 27, 0.72);
   color: #fff;
   font-family: var(--cc-font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   line-height: 1;
 }
 
 .cc-lib__dupe-badge {
   position: absolute;
-  left: 6px;
-  top: 6px;
-  padding: 2px 7px;
+  left: var(--cc-space-2);
+  top: var(--cc-space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 6px;
   border-radius: 999px;
-  background: var(--cc-warning);
-  color: #fff;
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border-strong);
+  color: var(--cc-text-secondary);
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  line-height: 1.4;
-  text-transform: uppercase;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1;
 }
 
 .cc-lib__notes-badge {
   position: absolute;
-  left: 6px;
-  bottom: 6px;
-  width: 18px;
-  height: 18px;
-  display: flex;
+  left: var(--cc-space-2);
+  bottom: var(--cc-space-2);
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(24, 24, 27, 0.72);
   color: #fff;
-  font-size: 11px;
-  line-height: 1;
 }
 
 /* ---- meta (name + mini-distribution) ---- */
@@ -195,8 +204,8 @@
 .cc-lib__meta {
   display: flex;
   flex-direction: column;
-  gap: var(--cc-space-1);
-  padding: var(--cc-space-2);
+  gap: var(--cc-space-2);
+  padding: var(--cc-space-3);
 }
 
 .cc-lib__name {
@@ -226,21 +235,20 @@
 
 .cc-lib__check {
   position: absolute;
-  right: 8px;
-  top: 8px;
-  width: 20px;
-  height: 20px;
+  right: var(--cc-space-2);
+  top: var(--cc-space-2);
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  border: 1.5px solid var(--cc-text-tertiary);
+  border: 1.5px solid var(--cc-border-strong);
   background: var(--cc-bg-elevated);
   color: var(--cc-text-on-accent);
-  font-size: 12px;
-  font-weight: 700;
   line-height: 1;
   pointer-events: none;
+  box-shadow: var(--cc-shadow-1);
 }
 
 .cc-lib__check--on {
@@ -252,30 +260,39 @@
 
 .cc-lib__delete {
   position: absolute;
-  right: 8px;
-  top: 8px;
-  width: 26px;
-  height: 26px;
+  right: var(--cc-space-2);
+  top: var(--cc-space-2);
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  border-radius: 999px;
-  background: var(--cc-danger);
-  color: #fff;
-  font-size: 12px;
-  line-height: 1;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text-secondary);
   cursor: pointer;
   opacity: 0;
-  transform: scale(0.85);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transform: scale(0.9);
+  transition: opacity 0.12s ease, transform 0.12s ease,
+    background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  box-shadow: var(--cc-shadow-1);
+}
+
+.cc-lib__delete:hover {
+  background: var(--cc-danger);
+  border-color: var(--cc-danger);
+  color: var(--cc-text-on-accent);
 }
 
 .cc-lib__cell:hover .cc-lib__delete,
 .cc-lib__delete:focus-visible {
   opacity: 1;
   transform: scale(1);
+}
+.cc-lib__delete:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cc-focus-ring);
 }
 
 /* ---- empty / loading ---- */
@@ -289,25 +306,34 @@
   justify-content: center;
   text-align: center;
   gap: var(--cc-space-3);
-  border: 1px dashed var(--cc-border-strong);
+  border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
-  background: var(--cc-bg-elevated);
+  background: var(--cc-bg-subtle);
   color: var(--cc-text-secondary);
   padding: var(--cc-space-8) var(--cc-space-5);
 }
 
 .cc-lib__empty-glyph {
-  font-size: 40px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--cc-radius-lg);
+  border: 1px solid var(--cc-border);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text-tertiary);
 }
 
 .cc-lib__empty-title {
+  font-family: var(--cc-font-display);
   font-size: var(--cc-text-xl);
   font-weight: 650;
   color: var(--cc-text);
 }
 
 .cc-lib__empty-sub {
+  margin: 0;
   font-size: var(--cc-text-md);
   color: var(--cc-text-secondary);
   max-width: 420px;

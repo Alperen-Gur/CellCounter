@@ -35,6 +35,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CellDTO, DetectionResultDTO, ImageDTO } from "../../../kernel/types";
 import { getPort } from "../../../kernel/persistence";
 import { useAppStore } from "../../../kernel/store/store";
+import { Icon } from "../../../components/Icon";
 
 import "./segnpy.css";
 
@@ -315,7 +316,7 @@ export default function SegNpyPanel() {
           title="Import a Cellpose _seg.npy as this image's masks"
         >
           <span className="cc-segnpy__glyph" aria-hidden="true">
-            ↧
+            <Icon name="download" size={14} />
           </span>
           <span className="cc-segnpy__btn-label">Import</span>
         </button>
@@ -327,7 +328,7 @@ export default function SegNpyPanel() {
           title="Export the current cells as a Cellpose-compatible _seg.npy"
         >
           <span className="cc-segnpy__glyph" aria-hidden="true">
-            ↥
+            <Icon name="upload" size={14} />
           </span>
           <span className="cc-segnpy__btn-label">Export</span>
         </button>

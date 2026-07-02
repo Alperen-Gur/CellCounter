@@ -17,12 +17,13 @@
 
 import type { EditorMode } from "../../../kernel/types";
 import { useAppStore } from "../../../kernel/store/store";
+import { Icon, type IconName } from "../../../components/Icon";
 import type { MaskEditorApi } from "./useMaskEditor";
 
 interface ModeDef {
   mode: EditorMode;
   label: string;
-  glyph: string;
+  icon: IconName;
   /** Single-key hint shown in the tooltip (bound by feat-directory-nav-keyboard). */
   key: string;
 }
@@ -30,13 +31,13 @@ interface ModeDef {
 // Order + keys mirror EditorModeToolbar + KeyboardShortcutsSheet (V/A/R/M/C/G),
 // with Split added as the first-class edit this port elevates (S).
 const MODES: ModeDef[] = [
-  { mode: "view", label: "View", glyph: "◉", key: "V" },
-  { mode: "add", label: "Add", glyph: "＋", key: "A" },
-  { mode: "remove", label: "Remove", glyph: "－", key: "R" },
-  { mode: "merge", label: "Merge", glyph: "⧉", key: "M" },
-  { mode: "split", label: "Split", glyph: "✂", key: "S" },
-  { mode: "manualCount", label: "Count", glyph: "①", key: "C" },
-  { mode: "annotate", label: "Annotate", glyph: "✜", key: "G" },
+  { mode: "view", label: "View", icon: "eye", key: "V" },
+  { mode: "add", label: "Add", icon: "plus", key: "A" },
+  { mode: "remove", label: "Remove", icon: "minus", key: "R" },
+  { mode: "merge", label: "Merge", icon: "layers", key: "M" },
+  { mode: "split", label: "Split", icon: "edit", key: "S" },
+  { mode: "manualCount", label: "Count", icon: "dot", key: "C" },
+  { mode: "annotate", label: "Annotate", icon: "scope", key: "G" },
 ];
 
 export interface EditingToolbarProps {
@@ -83,7 +84,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
               onClick={() => selectMode(m.mode)}
             >
               <span className="cc-edit-toolbar__glyph" aria-hidden="true">
-                {m.glyph}
+                <Icon name={m.icon} size={15} />
               </span>
               <span className="cc-edit-toolbar__label">{m.label}</span>
             </button>
@@ -102,7 +103,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
             }
             aria-label="Decrease diameter"
           >
-            −
+            <Icon name="minus" size={14} />
           </button>
           <span className="cc-edit-toolbar__value">
             {Math.round(manualMarkerDiameterUm)} µm
@@ -116,7 +117,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
             }
             aria-label="Increase diameter"
           >
-            +
+            <Icon name="plus" size={14} />
           </button>
         </div>
       )}
@@ -132,7 +133,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
           onClick={() => editor.undo()}
         >
           <span className="cc-edit-toolbar__glyph" aria-hidden="true">
-            ↺
+            <Icon name="undo" size={15} />
           </span>
           <span className="cc-edit-toolbar__label">Undo</span>
         </button>
@@ -144,7 +145,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
           onClick={() => editor.redo()}
         >
           <span className="cc-edit-toolbar__glyph" aria-hidden="true">
-            ↻
+            <Icon name="redo" size={15} />
           </span>
           <span className="cc-edit-toolbar__label">Redo</span>
         </button>

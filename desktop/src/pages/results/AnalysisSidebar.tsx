@@ -36,6 +36,7 @@ import {
   objectiveLabel,
 } from "../../kernel/calibration/calibration";
 import { evaluateF1 } from "../../kernel/stats/stats";
+import { Icon } from "../../components/Icon";
 
 import { binColor } from "./binColors";
 import {
@@ -321,7 +322,9 @@ function ConfidencePanel({
         className="rv-confidence__head"
         onClick={() => setExpanded((v) => !v)}
       >
-        <span className="rv-confidence__chevron">{expanded ? "▾" : "▸"}</span>
+        <span className="rv-confidence__chevron" aria-hidden="true">
+          <Icon name={expanded ? "chevronDown" : "chevronRight"} size={14} />
+        </span>
         <span className="rv-confidence__labels">
           <span className="rv-confidence__title">Confidence cutoff</span>
           <span className="rv-confidence__sub">
@@ -459,9 +462,10 @@ function GroundTruthPanel({
             type="button"
             className="rv-iconbtn"
             title="Delete every ground-truth annotation on this image."
+            aria-label="Delete all annotations"
             onClick={() => void onReset()}
           >
-            🗑
+            <Icon name="trash" size={15} />
           </button>
         }
       />
@@ -647,9 +651,10 @@ function RoiPanel({
                   type="button"
                   className="rv-iconbtn"
                   title="Delete ROI"
+                  aria-label="Delete ROI"
                   onClick={() => void onDeleteRoi(r.id)}
                 >
-                  ✕
+                  <Icon name="close" size={14} />
                 </button>
               </li>
             ))}

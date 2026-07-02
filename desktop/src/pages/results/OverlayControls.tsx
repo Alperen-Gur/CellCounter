@@ -10,6 +10,7 @@
  */
 
 import { useAppStore } from "../../kernel/store/store";
+import { Icon } from "../../components/Icon";
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 4.0;
@@ -61,12 +62,13 @@ export function OverlayControls({ onFit }: OverlayControlsProps) {
         </div>
         <button
           type="button"
-          className="rv-ctl-btn"
+          className={`rv-ctl-btn rv-ctl-btn--icon${overlayVisible ? " rv-ctl-btn--on" : ""}`}
           title={overlayVisible ? "Hide overlay (Space)" : "Show overlay (Space)"}
+          aria-label={overlayVisible ? "Hide overlay" : "Show overlay"}
           aria-pressed={overlayVisible}
           onClick={toggleOverlay}
         >
-          {overlayVisible ? "👁" : "🚫"}
+          <Icon name={overlayVisible ? "eye" : "eyeOff"} size={16} />
         </button>
         <button
           type="button"
@@ -87,7 +89,9 @@ export function OverlayControls({ onFit }: OverlayControlsProps) {
           Line
         </button>
         <label className="rv-opacity" title="Mask opacity">
-          <span className="rv-opacity__glyph">◑</span>
+          <span className="rv-opacity__glyph" aria-hidden="true">
+            <Icon name="layers" size={14} />
+          </span>
           <input
             type="range"
             min={0}
@@ -104,20 +108,22 @@ export function OverlayControls({ onFit }: OverlayControlsProps) {
       <div className="rv-controls rv-controls--tr">
         <button
           type="button"
-          className="rv-ctl-btn"
+          className="rv-ctl-btn rv-ctl-btn--icon"
           title="Zoom out (⌘−)"
+          aria-label="Zoom out"
           onClick={() => setZoom(clampZoom(zoom - 0.15))}
         >
-          −
+          <Icon name="zoomOut" size={16} />
         </button>
         <span className="rv-zoom-pct">{Math.round(zoom * 100)}%</span>
         <button
           type="button"
-          className="rv-ctl-btn"
+          className="rv-ctl-btn rv-ctl-btn--icon"
           title="Zoom in (⌘+)"
+          aria-label="Zoom in"
           onClick={() => setZoom(clampZoom(zoom + 0.15))}
         >
-          +
+          <Icon name="zoomIn" size={16} />
         </button>
         <button type="button" className="rv-ctl-btn" title="Fit to view (⌘0)" onClick={onFit}>
           Fit

@@ -32,6 +32,7 @@ import { useAppStore } from "../../kernel/store/store";
 import { navigate as shellNavigate } from "../../components/useHashRoute";
 import type { RouteId } from "../../components/routes";
 import { useKeymap } from "../../components/useKeymap";
+import { Icon } from "../../components/Icon";
 
 import { useReviewQueue } from "./useReviewQueue";
 import { ReviewCard } from "./ReviewCard";
@@ -124,6 +125,10 @@ export default function ReviewPage() {
     <div className="cc-review">
       <header className="cc-review__header">
         <div className="cc-review__title-group">
+          <span className="cc-review__eyebrow">
+            <Icon name="queue" size={14} />
+            Queue
+          </span>
           <h1 className="cc-review__title">Review queue</h1>
           <p className="cc-review__subtitle">
             Sort uncertain detections. Each correction nudges the model toward
@@ -140,7 +145,7 @@ export default function ReviewPage() {
           aria-label="Close review queue (Esc)"
           title="Close review queue (Esc)"
         >
-          ✕
+          <Icon name="close" size={16} />
         </button>
       </header>
 
@@ -150,7 +155,7 @@ export default function ReviewPage() {
         ) : finished ? (
           <div className="cc-review__empty">
             <div className="cc-review__empty-glyph" aria-hidden="true">
-              ✅
+              <Icon name="checkCircle" size={28} />
             </div>
             <div className="cc-review__empty-title">
               Done — nothing to review
@@ -162,10 +167,11 @@ export default function ReviewPage() {
             </p>
             <button
               type="button"
-              className="cc-review__btn cc-review__btn--ghost"
+              className="cc-btn cc-review__empty-btn"
               onClick={goHome}
             >
-              ‹ Back to home
+              <Icon name="arrowLeft" size={16} />
+              Back to home
             </button>
           </div>
         ) : current ? (
@@ -194,19 +200,23 @@ export default function ReviewPage() {
             <div className="cc-review__actions">
               <button
                 type="button"
-                className="cc-review__btn cc-review__btn--danger"
+                className="cc-btn cc-review__btn cc-review__btn--danger"
                 onClick={() => void reject()}
                 title="Reject (R)"
               >
-                ✕ Reject
+                <Icon name="xCircle" size={16} />
+                Reject
+                <kbd className="cc-review__kbd">R</kbd>
               </button>
               <button
                 type="button"
-                className="cc-review__btn"
+                className="cc-btn cc-review__btn"
                 onClick={() => void keep()}
                 title="Keep (K)"
               >
-                ✓ Keep
+                <Icon name="check" size={16} />
+                Keep
+                <kbd className="cc-review__kbd">K</kbd>
               </button>
 
               <span className="cc-review__actions-spacer" />
@@ -214,28 +224,31 @@ export default function ReviewPage() {
               {editing === null ? (
                 <button
                   type="button"
-                  className="cc-review__btn"
+                  className="cc-btn cc-review__btn"
                   onClick={startEditing}
                   title="Edit diameter (E)"
                 >
-                  ↔ Edit diameter
+                  <Icon name="edit" size={16} />
+                  Edit diameter
+                  <kbd className="cc-review__kbd">E</kbd>
                 </button>
               ) : (
                 <>
                   <button
                     type="button"
-                    className="cc-review__btn cc-review__btn--ghost"
+                    className="cc-btn cc-btn--ghost cc-review__btn"
                     onClick={cancelEditing}
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
-                    className="cc-review__btn cc-review__btn--primary"
+                    className="cc-btn cc-btn--primary cc-review__btn"
                     onClick={commitEditing}
                     title="Save edit (Return)"
                   >
-                    ✓ Save edit
+                    <Icon name="check" size={16} />
+                    Save edit
                   </button>
                 </>
               )}
@@ -246,7 +259,8 @@ export default function ReviewPage() {
               className="cc-review__done-link"
               onClick={goHome}
             >
-              ‹ Done — back to home
+              <Icon name="arrowLeft" size={14} />
+              Done — back to home
             </button>
           </div>
         ) : null}

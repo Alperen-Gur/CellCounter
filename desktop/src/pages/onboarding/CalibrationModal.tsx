@@ -34,6 +34,7 @@ import {
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+import { Icon } from "../../components/Icon";
 import {
   BUILTIN_PRESETS,
   objectiveLabel,
@@ -214,11 +215,11 @@ export function CalibrationModal({ imagePath, onClose }: CalibrationModalProps) 
           </div>
           <button
             type="button"
-            className="cc-cal-head__close"
+            className="cc-ob-close"
             onClick={onClose}
             aria-label="Close"
           >
-            ✕
+            <Icon name="close" size={16} />
           </button>
         </header>
 
@@ -625,12 +626,12 @@ function PresetTab({
                     }
                   }}
                 >
-                  🗑
+                  <Icon name="trash" size={15} />
                 </span>
               )}
               {selected === row.name && (
                 <span className="cc-cal-preset-row__check" aria-hidden="true">
-                  ✓
+                  <Icon name="check" size={16} />
                 </span>
               )}
             </button>
@@ -677,7 +678,8 @@ function PresetTab({
           onClick={onStartAdd}
           disabled={currentVal <= 0}
         >
-          + Save current value as new preset…
+          <Icon name="plus" size={15} />
+          Save current value as new preset…
         </button>
       )}
     </div>

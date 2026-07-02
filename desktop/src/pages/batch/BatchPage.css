@@ -1,16 +1,21 @@
 /*
- * pages/batch/BatchPage.css — scoped styles for the Batch screen (feat-batch).
+ * pages/batch/BatchPage.css — Batch screen (feat-batch).
  *
- * Uses only the shell's design tokens (styles/theme.css) so it inherits the
- * light/dark palette with no per-component theming. All selectors are prefixed
- * `cc-batch` to stay isolated to this page directory.
+ * A per-image data table (filename · status · cells · mean Ø · size-class
+ * mini-distribution) plus an aggregate strip, styled in the app's light,
+ * Fluent-leaning language. Consumes only the shared tokens in styles/theme.css
+ * (no per-component palette); every selector is prefixed `cc-batch` to stay
+ * isolated to this page directory.
  */
 
 .cc-batch {
+  max-width: 1120px;
+  margin: 0 auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: var(--cc-space-4);
-  padding: var(--cc-space-5);
+  gap: var(--cc-space-5);
+  padding: var(--cc-space-6) var(--cc-space-6) var(--cc-space-8);
   min-height: 100%;
 }
 
@@ -26,8 +31,10 @@
 
 .cc-batch__title {
   margin: 0;
+  font-family: var(--cc-font-display);
   font-size: var(--cc-text-2xl);
   font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
 }
 
@@ -52,49 +59,65 @@
 .cc-batch__kbd {
   font-family: var(--cc-font-mono);
   font-size: var(--cc-text-xs);
-  padding: 1px 5px;
+  line-height: 1;
+  padding: 2px 5px;
   border: 1px solid var(--cc-border-strong);
   border-radius: var(--cc-radius-sm);
-  color: var(--cc-text-secondary);
-  background: var(--cc-bg);
+  color: var(--cc-text-tertiary);
+  background: var(--cc-bg-subtle);
 }
 
-.cc-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* ---- sections (uppercase tertiary label + content) ---- */
+
+.cc-batch__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-3);
 }
 
-/* ---- aggregate cards ---- */
+.cc-batch__section-label {
+  padding: 0 var(--cc-space-1);
+  font-size: var(--cc-text-xs);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cc-text-tertiary);
+}
+
+/* ---- aggregate strip ---- */
 
 .cc-batch__stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: var(--cc-space-3);
 }
 
 .cc-batch__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-md);
+  border-radius: var(--cc-radius-lg);
   padding: var(--cc-space-4);
-  box-shadow: var(--cc-shadow-1);
 }
 
 .cc-batch__stat-value {
-  font-size: var(--cc-text-xl);
+  font-family: var(--cc-font-display);
+  font-size: var(--cc-text-2xl);
   font-weight: 650;
+  letter-spacing: -0.01em;
   color: var(--cc-text);
   font-variant-numeric: tabular-nums;
 }
 
 .cc-batch__stat-label {
-  margin-top: var(--cc-space-1);
   font-size: var(--cc-text-sm);
+  font-weight: 600;
   color: var(--cc-text-secondary);
 }
 
 .cc-batch__stat-hint {
-  margin-top: 2px;
   font-size: var(--cc-text-xs);
   color: var(--cc-text-tertiary);
 }
@@ -103,17 +126,25 @@
 
 .cc-batch__loading,
 .cc-batch__error {
-  padding: var(--cc-space-5);
-  border-radius: var(--cc-radius-md);
-  background: var(--cc-bg-elevated);
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  padding: var(--cc-space-4) var(--cc-space-5);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-subtle);
   border: 1px solid var(--cc-border);
   color: var(--cc-text-secondary);
   font-size: var(--cc-text-sm);
 }
 
+.cc-batch__loading .cc-icon {
+  color: var(--cc-text-tertiary);
+}
+
 .cc-batch__error {
   border-color: var(--cc-danger);
   color: var(--cc-danger);
+  background: var(--cc-bg-elevated);
 }
 
 /* ---- empty state ---- */
@@ -135,18 +166,28 @@
 }
 
 .cc-batch__empty-glyph {
-  font-size: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--cc-space-1);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-subtle);
+  border: 1px solid var(--cc-border);
+  color: var(--cc-text-tertiary);
 }
 
 .cc-batch__empty-title {
   font-size: var(--cc-text-lg);
-  font-weight: 600;
+  font-weight: 650;
   color: var(--cc-text);
 }
 
 .cc-batch__empty-msg {
-  margin: 0;
+  margin: 0 0 var(--cc-space-2);
   font-size: var(--cc-text-sm);
+  line-height: 1.55;
   color: var(--cc-text-secondary);
 }
 
@@ -156,28 +197,28 @@
   overflow-x: auto;
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
-  border-radius: var(--cc-radius-md);
-  box-shadow: var(--cc-shadow-1);
+  border-radius: var(--cc-radius-lg);
 }
 
 .cc-batch__table {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--cc-text-sm);
+  font-size: var(--cc-text-md);
 }
 
 .cc-batch__table thead th {
   text-align: left;
   padding: var(--cc-space-3) var(--cc-space-4);
   font-size: var(--cc-text-xs);
-  font-weight: 600;
+  font-weight: 650;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   color: var(--cc-text-tertiary);
   border-bottom: 1px solid var(--cc-border);
-  background: var(--cc-bg);
+  background: var(--cc-bg-subtle);
   position: sticky;
   top: 0;
+  z-index: 1;
 }
 
 .cc-batch__col-num {
@@ -190,6 +231,12 @@
   width: 220px;
 }
 
+.cc-batch__col-go {
+  width: 40px;
+  text-align: right;
+  color: var(--cc-text-tertiary);
+}
+
 .cc-batch__row {
   cursor: pointer;
   transition: background 0.1s ease;
@@ -199,9 +246,13 @@
   background: var(--cc-bg-hover);
 }
 
+.cc-batch__row:hover .cc-batch__col-go {
+  color: var(--cc-text-secondary);
+}
+
 .cc-batch__row:focus-visible {
-  outline: 2px solid var(--cc-accent);
-  outline-offset: -2px;
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--cc-border-focus);
 }
 
 .cc-batch__table tbody td {
@@ -220,6 +271,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 550;
 }
 
 /* ---- status pill ---- */
@@ -227,43 +279,50 @@
 .cc-batch__status {
   display: inline-flex;
   align-items: center;
-  gap: var(--cc-space-1);
+  gap: 6px;
   font-size: var(--cc-text-xs);
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 2px 9px 2px 7px;
   border-radius: 999px;
+  border: 1px solid var(--cc-border);
   white-space: nowrap;
 }
 
 .cc-batch__status-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
   background: currentColor;
+  flex: 0 0 auto;
 }
 
 .cc-batch__status--done {
   color: var(--cc-success);
-  background: var(--cc-bg-hover);
+  background: var(--cc-bg-subtle);
+  border-color: var(--cc-border);
 }
 
 .cc-batch__status--queued {
   color: var(--cc-text-tertiary);
-  background: var(--cc-bg-hover);
+  background: var(--cc-bg-subtle);
+  border-color: var(--cc-border);
 }
 
 .cc-batch__status--running {
-  color: var(--cc-accent);
+  color: var(--cc-text);
   background: var(--cc-accent-soft);
+  border-color: var(--cc-border-strong);
 }
 
 .cc-batch__status--running .cc-batch__status-dot {
+  background: var(--cc-accent);
   animation: cc-batch-pulse 1s ease-in-out infinite;
 }
 
 .cc-batch__status--error {
   color: var(--cc-danger);
-  background: var(--cc-bg-hover);
+  background: var(--cc-bg-subtle);
+  border-color: var(--cc-border);
 }
 
 @keyframes cc-batch-pulse {
@@ -281,7 +340,7 @@
 .cc-batch__dist {
   display: flex;
   flex-direction: column;
-  gap: var(--cc-space-1);
+  gap: var(--cc-space-2);
   min-width: 160px;
 }
 
@@ -292,10 +351,10 @@
 .cc-batch__dist-bar {
   display: flex;
   width: 100%;
-  height: 8px;
+  height: 6px;
   border-radius: 999px;
   overflow: hidden;
-  background: var(--cc-bg-hover);
+  background: var(--cc-bg-active);
 }
 
 .cc-batch__dist-seg {
@@ -313,7 +372,7 @@
 .cc-batch__dist-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
 }
 
 .cc-batch__dist-swatch {
@@ -321,6 +380,7 @@
   height: 8px;
   border-radius: 2px;
   display: inline-block;
+  flex: 0 0 auto;
 }
 
 /* ---- export overlay ---- */
@@ -331,7 +391,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(6, 9, 14, 0.45);
+  background: rgba(24, 24, 27, 0.28);
   z-index: 90;
   padding: var(--cc-space-5);
 }
@@ -339,7 +399,7 @@
 .cc-batch__export-sheet {
   display: flex;
   flex-direction: column;
-  gap: var(--cc-space-3);
+  gap: var(--cc-space-4);
   width: min(560px, 100%);
   max-height: 80vh;
   overflow: auto;
@@ -347,7 +407,7 @@
   border-radius: var(--cc-radius-lg);
   background: var(--cc-bg-elevated);
   border: 1px solid var(--cc-border);
-  box-shadow: var(--cc-shadow-2);
+  box-shadow: var(--cc-shadow-3);
 }
 
 .cc-batch__export-head {
@@ -355,7 +415,10 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--cc-space-3);
-  font-size: var(--cc-text-md);
-  font-weight: 600;
+}
+
+.cc-batch__export-title {
+  font-size: var(--cc-text-lg);
+  font-weight: 650;
   color: var(--cc-text);
 }

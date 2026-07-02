@@ -7,6 +7,7 @@
  * sibling page's internals (it routes through the shell's `navigate`).
  */
 
+import { Icon } from "../../components/Icon";
 import { navigate } from "../../components/useHashRoute";
 import { useAppStore } from "../../kernel/store/store";
 import type { BatchRow, BatchRowStatus } from "./batchStats";
@@ -55,6 +56,7 @@ export function BatchTable({ rows, thresholds }: BatchTableProps) {
             <th className="cc-batch__col-num">Cells</th>
             <th className="cc-batch__col-num">Mean Ø (µm)</th>
             <th className="cc-batch__col-dist">Size distribution</th>
+            <th className="cc-batch__col-go" aria-label="Open" />
           </tr>
         </thead>
         <tbody>
@@ -88,6 +90,9 @@ export function BatchTable({ rows, thresholds }: BatchTableProps) {
               </td>
               <td className="cc-batch__col-dist">
                 <SizeDistBar binCounts={row.binCounts} thresholds={thresholds} />
+              </td>
+              <td className="cc-batch__col-go" aria-hidden="true">
+                <Icon name="chevronRight" size={16} />
               </td>
             </tr>
           ))}

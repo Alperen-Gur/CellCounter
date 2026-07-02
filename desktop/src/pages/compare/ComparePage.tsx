@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { navigate } from "../../components/useHashRoute";
+import { Icon } from "../../components/Icon";
 import { useAppStore } from "../../kernel/store/store";
 import { useCompareData } from "./useCompareData";
 import { ChipRow } from "./ChipRow";
@@ -181,11 +182,12 @@ export default function ComparePage() {
           </button>
           <button
             type="button"
-            className="cc-btn cc-compare__export-btn"
+            className="cc-btn cc-btn--primary cc-compare__export-btn"
             onClick={() => void doExport()}
             disabled={!canExport || status.kind === "saving"}
             title="Export comparison CSV (⌘E)"
           >
+            <Icon name="download" size={16} />
             Export comparison CSV
             <span className="cc-compare__kbd">⌘E</span>
           </button>
@@ -202,9 +204,9 @@ export default function ComparePage() {
 function EmptyConditions({ loading }: { loading: boolean }) {
   return (
     <div className="cc-compare__empty">
-      <div className="cc-compare__empty-glyph" aria-hidden="true">
-        🧪
-      </div>
+      <span className="cc-compare__empty-glyph" aria-hidden="true">
+        <Icon name="compare" size={26} />
+      </span>
       <div className="cc-compare__empty-title">
         {loading ? "Loading conditions…" : "No conditions yet"}
       </div>
@@ -226,12 +228,12 @@ function EmptyConditions({ loading }: { loading: boolean }) {
 function EmptySelection() {
   return (
     <div className="cc-compare__empty">
-      <div className="cc-compare__empty-glyph" aria-hidden="true">
-        👆
-      </div>
+      <span className="cc-compare__empty-glyph" aria-hidden="true">
+        <Icon name="chevronUp" size={26} />
+      </span>
       <div className="cc-compare__empty-title">Pick at least one condition</div>
       <p className="cc-compare__empty-msg">
-        Tap a chip above to add it to the comparison. Select two to see the
+        Select a chip above to add it to the comparison. Choose two to see the
         Mann–Whitney U test.
       </p>
     </div>

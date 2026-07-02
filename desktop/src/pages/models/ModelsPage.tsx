@@ -23,6 +23,7 @@
 import { useMemo } from "react";
 
 import { useAppStore } from "../../kernel/store/store";
+import { Icon, type IconName } from "../../components/Icon";
 import { MODEL_CATALOG, type ModelCatalogEntry } from "./catalog";
 import { useModelInstall, type UseModelInstall } from "./useModelInstall";
 import "./models.css";
@@ -50,17 +51,22 @@ export default function ModelsPage() {
         </p>
       </div>
 
-      <ul className="cc-models__list">
-        {MODEL_CATALOG.map((model) => (
-          <ModelCard
-            key={model.id}
-            model={model}
-            isActive={model.id === activeModelId}
-            install={install}
-            onActivate={() => setActiveModelId(model.id)}
-          />
-        ))}
-      </ul>
+      <section className="cc-models__section" aria-label="Model catalog">
+        <div className="cc-models__section-head">
+          <span className="cc-models__section-title">Catalog</span>
+        </div>
+        <ul className="cc-models__list">
+          {MODEL_CATALOG.map((model) => (
+            <ModelCard
+              key={model.id}
+              model={model}
+              isActive={model.id === activeModelId}
+              install={install}
+              onActivate={() => setActiveModelId(model.id)}
+            />
+          ))}
+        </ul>
+      </section>
     </div>
   );
 }
@@ -91,7 +97,7 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
   return (
     <li className={cardClass}>
       <div className="cc-model-card__glyph" aria-hidden="true">
-        {model.glyph}
+        <Icon name={model.glyph as IconName} size={22} />
       </div>
 
       <div className="cc-model-card__head">
@@ -108,7 +114,10 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
             installed={installed}
           />
         ) : (
-          <span className="cc-pill cc-pill--soon">Coming soon</span>
+          <span className="cc-pill cc-pill--soon">
+            <Icon name="clock" size={12} />
+            Coming soon
+          </span>
         )}
         <span className="cc-model-card__meta">
           {model.backend} · {model.sizeLabel}
@@ -122,10 +131,11 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
           <>
             <button
               type="button"
-              className="cc-models__btn"
+              className="cc-btn cc-models__btn"
               onClick={() => void install.install()}
               disabled={installing}
             >
+              <Icon name={installed ? "refresh" : "download"} size={15} />
               {installing
                 ? "Installing…"
                 : installed
@@ -134,7 +144,7 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
             </button>
             <button
               type="button"
-              className="cc-models__btn cc-models__btn--primary"
+              className="cc-btn cc-btn--primary cc-models__btn"
               onClick={onActivate}
               disabled={isActive || !runnable}
               title={
@@ -145,6 +155,7 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
                     : undefined
               }
             >
+              {isActive && <Icon name="check" size={15} />}
               {isActive ? "Activated" : "Activate"}
             </button>
           </>
@@ -152,7 +163,7 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
           // Coming-soon models are non-activatable: a single disabled control.
           <button
             type="button"
-            className="cc-models__btn"
+            className="cc-btn cc-models__btn"
             disabled
             title="This model is not available in v1."
           >
@@ -191,16 +202,21 @@ function AvailabilityPill({
   installed: boolean;
 }) {
   if (probing && !installed) {
-    return <span className="cc-pill cc-pill--soon">Checking…</span>;
+    return (
+      <span className="cc-pill cc-pill--soon">
+        <Icon name="refresh" size={12} className="cc-pill__spin" />
+        Checking…
+      </span>
+    );
   }
   return installed ? (
     <span className="cc-pill cc-pill--installed">
-      <span className="cc-pill__dot" aria-hidden="true" />
+      <Icon name="checkCircle" size={13} />
       Installed
     </span>
   ) : (
     <span className="cc-pill cc-pill--missing">
-      <span className="cc-pill__dot" aria-hidden="true" />
+      <Icon name="alert" size={13} />
       Not installed
     </span>
   );
@@ -237,18 +253,23 @@ function InstallStatus({
 
       {phase === "error" && error && (
         <span className="cc-install-status__error" role="alert">
+          <Icon name="xCircle" size={14} />
           Install failed: {error}
         </span>
       )}
 
       {phase === "done" && !installing && (
-        <span className="cc-install-status__reason">
+        <span className="cc-install-status__reason cc-install-status__reason--ok">
+          <Icon name="checkCircle" size={14} />
           Install complete — cyto3 is ready to run.
         </span>
       )}
 
       {availabilityReason && phase !== "error" && (
-        <span className="cc-install-status__reason">{availabilityReason}</span>
+        <span className="cc-install-status__reason">
+          <Icon name="info" size={14} />
+          {availabilityReason}
+        </span>
       )}
 
       {showLog && (

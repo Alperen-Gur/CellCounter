@@ -25,6 +25,7 @@ import { getPort } from "../../kernel/persistence";
 import { useAppStore } from "../../kernel/store/store";
 import { navigate as shellNavigate } from "../../components/useHashRoute";
 import type { RouteId } from "../../components/routes";
+import { Icon } from "../../components/Icon";
 
 import { useLibraryData } from "./useLibraryData";
 import { ImageThumbCell } from "./ImageThumbCell";
@@ -241,9 +242,9 @@ export default function LibraryPage() {
     return (
       <div className="cc-lib">
         <div className="cc-lib__empty">
-          <div className="cc-lib__empty-glyph" aria-hidden="true">
-            🖼️
-          </div>
+          <span className="cc-lib__empty-glyph" aria-hidden="true">
+            <Icon name="images" size={26} />
+          </span>
           <div className="cc-lib__empty-title">No images yet</div>
           <p className="cc-lib__empty-sub">
             Drop microscope images on Home to get started.
@@ -275,21 +276,23 @@ export default function LibraryPage() {
         {multiSelectMode && selectedIds.size > 0 && (
           <button
             type="button"
-            className="cc-lib__btn cc-lib__btn--danger"
+            className="cc-btn cc-lib__btn--danger"
             onClick={confirmDeleteSelected}
           >
-            🗑 Delete {selectedIds.size}
+            <Icon name="trash" size={15} />
+            Delete {selectedIds.size}
           </button>
         )}
 
         <button
           type="button"
           className={
-            "cc-lib__btn" + (multiSelectMode ? " cc-lib__btn--active" : "")
+            "cc-btn" + (multiSelectMode ? " cc-lib__btn--active" : "")
           }
           aria-pressed={multiSelectMode}
           onClick={() => setSelectMode(!multiSelectMode)}
         >
+          <Icon name={multiSelectMode ? "check" : "grid"} size={15} />
           {multiSelectMode ? "Done" : "Select"}
         </button>
       </div>

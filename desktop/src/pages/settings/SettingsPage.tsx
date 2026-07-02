@@ -56,6 +56,7 @@ import {
   ConfirmDialog,
 } from "./controls";
 import { binColor } from "./binColors";
+import { Icon, type IconName } from "../../components/Icon";
 import "./settings.css";
 
 // ---------------------------------------------------------------------------
@@ -64,11 +65,11 @@ import "./settings.css";
 
 type SectionId = "general" | "bins" | "calibration" | "data";
 
-const SECTIONS: { id: SectionId; label: string; icon: string }[] = [
-  { id: "general", label: "General", icon: "⚙️" },
-  { id: "bins", label: "Default bins", icon: "📊" },
-  { id: "calibration", label: "Calibration presets", icon: "📏" },
-  { id: "data", label: "Data & reset", icon: "🧹" },
+const SECTIONS: { id: SectionId; label: string; icon: IconName }[] = [
+  { id: "general", label: "General", icon: "settings" },
+  { id: "bins", label: "Default bins", icon: "histogram" },
+  { id: "calibration", label: "Calibration presets", icon: "calibrate" },
+  { id: "data", label: "Data & reset", icon: "trash" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -133,9 +134,9 @@ export default function SettingsPage() {
             onClick={() => setSection(s.id)}
           >
             <span className="cc-set__rail-icon" aria-hidden="true">
-              {s.icon}
+              <Icon name={s.icon} size={17} />
             </span>
-            {s.label}
+            <span className="cc-set__rail-label">{s.label}</span>
           </button>
         ))}
       </nav>
@@ -415,7 +416,7 @@ function BinsSection() {
                   : "Remove threshold"
               }
             >
-              −
+              <Icon name="minus" size={15} />
             </button>
           </div>
         ))}
@@ -425,7 +426,8 @@ function BinsSection() {
           className="cc-set__add-link"
           onClick={addThreshold}
         >
-          + Add threshold
+          <Icon name="plus" size={15} />
+          Add threshold
         </button>
 
         <div className="cc-set__thresholds-preview">
@@ -599,12 +601,12 @@ function CalibrationSection() {
                 </button>
                 <button
                   type="button"
-                  className="cc-set__btn cc-set__btn--icon"
+                  className="cc-set__btn cc-set__btn--icon cc-set__btn--icon-danger"
                   onClick={() => void remove(p.id)}
                   aria-label={`Delete preset ${p.name}`}
                   title="Delete preset"
                 >
-                  🗑
+                  <Icon name="trash" size={15} />
                 </button>
               </div>
             </div>
@@ -662,7 +664,8 @@ function CalibrationSection() {
           className="cc-set__add-link"
           onClick={openNew}
         >
-          + New preset…
+          <Icon name="plus" size={15} />
+          New preset…
         </button>
       )}
     </section>
@@ -727,24 +730,20 @@ function DataSection() {
       />
 
       <div className="cc-set__group-title">Reset settings</div>
-      <p className="cc-set__danger-note">
-        Restores every analysis parameter (thresholds, confidence, channels,
-        watershed, GPU, max-parallel, …) to its default value. Your imported
-        images, detections, batches, and saved presets are not affected.
-      </p>
-      <div className="cc-set__danger-card">
-        <div className="cc-set__danger-row">
+      <div className="cc-set__card">
+        <div className="cc-set__card-row">
           <div className="cc-set__row-text">
             <span className="cc-set__row-label">Reset all settings</span>
             <span className="cc-set__row-desc">
-              Analysis parameters return to defaults (thresholds 20/30, px/µm
-              2.6, confidence 0.50, GPU on, …).
+              Restores every analysis parameter (thresholds 20/30, px/µm 2.6,
+              confidence 0.50, GPU on, …) to its default. Your images,
+              detections, batches, and saved presets are not affected.
             </span>
           </div>
           <div className="cc-set__list-actions">
             <button
               type="button"
-              className="cc-set__btn cc-set__btn--danger"
+              className="cc-set__btn"
               onClick={() => setConfirm("settings")}
             >
               Reset
@@ -753,7 +752,10 @@ function DataSection() {
         </div>
       </div>
 
-      <div className="cc-set__group-title">Reset data</div>
+      <div className="cc-set__group-title cc-set__group-title--danger">
+        <Icon name="alert" size={13} />
+        Danger zone
+      </div>
       <div className="cc-set__danger-card">
         <div className="cc-set__danger-row">
           <div className="cc-set__row-text">
@@ -775,19 +777,23 @@ function DataSection() {
             </button>
           </div>
         </div>
-      </div>
 
-      {wipe.kind === "done" && (
-        <div className="cc-set__result cc-set__result--ok" role="status">
-          Data cleared. All imported images, detections, batches, and corrections
-          have been removed.
-        </div>
-      )}
-      {wipe.kind === "error" && (
-        <div className="cc-set__result cc-set__result--err" role="alert">
-          Couldn't fully reset data: {wipe.message}
-        </div>
-      )}
+        {wipe.kind === "done" && (
+          <div className="cc-set__result cc-set__result--ok" role="status">
+            <Icon name="checkCircle" size={15} />
+            <span>
+              Data cleared. All imported images, detections, batches, and
+              corrections have been removed.
+            </span>
+          </div>
+        )}
+        {wipe.kind === "error" && (
+          <div className="cc-set__result cc-set__result--err" role="alert">
+            <Icon name="xCircle" size={15} />
+            <span>Couldn&apos;t fully reset data: {wipe.message}</span>
+          </div>
+        )}
+      </div>
 
       {confirm === "settings" && (
         <ConfirmDialog

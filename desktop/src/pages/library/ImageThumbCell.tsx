@@ -18,6 +18,7 @@ import { useMemo } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import type { ImageDTO } from "../../kernel/types";
+import { Icon } from "../../components/Icon";
 import type { ImageStats } from "./useLibraryData";
 
 /** Size-bin palette (shell tokens), cycled for any bins beyond the first 3. */
@@ -101,17 +102,24 @@ export function ImageThumbCell({
             />
           ) : (
             <div className="cc-lib__thumb-fallback" aria-hidden="true">
-              🖼️
+              <Icon name="image" size={26} />
             </div>
           )}
 
           {stats?.hasDetection && (
-            <span className="cc-lib__count-badge">{stats.cellCount} cells</span>
+            <span className="cc-lib__count-badge">
+              <Icon name="scope" size={11} />
+              {stats.cellCount}
+            </span>
           )}
 
           {isDuplicate && (
-            <span className="cc-lib__dupe-badge" title="Shares content with another image">
-              duplicate
+            <span
+              className="cc-lib__dupe-badge"
+              title="Shares content with another image"
+            >
+              <Icon name="layers" size={11} />
+              Duplicate
             </span>
           )}
 
@@ -121,7 +129,7 @@ export function ImageThumbCell({
               title={notesTooltip(image.notes)}
               aria-hidden="true"
             >
-              ℹ
+              <Icon name="info" size={12} />
             </span>
           )}
         </div>
@@ -159,7 +167,7 @@ export function ImageThumbCell({
           }
           aria-hidden="true"
         >
-          {isSelected ? "✓" : ""}
+          {isSelected && <Icon name="check" size={13} strokeWidth={2.5} />}
         </span>
       ) : (
         <button
@@ -172,7 +180,7 @@ export function ImageThumbCell({
           aria-label={`Delete ${displayName}`}
           title="Delete image"
         >
-          🗑
+          <Icon name="trash" size={15} />
         </button>
       )}
     </div>

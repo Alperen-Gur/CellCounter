@@ -31,6 +31,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 
 import { useAppStore } from "../../kernel/store/store";
 import { navigate } from "../../components/useHashRoute";
+import { Icon } from "../../components/Icon";
 import {
   cancelActiveProcessingRun,
   getActiveProcessingRun,
@@ -145,14 +146,19 @@ export default function ProcessingPage() {
     <div className="cc-processing">
       <div className="cc-processing__card" role="status" aria-live="polite">
         <div className="cc-processing__head">
-          <span className="cc-processing__title">
-            {idle ? "Nothing processing" : "Detecting cells…"}
+          <span className="cc-processing__head-icon" aria-hidden="true">
+            <Icon name={idle ? "check" : "scope"} size={20} />
           </span>
-          {activeRun?.label ? (
-            <span className="cc-processing__label" title={activeRun.label}>
-              {activeRun.label}
+          <span className="cc-processing__titles">
+            <span className="cc-processing__title">
+              {idle ? "Nothing processing" : "Detecting cells…"}
             </span>
-          ) : null}
+            {activeRun?.label ? (
+              <span className="cc-processing__label" title={activeRun.label}>
+                {activeRun.label}
+              </span>
+            ) : null}
+          </span>
         </div>
 
         {idle ? (
@@ -211,14 +217,11 @@ export default function ProcessingPage() {
                   </span>
                 ) : stalled ? (
                   <span className="cc-processing__live cc-processing__live--stalled">
-                    <span
-                      className="cc-processing__live-dot"
-                      aria-hidden="true"
-                    />
+                    <Icon name="clock" size={12} />
                     Still working…
                   </span>
                 ) : (
-                  "Stage"
+                  <span className="cc-processing__stage-heading">Stage</span>
                 )}
               </div>
               <div
@@ -236,10 +239,11 @@ export default function ProcessingPage() {
               <span className="cc-processing__actions-spacer" />
               <button
                 type="button"
-                className="cc-processing__cancel"
+                className="cc-btn cc-processing__cancel"
                 onClick={handleCancel}
                 disabled={cancelling}
               >
+                <Icon name="close" size={16} />
                 {cancelling ? "Cancelling…" : "Cancel"}
               </button>
             </div>
@@ -266,12 +270,12 @@ function clampPct(fraction: number): number {
 /** The idle state body: no run in flight, just a way back. */
 function IdleBody({ onBack }: { onBack: () => void }) {
   return (
-    <div className="cc-processing__actions">
+    <div className="cc-processing__idle">
       <span className="cc-processing__idle-note">
         No detection is currently running.
       </span>
-      <span className="cc-processing__actions-spacer" />
       <button type="button" className="cc-btn" onClick={onBack}>
+        <Icon name="arrowLeft" size={16} />
         Back
       </button>
     </div>
