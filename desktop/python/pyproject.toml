@@ -1,0 +1,48 @@
+# CellCounter Python sidecar — uv project (ARCHITECTURE.md §2, kernel-env).
+#
+# Replaces the Swift `install_python.sh`. The Rust backend (`env/uv.rs`) runs
+# `uv sync --project <this dir>` at install time, which creates `.venv/` here
+# and installs the pinned deps below. The detection sidecar
+# (`cellpose_detect.py`) then runs from `<.venv>/bin/python`.
+#
+# Pins mirror the Swift installer's requirements:
+#   cellpose >= 3, < 4   (cyto3-only for v1 — decision (c))
+#   numpy    < 2         (cellpose 3.x is not numpy-2 clean)
+#   pillow, scikit-image (image I/O + QC / watershed / colony metrics)
+#   torch / torchvision  (CPU wheels — see [tool.uv.sources] below)
+
+[project]
+name = "cellcounter-sidecar"
+version = "1.0.0"
+description = "CellCounter Cellpose detection sidecar (uv-managed)."
+requires-python = ">=3.9,<3.13"
+
+dependencies = [
+    "cellpose>=3,<4",
+    "numpy<2",
+    "pillow",
+    "scikit-image",
+    "torch",
+    "torchvision",
+]
+
+# --- CPU torch/torchvision for portability (decision (b)) ------------------
+#
+# We pin the CPU-only PyTorch wheels so the environment is reproducible on any
+# machine without a CUDA toolchain — the first target is Windows, where a stray
+# CUDA build would fail to import on GPU-less boxes. On macOS these same CPU
+# wheels still expose the MPS backend, so Apple-silicon acceleration is
+# unaffected.
+#
+# CUDA is a FUTURE TODO: to enable it, add a GPU-flavoured index (e.g.
+# `pytorch-cu124`) and an optional `[project.optional-dependencies] gpu` group,
+# then `uv sync --extra gpu`. No change is needed in `env/uv.rs`.
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
