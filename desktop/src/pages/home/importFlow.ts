@@ -482,8 +482,9 @@ async function runDetection(
     }
   };
 
-  // Concurrency mirrors Settings → maxParallel (default 1 — CPU cellpose is
-  // CPU-bound). A tiny worker pool over the kept images.
+  // Concurrency mirrors Settings → maxParallel. Default is hardware-aware —
+  // half the logical cores, clamped to 1..4 (see defaultMaxParallel() in the
+  // store) — since cellpose is CPU-bound. A tiny worker pool over the kept images.
   const parallelism = Math.max(1, store.maxParallel);
 
   const queue = [...keep];
