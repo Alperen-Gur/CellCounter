@@ -1,0 +1,152 @@
+/*
+ * styles/theme.css — design-token baseline for the CellCounter shell.
+ *
+ * A small, dependency-free token layer ported in spirit from the macOS app's
+ * `Theme/Tokens.swift`. Feature pages consume these CSS custom properties so the
+ * whole app shares one palette / spacing scale / typography ramp. A dedicated
+ * `styles/` design-token task can later expand this file; the shell only needs a
+ * coherent baseline so the 14 stub pages render legibly on day one.
+ *
+ * Everything is expressed as CSS variables on :root with a dark override via
+ * prefers-color-scheme, so no page has to branch on theme.
+ */
+
+:root {
+  /* ---- palette (light) ---- */
+  --cc-bg: #f6f7f9;
+  --cc-bg-elevated: #ffffff;
+  --cc-bg-sidebar: #eef0f3;
+  --cc-bg-hover: #e4e7ec;
+  --cc-bg-active: #dbe2f1;
+  --cc-border: #d8dce2;
+  --cc-border-strong: #c2c8d0;
+
+  --cc-text: #14171c;
+  --cc-text-secondary: #545b66;
+  --cc-text-tertiary: #868e99;
+  --cc-text-on-accent: #ffffff;
+
+  --cc-accent: #396cd8;
+  --cc-accent-hover: #2f5cc0;
+  --cc-accent-soft: #e6edfb;
+
+  --cc-danger: #d1453b;
+  --cc-warning: #c8860b;
+  --cc-success: #2f9e57;
+
+  /* size-bin colors (mirror the Swift bin palette: small / mid / large) */
+  --cc-bin-small: #4c9be8;
+  --cc-bin-mid: #7bc86c;
+  --cc-bin-large: #e8a04c;
+
+  /* ---- spacing scale ---- */
+  --cc-space-1: 4px;
+  --cc-space-2: 8px;
+  --cc-space-3: 12px;
+  --cc-space-4: 16px;
+  --cc-space-5: 24px;
+  --cc-space-6: 32px;
+  --cc-space-8: 48px;
+
+  /* ---- radii ---- */
+  --cc-radius-sm: 6px;
+  --cc-radius-md: 10px;
+  --cc-radius-lg: 14px;
+
+  /* ---- typography ---- */
+  --cc-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Avenir,
+    Helvetica, Arial, sans-serif;
+  --cc-font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --cc-text-xs: 11px;
+  --cc-text-sm: 13px;
+  --cc-text-md: 15px;
+  --cc-text-lg: 18px;
+  --cc-text-xl: 22px;
+  --cc-text-2xl: 28px;
+
+  /* ---- chrome ---- */
+  --cc-sidebar-width: 236px;
+  --cc-toolbar-height: 52px;
+  --cc-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06),
+    0 1px 3px rgba(15, 23, 42, 0.1);
+  --cc-shadow-2: 0 4px 12px rgba(15, 23, 42, 0.12);
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cc-bg: #1a1d21;
+    --cc-bg-elevated: #24282e;
+    --cc-bg-sidebar: #15181c;
+    --cc-bg-hover: #2c313a;
+    --cc-bg-active: #33405c;
+    --cc-border: #333941;
+    --cc-border-strong: #454c56;
+
+    --cc-text: #eef1f5;
+    --cc-text-secondary: #a9b1bd;
+    --cc-text-tertiary: #737b87;
+    --cc-text-on-accent: #ffffff;
+
+    --cc-accent: #5b86e0;
+    --cc-accent-hover: #6f96e8;
+    --cc-accent-soft: #26324b;
+
+    --cc-danger: #e5675d;
+    --cc-warning: #e0a83a;
+    --cc-success: #52b877;
+  }
+}
+
+/* ---- global baseline ---- */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--cc-font);
+  font-size: var(--cc-text-md);
+  line-height: 1.5;
+  color: var(--cc-text);
+  background: var(--cc-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: var(--cc-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--cc-accent-hover);
+}
+
+button {
+  font-family: inherit;
+}
+
+/* thin, unobtrusive scrollbars for the content panes */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--cc-border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

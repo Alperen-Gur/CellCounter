@@ -1,50 +1,85 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+/**
+ * App.tsx — the CellCounter application shell.
+ *
+ * Composes the persistent chrome (Sidebar + top bar) around a hash-routed
+ * content pane that renders exactly one feature page. Routing is driven by the
+ * dependency-free `useHashRoute` hook + the `ROUTES` registry, so:
+ *   - no client-router package is added, and
+ *   - route state lives in the URL hash, never in the FROZEN kernel store.
+ *
+ * On mount it runs launch-time app-data init (persistence + env probe) via
+ * `initAppData`. Each page is lazy-loaded from its own directory behind a
+ * <Suspense> boundary, keeping the 14 feature directories physically disjoint.
+ *
+ * This file is shell-owned. Feature engineers fill their `pages/<name>/`
+ * directory and never edit App.tsx, the router, the Sidebar, or the theme.
+ */
+
+import { Suspense, useEffect, useState } from "react";
+
+import { Sidebar } from "./components/Sidebar";
+import { KeyboardShortcutsSheet } from "./components/KeyboardShortcutsSheet";
+import { useHashRoute } from "./components/useHashRoute";
+import { initAppData } from "./components/appInit";
+
+import "./styles/theme.css";
+import "./styles/shell.css";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const { route, navigate } = useHashRoute();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  // Launch-time app-data init: persistence read + env availability probe.
+  // Guarded internally against StrictMode's double-invoke.
+  useEffect(() => {
+    void initAppData();
+  }, []);
+
+  // Global "?" opens the (stubbed) shortcuts sheet — a shell affordance the
+  // keyboard feature later replaces with the real per-scope keymap.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (!typing && e.key === "?") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      }
+      if (e.key === "Escape") setShortcutsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const PageComponent = route.component;
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="cc-app">
+      <Sidebar activeId={route.id} onNavigate={navigate} />
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <div className="cc-main">
+        <header className="cc-topbar">
+          <span className="cc-topbar__title">{route.label}</span>
+          <span className="cc-topbar__spacer" />
+          <span className="cc-topbar__hint">Press ? for shortcuts</span>
+        </header>
+
+        <main className="cc-content">
+          <Suspense fallback={<div className="cc-loading">Loading…</div>}>
+            <PageComponent />
+          </Suspense>
+        </main>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <KeyboardShortcutsSheet
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
+    </div>
   );
 }
 

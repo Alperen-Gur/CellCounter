@@ -1,0 +1,273 @@
+/*
+ * styles/shell.css — layout + chrome for the app shell (sidebar, top bar,
+ * content pane, nav items, stub-page placeholder). Consumes the tokens from
+ * theme.css. Feature pages style their own internals; this file only owns the
+ * frame around them.
+ */
+
+.cc-app {
+  display: grid;
+  grid-template-columns: var(--cc-sidebar-width) 1fr;
+  grid-template-rows: 100%;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* ---- sidebar ---- */
+
+.cc-sidebar {
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--cc-bg-sidebar);
+  border-right: 1px solid var(--cc-border);
+  min-height: 0;
+}
+
+.cc-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  padding: var(--cc-space-4) var(--cc-space-4) var(--cc-space-3);
+}
+
+.cc-sidebar__logo {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.cc-sidebar__brand-name {
+  font-size: var(--cc-text-md);
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+.cc-sidebar__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--cc-space-2) var(--cc-space-3);
+}
+
+.cc-sidebar__section {
+  margin-bottom: var(--cc-space-4);
+}
+
+.cc-sidebar__section-title {
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--cc-text-tertiary);
+  padding: 0 var(--cc-space-2) var(--cc-space-1);
+}
+
+.cc-navitem {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  width: 100%;
+  padding: var(--cc-space-2);
+  border: none;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-sm);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cc-navitem:hover {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text);
+}
+
+.cc-navitem--active,
+.cc-navitem--active:hover {
+  background: var(--cc-bg-active);
+  color: var(--cc-text);
+  font-weight: 600;
+}
+
+.cc-navitem__icon {
+  width: 18px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.cc-navitem__label {
+  flex: 1 1 auto;
+}
+
+.cc-navitem__badge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--cc-accent);
+  color: var(--cc-text-on-accent);
+  font-size: var(--cc-text-xs);
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+
+.cc-sidebar__footer {
+  padding: var(--cc-space-3) var(--cc-space-4);
+  border-top: 1px solid var(--cc-border);
+}
+
+.cc-sidebar__version {
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+}
+
+/* ---- main column ---- */
+
+.cc-main {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.cc-topbar {
+  flex: 0 0 auto;
+  height: var(--cc-toolbar-height);
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-3);
+  padding: 0 var(--cc-space-5);
+  border-bottom: 1px solid var(--cc-border);
+  background: var(--cc-bg-elevated);
+}
+
+.cc-topbar__title {
+  font-size: var(--cc-text-lg);
+  font-weight: 650;
+}
+
+.cc-topbar__spacer {
+  flex: 1 1 auto;
+}
+
+.cc-topbar__hint {
+  font-size: var(--cc-text-sm);
+  color: var(--cc-text-tertiary);
+}
+
+.cc-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--cc-space-5);
+  background: var(--cc-bg);
+}
+
+/* ---- stub-page placeholder ---- */
+
+.cc-stub {
+  height: 100%;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--cc-space-3);
+  border: 1px dashed var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text-secondary);
+  padding: var(--cc-space-8) var(--cc-space-5);
+}
+
+.cc-stub__glyph {
+  font-size: 40px;
+  line-height: 1;
+}
+
+.cc-stub__title {
+  font-size: var(--cc-text-xl);
+  font-weight: 650;
+  color: var(--cc-text);
+}
+
+.cc-stub__msg {
+  font-size: var(--cc-text-md);
+  color: var(--cc-text-secondary);
+  max-width: 460px;
+}
+
+.cc-stub__owner {
+  font-family: var(--cc-font-mono);
+  font-size: var(--cc-text-xs);
+  color: var(--cc-text-tertiary);
+  background: var(--cc-bg);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  padding: 2px 8px;
+}
+
+/* ---- suspense fallback ---- */
+
+.cc-loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-sm);
+}
+
+/* ---- generic button (shell affordances only) ---- */
+
+.cc-btn {
+  padding: var(--cc-space-2) var(--cc-space-4);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.cc-btn:hover {
+  border-color: var(--cc-accent);
+}
+
+.cc-btn:active {
+  background: var(--cc-bg-hover);
+}
+
+/* ---- keyboard-shortcuts sheet (stub chrome) ---- */
+
+.cc-shortcuts-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 14, 0.45);
+  z-index: 100;
+}
+
+.cc-shortcuts-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cc-space-3);
+  max-width: 440px;
+  padding: var(--cc-space-6);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border);
+  box-shadow: var(--cc-shadow-2);
+  text-align: center;
+}
