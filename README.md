@@ -8,7 +8,7 @@ It was built for one concrete job: counting patient-derived oral keratinocytes a
 
 > **Status — July 2026.** The current download is **CellCounter 1.0.2 for macOS** — a native, extensively code-reviewed app (Apple-silicon + Intel universal build). A cross-platform desktop rebuild (Windows, Linux) is compiling green in CI but is still a pre-release preview pending real-world verification; a planned in-browser WebGPU version is not yet started — see [Roadmap](#roadmap).
 
-_Screenshot: to be added using public / synthetic images (never patient data)._
+_Screenshot: to be added._
 
 ---
 
