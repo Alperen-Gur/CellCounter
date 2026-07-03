@@ -369,7 +369,7 @@ private struct ModelsSections: View {
     let onActivate: (String) -> Void
     let onDownload: (String) -> Void
 
-    private let familyOrder: [ModelFamily] = [.cellpose, .cellpose4, .stardist, .yolo, .sam, .custom]
+    private let familyOrder: [ModelFamily] = [.cellpose, .cellpose4, .stardist, .sam, .custom]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -503,7 +503,6 @@ private struct ModelRow: View {
         // present here for the switch to remain exhaustive.
         case .cellpose4: return "flame"
         case .stardist: return "star"
-        case .yolo: return "layers"
         case .sam: return "flask"
         case .custom: return "sparkles"
         case .all: return "cpu"

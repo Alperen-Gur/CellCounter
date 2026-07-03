@@ -797,3 +797,11 @@
   font-size: var(--cc-text-sm);
   color: var(--cc-text-tertiary);
 }
+
+/* Honor "Reduce motion": drop the pop-in entrance animation on sheets. */
+@media (prefers-reduced-motion: reduce) {
+  .cc-ob-sheet,
+  .cc-cal-sheet {
+    animation: none;
+  }
+}

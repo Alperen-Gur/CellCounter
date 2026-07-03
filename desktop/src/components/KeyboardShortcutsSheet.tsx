@@ -19,6 +19,7 @@ import {
   type KeyBinding,
 } from "../kernel/shortcuts/keymap";
 import { Icon } from "./Icon";
+import { useFocusTrap } from "./useFocusTrap";
 
 interface KeyboardShortcutsSheetProps {
   open: boolean;
@@ -45,6 +46,10 @@ export function KeyboardShortcutsSheet({
   open,
   onClose,
 }: KeyboardShortcutsSheetProps) {
+  // Trap Tab focus inside the dialog, move focus in on open, and restore it to
+  // the invoking control on close (aria-modal alone does not trap DOM tab order).
+  const dialogRef = useFocusTrap<HTMLDivElement>(open);
+
   // Close on Escape while the sheet is open (also stops the key from leaking to
   // page handlers underneath). The shell binds "?"/Escape too; this is belt-and
   // -suspenders so the sheet is self-contained.
@@ -73,6 +78,7 @@ export function KeyboardShortcutsSheet({
     >
       <style>{SHEET_STYLES}</style>
       <div
+        ref={dialogRef}
         className="cc-shortcuts-sheet cc-ksh"
         role="dialog"
         aria-modal="true"

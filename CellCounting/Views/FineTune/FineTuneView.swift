@@ -144,7 +144,7 @@ struct FineTuneView: View {
                 .font(.system(size: 22, weight: .bold))
                 .tracking(-0.44)
                 .foregroundStyle(Tokens.text)
-            Text("Train Cellpose or YOLO on your patient-derived samples — runs locally on this Mac.")
+            Text("Train Cellpose on your patient-derived samples — runs locally on this Mac.")
                 .font(.system(size: 13))
                 .foregroundStyle(Tokens.textTertiary)
         }

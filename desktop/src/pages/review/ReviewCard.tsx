@@ -261,6 +261,10 @@ export function ReviewCard({
           width={CANVAS_W}
           height={CANVAS_H}
           className="cc-review__canvas"
+          role="img"
+          aria-label={`Detected cell crop, diameter ${activeDiameter.toFixed(
+            1,
+          )} µm, size bin ${binLabel}`}
         />
         {!img && (
           <div className="cc-review__crop-loading" aria-hidden="true">
@@ -273,7 +277,7 @@ export function ReviewCard({
         <div className="cc-review__card-row">
           <span
             className="cc-review__bin"
-            style={{ borderColor: binColor(binIdx), color: binColor(binIdx) }}
+            style={{ borderColor: binColor(binIdx) }}
           >
             {binLabel}
           </span>

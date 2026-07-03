@@ -48,7 +48,6 @@ final class ChildProcessTracker {
         "cellpose_detect.py",
         "cellpose_train.py",
         "stardist_detect.py",
-        "yolo_detect.py",
         "sam_detect.py",
         "install_python.sh",
     ]

@@ -57,6 +57,8 @@ function isTauri(): boolean {
 export interface UseModelInstall {
   /** Latest availability probe result; null until the first probe resolves. */
   availability: Availability | null;
+  /** Whether the `uv` toolchain itself is present (the install IS `uv sync`). */
+  uv: Availability | null;
   /** True while an availability probe is in flight (initial or refresh). */
   probing: boolean;
   /** Install lifecycle phase. */
@@ -80,6 +82,7 @@ const MAX_LOG_LINES = 500;
  */
 export function useModelInstall(modelId: string): UseModelInstall {
   const [availability, setAvailability] = useState<Availability | null>(null);
+  const [uv, setUv] = useState<Availability | null>(null);
   const [probing, setProbing] = useState(false);
   const [phase, setPhase] = useState<InstallPhase>("idle");
   const [logLines, setLogLines] = useState<string[]>([]);
@@ -124,8 +127,11 @@ export function useModelInstall(modelId: string): UseModelInstall {
     if (mountedRef.current) setProbing(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const [env, transport] = await Promise.all([
+      const [env, uvRes, transport] = await Promise.all([
         invoke<Availability>("env_availability").catch(
+          (e): Availability => ({ installed: false, reason: String(e) }),
+        ),
+        invoke<Availability>("env_uv_available").catch(
           (e): Availability => ({ installed: false, reason: String(e) }),
         ),
         getTransport()
@@ -140,7 +146,10 @@ export function useModelInstall(modelId: string): UseModelInstall {
             ? transport.reason
             : undefined,
       };
-      if (mountedRef.current) setAvailability(merged);
+      if (mountedRef.current) {
+        setAvailability(merged);
+        setUv(uvRes);
+      }
     } finally {
       if (mountedRef.current) setProbing(false);
     }
@@ -161,6 +170,29 @@ export function useModelInstall(modelId: string): UseModelInstall {
     setPhase("installing");
     setError(undefined);
     setLogLines([]);
+
+    // Preflight: the whole install is `uv sync`, so a missing `uv` toolchain
+    // would otherwise surface only as a raw spawn error. Probe it first and fail
+    // with the actionable hint instead of a stack trace.
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const uvRes = await invoke<Availability>("env_uv_available").catch(
+        (): Availability => ({ installed: false }),
+      );
+      if (!uvRes.installed) {
+        if (mountedRef.current) {
+          setUv(uvRes);
+          setPhase("error");
+          setError(
+            uvRes.reason ??
+              "The `uv` Python toolchain isn't installed. Install uv, then retry.",
+          );
+        }
+        return;
+      }
+    } catch {
+      /* if the probe itself throws, fall through and let env_install surface it */
+    }
 
     let unlisten: (() => void) | undefined;
     try {
@@ -192,5 +224,5 @@ export function useModelInstall(modelId: string): UseModelInstall {
     }
   }, [appendLog, refresh]);
 
-  return { availability, probing, phase, logLines, error, install, refresh };
+  return { availability, uv, probing, phase, logLines, error, install, refresh };
 }

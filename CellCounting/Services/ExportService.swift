@@ -472,9 +472,22 @@ enum ExportService {
     }
 
     nonisolated private static func csvEscape(_ s: String, separator: String) -> String {
-        let needsQuote = s.contains(separator) || s.contains("\"") || s.contains("\n") || s.contains("\r")
-        if !needsQuote { return s }
-        let escaped = s.replacingOccurrences(of: "\"", with: "\"\"")
+        // Neutralize spreadsheet formula injection: a free-text field beginning
+        // with `=`, `+`, `-`, `@`, tab, or CR is executed as a formula by
+        // Excel/LibreOffice on open. Attacker-influenceable values (image
+        // filenames like `=HYPERLINK(...)`, free-text notes) flow verbatim into
+        // the CSV, so prefix an apostrophe ("force text" marker) to import the
+        // cell as literal text. Mirrors the Rust csv_escape guard.
+        var guarded = s
+        if let first = s.first,
+           first == "=" || first == "+" || first == "-" || first == "@"
+            || first == "\t" || first == "\r" {
+            guarded = "'" + s
+        }
+        let needsQuote = guarded.contains(separator) || guarded.contains("\"")
+            || guarded.contains("\n") || guarded.contains("\r")
+        if !needsQuote { return guarded }
+        let escaped = guarded.replacingOccurrences(of: "\"", with: "\"\"")
         return "\"\(escaped)\""
     }
 
@@ -1054,10 +1067,40 @@ enum ExportService {
         } catch {
             throw ExportError.writeFailed(error)
         }
-        proc.waitUntilExit()
 
-        let stdoutData = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
-        let stderrData = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
+        // CRITICAL: drain BOTH pipes concurrently BEFORE waitUntilExit(). The
+        // helper writes one stderr line per skipped/degenerate cell, so a
+        // detection with many malformed contours can fill the OS pipe buffer
+        // (~16–64 KB); if we joined the process first it would block on
+        // `sys.stderr.write` and never exit, deadlocking waitUntilExit()
+        // forever. Reading each handle on its own background queue keeps both
+        // buffers moving and bounds memory to the emitted payload. Mirrors
+        // SidecarProcessRunner / ChildProcessTracker's concurrent-drain rule.
+        let drainLock = NSLock()
+        var stdoutData = Data()
+        var stderrData = Data()
+        let drainGroup = DispatchGroup()
+        func drain(_ pipe: Pipe, into store: @escaping (Data) -> Void) {
+            drainGroup.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let d = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+                drainLock.lock(); store(d); drainLock.unlock()
+                drainGroup.leave()
+            }
+        }
+        drain(stdoutPipe) { stdoutData = $0 }
+        drain(stderrPipe) { stderrData = $0 }
+
+        // Soft watchdog backstop: if the helper wedges, terminate it so the
+        // export surfaces an error instead of hanging the export thread.
+        let watchdog = DispatchWorkItem { [weak proc] in
+            guard let proc, proc.isRunning else { return }
+            proc.terminate()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 120.0, execute: watchdog)
+        proc.waitUntilExit()
+        watchdog.cancel()
+        drainGroup.wait()
 
         if proc.terminationStatus != 0 {
             let stderrText = String(data: stderrData, encoding: .utf8) ?? ""

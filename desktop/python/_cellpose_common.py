@@ -173,10 +173,19 @@ def open_image_for_detection(path: str, channels: list[int], args):
     import numpy as np
     from PIL import Image
 
+    # These are trusted, user-chosen local microscopy files — a whole-slide or
+    # large-sensor scan legitimately exceeds PIL's default ~178 MP DecompressionBomb
+    # guard. Raise the ceiling to a sane sanity cap (2 GP) so valid large scans open
+    # instead of false-failing, while still rejecting an absurdly large header.
+    Image.MAX_IMAGE_PIXELS = 2_000_000_000
+
     log(f"[cellpose_detect] loading image: {path}")
     try:
         pil = Image.open(path)
         pil.load()
+    except Image.DecompressionBombError as exc:  # noqa: BLE001
+        log(f"[cellpose_detect] image too large: {exc!r}")
+        emit_error("image-too-large", hint=str(exc), exit_code=3)
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] could not open image: {exc!r}")
         emit_error("image-open-failed", hint=str(exc), exit_code=3)
@@ -223,11 +232,16 @@ def compute_qc_metrics(img) -> dict:
         stats["focus_score"] = focus_score
         log(f"[cellpose_detect] QC focus_score={focus_score:.4f} (lap_var={lap_var:.1f})")
 
-        # Illumination: residual std / mean after fitting a quadratic surface on a 128×128 grid.
+        # Illumination: residual std / mean after fitting a quadratic surface on a
+        # grid capped to the image size. Sampling more points than there are rows
+        # (or columns) just round-trips onto the same integer pixels, over-weighting
+        # duplicated samples in the lstsq fit — so cap each axis at its extent.
         H, W = gray.shape
         DS = 128
-        ys = np.linspace(0, H - 1, DS, dtype=np.float64)
-        xs = np.linspace(0, W - 1, DS, dtype=np.float64)
+        ny = min(DS, H)
+        nx = min(DS, W)
+        ys = np.linspace(0, H - 1, ny, dtype=np.float64)
+        xs = np.linspace(0, W - 1, nx, dtype=np.float64)
         xv, yv = np.meshgrid(xs, ys)
         xv_f = xv.ravel()
         yv_f = yv.ravel()

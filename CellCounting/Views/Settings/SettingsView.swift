@@ -1025,7 +1025,6 @@ private struct StorageRow: View {
         // Pass-16: Cellpose-SAM (4.x). See ModelsView for the same case.
         case .cellpose4: return "flame"
         case .stardist:  return "star"
-        case .yolo:      return "layers"
         case .sam:       return "flask"
         case .custom:    return "sparkles"
         case .all:       return "cpu"
@@ -1476,14 +1475,6 @@ private struct AcknowledgementsContent: View {
             paper: "https://doi.org/10.1007/978-3-030-00934-2_30"
         ),
         AckEntry(
-            name: "YOLOv11",
-            year: "2024",
-            authors: "Ultralytics",
-            license: "AGPL-3.0",
-            description: "Real-time object detection backbone for cell bounding boxes.",
-            paper: "https://github.com/ultralytics/ultralytics"
-        ),
-        AckEntry(
             name: "Segment Anything for Microscopy (micro_sam)",
             year: "2024",
             authors: "Archit et al.",
@@ -1612,7 +1603,7 @@ private struct PrivacyContent: View {
                 "Everything runs locally on your Mac. No images, measurements, or detection results are ever transmitted anywhere. " +
                 "CellCounter has no telemetry; if we ever add optional analytics they will be strictly opt-in.\n\n" +
                 "Python runs in an isolated virtual environment on your machine. Model weights are downloaded from public sources " +
-                "(Cellpose model hub, Hugging Face, Ultralytics GitHub) only when you tap \"Get\" on a model card — never automatically. " +
+                "(Cellpose model hub, Hugging Face) only when you tap \"Get\" on a model card — never automatically. " +
                 "Fine-tuned models stay on your Mac unless you manually export them."
             )
             .font(.system(size: 12.5))

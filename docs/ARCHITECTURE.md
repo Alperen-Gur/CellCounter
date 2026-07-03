@@ -1,6 +1,6 @@
 # CellCounter — Cross-Platform Port Architecture
 
-**Status:** Design (v1). DESIGN ONLY — no application code exists yet beyond the default Tauri scaffold at `desktop/`.
+**Status:** Implemented (v1, pre-release). This document began as the design brief for the port and remains the source of truth for its structure; the port is now built — `desktop/src/` and `desktop/src-tauri/src/` contain the full React UI, shared kernel, and Rust backend described below. It is not yet publicly released (see the README Roadmap).
 **Stack:** Tauri v2 (Rust shell) · React 19 + TypeScript · Vite 7 · Python sidecar (Cellpose) bootstrapped with `uv` · SQLite persistence in the Rust backend.
 **First target:** Windows. **Second target (design for, don't build):** WebGPU browser build reusing the same React UI via a swappable inference transport.
 
@@ -14,7 +14,7 @@ The app is a three-tier desktop application:
 
 - **React UI (`desktop/src/`)** — all screens, canvas rendering, the mask-editing engine, statistics, calibration math, and state. Written to be **backend-agnostic**: it talks to inference and persistence only through narrow TypeScript interfaces.
 - **Rust backend (`desktop/src-tauri/`)** — owns the SQLite store, the filesystem layout under the OS app-data dir, image import/decoding + SHA-256 dedup, `uv`-based Python environment bootstrap, and the **Python sidecar process lifecycle** (spawn / stream progress / cancel). Exposed to the UI as Tauri `#[command]`s + events.
-- **Python sidecar (`desktop/python/`)** — the existing Cellpose scripts reused as-is: `cellpose_detect.py`, `_cellpose_common.py`, `_preprocessing.py`, `_watershed.py`, `_colony.py`, `_export_imagej_roi.py`. Invoked per-image; emits a single JSON payload on stdout and progress lines on stderr.
+- **Python sidecar (`desktop/python/`)** — the existing Cellpose scripts reused as-is: `cellpose_detect.py`, `_cellpose_common.py`, `_preprocessing.py`, `_watershed.py`, `_colony.py`, `_export_imagej_roi.py`, `_seg_npy_io.py`. `cellpose_detect.py` runs as a **persistent warm worker** (`--serve`): the Rust backend spawns it once, keeps the model loaded, and streams one NDJSON detection request per stdin line across a batch (a one-shot per-image invocation remains as a fallback). Each response is a single JSON payload on stdout with progress lines on stderr.
 
 ### ASCII diagram — desktop (Tauri) topology
 
@@ -70,7 +70,7 @@ Because both ports return the **same TypeScript domain types** (`DetectionResult
 
 ## 2. Directory Layout
 
-The Tauri scaffold already exists at `desktop/` (default `create-tauri-app` React-TS output: `desktop/src/` with `App.tsx`/`main.tsx`, `desktop/src-tauri/` with `Cargo.toml`, `lib.rs`, `main.rs`, `tauri.conf.json`). We build **into** it — the layout below is what it grows into. New top-level dirs relative to `desktop/` are marked `NEW`.
+The port started from the default `create-tauri-app` React-TS scaffold at `desktop/` (`desktop/src/` with `App.tsx`/`main.tsx`, `desktop/src-tauri/` with `Cargo.toml`, `lib.rs`, `main.rs`, `tauri.conf.json`) and has been built out into the layout below. Dirs that were added on top of the original scaffold are marked `NEW`.
 
 ```
 desktop/
@@ -86,6 +86,7 @@ desktop/
 │   ├── _watershed.py
 │   ├── _colony.py
 │   ├── _export_imagej_roi.py
+│   ├── _seg_npy_io.py           _seg.npy import/export interchange with the Cellpose GUI
 │   └── pyproject.toml           NEW — uv project (replaces install_python.sh); pins cellpose>=3,<4, numpy<2, …
 │
 ├── src/                         React UI (backend-agnostic)

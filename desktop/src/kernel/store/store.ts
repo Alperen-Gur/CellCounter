@@ -228,7 +228,11 @@ export const useAppStore = create<AppStore>()(
       useGpu: true,
       maxParallel: defaultMaxParallel(),
 
-      setThresholds: (t) => set({ thresholds: t }),
+      // Store thresholds ascending so every consumer (calibration binIndex/
+      // binsFromThresholds, the inlined review/library bin math, and the
+      // Settings preview) bins against the same sorted ladder. Matches Swift
+      // `BinMath`, which sorts defensively inside bins(from:)/binIndex(for:).
+      setThresholds: (t) => set({ thresholds: t.slice().sort((a, b) => a - b) }),
       setPxPerUm: (v) => set({ pxPerUm: v }),
       setConfidence: (v) => set({ confidence: v }),
       setActiveModelId: (id) => set({ activeModelId: id }),

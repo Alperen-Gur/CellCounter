@@ -118,7 +118,7 @@ struct SupportSheet: View {
                             )
                             SupportHintRow(
                                 question: "Is anything uploaded?",
-                                answer: "No. Everything runs locally on your Mac. Model weights are downloaded once from public sources (Cellpose, Hugging Face, Ultralytics) and then cached on disk."
+                                answer: "No. Everything runs locally on your Mac. Model weights are downloaded once from public sources (Cellpose, Hugging Face) and then cached on disk."
                             )
                             SupportHintRow(
                                 question: "Fine-tuned models",

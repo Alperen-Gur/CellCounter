@@ -53,7 +53,7 @@ struct SidecarError: Decodable {
 extension SidecarPayload {
     /// Single source of truth for turning a sidecar's stdout into a
     /// `DetectionResult`. Every detection family (Cellpose, CellposeSAM, SAM,
-    /// StarDist, YOLO) funnels through this so the structured-error check, the
+    /// StarDist) funnels through this so the structured-error check, the
     /// payload decode, and the per-cell field mapping (including every `?? …`
     /// default) live in exactly one place and can't drift between detectors.
     ///

@@ -18,7 +18,6 @@ import Foundation
 ///           _watershed.py
 ///           _colony.py
 ///           stardist_detect.py
-///           yolo_detect.py
 ///           sam_detect.py
 ///
 /// The bundle is read-only under the sandbox; we only use it as the SOURCE

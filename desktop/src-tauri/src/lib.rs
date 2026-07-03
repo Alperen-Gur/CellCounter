@@ -114,6 +114,7 @@ pub fn run() {
             // ── uv env ──
             env::uv::env_install,
             env::uv::env_availability,
+            env::uv::env_uv_available,
             // ── export (stubs) ──
             export::roi::export_imagej_roi,
             export::csv::export_cells_csv,

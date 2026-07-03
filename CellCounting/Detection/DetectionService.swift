@@ -23,7 +23,7 @@ struct DetectionInput {
     let largeThreshold: Double
     /// Use GPU (Apple Neural Engine / Metal) when supported by the sidecar.
     /// False forces CPU. Plumbed through each detector to its sidecar
-    /// (Cellpose: `--no-gpu` arg; YOLO/StarDist/SAM similarly). Default true.
+    /// (Cellpose: `--no-gpu` arg; StarDist/SAM similarly). Default true.
     let useGPU: Bool
 
     init(imageURL: URL?,
@@ -90,6 +90,11 @@ enum DetectionError: LocalizedError {
     /// ChildProcessTracker.terminateAll). Distinct from .sidecarFailed so the UI
     /// can swallow it silently instead of showing a "detection failed" banner.
     case cancelled
+    /// The sidecar emitted a stdout payload larger than the runner will buffer
+    /// (e.g. a pathologically dense image yielding hundreds of thousands of
+    /// contour polygons). Fail with a clear message rather than holding an
+    /// unbounded payload in memory and OOM'ing mid-batch.
+    case payloadTooLarge(limitBytes: Int)
 
     var errorDescription: String? {
         switch self {
@@ -105,6 +110,10 @@ enum DetectionError: LocalizedError {
             return "Couldn't decode the image bytes for detection."
         case .cancelled:
             return "Detection was cancelled."
+        case .payloadTooLarge(let limitBytes):
+            let mb = limitBytes / (1024 * 1024)
+            return "Detection produced too many objects to process (result exceeded \(mb) MB). "
+                + "Try a smaller region or a less dense image."
         }
     }
 }

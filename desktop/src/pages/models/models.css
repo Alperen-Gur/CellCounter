@@ -357,3 +357,17 @@
     max-width: none;
   }
 }
+
+/* Honor "Reduce motion": freeze the spinner and turn the indeterminate install
+   shimmer into a static full bar (matches processing.css behavior). */
+@media (prefers-reduced-motion: reduce) {
+  .cc-pill__spin {
+    animation: none;
+  }
+  .cc-install-bar__fill {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

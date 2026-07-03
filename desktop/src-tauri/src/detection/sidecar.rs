@@ -83,7 +83,6 @@ const OWNED_SCRIPTS: &[&str] = &[
     "cellpose_detect.py",
     "cellpose_train.py",
     "stardist_detect.py",
-    "yolo_detect.py",
     "sam_detect.py",
 ];
 

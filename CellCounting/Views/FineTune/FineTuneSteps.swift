@@ -785,7 +785,6 @@ struct StepConfigure: View {
     private let baseModels: [(String, String)] = [
         ("cp-cyto3", "Cellpose cyto3 (recommended)"),
         ("cp-nuclei", "Cellpose nuclei"),
-        ("yo-s", "YOLOv11 small"),
         ("nuclephaser", "NuclePhaser"),
     ]
 

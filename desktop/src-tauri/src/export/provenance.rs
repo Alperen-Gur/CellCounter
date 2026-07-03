@@ -55,20 +55,76 @@ pub(crate) fn open_reader(store: &FileStore) -> Result<Connection, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Line endings
+// ---------------------------------------------------------------------------
+
+/// Platform newline for exported text artefacts (CSV / provenance block).
+///
+/// CSVs are opened by mixed tools (Excel, R, pandas, plain editors); on Windows
+/// the native expectation is CRLF, so we emit `\r\n` there and `\n` elsewhere.
+/// This is the single source of truth — every CSV/provenance writer joins and
+/// terminates lines with [`newline()`] so the whole file has one consistent
+/// ending rather than a mix of `\n` bodies under a `\r\n`-joined header.
+pub(crate) const fn newline() -> &'static str {
+    if cfg!(windows) {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Output-path resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve an export destination. A bare filename (no path separator) is placed
-/// under the app-data `Exports/` dir; an absolute or already-qualified path is
-/// used verbatim. The parent dir is created so the writer can't fail on a
-/// missing directory. Returns the absolute path to write to.
+/// Resolve an export destination.
+///
+/// The save-dialog path is the trust boundary: a *fully qualified* absolute path
+/// (one the user picked in the native picker) is used verbatim; anything else is
+/// treated as a bare filename and confined under the app-data `Exports/` dir.
+///
+/// "Fully qualified" here means an OS-absolute path — one that has BOTH a root
+/// and (on Windows) a drive prefix, so `C:\Users\…\out.csv` qualifies but the
+/// drive-*relative* `C:out.csv`, root-relative `\out.csv`, and bare `out.csv`
+/// do not. `Path::is_absolute()` already enforces the drive+root rule on
+/// Windows, so it is the correct predicate for the "verbatim" branch (the old
+/// `parent().is_some()` test wrongly treated `C:out.csv` — whose parent is
+/// `C:` — as qualified and wrote it relative to that drive's cwd).
+///
+/// For the confined branch we reject any component that would escape the base:
+/// a `..` or an absolute/prefix component in the (non-qualified) request is a
+/// traversal attempt and is refused rather than silently relocated. The parent
+/// dir is created so the writer can't fail on a missing directory. Returns the
+/// absolute path to write to.
 pub(crate) fn resolve_out_path(store: &FileStore, out_path: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+
     let requested = Path::new(out_path);
-    let resolved = if requested.is_absolute() || requested.parent().is_some_and(|p| !p.as_os_str().is_empty())
-    {
+
+    // A user-picked absolute path (drive + root on Windows) is trusted verbatim.
+    let resolved = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
-        store.exports_dir().join(requested)
+        // Everything else is confined under Exports/. Reject any component that
+        // could escape the base: `..`, or a root/prefix (drive-relative like
+        // `C:foo`, root-relative like `\foo`) sneaking into a "bare" name.
+        let base = store.exports_dir();
+        for comp in requested.components() {
+            match comp {
+                Component::Normal(_) | Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(format!(
+                        "refusing to export outside the Exports directory: {out_path}"
+                    ));
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(format!(
+                        "refusing to export to a non-relative path: {out_path}"
+                    ));
+                }
+            }
+        }
+        base.join(requested)
     };
     if let Some(parent) = resolved.parent() {
         std::fs::create_dir_all(parent)
@@ -344,7 +400,7 @@ impl Provenance {
         if let Some(ran) = &self.detection_ran_at {
             lines.push(format!("# detection_ran_at: {ran}"));
         }
-        lines.join("\n")
+        lines.join(newline())
     }
 
     /// Pretty-printed, key-sorted JSON (mirrors `ProvenanceMetadata.asJSON`,

@@ -327,7 +327,6 @@ final class AppState {
         // routes by `ModelFamily.cellpose4`.
         detectorRegistry.register(CellposeSAMDownloader())
         detectorRegistry.register(StarDistDownloader())
-        detectorRegistry.register(YOLODownloader())
         detectorRegistry.register(SAMDownloader())
         // Wire the install-state cache so the registry can refresh it on
         // install start/completion. Held weakly on the registry side.

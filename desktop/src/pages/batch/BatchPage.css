@@ -481,3 +481,10 @@
   font-weight: 650;
   color: var(--cc-text);
 }
+
+/* Honor "Reduce motion": stop the running-status dot from pulsing. */
+@media (prefers-reduced-motion: reduce) {
+  .cc-batch__status--running .cc-batch__status-dot {
+    animation: none;
+  }
+}

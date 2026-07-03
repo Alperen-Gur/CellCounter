@@ -5,10 +5,14 @@ on:
     branches: [main]
     paths:
       - "desktop/**"
+      - "CellCounting/**"
+      - "CellCounting.xcodeproj/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "desktop/**"
+      - "CellCounting/**"
+      - "CellCounting.xcodeproj/**"
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -67,3 +71,38 @@ jobs:
       - name: Backend cargo check
         working-directory: desktop/src-tauri
         run: cargo check --locked
+
+  # Native macOS (Swift) app — the shipping 1.0.2 binary. Compiles the Xcode
+  # project with signing disabled (no developer team in CI).
+  swift-build:
+    name: swift-build (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build native macOS app
+        run: |
+          xcodebuild build \
+            -project CellCounting.xcodeproj \
+            -target CellCounting \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+  # AGPL guard — this project is MIT. Fail if any Ultralytics/YOLO (AGPL-3.0)
+  # reference is reintroduced into tracked source, keeping THIRD_PARTY_LICENSES
+  # honest. Only the license file's own explanatory text is exempt.
+  license-guard:
+    name: license-guard (no AGPL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on Ultralytics/YOLO references
+        run: |
+          if git grep -niE 'ultralytics|yolo_detect|YOLODetectionService|YOLODownloader' -- ':!THIRD_PARTY_LICENSES.md' ':!.github/workflows/ci.yml'; then
+            echo "::error::AGPL (Ultralytics/YOLO) reference found in tracked source — this project is MIT."
+            exit 1
+          fi
+          echo "OK: no AGPL/Ultralytics references in tracked source."

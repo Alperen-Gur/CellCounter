@@ -184,7 +184,7 @@ struct ProvenanceMetadata: Codable, Sendable {
     }
 
     /// Heuristic to locate the weights file for a given family/model. Returns
-    /// nil for families we don't yet support (StarDist/YOLO/SAM downloaders
+    /// nil for families we don't yet support (StarDist/SAM downloaders
     /// own their own checkpoint paths — wire them up here when needed).
     private static func weightsURL(for family: ModelFamily, modelId: String) -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -199,7 +199,7 @@ struct ProvenanceMetadata: Codable, Sendable {
             // CPSAM ships a single big checkpoint "cpsam".
             let url = home.appendingPathComponent(".cellpose/models/cpsam")
             return FileManager.default.fileExists(atPath: url.path) ? url : nil
-        case .stardist, .yolo, .sam, .custom, .all:
+        case .stardist, .sam, .custom, .all:
             return nil
         }
     }
@@ -255,7 +255,7 @@ final class ProvenanceVersionCache: @unchecked Sendable {
             // reads the right value out of the cp4 venv.
             return probePython(interpreter: FileStore.shared.pythonInterpreter4URL,
                                importLine: "import cellpose; print(cellpose.version)")
-        case .stardist, .yolo, .sam, .custom, .all:
+        case .stardist, .sam, .custom, .all:
             return nil
         }
     }

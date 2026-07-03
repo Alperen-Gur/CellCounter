@@ -9,7 +9,6 @@ enum ModelFamily: String, CaseIterable, Identifiable {
     /// and per-family icons can distinguish them.
     case cellpose4 = "Cellpose-SAM"
     case stardist = "StarDist"
-    case yolo = "YOLO"
     case sam = "SAM-family"
     case custom = "Custom"
     var id: String { rawValue }
@@ -141,42 +140,6 @@ enum ModelCatalog {
               outputType: "Masks + boxes", comingSoon: true),
     ]
 
-    // Pass-18 K5: YOLO catalog descriptions made honest. We ship the
-    // COCO-pretrained Ultralytics checkpoints (see YOLODownloader.weightURLs).
-    // There are no canonical cell-trained YOLOv11 weights publicly available,
-    // so calling these "cells nano/small/medium" was misleading. Renamed and
-    // tagged `Preview · COCO-pretrained` so users know they need to fine-tune
-    // on their own data before expecting useful cell counts.
-    static let yolo: [DetectionModelInfo] = [
-        .init(id: "yo-n", family: .yolo, name: "YOLOv11 nano",
-              sizeMB: 6, sizeLabel: "6 MB",
-              desc: "Smallest. Boxes only. Preview · COCO-pretrained — fine-tune on your data for real counts.",
-              state: .off, speed: .fast, accuracy: .med,
-              tags: ["bf", "phase"], note: "boxes only · COCO-pretrained",
-              architecture: "YOLOv11n",
-              trainingData: "COCO (stand-in — no public cell-trained weights)",
-              paper: "Ultralytics — YOLOv11 (2024)",
-              outputType: "Boxes only", comingSoon: true),
-        .init(id: "yo-s", family: .yolo, name: "YOLOv11 small",
-              sizeMB: 20, sizeLabel: "20 MB",
-              desc: "Balanced speed / accuracy. Preview · COCO-pretrained — fine-tune before relying on counts.",
-              state: .off, speed: .fast, accuracy: .med,
-              tags: ["bf", "phase"], note: "boxes only · COCO-pretrained",
-              architecture: "YOLOv11s",
-              trainingData: "COCO (stand-in — no public cell-trained weights)",
-              paper: "Ultralytics — YOLOv11 (2024)",
-              outputType: "Boxes only", comingSoon: true),
-        .init(id: "yo-m", family: .yolo, name: "YOLOv11 medium",
-              sizeMB: 40, sizeLabel: "40 MB",
-              desc: "Higher accuracy, still fast. Preview · COCO-pretrained — fine-tune before relying on counts.",
-              state: .off, speed: .med, accuracy: .high,
-              tags: ["bf", "phase"], note: "boxes only · COCO-pretrained",
-              architecture: "YOLOv11m",
-              trainingData: "COCO (stand-in — no public cell-trained weights)",
-              paper: "Ultralytics — YOLOv11 (2024)",
-              outputType: "Boxes only", comingSoon: true),
-    ]
-
     static let sam: [DetectionModelInfo] = [
         .init(id: "mobilesam", family: .sam, name: "MobileSAM",
               sizeMB: 40, sizeLabel: "40 MB",
@@ -217,6 +180,6 @@ enum ModelCatalog {
     ]
 
     static var all: [DetectionModelInfo] {
-        builtIn + cellpose + cellpose4 + stardist + yolo + sam
+        builtIn + cellpose + cellpose4 + stardist + sam
     }
 }

@@ -207,6 +207,9 @@
   padding: 2px 9px;
   border: 1px solid;
   border-radius: 999px;
+  /* Bin color rides on the border (the color cue); the label text stays in the
+     AA-readable foreground so the light upper-bin ramp stops don't fail WCAG. */
+  color: var(--cc-text);
   font-size: var(--cc-text-xs);
   font-weight: 650;
   letter-spacing: 0.01em;

@@ -48,8 +48,6 @@ target/
 *.lif
 sample_data/private/
 
-# ── AGPL firewall: Ultralytics YOLO sidecar is excluded from this MIT repo ──
-**/yolo_detect.py
 
 # ── Secrets ──
 .env

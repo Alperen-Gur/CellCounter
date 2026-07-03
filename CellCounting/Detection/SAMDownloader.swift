@@ -16,7 +16,7 @@ import Foundation
 struct SAMDownloader: ModelDownloader {
     let family: ModelFamily = .sam
 
-    /// Per-interpreter import-probe cache. See YOLO/StarDist for the same pattern.
+    /// Per-interpreter import-probe cache. See StarDist for the same pattern.
     fileprivate static let importCache = PythonModuleImportCache(module: "micro_sam")
 
     // MARK: — App id → micro_sam model_type mapping

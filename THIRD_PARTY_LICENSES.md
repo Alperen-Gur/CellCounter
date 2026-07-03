@@ -29,14 +29,13 @@ in this repository.
 All of the above are permissive (BSD / MIT / Apache-2.0) and compatible with
 CellCounter's MIT license.
 
-## Intentionally excluded: Ultralytics YOLO
+## No AGPL / Ultralytics components
 
-Earlier development explored **Ultralytics YOLOv11** for box-only detection.
-Ultralytics is licensed **AGPL-3.0**, which is incompatible with shipping this
-project under a permissive license. The YOLO inference sidecar has therefore
-been **removed from the public repository** and is not part of any release. If a
-box-only detector is added back in the future it will use a permissively-licensed
-implementation.
+CellCounter does **not** include, link against, or download any AGPL-3.0
+component. In particular it ships **no Ultralytics YOLO** code or weights: there
+is no YOLO detection service, downloader, model-catalog entry, or sidecar in the
+source tree or in any built release. If a box-only detector is added in the
+future it will use a permissively-licensed implementation.
 
 ## A note on model provenance
 

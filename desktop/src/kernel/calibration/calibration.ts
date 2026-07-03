@@ -126,7 +126,10 @@ function fmtThreshold(v: number): string {
  * `[0, ∞)`. The top bin's `max` is `Infinity` (open top). Port of
  * `BinMath.bins(from:)`.
  */
-export function binsFromThresholds(thresholds: number[]): SizeBin[] {
+export function binsFromThresholds(rawThresholds: number[]): SizeBin[] {
+  // Sort defensively (matches Swift `BinMath.bins(from:)`) so out-of-order
+  // thresholds can't emit inverted/empty interior bins.
+  const thresholds = rawThresholds.slice().sort((a, b) => a - b);
   const first = thresholds.length > 0 ? thresholds[0] : undefined;
   const last =
     thresholds.length > 0 ? thresholds[thresholds.length - 1] : undefined;
@@ -153,7 +156,10 @@ export function binsFromThresholds(thresholds: number[]): SizeBin[] {
  * bins from `binsFromThresholds` (which uses half-open `[min, max)` interior
  * bins, top bin `[last, ∞)`).
  */
-export function binIndex(diameterUm: number, thresholds: number[]): number {
+export function binIndex(diameterUm: number, rawThresholds: number[]): number {
+  // Sort defensively (matches Swift `BinMath.binIndex(for:)`) so an unsorted
+  // thresholds array can't miscount cells into the wrong bin.
+  const thresholds = rawThresholds.slice().sort((a, b) => a - b);
   for (let i = 0; i < thresholds.length; i++) {
     if (diameterUm < thresholds[i]) return i;
   }

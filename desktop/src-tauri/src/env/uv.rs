@@ -48,6 +48,14 @@ fn uv_executable() -> String {
     std::env::var("UV").unwrap_or_else(|_| "uv".to_string())
 }
 
+/// Interpreter pin for the sidecar env. `pyproject.toml` allows
+/// `>=3.9,<3.13`; we pin a single version so the environment is reproducible
+/// regardless of whatever Python happens to be on PATH, and so uv downloads a
+/// managed interpreter when none matches (rather than silently using a stray
+/// one). 3.11 is inside the supported range and has good wheel coverage for the
+/// pinned deps (cellpose 3.x / numpy<2 / CPU torch).
+const PINNED_PYTHON: &str = "3.11";
+
 /// Cheap "is the staged copy already current?" check: identical length and
 /// byte-for-byte contents. Reading both files is fine here — the sidecar scripts
 /// are small — and avoids re-copying (and thus locking/clobbering) a file the
@@ -62,6 +70,37 @@ fn files_match(src: &std::path::Path, dest: &std::path::Path) -> bool {
     match (std::fs::read(src), std::fs::read(dest)) {
         (Ok(sa), Ok(sb)) => sa == sb,
         _ => false,
+    }
+}
+
+/// Windows MAX_PATH guard for the venv. Returns `Some(message)` when the venv
+/// base directory is long enough that installing deep dependency trees (e.g.
+/// torch under `.venv\Lib\site-packages\…`) is likely to exceed the legacy
+/// 260-char `MAX_PATH` limit, and long-path support isn't a given. On non-Windows
+/// targets this is always `None` (no such limit).
+///
+/// `RESERVE` is a conservative budget for the tail we don't control:
+/// `\Lib\site-packages\` (~19) plus a nested package file path (torch ships files
+/// well over 150 chars deep), so we flag once the venv base alone leaves too
+/// little headroom under 260.
+fn long_path_warning(venv_dir: &std::path::Path) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    const MAX_PATH: usize = 260;
+    const RESERVE: usize = 200; // "\Lib\site-packages\" + deepest known dep file
+    let base_len = venv_dir.as_os_str().len();
+    if base_len + RESERVE > MAX_PATH {
+        Some(format!(
+            "The install directory is too deep for Windows' 260-character path \
+             limit:\n  {}\nInstalling large dependencies (e.g. torch) would fail \
+             with a path-too-long error. Enable long paths (set the registry key \
+             HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\\LongPathsEnabled \
+             to 1, then reboot), or move the app data to a shorter location.",
+            venv_dir.display()
+        ))
+    } else {
+        None
     }
 }
 
@@ -98,9 +137,13 @@ fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String
     // Copy all files (flat dir — the sidecar scripts + pyproject live at top level).
     // Skip files whose contents already match the staged copy so a still-running
     // orphan sidecar / antivirus lock on Windows can't fail the copy of a file
-    // that is already current. When a copy of an out-of-date-looking file does
-    // fail, keep going and let `uv sync` decide: aborting the whole install on a
-    // transient lock surfaces a confusing "copy" error instead of an install one.
+    // that is already current.
+    //
+    // A file that DIFFERS from the staged copy (the source was updated) must be
+    // refreshed; if that copy fails we abort. Reporting success while leaving a
+    // stale `pyproject.toml`/sidecar on disk would let `env_install` "succeed"
+    // against an out-of-date environment — the existence-only gate in
+    // `env_install` can't catch it, so a failed refresh is fatal here.
     for entry in std::fs::read_dir(&src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
@@ -111,10 +154,11 @@ fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String
                     continue; // already staged and identical — don't touch it
                 }
                 if let Err(e) = std::fs::copy(&path, &target) {
-                    eprintln!(
-                        "[env] staging copy failed for {}: {e} (continuing)",
+                    return Err(format!(
+                        "could not update staged file {}: {e}. Close any running \
+                         detection and retry (a lock on the file blocks the update).",
                         target.display()
-                    );
+                    ));
                 }
             }
         }
@@ -142,12 +186,35 @@ pub async fn env_install(app: AppHandle) -> Result<(), String> {
         ));
     }
 
+    // Windows MAX_PATH preflight: the venv site-packages tree
+    // (`…\.venv\Lib\site-packages\`) plus a deeply-nested dependency file (torch
+    // buries files well past 100 chars) can blow past the legacy 260-char limit,
+    // which fails `uv sync` with an opaque copy/extract error. Detect the risk up
+    // front and surface an actionable message (enable long paths) instead.
+    if let Some(msg) = long_path_warning(&store.venv_dir()) {
+        return Err(msg);
+    }
+
+    // Pin the interpreter so the env is reproducible regardless of the ambient
+    // Python on PATH. Writing a `.python-version` next to the pyproject makes the
+    // pin visible to any later `uv` invocation in this dir; `--python` below
+    // enforces it for this sync (and lets uv fetch a managed 3.11 when none is
+    // installed). A best-effort write is fine — `--python` is authoritative.
+    let _ = std::fs::write(project_dir.join(".python-version"), PINNED_PYTHON);
+
     // `uv sync` creates `.venv` in the project dir and installs the locked deps.
     // `--project <dir>` pins the project; we also set cwd for good measure.
     let mut cmd = Command::new(uv_executable());
     cmd.arg("sync")
+        // Install exactly the committed uv.lock (staged alongside pyproject) so
+        // every machine resolves identical versions; fail loudly on a stale lock.
+        .arg("--frozen")
         .arg("--project")
         .arg(&project_dir)
+        // Pin the interpreter explicitly (matches the staged `.python-version`);
+        // uv downloads a managed build if no matching interpreter is on PATH.
+        .arg("--python")
+        .arg(PINNED_PYTHON)
         .current_dir(&project_dir)
         // uv respects VIRTUAL_ENV; make sure a stray one doesn't hijack the sync.
         .env_remove("VIRTUAL_ENV")
@@ -294,5 +361,53 @@ pub async fn env_availability(app: AppHandle) -> Result<Availability, String> {
                 stderr.lines().last().unwrap_or("").trim()
             )),
         })
+    }
+}
+
+// ===========================================================================
+// COMMAND: env_uv_available
+// ===========================================================================
+
+/// Preflight for the `uv` toolchain: is it installed and on PATH (or pointed to
+/// by the `UV` env var)? Runs `uv --version`. Surfaced in onboarding / the
+/// Models page BEFORE enabling Install, so a missing toolchain is caught up
+/// front with actionable guidance rather than as a mid-install spawn failure.
+///
+/// Returns [`Availability`] for symmetry with `env_availability`: `installed`
+/// true when `uv --version` runs, else a `reason` with the install hint.
+#[tauri::command]
+pub async fn env_uv_available() -> Result<Availability, String> {
+    let mut cmd = Command::new(uv_executable());
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::proc::hide_console_tokio(&mut cmd);
+
+    match cmd.output().await {
+        Ok(output) if output.status.success() => Ok(Availability {
+            installed: true,
+            reason: Some(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+        }),
+        // Spawned but exited non-zero (unusual for `--version`) — report the tail.
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Ok(Availability {
+                installed: false,
+                reason: Some(format!(
+                    "uv is installed but did not respond as expected. {}",
+                    stderr.lines().last().unwrap_or("").trim()
+                )),
+            })
+        }
+        // Could not spawn — uv is not installed / not on PATH.
+        Err(_) => Ok(Availability {
+            installed: false,
+            reason: Some(
+                "uv was not found. Install it from https://docs.astral.sh/uv/ \
+                 (or set the UV environment variable to its path), then retry."
+                    .into(),
+            ),
+        }),
     }
 }

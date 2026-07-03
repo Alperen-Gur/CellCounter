@@ -25,7 +25,9 @@
   /* ---- text ---- */
   --cc-text: #18181b;
   --cc-text-secondary: #5c5c66;
-  --cc-text-tertiary: #9a9aa3;
+  /* Darkened to meet WCAG AA (4.5:1) as body/caption text on the white content
+     pane and the #f3f3f4 app background (was #9a9aa3 ≈ 2.5:1). */
+  --cc-text-tertiary: #6b6b73;
   --cc-text-on-accent: #ffffff;
 
   /* ---- accent (monochrome primary, à la the reference) ---- */
@@ -34,14 +36,23 @@
   --cc-accent-soft: #ededee;
   --cc-focus-ring: rgba(24, 24, 27, 0.35);
 
-  --cc-danger: #d1453b;
-  --cc-warning: #b5730a;
-  --cc-success: #2f9e57;
+  /* Status colors, darkened to meet WCAG AA (4.5:1) as text on both the white
+     content pane and the #f3f3f4 app background (were ~3.1–4.4:1). */
+  --cc-danger: #c13328;
+  --cc-warning: #8a5600;
+  --cc-success: #1f7a41;
 
-  /* size-bin colors (data viz — kept vivid on purpose) */
+  /* size-bin colors (data viz — kept vivid on purpose, for fills/swatches) */
   --cc-bin-small: #4c8bf5;
   --cc-bin-mid: #4aa96c;
   --cc-bin-large: #e08a3c;
+
+  /* AA-compliant text variants of the bin palette, for use where a bin color is
+     rendered as a label/count/name rather than a filled swatch (the vivid fills
+     above are too light: 2.4–3.3:1 as text). ≥4.5:1 on white and #f3f3f4. */
+  --cc-bin-small-text: #2867c9;
+  --cc-bin-mid-text: #1f7a45;
+  --cc-bin-large-text: #a85c14;
 
   /* ---- spacing ---- */
   --cc-space-1: 4px;

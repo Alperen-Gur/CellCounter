@@ -15,7 +15,6 @@ import Foundation
 ///         _watershed.py
 ///         _colony.py
 ///         stardist_detect.py
-///         yolo_detect.py
 ///         sam_detect.py
 ///
 /// Bundle layout (read-only, what we copy FROM):
@@ -41,7 +40,6 @@ enum PythonRuntime {
         "_watershed.py",
         "_colony.py",
         "stardist_detect.py",
-        "yolo_detect.py",
         "sam_detect.py",
         // Pass-14 (F3): ImageJ RoiSet exporter.
         "_export_imagej_roi.py",

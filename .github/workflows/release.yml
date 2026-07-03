@@ -54,7 +54,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: desktop
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'app-v__VERSION__' }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'desktop-v__VERSION__' }}
           releaseName: "CellCounter __VERSION__"
           releaseBody: |
             CellCounter desktop build.

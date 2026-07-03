@@ -2,7 +2,7 @@
 
 ## macOS
 
-CellCounter v1.0 is a native macOS app. It is **ad-hoc signed but not yet
+CellCounter v1.0.2 is a native macOS app. It is **ad-hoc signed but not yet
 notarized**, so macOS Gatekeeper will warn you the first time you open it. This
 is expected; here's how to get past it.
 

@@ -1,8 +1,10 @@
 [package]
 name = "desktop"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "CellCounter: a desktop app for counting and size-classifying cells in microscopy images."
+authors = ["Alperen Gur <alguer@ethz.ch>"]
+license = "MIT"
+repository = "https://github.com/Alperen-Gur/CellCounter"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

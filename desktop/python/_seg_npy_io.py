@@ -81,7 +81,81 @@ def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
 
 # ---------------------------------------------------------------------------
 # Loading a Cellpose _seg.npy — tolerant of the several shapes it ships in.
+#
+# SECURITY: a ``_seg.npy`` is a normal interchange file received from
+# collaborators/downloads, so it is UNTRUSTED. The Cellpose GUI writes the dict
+# with ``np.save(..., allow_pickle=True)``, and loading such a file with the
+# stock ``allow_pickle=True`` unpickles arbitrary Python objects — a crafted file
+# can execute code (RCE). We therefore never call the stock pickle machinery:
+#   * bare array files load with ``allow_pickle=False`` (no pickle at all);
+#   * the dict form is decoded with a RESTRICTED unpickler that permits ONLY the
+#     numpy ndarray/dtype reconstruction primitives and plain builtin containers,
+#     so no attacker-supplied callable (os.system, eval, subprocess, …) can be
+#     invoked during load.
 # ---------------------------------------------------------------------------
+
+# Whitelist of (module, qualname) globals the restricted unpickler may resolve.
+# Enough to rebuild an ndarray/dtype and the plain dict that wraps the masks;
+# deliberately excludes every callable that could run code.
+_SAFE_PICKLE_GLOBALS = {
+    ("numpy", "ndarray"),
+    ("numpy", "dtype"),
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy.core.multiarray", "scalar"),
+    ("numpy._core.multiarray", "_reconstruct"),  # numpy >= 2 module path
+    ("numpy._core.multiarray", "scalar"),
+    ("builtins", "dict"),
+    ("builtins", "list"),
+    ("builtins", "tuple"),
+    ("builtins", "set"),
+    ("builtins", "frozenset"),
+    ("builtins", "bytearray"),
+    ("builtins", "bytes"),
+    ("builtins", "str"),
+    ("builtins", "int"),
+    ("builtins", "float"),
+    ("builtins", "bool"),
+    ("builtins", "complex"),
+}
+
+
+def _load_seg_object(npy_path: str):
+    """Decode a pickled ``_seg.npy`` with a restricted unpickler (no RCE).
+
+    Only the numpy-array reconstruction globals and plain builtin containers in
+    ``_SAFE_PICKLE_GLOBALS`` are permitted; any other global (a callable an
+    attacker could weaponise) raises ``pickle.UnpicklingError`` and the file is
+    rejected. Reads the ``.npy`` header itself so we can hand the raw pickle
+    payload to our unpickler instead of numpy's ``allow_pickle=True`` path.
+    """
+    import pickle
+
+    import numpy as np
+    from numpy.lib import format as npy_format
+
+    class _RestrictedUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if (module, name) in _SAFE_PICKLE_GLOBALS:
+                return super().find_class(module, name)
+            raise pickle.UnpicklingError(
+                f"disallowed global in _seg.npy: {module}.{name}"
+            )
+
+    with open(npy_path, "rb") as fh:
+        version = npy_format.read_magic(fh)
+        npy_format._check_version(version)
+        shape, fortran_order, dtype = npy_format._read_array_header(fh, version)
+        if dtype.hasobject:
+            # Object array: numpy stores the whole array as one pickle stream
+            # right after the header. Our restricted unpickler returns that
+            # reconstructed ndarray directly (a 0-d object array wrapping the
+            # Cellpose dict, in the normal case).
+            return _RestrictedUnpickler(fh).load()
+        # Non-object dtype that merely tripped allow_pickle=False for another
+        # reason — read it back plainly.
+        fh.seek(0)
+        return np.load(npy_path, allow_pickle=False)
+
 
 def load_seg_masks(npy_path: str):
     """Return the HxW int label map from a Cellpose ``_seg.npy``.
@@ -90,6 +164,10 @@ def load_seg_masks(npy_path: str):
     We also accept: a bare 2-D int array saved as ``*_seg.npy``, and the rare
     case where ``np.load`` yields the dict directly. Never raises — calls
     ``emit_error`` and exits on anything unreadable.
+
+    Loaded WITHOUT the stock pickle machinery: array-only files use
+    ``allow_pickle=False`` and the dict form goes through a restricted unpickler
+    (see module docstring), so a malicious ``_seg.npy`` cannot execute code.
     """
     import numpy as np
 
@@ -97,7 +175,17 @@ def load_seg_masks(npy_path: str):
         emit_error("seg-npy-not-found", hint=npy_path, exit_code=3)
 
     try:
-        raw = np.load(npy_path, allow_pickle=True)
+        # Fast path: a plain (non-object) array — no pickle involved at all.
+        raw = np.load(npy_path, allow_pickle=False)
+    except ValueError:
+        # numpy raises ValueError when the file requires pickle to decode (the
+        # normal Cellpose dict form). Fall back to the RESTRICTED unpickler,
+        # which permits only numpy-array reconstruction — never arbitrary code.
+        try:
+            raw = _load_seg_object(npy_path)
+        except Exception as exc:  # noqa: BLE001
+            emit_error("seg-npy-untrusted-pickle", hint=f"{exc!r}", exit_code=3)
+            return None  # unreachable; keeps type-checkers happy
     except Exception as exc:  # noqa: BLE001
         emit_error("seg-npy-unreadable", hint=f"{exc!r}", exit_code=3)
         return None  # unreachable; keeps type-checkers happy
@@ -200,6 +288,9 @@ def cmd_import(args) -> None:
         try:
             from PIL import Image
 
+            # Trusted local scan — allow legitimately large microscopy images past
+            # PIL's ~178 MP DecompressionBomb guard (sane 2 GP sanity cap).
+            Image.MAX_IMAGE_PIXELS = 2_000_000_000
             pil = Image.open(args.image)
             pil.load()
             img = np.array(pil.convert("L"), dtype=np.uint8)

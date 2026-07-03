@@ -3,7 +3,7 @@
 //
 //  Single, correct implementation of "spawn a Python detection sidecar,
 //  bridge its termination into structured concurrency, and drain both pipes
-//  CONCURRENTLY." Every sidecar detection service (Cellpose, YOLO, StarDist,
+//  CONCURRENTLY." Every sidecar detection service (Cellpose, StarDist,
 //  SAM) funnels through this so the pipe-buffer deadlock is fixed in exactly
 //  one place.
 //
@@ -46,6 +46,13 @@ struct SidecarOutcome {
 }
 
 enum SidecarProcessRunner {
+
+    /// Hard cap on buffered stdout. A well-formed detection payload for even a
+    /// very busy image is a few MB; 256 MB is far above any legitimate result
+    /// but well below the point where holding it (plus the pipe copy and the
+    /// decoded model objects) threatens a modest lab laptop. Past this we fail
+    /// with `.payloadTooLarge` rather than decode an unbounded payload.
+    static let maxStdoutBytes = 256 * 1024 * 1024
 
     /// Spawn `pythonURL args…` off the main actor and return its full stdout,
     /// stderr, and exit code once it terminates.
@@ -97,8 +104,12 @@ enum SidecarProcessRunner {
                 }
 
                 // stdout — drain CONCURRENTLY too, or a payload bigger than the
-                // OS pipe buffer wedges the child (see file header).
-                let stdoutAccumulator = SidecarDataSink()
+                // OS pipe buffer wedges the child (see file header). Bounded so
+                // a pathologically dense image (100k+ objects, each with a
+                // contour polygon) can't buffer hundreds of MB of JSON in the
+                // host and OOM mid-batch — past the cap we stop accumulating and
+                // surface `.payloadTooLarge` instead of decoding it.
+                let stdoutAccumulator = SidecarDataSink(maxBytes: Self.maxStdoutBytes)
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     let chunk = handle.availableData
                     if chunk.isEmpty { return } // EOF
@@ -131,6 +142,14 @@ enum SidecarProcessRunner {
                         Task { @MainActor in onStderrLine(last) }
                     }
                     if resumed.markAndCheck() {
+                        // If stdout blew past the cap, the accumulated buffer is
+                        // truncated garbage — don't hand it back to be decoded.
+                        // Fail with a clear, bounded error instead.
+                        if stdoutAccumulator.overflowed {
+                            continuation.resume(
+                                throwing: DetectionError.payloadTooLarge(limitBytes: Self.maxStdoutBytes))
+                            return
+                        }
                         continuation.resume(returning: SidecarOutcome(
                             exitCode: proc.terminationStatus,
                             stdout: stdoutAccumulator.snapshot(),
@@ -163,15 +182,38 @@ enum SidecarProcessRunner {
 private final class SidecarDataSink: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
+    /// Optional hard cap. Once the accumulated payload would exceed this many
+    /// bytes we STOP appending and set `didOverflow`, so a pathologically large
+    /// stdout (e.g. hundreds of MB of contour polygons from a confluent image)
+    /// can't spike host memory into swap/OOM. `nil` = unbounded (stderr, which
+    /// is small and needed verbatim for error surfacing).
+    private let maxBytes: Int?
+    private(set) var didOverflow = false
+
+    init(maxBytes: Int? = nil) {
+        self.maxBytes = maxBytes
+    }
 
     func append(_ chunk: Data) {
         lock.lock(); defer { lock.unlock() }
+        if let maxBytes {
+            if didOverflow { return }
+            if buffer.count + chunk.count > maxBytes {
+                didOverflow = true
+                return
+            }
+        }
         buffer.append(chunk)
     }
 
     func snapshot() -> Data {
         lock.lock(); defer { lock.unlock() }
         return buffer
+    }
+
+    var overflowed: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return didOverflow
     }
 }
 

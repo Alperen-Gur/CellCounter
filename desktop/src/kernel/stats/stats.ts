@@ -112,9 +112,9 @@ export function median(xs: number[]): number {
 
 /** `significanceLabel` — matches `MannWhitneyResult.significanceLabel`. */
 function significanceLabel(pValue: number): string {
-  if (pValue < 0.001) return "p < 0.001";
-  if (pValue < 0.01) return `p = ${pValue.toFixed(3)}`;
-  if (pValue < 0.05) return `p = ${pValue.toFixed(3)}`;
+  if (pValue < 0.001) return "p < 0.001 (***)";
+  if (pValue < 0.01) return `p = ${pValue.toFixed(3)} (**)`;
+  if (pValue < 0.05) return `p = ${pValue.toFixed(3)} (*)`;
   // >= 0.05
   return `p = ${pValue.toFixed(2)} (n.s.)`;
 }
@@ -141,7 +141,7 @@ function effectSizeLabel(
  *   U2       = n1·n2 − U1
  *   U_stat   = min(U1, U2)
  *   μ_U      = n1·n2 / 2
- *   σ_U      = √(n1·n2·(n1+n2+1) / 12)     (no tie correction — negligible at our N)
+ *   σ_U      = √((n1·n2/12)·((n+1) − Σ(t³−t)/(n(n−1))))  (n=n1+n2; standard tie correction)
  *   z        = (U_stat − μ_U + 0.5) / σ_U  (continuity correction; U_stat ≤ μ_U)
  *   p_two    = 2·(1 − Φ(|z|))
  *   rB       = 1 − 2·U1 / (n1·n2)          (rank-biserial)
@@ -162,6 +162,8 @@ export function mannWhitneyU(a: number[], b: number[]): CompareResult | null {
   pooled.sort((x, y) => x.v - y.v);
 
   const ranks = new Array<number>(pooled.length).fill(0);
+  // Accumulate Σ(t³ − t) over tie-group sizes t for the tie correction.
+  let tieCorrection = 0;
   let i = 0;
   while (i < pooled.length) {
     let j = i;
@@ -169,6 +171,8 @@ export function mannWhitneyU(a: number[], b: number[]): CompareResult | null {
     // Tied positions [i..j] share the average 1-based rank.
     const avg = ((i + 1) + (j + 1)) / 2.0;
     for (let k = i; k <= j; k++) ranks[k] = avg;
+    const t = j - i + 1;
+    if (t > 1) tieCorrection += t * t * t - t;
     i = j + 1;
   }
 
@@ -185,7 +189,13 @@ export function mannWhitneyU(a: number[], b: number[]): CompareResult | null {
 
   // 3) Normal approximation.
   const muU = n1n2 / 2.0;
-  const sigmaU = Math.sqrt((n1n2 * (n1 + n2 + 1)) / 12.0);
+  // Variance with the standard tie correction:
+  //   σ_U = sqrt( (n1·n2/12) · ((n+1) − Σ(t³−t)/(n(n−1))) )
+  // where the sum runs over tie-group sizes t and n = n1+n2. Reduces to the
+  // untied sqrt(n1·n2·(n+1)/12) when there are no ties (tieCorrection == 0).
+  const n = n1 + n2;
+  const tieTerm = n > 1 ? tieCorrection / (n * (n - 1)) : 0;
+  const sigmaU = Math.sqrt((n1n2 / 12.0) * ((n + 1) - tieTerm));
 
   const z = sigmaU > 0 ? (uStat - muU + 0.5) / sigmaU : 0;
   const p = twoTailedNormalP(z);

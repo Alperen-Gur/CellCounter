@@ -83,11 +83,14 @@ interface ModelCardProps {
 }
 
 function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
-  const { availability, probing, phase, logLines, error } = install;
+  const { availability, uv, probing, phase, logLines, error } = install;
 
   const installing = model.available && phase === "installing";
   const installed = model.available && availability?.installed === true;
   const runnable = installed; // the Run flow gates on this
+  // The install IS `uv sync`, so surface a missing uv toolchain on the button
+  // itself instead of letting the user click into a raw spawn error.
+  const uvMissing = uv != null && !uv.installed;
 
   const cardClass =
     "cc-model-card" +
@@ -133,7 +136,13 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
               type="button"
               className="cc-btn cc-models__btn"
               onClick={() => void install.install()}
-              disabled={installing}
+              disabled={installing || uvMissing}
+              title={
+                uvMissing
+                  ? (uv?.reason ??
+                    "The uv toolchain isn't installed — install uv first.")
+                  : undefined
+              }
             >
               <Icon name={installed ? "refresh" : "download"} size={15} />
               {installing

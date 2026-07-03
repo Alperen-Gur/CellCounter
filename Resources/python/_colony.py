@@ -186,5 +186,5 @@ def compute(labels: Any, px_per_um: float, image_shape: tuple[int, int]) -> dict
 
 
 def zero_stats() -> dict[str, float]:
-    """Return the canonical zero-valued stats dict (used by yolo_detect fallback)."""
+    """Return the canonical zero-valued stats dict (a fallback when detection yields no cells)."""
     return dict(_ZERO_STATS)

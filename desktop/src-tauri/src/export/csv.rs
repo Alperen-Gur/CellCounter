@@ -17,7 +17,8 @@ use tauri::{AppHandle, State};
 use crate::db::models::CellDto;
 use crate::db::repo::Db;
 use crate::export::provenance::{
-    fmt_g, fmt_thresholds_bracket, open_reader, resolve_out_path, ExportContext, Provenance,
+    fmt_g, fmt_thresholds_bracket, newline, open_reader, resolve_out_path, ExportContext,
+    Provenance,
 };
 use crate::paths::FileStore;
 
@@ -220,7 +221,8 @@ pub(crate) fn build_cells_csv(
         lines.push(row.join(sep));
     }
 
-    lines.join("\n") + "\n"
+    let nl = newline();
+    lines.join(nl) + nl
 }
 
 /// Write a per-cell `cells.csv` for `image_id`. The UI passes the live `cells`
@@ -296,6 +298,9 @@ const SUMMARY_HEADER: &[&str] = &[
 struct SummaryImage {
     file_name: String,
     imported_at: String,
+    /// Per-image confidence override; when present it wins over the global
+    /// slider for this image's effective cutoff (mirrors `AppState`).
+    confidence_override: Option<f64>,
     has_detection: bool,
     cells: Vec<CellDto>,
     image_stats: std::collections::BTreeMap<String, f64>,
@@ -304,13 +309,18 @@ struct SummaryImage {
 }
 
 /// Write a one-row-per-image `summary.csv` for the whole batch. All values come
-/// from the store (saved detections). A bare `out_path` filename lands under
-/// `Exports/`. Returns the absolute path.
+/// from the store (saved detections). Each image's cells are filtered by that
+/// image's effective confidence (`confidence_override ?? global` — matching
+/// `AppState.effectiveConfidence` and the Swift `writePerImageSummaryCSV`), so
+/// the summary counts agree with the on-screen overlay per image. The optional
+/// `confidence` is the global slider fallback (absent → 0, include all cells). A
+/// bare `out_path` filename lands under `Exports/`. Returns the absolute path.
 #[tauri::command]
 pub async fn export_batch_summary_csv(
     app: AppHandle,
     db: State<'_, Db>,
     batch_id: String,
+    confidence: Option<f64>,
     out_path: String,
 ) -> Result<String, String> {
     let _ = &db;
@@ -325,6 +335,7 @@ pub async fn export_batch_summary_csv(
         crate::export::provenance::load_batch_calibration(&conn, &batch_id)?
             .ok_or_else(|| format!("no batch with id {batch_id}"))?;
 
+    let global_confidence = confidence.unwrap_or(0.0);
     let images = load_batch_summary_images(&conn, &batch_id)?;
     let body = build_summary_csv(
         &images,
@@ -332,6 +343,7 @@ pub async fn export_batch_summary_csv(
         px_per_um,
         &px_per_um_source,
         &model_id,
+        global_confidence,
     );
 
     let resolved = resolve_out_path(&store, &out_path)?;
@@ -347,7 +359,7 @@ fn load_batch_summary_images(
 ) -> Result<Vec<SummaryImage>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT i.file_name, i.imported_at,
+            "SELECT i.file_name, i.imported_at, i.confidence_override,
                     d.detector_id, d.ran_at, d.cells_json, d.image_stats_json
                FROM images i
                LEFT JOIN detections d ON d.image_id = i.id
@@ -359,13 +371,15 @@ fn load_batch_summary_images(
         .query_map([batch_id], |r| {
             let file_name: String = r.get(0)?;
             let imported_at: String = r.get(1)?;
-            let detector_id: Option<String> = r.get(2)?;
-            let ran_at: Option<String> = r.get(3)?;
-            let cells_json: Option<String> = r.get(4)?;
-            let stats_json: Option<String> = r.get(5)?;
+            let confidence_override: Option<f64> = r.get(2)?;
+            let detector_id: Option<String> = r.get(3)?;
+            let ran_at: Option<String> = r.get(4)?;
+            let cells_json: Option<String> = r.get(5)?;
+            let stats_json: Option<String> = r.get(6)?;
             Ok((
                 file_name,
                 imported_at,
+                confidence_override,
                 detector_id,
                 ran_at,
                 cells_json,
@@ -377,7 +391,9 @@ fn load_batch_summary_images(
         .map_err(|e| e.to_string())?;
 
     let mut out = Vec::with_capacity(rows.len());
-    for (file_name, imported_at, detector_id, ran_at, cells_json, stats_json) in rows {
+    for (file_name, imported_at, confidence_override, detector_id, ran_at, cells_json, stats_json) in
+        rows
+    {
         let has_detection = cells_json.is_some();
         let cells = cells_json
             .as_deref()
@@ -389,6 +405,7 @@ fn load_batch_summary_images(
         out.push(SummaryImage {
             file_name,
             imported_at,
+            confidence_override,
             has_detection,
             cells,
             image_stats,
@@ -407,12 +424,16 @@ fn build_summary_csv(
     px_per_um: f64,
     px_per_um_source: &str,
     model_id: &str,
+    global_confidence: f64,
 ) -> String {
     let sep = ",";
     let small_t = thresholds.first().copied().unwrap_or(20.0);
     let large_t = thresholds.last().copied().unwrap_or(30.0);
 
-    // Provenance block over the batch (image-agnostic — no per-image hash).
+    // Provenance block over the batch (image-agnostic — no per-image hash). The
+    // confidence floor stamped here is the batch-wide global slider (mirrors the
+    // Swift summary, which threads `confidence` into the header); per-image
+    // overrides are applied to each row's cell filter below.
     let prov = Provenance {
         app_version: crate::export::provenance::APP_VERSION.to_string(),
         os_version: crate::export::provenance::os_descriptor(),
@@ -420,7 +441,7 @@ fn build_summary_csv(
         px_per_um,
         px_per_um_source: px_per_um_source.to_string(),
         thresholds: thresholds.to_vec(),
-        confidence_floor: 0.0,
+        confidence_floor: global_confidence,
         background_subtract: false,
         watershed_split: false,
         exported_at: crate::db::repo::now_iso8601(),
@@ -432,7 +453,12 @@ fn build_summary_csv(
 
     let mut lines: Vec<String> = Vec::new();
     lines.push(prov.as_csv_header());
-    lines.push(config_header_comment(thresholds, px_per_um, 0.0, model_id));
+    lines.push(config_header_comment(
+        thresholds,
+        px_per_um,
+        global_confidence,
+        model_id,
+    ));
     lines.push(SUMMARY_HEADER.join(sep));
 
     // Disambiguate duplicate filenames with _2, _3… (mirrors the Swift map).
@@ -443,10 +469,17 @@ fn build_summary_csv(
     let mut name_seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
 
     for img in images {
-        // Confidence floor for the summary is 0 (include all saved cells) — the
-        // Swift default when no cutoff is threaded; the batch summary aggregates
-        // the whole detection.
-        let cells: Vec<&CellDto> = img.cells.iter().collect();
+        // Filter this image's cells by ITS OWN effective cutoff
+        // (`confidence_override ?? global`), so each summary row aggregates over
+        // the same cells the on-screen overlay shows — matching Swift's
+        // `writePerImageSummaryCSV`. Absent both, `global_confidence` is 0 and
+        // all saved cells are included.
+        let effective_conf = img.confidence_override.unwrap_or(global_confidence);
+        let cells: Vec<&CellDto> = img
+            .cells
+            .iter()
+            .filter(|c| c.confidence >= effective_conf)
+            .collect();
         let n_cells = cells.len();
         let diameters: Vec<f64> = cells.iter().map(|c| c.diameter_um).collect();
 
@@ -566,5 +599,6 @@ fn build_summary_csv(
         lines.push(row.join(sep));
     }
 
-    lines.join("\n") + "\n"
+    let nl = newline();
+    lines.join(nl) + nl
 }

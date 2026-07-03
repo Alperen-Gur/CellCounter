@@ -16,7 +16,7 @@ final class PythonModuleImportCache: @unchecked Sendable {
     private let lock = NSLock()
     private var cache: [String: Bool] = [:]
 
-    /// - Parameter module: the importable module name, e.g. "ultralytics".
+    /// - Parameter module: the importable module name, e.g. "micro_sam".
     init(module: String) {
         self.module = module
     }
