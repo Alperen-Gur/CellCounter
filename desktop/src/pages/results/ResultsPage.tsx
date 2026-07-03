@@ -29,6 +29,7 @@ import { useAppStore } from "../../kernel/store/store";
 import { Icon } from "../../components/Icon";
 
 import { useResultsData } from "./useResultsData";
+import { applyRoiFilter } from "./roiFilter";
 import { AnalysisSidebar } from "./AnalysisSidebar";
 import { OverlayControls } from "./OverlayControls";
 import { QCBadges } from "./QCBadges";
@@ -92,7 +93,25 @@ export default function ResultsPage() {
     sourceHeight: currentImage?.heightPx,
   });
   useEditingKeymap({ editor, enabled: !!currentImage });
+  // OVERLAY cells: the full live list (engine cells while editing, else the
+  // detection cells). The overlay must render hidden/low-confidence cells too
+  // (dashed), so it is intentionally UNfiltered.
   const displayCells = editor.engine ? editor.cells : cells;
+
+  // SIDEBAR cells: when the editor is live it owns the cell list, but the
+  // sidebar must still count only the confidence-passing, ROI-included cells —
+  // exactly what `useResultsData.cells` does for the non-editing path. Run the
+  // live cells through the SAME confidence cutoff + ROI filter so every
+  // count-driven panel (count, size bins, histograms, F1) honours the slider
+  // and the ROI include/exclude panel. When no engine is loaded, `cells` from
+  // useResultsData is already filtered, so pass it through unchanged.
+  const sidebarCells = useMemo(() => {
+    if (!editor.engine) return cells;
+    const confFiltered = editor.cells.filter(
+      (c) => c.confidence >= confidenceCutoff,
+    );
+    return applyRoiFilter(confFiltered, rois);
+  }, [editor.engine, editor.cells, cells, confidenceCutoff, rois]);
 
   // Resolve the on-disk image path to a webview-loadable URL. Recomputed only
   // when the stored path changes.
@@ -328,7 +347,7 @@ export default function ResultsPage() {
         batch={batch}
         image={currentImage}
         imageSrc={imageSrc}
-        cells={displayCells}
+        cells={sidebarCells}
         annotations={annotations}
         rois={rois}
         imageStats={detection?.imageStats}

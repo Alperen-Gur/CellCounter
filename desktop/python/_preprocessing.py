@@ -38,16 +38,30 @@ def apply(img, args):
 
         radius = max(5, int(getattr(args, "rolling_ball_radius", 50)))
 
+        # Compute the subtraction in a signed/float-wide dtype and clip BEFORE
+        # casting back. Doing `out - bg` directly in a narrow unsigned dtype
+        # (e.g. uint8) wraps around modularly wherever bg > pixel, turning
+        # background-subtracted regions into bright noise; the later clip then
+        # runs on already-corrupted data. Promote to a signed dtype wide enough
+        # to hold the difference, clip to the original dtype's range, cast back.
+        info = np.iinfo(img.dtype) if np.issubdtype(img.dtype, np.integer) else None
+        hi = info.max if info is not None else None
+
+        def _subtract(plane):
+            bg = restoration.rolling_ball(plane, radius=radius)
+            # int32 comfortably holds uint8/uint16 differences; float images use
+            # their own dtype and just clip at 0.
+            if info is not None:
+                diff = plane.astype(np.int32) - bg.astype(np.int32)
+                return np.clip(diff, 0, hi).astype(img.dtype)
+            diff = plane.astype(np.float64) - bg.astype(np.float64)
+            return np.clip(diff, 0.0, None).astype(img.dtype)
+
         # If multi-channel (H, W, C), run rolling ball per channel.
         if out.ndim == 3:
             for c in range(out.shape[2]):
-                bg = restoration.rolling_ball(out[..., c], radius=radius)
-                out[..., c] = out[..., c] - bg
+                out[..., c] = _subtract(out[..., c])
         else:
-            bg = restoration.rolling_ball(out, radius=radius)
-            out = out - bg
-
-        # Clip negative values introduced by subtraction, restore original dtype.
-        out = np.clip(out, 0, None).astype(img.dtype)
+            out = _subtract(out)
 
     return out

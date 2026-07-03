@@ -38,13 +38,13 @@ import {
 import { evaluateF1 } from "../../kernel/stats/stats";
 import { Icon } from "../../components/Icon";
 
-import { binColor } from "./binColors";
+import { binColor } from "../../kernel/theme/binColors";
 import {
   histogramBuckets,
   bucketCenterUm,
   HIST_MIN,
   HIST_MAX,
-} from "./histogram";
+} from "../../kernel/stats/histogram";
 import { IntensityHistogram } from "./IntensityHistogram";
 
 // ---------------------------------------------------------------------------

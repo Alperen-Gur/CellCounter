@@ -13,6 +13,7 @@
 
 import type { BatchDTO, CellDTO, DetectionDTO, ImageDTO } from "../../kernel/types";
 import { binIndex, binsFromThresholds } from "../../kernel/calibration/calibration";
+import { mean, stdDev } from "../../kernel/stats/stats";
 
 // ---------------------------------------------------------------------------
 // Per-image status
@@ -64,33 +65,9 @@ export interface BatchAggregates {
   sdDiameterUm: number;
 }
 
-// ---------------------------------------------------------------------------
-// Descriptive statistics (population — matches Swift summary math)
-// ---------------------------------------------------------------------------
-
-/** Arithmetic mean; 0 for an empty list. */
-export function mean(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  let sum = 0;
-  for (const x of xs) sum += x;
-  return sum / xs.length;
-}
-
-/**
- * Population standard deviation (divide by N, not N−1). Matches the descriptive
- * σ the Swift `ExportService` summary and Batch view report. Returns 0 for
- * fewer than 2 samples.
- */
-export function stdDev(xs: number[]): number {
-  if (xs.length < 2) return 0;
-  const m = mean(xs);
-  let acc = 0;
-  for (const x of xs) {
-    const d = x - m;
-    acc += d * d;
-  }
-  return Math.sqrt(acc / xs.length);
-}
+// Descriptive statistics (population mean / σ) live in `kernel/stats/stats.ts`
+// — the single owner shared with the Compare view, so the two views can never
+// report mismatched summary numbers. Imported above as `mean` / `stdDev`.
 
 // ---------------------------------------------------------------------------
 // Row derivation

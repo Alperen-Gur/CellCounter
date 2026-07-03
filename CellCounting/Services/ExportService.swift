@@ -285,9 +285,7 @@ enum ExportService {
             guard let v else { return "—" }
             return String(format: "%.\(decimals)f", v)
         }
-        let binsList = snapshot.thresholds.map { v -> String in
-            v.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(v)) : String(format: "%.1f", v)
-        }.joined(separator: ", ")
+        let binsList = snapshot.thresholds.map(\.trimmedString).joined(separator: ", ")
 
         let coloniesLine: String = {
             if let n = snapshot.nColonies, let pct = snapshot.confluencyPct {
@@ -435,13 +433,10 @@ enum ExportService {
                                     pxPerUm: Double,
                                     confidence: Double,
                                     modelId: String) -> String {
-        let binsStr = "[" + thresholds.map { binFmt($0) }.joined(separator: ",") + "]"
+        let binsStr = "[" + thresholds.map(\.trimmedString).joined(separator: ",") + "]"
         let confStr = String(format: "%.2f", confidence)
         let pxStr   = String(format: "%g", pxPerUm)
         return "# confidence=\(confStr); bins=\(binsStr); model=\(modelId); pxPerUm=\(pxStr)"
-    }
-    private static func binFmt(_ v: Double) -> String {
-        v.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(v)) : String(v)
     }
 
     // MARK: — Annotated PNG
@@ -616,21 +611,15 @@ enum ExportService {
         ctx.restoreGState()
     }
 
-    // MARK: — Bin colors (mirrors Tokens.binColor without importing SwiftUI Color into CGContext)
+    // MARK: — Bin colors
 
-    /// OKLCH values copied from Theme/Tokens.swift bin1...bin5
-    private static let binOKLCH: [(l: Double, c: Double, h: Double)] = [
-        (0.45, 0.14, 280),
-        (0.58, 0.13, 230),
-        (0.68, 0.11, 180),
-        (0.78, 0.13, 105),
-        (0.82, 0.16,  60),
-    ]
-
+    /// CGColor for bin `index`, derived from the single `Tokens.binRamp` source
+    /// of truth (OKLCH → sRGB) so exported overlays never drift from the
+    /// on-screen SwiftUI swatches.
     private static func binCGColor(_ index: Int) -> CGColor {
-        let i = max(0, min(index, binOKLCH.count - 1))
-        let v = binOKLCH[i]
-        let s = OKLCH(v.l, v.c, v.h).srgb
+        let ramp = Tokens.binRamp
+        let i = max(0, min(index, ramp.count - 1))
+        let s = ramp[i].srgb
         return CGColor(red: CGFloat(s.r),
                        green: CGFloat(s.g),
                        blue: CGFloat(s.b),

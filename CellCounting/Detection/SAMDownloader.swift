@@ -17,7 +17,7 @@ struct SAMDownloader: ModelDownloader {
     let family: ModelFamily = .sam
 
     /// Per-interpreter import-probe cache. See YOLO/StarDist for the same pattern.
-    fileprivate static let importCache = SAMImportCheckCache()
+    fileprivate static let importCache = PythonModuleImportCache(module: "micro_sam")
 
     // MARK: — App id → micro_sam model_type mapping
 
@@ -88,7 +88,7 @@ struct SAMDownloader: ModelDownloader {
         guard let modelType = Self.modelType(for: modelId) else { return false }
         guard let py = venvPython() else { return false }
         let importable = await Task.detached(priority: .userInitiated) {
-            Self.importCache.isMicroSAMImportable(pythonURL: py)
+            Self.importCache.isImportable(pythonURL: py)
         }.value
         if !importable { return false }
         let dir = cacheDir(for: modelType)
@@ -315,34 +315,6 @@ private final class TailBuffer: @unchecked Sendable {
     func snapshot() -> [String] {
         lock.lock(); defer { lock.unlock() }
         return items
-    }
-}
-
-/// Per-interpreter cache for the `import micro_sam` probe so a Models-view
-/// refresh doesn't fork N processes back-to-back.
-fileprivate final class SAMImportCheckCache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cache: [String: Bool] = [:]
-
-    func isMicroSAMImportable(pythonURL: URL) -> Bool {
-        let key = pythonURL.path
-        lock.lock()
-        if let v = cache[key] { lock.unlock(); return v }
-        lock.unlock()
-        let ok = SAMDownloader.runSync(pythonURL, args: ["-c", "import micro_sam"]) == 0
-        lock.lock(); cache[key] = ok; lock.unlock()
-        return ok
-    }
-
-    /// Non-blocking peek. Returns nil if never probed.
-    func cachedAnswer(pythonURL: URL) -> Bool? {
-        lock.lock(); defer { lock.unlock() }
-        return cache[pythonURL.path]
-    }
-
-    func invalidate(pythonURL: URL) {
-        lock.lock(); defer { lock.unlock() }
-        cache[pythonURL.path] = nil
     }
 }
 

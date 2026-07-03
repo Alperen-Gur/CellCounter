@@ -34,28 +34,10 @@ export interface PooledCondition {
   cells: CellDTO[];
 }
 
-/** Arithmetic mean of a sample; 0 for an empty list. */
-export function mean(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  let s = 0;
-  for (const x of xs) s += x;
-  return s / xs.length;
-}
-
-/**
- * Population standard deviation (÷N), matching the σ the Swift ConditionPanel
- * shows (`variance = Σ(x−mean)² / n`). Returns 0 for an empty sample.
- */
-export function stdDev(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  const m = mean(xs);
-  let acc = 0;
-  for (const x of xs) {
-    const d = x - m;
-    acc += d * d;
-  }
-  return Math.sqrt(acc / xs.length);
-}
+// Population mean / σ live in `kernel/stats/stats.ts` (the single owner shared
+// with the Batch view). Re-exported here so this page's components keep a stable
+// `./comparePooling` import surface.
+export { mean, stdDev } from "../../kernel/stats/stats";
 
 /** Diameters (µm) of a pooled condition — the vector Mann–Whitney runs on. */
 export function diametersOf(pool: PooledCondition): number[] {

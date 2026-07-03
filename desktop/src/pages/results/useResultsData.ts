@@ -5,7 +5,8 @@
  *
  * Mirrors the data plumbing of the Swift `ResultsView` / `ResultsSidebar`:
  *   - `currentBatch` from the store's `currentBatchId`
- *   - the batch's images sorted by `importedAt` (Swift `sortedImages`)
+ *   - the batch's images in `batch.imageIds` order (matches the Batch table's
+ *     row order + the seg-npy panel, so a row click opens the right image)
  *   - `currentImage` = images[currentImageIdx] (clamped)
  *   - the image's detection (`getDetection`), ground-truth annotations, and ROIs
  *   - `cells` = detection cells, filtered by effectiveConfidence THEN ROIs
@@ -37,7 +38,7 @@ import { DETECTION_UPDATED_EVENT } from "./segnpy/SegNpyPanel";
 export interface ResultsData {
   /** The open batch, or null while none is selected / still loading. */
   batch: BatchDTO | null;
-  /** The batch's images, sorted by importedAt ascending. */
+  /** The batch's images, in `batch.imageIds` order. */
   images: ImageDTO[];
   /** Clamped index into `images`. */
   imageIdx: number;
@@ -103,16 +104,19 @@ export function useResultsData(): ResultsData {
         setLoading(false);
         return;
       }
-      // The batch carries imageIds; resolve to full ImageDTOs and sort by
-      // importedAt (Swift `sortedImages`). allImages() is the port's only image
-      // read, so we filter to this batch's ids client-side.
+      // The batch carries imageIds; resolve to full ImageDTOs in that declared
+      // order. allImages() is the port's only image read, so we filter to this
+      // batch's ids client-side. Ordering MUST follow `batch.imageIds` (not
+      // importedAt): the Batch table navigates by row position in this same
+      // `imageIds` order (BatchTable.openInResults → setCurrentImageIdx), and
+      // the seg-npy panel resolves `batch.imageIds[currentImageIdx]`, so any
+      // other ordering here would open a different image than the one clicked.
       const all = await port.allImages();
       if (req !== batchReqRef.current) return;
       const byId = new Map(all.map((im) => [im.id, im]));
       const ordered = b.imageIds
         .map((id) => byId.get(id))
-        .filter((im): im is ImageDTO => im !== undefined)
-        .sort((a, c) => (a.importedAt < c.importedAt ? -1 : a.importedAt > c.importedAt ? 1 : 0));
+        .filter((im): im is ImageDTO => im !== undefined);
       setImages(ordered);
       setLoading(false);
     })();

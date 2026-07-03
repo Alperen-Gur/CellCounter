@@ -262,62 +262,16 @@ private struct GeneralSection: View {
 
 private struct AppearanceSection: View {
     @Environment(AppTheme.self) private var theme
-    @AppStorage("cc-bin-palette") private var selectedPalette = "viridis"
 
     private let accentChoices = AccentChoice.all
     private let themeModes: [(value: ThemeMode, label: String)] = [
         (.system, "System"), (.light, "Light"), (.dark, "Dark")
     ]
 
-    private let palettes: [(id: String, name: String, colors: [Color])] = [
-        ("viridis", "Viridis", Tokens.bins),
-        ("coral", "Coral steps", [
-            Color(OKLCH(0.42, 0.10, 30)), Color(OKLCH(0.55, 0.13, 30)),
-            Color(OKLCH(0.68, 0.15, 30)), Color(OKLCH(0.78, 0.13, 30)),
-            Color(OKLCH(0.86, 0.09, 30))
-        ]),
-        ("blues", "Cool blues", [
-            Color(OKLCH(0.30, 0.13, 260)), Color(OKLCH(0.45, 0.13, 250)),
-            Color(OKLCH(0.60, 0.12, 230)), Color(OKLCH(0.72, 0.10, 210)),
-            Color(OKLCH(0.84, 0.08, 200))
-        ]),
-        // Additional palettes
-        ("magma", "Magma", [
-            Color(OKLCH(0.18, 0.08, 295)), Color(OKLCH(0.38, 0.16, 10)),
-            Color(OKLCH(0.58, 0.18, 30)),  Color(OKLCH(0.76, 0.14, 60)),
-            Color(OKLCH(0.93, 0.06, 80))
-        ]),
-        ("inferno", "Inferno", [
-            Color(OKLCH(0.16, 0.07, 280)), Color(OKLCH(0.36, 0.17, 10)),
-            Color(OKLCH(0.57, 0.19, 35)),  Color(OKLCH(0.78, 0.15, 65)),
-            Color(OKLCH(0.96, 0.06, 85))
-        ]),
-        ("plasma", "Plasma", [
-            Color(OKLCH(0.35, 0.18, 285)), Color(OKLCH(0.48, 0.20, 330)),
-            Color(OKLCH(0.62, 0.18, 0)),   Color(OKLCH(0.76, 0.15, 45)),
-            Color(OKLCH(0.90, 0.12, 85))
-        ]),
-        ("cividis", "Cividis", [
-            Color(OKLCH(0.32, 0.04, 235)), Color(OKLCH(0.46, 0.06, 220)),
-            Color(OKLCH(0.60, 0.07, 195)), Color(OKLCH(0.74, 0.09, 105)),
-            Color(OKLCH(0.88, 0.09, 90))
-        ]),
-        ("greys", "Greys", [
-            Color(OKLCH(0.20, 0, 0)), Color(OKLCH(0.40, 0, 0)),
-            Color(OKLCH(0.58, 0, 0)), Color(OKLCH(0.75, 0, 0)),
-            Color(OKLCH(0.90, 0, 0))
-        ]),
-        ("rdylgn", "Red–Yellow–Green", [
-            Color(OKLCH(0.52, 0.20, 25)),  Color(OKLCH(0.68, 0.18, 50)),
-            Color(OKLCH(0.86, 0.14, 95)),  Color(OKLCH(0.72, 0.15, 140)),
-            Color(OKLCH(0.55, 0.17, 145))
-        ]),
-    ]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: "Appearance",
-                           subtitle: "How the app looks. Bin palette also drives overlay colors in the image viewer.")
+                           subtitle: "How the app looks.")
 
             SetRow(label: "Theme",
                    desc: "Match system, or force light/dark") {
@@ -334,27 +288,6 @@ private struct AppearanceSection: View {
                     }
                 }
             }
-
-            HStack(alignment: .center, spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Bin palette")
-                        .font(.system(size: 13.5, weight: .medium))
-                        .foregroundStyle(Tokens.text)
-                    Text("Perceptually-ordered, colorblind-safe")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Tokens.textTertiary)
-                }
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 6) {
-                    ForEach(palettes, id: \.id) { p in
-                        PalettePill(palette: p, isSelected: selectedPalette == p.id) {
-                            selectedPalette = p.id
-                        }
-                    }
-                }
-            }
-            .padding(.vertical, 14)
-            .overlay(alignment: .bottom) { Rectangle().fill(Tokens.divider).frame(height: 0.5) }
         }
     }
 }
@@ -376,45 +309,6 @@ private struct AccentSwatch: View {
                         .strokeBorder(isSelected ? Tokens.text : Tokens.border,
                                       lineWidth: isSelected ? 2 : 0.5)
                 )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct PalettePill: View {
-    let palette: (id: String, name: String, colors: [Color])
-    let isSelected: Bool
-    let action: () -> Void
-    @Environment(AppTheme.self) private var theme
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                HStack(spacing: 2) {
-                    ForEach(0..<palette.colors.count, id: \.self) { i in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(palette.colors[i])
-                            .frame(width: 12, height: 12)
-                    }
-                }
-                Text(palette.name)
-                    .font(.system(size: 12))
-                if isSelected {
-                    Icon("check", size: 12)
-                        .foregroundStyle(theme.accentColor)
-                }
-            }
-            .foregroundStyle(Tokens.text)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Tokens.bgElevated)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(Tokens.borderStrong, lineWidth: 0.5)
-            )
         }
         .buttonStyle(.plain)
     }
@@ -1476,7 +1370,7 @@ private struct AboutSection: View {
         let ccKeys = [
             "cc-default-model", "cc-max-parallel",
             "cc-theme", "cc-accent",
-            "cc-bin-palette", "cc-use-specimen-defaults",
+            "cc-use-specimen-defaults",
             "cc-verify-checksums", "cc-use-gpu",
             "cc-channels-cyto", "cc-bg-subtract", "cc-rolling-ball",
             "cc-watershed", "cc-watershed-min-distance-um",

@@ -19,7 +19,7 @@ import {
   binsFromThresholds,
   binIndex,
 } from "../../kernel/calibration/calibration";
-import { binColor } from "./binColors";
+import { binColor } from "../../kernel/theme/binColors";
 import { PooledHistogram } from "./PooledHistogram";
 
 interface ConditionPanelProps {

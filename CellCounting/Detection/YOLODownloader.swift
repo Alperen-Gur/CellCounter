@@ -55,7 +55,7 @@ struct YOLODownloader: ModelDownloader {
         }
         // Run the `import ultralytics` probe off-main and seed the cache.
         return await Task.detached(priority: .userInitiated) {
-            Self.importCache.isUltralyticsImportable(pythonURL: py)
+            Self.importCache.isImportable(pythonURL: py)
         }.value
     }
 
@@ -208,12 +208,12 @@ struct YOLODownloader: ModelDownloader {
     /// Session-lived cache for `python -c "import ultralytics"`. Keyed by
     /// python interpreter path. Sub-second per check, but cumulative cost
     /// across a render of N rows was the original main-thread stall.
-    fileprivate static let importCache = YOLOImportCheckCache()
+    fileprivate static let importCache = PythonModuleImportCache(module: "ultralytics")
 
     /// Synchronous import check. Only called from off-main contexts
     /// (`probeInstalled` and `install`). `isInstalled` reads from the cache.
     private static func canImportUltralytics(pythonURL: URL) -> Bool {
-        Self.importCache.isUltralyticsImportable(pythonURL: pythonURL)
+        Self.importCache.isImportable(pythonURL: pythonURL)
     }
 
     /// Streams `pip install` output into `progress.append(_:)` so the UI can show it.
@@ -309,50 +309,6 @@ struct YOLODownloader: ModelDownloader {
                     continuation.resume(returning: false)
                 }
             }
-        }
-    }
-}
-
-/// Per-interpreter cache for the `import ultralytics` probe so a Models-view
-/// refresh doesn't fork N processes back-to-back.
-fileprivate final class YOLOImportCheckCache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cache: [String: Bool] = [:]
-
-    func isUltralyticsImportable(pythonURL: URL) -> Bool {
-        let key = pythonURL.path
-        lock.lock()
-        if let v = cache[key] { lock.unlock(); return v }
-        lock.unlock()
-        let ok = Self.runImportCheck(pythonURL: pythonURL)
-        lock.lock(); cache[key] = ok; lock.unlock()
-        return ok
-    }
-
-    /// Non-blocking peek into the cache. Returns nil if never probed.
-    func cachedAnswer(pythonURL: URL) -> Bool? {
-        lock.lock(); defer { lock.unlock() }
-        return cache[pythonURL.path]
-    }
-
-    func invalidate(pythonURL: URL) {
-        lock.lock(); defer { lock.unlock() }
-        cache[pythonURL.path] = nil
-    }
-
-    private static func runImportCheck(pythonURL: URL) -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else { return false }
-        let p = Process()
-        p.executableURL = pythonURL
-        p.arguments = ["-c", "import ultralytics"]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do {
-            try p.run()
-            p.waitUntilExit()
-            return p.terminationStatus == 0
-        } catch {
-            return false
         }
     }
 }

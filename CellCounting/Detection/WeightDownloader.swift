@@ -30,54 +30,44 @@ enum WeightDownloader {
                          progress: ModelInstallProgress) async throws {
         try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        let session = URLSession(configuration: .default)
-        let req = URLRequest(url: url)
-        let (asyncBytes, response) = try await session.bytes(for: req)
+
+        // Stream straight to a temp file via URLSessionDownloadTask. This is the
+        // efficient path for multi-GB weights: URLSession writes to disk itself,
+        // so we never iterate the body a byte at a time (the AsyncBytes pitfall)
+        // nor grow a Data buffer in memory. Progress + throttled rate come from
+        // the delegate's didWriteData callback.
+        let delegate = DownloadProgressDelegate(progress: progress)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        let tempURL: URL
+        let response: URLResponse
+        do {
+            (tempURL, response) = try await session.download(for: URLRequest(url: url))
+        } catch is CancellationError {
+            throw Error.cancelled
+        } catch {
+            throw Error.ioError(error)
+        }
+
         guard let http = response as? HTTPURLResponse else {
             throw Error.badResponse(0)
         }
         guard (200...299).contains(http.statusCode) else {
+            try? FileManager.default.removeItem(at: tempURL)
             throw Error.badResponse(http.statusCode)
         }
-        let total = http.expectedContentLength
-        FileManager.default.createFile(atPath: dest.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: dest) else {
-            throw Error.ioError(NSError(domain: "WeightDownloader", code: 1,
-                                         userInfo: [NSLocalizedDescriptionKey: "Cannot open \(dest.path)"]))
-        }
-        defer { try? handle.close() }
 
-        var written: Int64 = 0
-        var chunk = Data()
-        chunk.reserveCapacity(64 * 1024)
-        var lastReport = Date()
-        var lastBytes: Int64 = 0
-
-        for try await byte in asyncBytes {
-            chunk.append(byte)
-            if chunk.count >= 64 * 1024 {
-                try handle.write(contentsOf: chunk)
-                written += Int64(chunk.count)
-                chunk.removeAll(keepingCapacity: true)
-                let now = Date()
-                let elapsed = now.timeIntervalSince(lastReport)
-                if elapsed > 0.25 {
-                    let rate = Int64(Double(written - lastBytes) / elapsed)
-                    let p = total > 0 ? Double(written) / Double(total) : 0
-                    await MainActor.run {
-                        progress.stage = .downloading(progress: p, bytesPerSec: rate)
-                    }
-                    lastReport = now
-                    lastBytes = written
-                }
+        // Move the completed download into place (replacing any prior file).
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
             }
-            try Task.checkCancellation()
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw Error.ioError(error)
         }
-        if !chunk.isEmpty {
-            try handle.write(contentsOf: chunk)
-            written += Int64(chunk.count)
-        }
-        try handle.close()
 
         // Honour the `cc-verify-checksums` user pref (default: true). The
         // `verifyChecksum` parameter still acts as an explicit override for
@@ -111,4 +101,41 @@ enum WeightDownloader {
         let text = String(data: data, encoding: .utf8) ?? ""
         return text.split(separator: " ").first.map(String.init) ?? ""
     }
+}
+
+/// Bridges `URLSessionDownloadTask` progress into `ModelInstallProgress`,
+/// throttling UI updates to ~4/s and computing a byte rate between reports.
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let progress: ModelInstallProgress
+    private var lastReport = Date()
+    private var lastBytes: Int64 = 0
+
+    init(progress: ModelInstallProgress) {
+        self.progress = progress
+    }
+
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastReport)
+        guard elapsed > 0.25 else { return }
+        let rate = Int64(Double(totalBytesWritten - lastBytes) / elapsed)
+        let p = totalBytesExpectedToWrite > 0
+            ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+            : 0
+        lastReport = now
+        lastBytes = totalBytesWritten
+        Task { @MainActor in
+            progress.stage = .downloading(progress: p, bytesPerSec: rate)
+        }
+    }
+
+    // Required by the protocol; the async `download(for:)` API consumes the
+    // finished file via its returned temp URL, so nothing to do here.
+    func urlSession(_ session: URLSession,
+                    downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {}
 }

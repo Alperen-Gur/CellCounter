@@ -85,7 +85,15 @@ struct CellposeDetectionService: DetectionService {
 
         let outcome: SidecarOutcome
         do {
-            outcome = try await Self.runSidecar(pythonURL: pythonURL, args: args)
+            // Stream stderr lines into a `ccDetectionStage` notification so the
+            // UI shows what cellpose is doing (loading model, computing flows,
+            // running dynamics, …) instead of sitting at 0% for 60–90s.
+            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args) { line in
+                NotificationCenter.default.post(
+                    name: .ccDetectionStage,
+                    object: nil,
+                    userInfo: ["line": line])
+            }
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
@@ -160,138 +168,4 @@ struct CellposeDetectionService: DetectionService {
                                imageStats: decoded.image_stats)
     }
 
-    // MARK: — Sidecar plumbing (kept self-contained per the family-service contract)
-
-    private struct SidecarOutcome {
-        var exitCode: Int32
-        var stdout: Data
-        var stderr: Data
-    }
-
-    /// Spawn the sidecar Process off the main actor and bridge its termination
-    /// handler into structured concurrency. The continuation is resumed at
-    /// most once thanks to `ResumeFlag`.
-    ///
-    /// Pass-13: stderr is streamed line-by-line into a `ccDetectionStage`
-    /// notification so the UI can show what cellpose is actually doing
-    /// (loading model, computing flows, running dynamics, …). Without this
-    /// the ProcessingView bar sits at 0% for 60–90s and looks broken.
-    private static func runSidecar(pythonURL: URL, args: [String]) async throws -> SidecarOutcome {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SidecarOutcome, Error>) in
-            Task.detached(priority: .userInitiated) {
-                let process = Process()
-                process.executableURL = pythonURL
-                process.arguments = args
-
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
-
-                // Collected stderr — we still want the full buffer for error
-                // surfacing on non-zero exit, but we *also* tap each line as
-                // it arrives so the UI can show live progress.
-                let stderrAccumulator = CellposeStderrSink()
-                stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if chunk.isEmpty { return } // EOF
-                    stderrAccumulator.append(chunk)
-                    guard let text = String(data: chunk, encoding: .utf8) else { return }
-                    for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-                        let line = String(raw).trimmingCharacters(in: .whitespaces)
-                        guard !line.isEmpty else { continue }
-                        Task { @MainActor in
-                            NotificationCenter.default.post(
-                                name: .ccDetectionStage,
-                                object: nil,
-                                userInfo: ["line": line])
-                        }
-                    }
-                }
-
-                // Pass-14: drain stdout CONCURRENTLY too. Reading only at
-                // terminationHandler time deadlocks for any payload bigger
-                // than the OS pipe buffer (~16–64 KB on macOS). A 130-cell
-                // JSON payload is ~60 KB — right at the limit. The Python
-                // side blocks on `sys.stdout.write(...)`, we block on
-                // `process.terminationHandler` never firing, and the user
-                // sits forever on "serializing JSON…".
-                let stdoutAccumulator = CellposeStderrSink()
-                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if chunk.isEmpty { return } // EOF
-                    stdoutAccumulator.append(chunk)
-                }
-
-                let resumed = CellposeResumeFlag()
-
-                process.terminationHandler = { proc in
-                    // Detach BOTH readability handlers before final drain —
-                    // otherwise they can race the readToEnd() calls below.
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                    // Pull anything still sitting in the OS pipe buffer that
-                    // the handlers missed between the last fire and EOF.
-                    if let tailOut = try? stdoutPipe.fileHandleForReading.readToEnd() {
-                        stdoutAccumulator.append(tailOut)
-                    }
-                    if let tailErr = try? stderrPipe.fileHandleForReading.readToEnd() {
-                        stderrAccumulator.append(tailErr)
-                    }
-                    if resumed.markAndCheck() {
-                        continuation.resume(returning: SidecarOutcome(
-                            exitCode: proc.terminationStatus,
-                            stdout: stdoutAccumulator.snapshot(),
-                            stderr: stderrAccumulator.snapshot()))
-                    }
-                }
-
-                do {
-                    try process.run()
-                    // Pass-13: hand the Process to the global tracker so it
-                    // gets SIGTERM'd on app quit. terminationHandler will
-                    // un-register via the chained callback the tracker installs.
-                    Task { @MainActor in
-                        ChildProcessTracker.shared.register(process, kind: .detection)
-                    }
-                } catch {
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                    if resumed.markAndCheck() {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Thread-safe accumulator for the cellpose subprocess's stderr stream.
-/// readabilityHandler fires on a background queue and the terminationHandler
-/// reads `snapshot()` — both serialize through `lock`.
-private final class CellposeStderrSink: @unchecked Sendable {
-    private let lock = NSLock()
-    private var buffer = Data()
-
-    func append(_ chunk: Data) {
-        lock.lock(); defer { lock.unlock() }
-        buffer.append(chunk)
-    }
-
-    func snapshot() -> Data {
-        lock.lock(); defer { lock.unlock() }
-        return buffer
-    }
-}
-
-/// One-shot resume guard for the Process termination handler.
-private final class CellposeResumeFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fired = false
-    func markAndCheck() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if fired { return false }
-        fired = true
-        return true
-    }
 }

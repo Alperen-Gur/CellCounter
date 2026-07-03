@@ -289,22 +289,9 @@ struct ResultsView: View {
     /// Pass-15 (A2): delete every cell in `selectedCellIds` from the current
     /// image's detection. Mirrors EditableOverlay.deleteCurrentSelection so the
     /// keyboard shortcut still works when the overlay doesn't hold focus.
-    /// Empty-selection is a no-op (caller already gates).
+    /// Empty-selection is a no-op. The mutation itself lives on AppState.removeCells.
     fileprivate func deleteSelectedCells() {
-        guard let image = state.currentImage,
-              let detection = image.detection else { return }
-        guard !selectedCellIds.isEmpty else { return }
-        let victims = detection.cells.filter { selectedCellIds.contains($0.id) }
-        guard !victims.isEmpty else {
-            selectedCellIds.removeAll()
-            return
-        }
-        detection.cells.removeAll { selectedCellIds.contains($0.id) }
-        try? state.repos.context.save()
-        for c in victims {
-            state.recordCorrection(kind: "remove", cellId: c.id,
-                                   cx: c.cx, cy: c.cy, diameter: c.diameter)
-        }
+        state.removeCells(selectedCellIds)
         selectedCellIds.removeAll()
     }
 }
@@ -407,7 +394,8 @@ private struct ViewerPanel: View {
                         // selection deletes the selection in one go instead
                         // of switching to .remove mode.
                         if !selectedCellIds.isEmpty {
-                            deleteSelectedCellsFromToolbar()
+                            state.removeCells(selectedCellIds)
+                            selectedCellIds.removeAll()
                             return true
                         }
                         return false
@@ -509,26 +497,6 @@ private struct ViewerPanel: View {
         }
     }
 
-    /// Pass-15 (A2): delete every cell in `selectedCellIds` from the current
-    /// image's detection. Used by the EditorModeToolbar's "delete selected"
-    /// override when the user clicks Remove with a non-empty selection.
-    private func deleteSelectedCellsFromToolbar() {
-        guard let image = state.currentImage,
-              let detection = image.detection else { return }
-        guard !selectedCellIds.isEmpty else { return }
-        let victims = detection.cells.filter { selectedCellIds.contains($0.id) }
-        guard !victims.isEmpty else {
-            selectedCellIds.removeAll()
-            return
-        }
-        detection.cells.removeAll { selectedCellIds.contains($0.id) }
-        try? state.repos.context.save()
-        for c in victims {
-            state.recordCorrection(kind: "remove", cellId: c.id,
-                                   cx: c.cx, cy: c.cy, diameter: c.diameter)
-        }
-        selectedCellIds.removeAll()
-    }
 }
 
 // MARK: — Real-image viewer
@@ -1374,7 +1342,7 @@ private struct SizeBinRow: View {
                         .onTapGesture {
                             guard let i = thresholdIndex,
                                   state.thresholds.indices.contains(i) else { return }
-                            text = formatThreshold(state.thresholds[i])
+                            text = state.thresholds[i].trimmedString
                             editing = true
                             focused = true
                         }
@@ -1446,9 +1414,6 @@ private struct SizeBinRow: View {
         }
     }
 
-    private func formatThreshold(_ v: Double) -> String {
-        v.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(v)) : String(format: "%.1f", v)
-    }
 }
 
 // MARK: — Distribution panel

@@ -90,8 +90,6 @@ pub(crate) fn resolve_out_path(store: &FileStore, out_path: &str) -> Result<Path
 pub(crate) struct ExportContext {
     pub image_id: String,
     pub file_name: String,
-    pub width_px: i64,
-    pub height_px: i64,
     pub stored_path: PathBuf,
     pub file_hash: Option<String>,
     pub confidence_override: Option<f64>,
@@ -117,24 +115,22 @@ impl ExportContext {
         // --- image row ---
         let image = conn
             .query_row(
-                "SELECT file_name, width_px, height_px, file_hash, confidence_override, batch_id
+                "SELECT file_name, file_hash, confidence_override, batch_id
                    FROM images WHERE id = ?1",
                 [image_id],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<f64>>(2)?,
                         r.get::<_, Option<String>>(3)?,
-                        r.get::<_, Option<f64>>(4)?,
-                        r.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(|e| format!("image lookup failed: {e}"))?
             .ok_or_else(|| format!("no image with id {image_id}"))?;
-        let (file_name, width_px, height_px, file_hash, confidence_override, batch_id) = image;
+        let (file_name, file_hash, confidence_override, batch_id) = image;
 
         // --- stored path (Images/<id>.<ext>, ext from file_name) ---
         let ext = Path::new(&file_name)
@@ -174,16 +170,17 @@ impl ExportContext {
         };
 
         // --- owning batch calibration (per-batch px/µm wins; else defaults) ---
+        // A missing batch row (or an image not attached to a batch) falls back to
+        // the sensible defaults — provenance is a still-valid export target for an
+        // un-batched image.
         let (px_per_um, px_per_um_source, thresholds, model_id) = match batch_id {
-            Some(bid) => load_batch_calibration(conn, &bid)?,
-            None => (2.6, "default".to_string(), vec![20.0, 30.0], "cp-cyto3".to_string()),
+            Some(bid) => load_batch_calibration(conn, &bid)?.unwrap_or_else(default_batch_calibration),
+            None => default_batch_calibration(),
         };
 
         Ok(ExportContext {
             image_id: image_id.to_string(),
             file_name,
-            width_px,
-            height_px,
             stored_path,
             file_hash,
             confidence_override,
@@ -214,11 +211,22 @@ impl ExportContext {
     }
 }
 
+/// The default batch calibration used when an image has no owning batch (or the
+/// batch row is missing): 2.6 px/µm, `[20,30]` thresholds, cyto3.
+pub(crate) fn default_batch_calibration() -> (f64, String, Vec<f64>, String) {
+    (2.6, "default".to_string(), vec![20.0, 30.0], "cp-cyto3".to_string())
+}
+
 /// Read a batch's calibration (px/µm + source + thresholds + model id).
-fn load_batch_calibration(
+/// Returns `Ok(None)` when no batch row with `batch_id` exists, so the caller
+/// decides whether that is an error (a batch-summary export of a nonexistent
+/// batch) or a fall back to [`default_batch_calibration`] (an un-batched image).
+/// The single query + mapping lives here so `csv.rs` and `ExportContext::load`
+/// stay in lock-step.
+pub(crate) fn load_batch_calibration(
     conn: &Connection,
     batch_id: &str,
-) -> Result<(f64, String, Vec<f64>, String), String> {
+) -> Result<Option<(f64, String, Vec<f64>, String)>, String> {
     let row = conn
         .query_row(
             "SELECT px_per_um, px_per_um_source, thresholds_json, model_id
@@ -235,18 +243,15 @@ fn load_batch_calibration(
         )
         .optional()
         .map_err(|e| format!("batch lookup failed: {e}"))?;
-    match row {
-        Some((px, source, thresholds_json, model_id)) => {
-            let thresholds: Vec<f64> = serde_json::from_str(&thresholds_json).unwrap_or_default();
-            Ok((
-                px,
-                source.unwrap_or_else(|| "default".to_string()),
-                thresholds,
-                model_id,
-            ))
-        }
-        None => Ok((2.6, "default".to_string(), vec![20.0, 30.0], "cp-cyto3".to_string())),
-    }
+    Ok(row.map(|(px, source, thresholds_json, model_id)| {
+        let thresholds: Vec<f64> = serde_json::from_str(&thresholds_json).unwrap_or_default();
+        (
+            px,
+            source.unwrap_or_else(|| "default".to_string()),
+            thresholds,
+            model_id,
+        )
+    }))
 }
 
 // ---------------------------------------------------------------------------

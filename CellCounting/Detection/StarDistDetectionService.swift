@@ -67,7 +67,7 @@ struct StarDistDetectionService: DetectionService {
 
         let outcome: SidecarOutcome
         do {
-            outcome = try await Self.runSidecar(pythonURL: pythonURL, args: args)
+            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args)
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
@@ -134,58 +134,4 @@ struct StarDistDetectionService: DetectionService {
         return PythonRuntime.bundledPythonURL(named: "stardist_detect.py")
     }
 
-    // MARK: — Process plumbing
-
-    private struct SidecarOutcome {
-        var exitCode: Int32
-        var stdout: Data
-        var stderr: Data
-    }
-
-    private static func runSidecar(pythonURL: URL, args: [String]) async throws -> SidecarOutcome {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SidecarOutcome, Error>) in
-            Task.detached(priority: .userInitiated) {
-                let process = Process()
-                process.executableURL = pythonURL
-                process.arguments = args
-
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
-
-                let resumed = StarDistDetectResumeFlag()
-
-                process.terminationHandler = { proc in
-                    let outData = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    let errData = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    if resumed.markAndCheck() {
-                        continuation.resume(returning: SidecarOutcome(
-                            exitCode: proc.terminationStatus,
-                            stdout: outData,
-                            stderr: errData))
-                    }
-                }
-
-                do {
-                    try process.run()
-                } catch {
-                    if resumed.markAndCheck() {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private final class StarDistDetectResumeFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fired = false
-    func markAndCheck() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if fired { return false }
-        fired = true
-        return true
-    }
 }

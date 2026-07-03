@@ -49,6 +49,7 @@ import { useContext, useEffect, useMemo, useRef } from "react";
 
 import type { CellDTO, GroundTruthDTO, OverlayMode } from "../types";
 import { binIndex } from "../calibration/calibration";
+import { binColor } from "../theme/binColors";
 import { ViewportTransformContext } from "../viewport/Viewport";
 
 export interface MaskOverlayProps {
@@ -65,25 +66,9 @@ export interface MaskOverlayProps {
   splitStagedId?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Bin color ramp — ported from Tokens.swift (5 OKLCH stops, viridis-ish,
-// colorblind-safe). Modern webviews render `oklch()` natively.
-// ---------------------------------------------------------------------------
-
-const BIN_OKLCH: ReadonlyArray<readonly [number, number, number]> = [
-  [0.45, 0.14, 280], // bin1
-  [0.58, 0.13, 230], // bin2
-  [0.68, 0.11, 180], // bin3
-  [0.78, 0.13, 105], // bin4
-  [0.82, 0.16, 60], // bin5
-];
-
-/** Bin color for index `i`, clamped to the ramp (port of `Tokens.binColor`). */
-function binColor(i: number): string {
-  const idx = Math.max(0, Math.min(i, BIN_OKLCH.length - 1));
-  const [l, c, h] = BIN_OKLCH[idx];
-  return `oklch(${l} ${c} ${h})`;
-}
+// The size-bin color ramp (`BIN_OKLCH` / `binColor`) lives in
+// `kernel/theme/binColors.ts` — the single source of truth shared with every
+// sidebar/settings swatch, so a swatch always matches the mask color it labels.
 
 // Fixed view-unit constants (unchanged from the SVG version). These are VIEW
 // pixels — they must stay constant across zoom, so anything drawn under the

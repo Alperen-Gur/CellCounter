@@ -4,18 +4,8 @@ import SwiftUI
 //
 // Top banner for the Models view header, prompting the user to install Cellpose
 // when `CellposeAvailability.detect()` is anything other than `.available`.
-//
-// SPLICE POINT: Drop `InstallCellposeBanner(state: state)` inside
-// `ModelsView.body`'s VStack just above the `ModelsFilterChips` row — i.e. right
-// below the existing `ModelsBanner` block:
-//
-//   if !state.modelsBannerDismissed { ModelsBanner(...) }
-//   InstallCellposeBanner(state: state)        // ← here
-//       .padding(.bottom, 16)
-//   ModelsFilterChips(...)
-//
-// The banner self-hides when Cellpose is already available or when the user has
-// dismissed it once (persisted under `cc-install-banner-dismissed`).
+// Self-hides when Cellpose is already available or when the user has dismissed
+// it once (persisted under `cc-install-banner-dismissed`).
 
 struct InstallCellposeBanner: View {
     @Bindable var state: AppState

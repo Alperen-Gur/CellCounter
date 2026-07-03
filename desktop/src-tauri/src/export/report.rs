@@ -115,8 +115,6 @@ struct ReportSnapshot {
     date_iso: String,
     app_version: String,
     model_name: String,
-    px_per_um: f64,
-    confidence: f64,
 
     n_cells: usize,
     median_diameter: Option<f64>,
@@ -188,8 +186,6 @@ impl ReportSnapshot {
             date_iso: crate::db::repo::now_iso8601(),
             app_version: crate::export::provenance::APP_VERSION.to_string(),
             model_name: model_display_name(&ctx.model_id),
-            px_per_um: ctx.px_per_um,
-            confidence: cutoff,
             n_cells: n,
             median_diameter: median,
             mean_diameter: mean,
@@ -366,7 +362,9 @@ fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJp
     let (w, h) = img.dimensions();
     let mut rgb = img.to_rgb8();
 
-    for cell in ctx.cells.iter().filter(|c| c.confidence >= cutoff) {
+    // Route through `visible_cells` so the on-screen/overlay visibility rule
+    // (confidence >= cutoff) lives in exactly one place.
+    for cell in ctx.visible_cells(cutoff) {
         let idx = bin_index(cell.diameter_um, &ctx.thresholds);
         let (cr, cg, cb) = bin_rgb8(idx);
         let r = (cell.diameter_px / 2.0).max(1.0);
@@ -750,7 +748,6 @@ fn build_pdf(snap: &ReportSnapshot, prov: &Provenance, annotated: Option<Annotat
             INK,
             &format!("F1 vs annotations: {f1:.3}"),
         );
-        ry += 16.0;
     }
 
     // ---- footer: provenance lines ----

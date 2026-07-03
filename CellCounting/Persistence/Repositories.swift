@@ -189,6 +189,11 @@ final class Repositories {
 
     func saveDetection(_ cells: [DetectedCell], detectorId: String, for image: ImageRecord,
                        imageStats: [String: Double]? = nil) {
+        // Reassigning the to-one relationship only nulls the old record's inverse;
+        // it does not delete the orphan. Explicitly delete the superseded detection
+        // so re-runs don't leave stale DetectionRecords in the store (which would
+        // inflate uncorrectedCellCount(below:) / the Review badge).
+        if let old = image.detection { context.delete(old) }
         let det = DetectionRecord(detectorId: detectorId, cells: cells,
                                   imageStats: imageStats ?? [:])
         det.image = image

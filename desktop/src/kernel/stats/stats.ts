@@ -6,8 +6,7 @@
  * `Detection/AnnotationMatcher.swift` (greedy nearest-neighbour F1).
  *
  * No platform deps — runs identically in the desktop and the future WebGPU
- * browser build. All distance math is in SOURCE-PIXEL space. The Swift
- * `_selfTest` cases are ported as `_selfTest()` at the bottom.
+ * browser build. All distance math is in SOURCE-PIXEL space.
  *
  * Numerics are frozen to match the Swift originals bit-for-bit where it matters
  * (labels, thresholds, continuity correction, tie-averaged ranks).
@@ -69,6 +68,34 @@ export function normalCdf(x: number): number {
 export function twoTailedNormalP(z: number): number {
   const p = 2.0 * (1.0 - normalCdf(Math.abs(z)));
   return Math.min(1.0, Math.max(0.0, p));
+}
+
+/**
+ * Arithmetic mean of a sample; 0 for an empty list. Matches the descriptive
+ * mean the Swift `ExportService` summary, Batch view, and Compare panel report.
+ */
+export function mean(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  let sum = 0;
+  for (const x of xs) sum += x;
+  return sum / xs.length;
+}
+
+/**
+ * Population standard deviation (÷N, not ÷(N−1)) — the descriptive σ the Swift
+ * `ExportService` summary, Batch view, and Compare panel all report. Returns 0
+ * for an empty sample; a single-element sample yields 0 by construction (the one
+ * deviation is 0), so the empty-guard is the only special case needed.
+ */
+export function stdDev(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const m = mean(xs);
+  let acc = 0;
+  for (const x of xs) {
+    const d = x - m;
+    acc += d * d;
+  }
+  return Math.sqrt(acc / xs.length);
 }
 
 /**
@@ -265,50 +292,4 @@ export function evaluateF1(
   const fp = detections.length - claimedDets.size;
   const fn = annotations.length - claimedAnns.size;
   return score(tp, fp, fn);
-}
-
-// ===========================================================================
-// Self-test (port of Statistics._selfTest). Returns true on success; logs
-// mismatches to console.error. Not run automatically — call from a test.
-// ===========================================================================
-
-/** @internal — ported Swift `_selfTest` smoke cases. */
-export function _selfTest(): boolean {
-  let ok = true;
-  const fail = (msg: string) => {
-    // eslint-disable-next-line no-console
-    console.error(`stats._selfTest: ${msg}`);
-    ok = false;
-  };
-
-  // Case 1: identical distributions → median diff 0, high p (n.s.).
-  const same = [10, 12, 14, 16, 18];
-  const r1 = mannWhitneyU(same, same);
-  if (r1) {
-    if (Math.abs(r1.medianDifference) > 1e-9) fail("identical median diff != 0");
-    if (r1.pValue < 0.5) fail(`identical p too low (${r1.pValue})`);
-  } else {
-    fail("identical case returned null");
-  }
-
-  // Case 2: A = [1,2,3], B = [4,5,6]. U = 0, z ≈ -1.7457431, rB = 1.0, z < 0.
-  const aSep = [1, 2, 3];
-  const bSep = [4, 5, 6];
-  const r2 = mannWhitneyU(aSep, bSep);
-  if (r2) {
-    if (Math.abs(r2.u - 0) > 1e-6) fail(`U mismatch ${r2.u} vs 0`);
-    if (Math.abs(r2.z - -1.7457431) > 1e-3) fail(`z mismatch ${r2.z} vs -1.7457431`);
-    if (Math.abs(r2.rankBiserial - 1.0) > 1e-9)
-      fail(`rB mismatch ${r2.rankBiserial} vs 1.0`);
-    if (r2.z >= 0) fail("expected negative z for A<B");
-  } else {
-    fail("separated case returned null");
-  }
-
-  // Case 3: n < 3 gate returns null.
-  if (mannWhitneyU([1, 2], [3, 4, 5]) !== null) {
-    fail("small-n gate not enforced");
-  }
-
-  return ok;
 }

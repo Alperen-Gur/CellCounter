@@ -133,11 +133,15 @@ enum EXIFCalibration {
 
         guard pxPerUm > 0.001, pxPerUm < 1000 else { return nil }
 
-        // Heuristic sanity: very round numbers like exactly 72 or 96 dpi
-        // are default DPI values written by scanners without real calibration.
+        // Heuristic sanity: 72 and 96 dpi are the default screen/scanner DPI
+        // values written by software without real calibration. Compare with a
+        // small tolerance rather than exact float equality — on the cm path
+        // pxPerInch is derived as xRes * 2.54 and will almost never land on
+        // exactly 72.0/96.0 even when it should match. (300 dpi is a plausible
+        // real microscope/scan resolution, so it is NOT treated as a default.)
         let pxPerInch = unitRaw == 2 ? xRes : xRes * 2.54
-        if pxPerInch == 72 || pxPerInch == 96 || pxPerInch == 300 {
-            // These are almost certainly scanner/printer defaults, not real calibration.
+        if abs(pxPerInch - 72) < 0.5 || abs(pxPerInch - 96) < 0.5 {
+            // Almost certainly a scanner/printer default, not real calibration.
             return nil
         }
 

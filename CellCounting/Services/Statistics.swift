@@ -30,9 +30,9 @@ struct MannWhitneyResult {
     let rankBiserial: Double
 
     var significanceLabel: String {
-        if pValue < 0.001 { return "p < 0.001" }
-        if pValue < 0.01  { return String(format: "p = %.3f", pValue) }
-        if pValue < 0.05  { return String(format: "p = %.3f", pValue) }
+        if pValue < 0.001 { return "p < 0.001 (***)" }
+        if pValue < 0.01  { return String(format: "p = %.3f (**)", pValue) }
+        if pValue < 0.05  { return String(format: "p = %.3f (*)", pValue) }
         // >= 0.05
         return String(format: "p = %.2f (n.s.)", pValue)
     }

@@ -23,7 +23,7 @@ import { FixedSizeGrid, type GridChildComponentProps } from "react-window";
 import type { ImageDTO } from "../../kernel/types";
 import { ImageThumbCell } from "./ImageThumbCell";
 import type { ImageStats } from "./useLibraryData";
-import { useMeasuredSize } from "./useMeasuredSize";
+import { useMeasuredSize } from "../../kernel/viewport/useMeasuredSize";
 
 /**
  * Layout constants mirroring the old `.cc-lib__grid` CSS so the windowed grid

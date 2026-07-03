@@ -24,7 +24,7 @@ import { navigate } from "../../components/useHashRoute";
 import { useAppStore } from "../../kernel/store/store";
 import type { BatchRow, BatchRowStatus } from "./batchStats";
 import { SizeDistBar } from "./SizeDistBar";
-import { useMeasuredSize } from "./useMeasuredSize";
+import { useMeasuredSize } from "../../kernel/viewport/useMeasuredSize";
 
 const STATUS_META: Record<
   BatchRowStatus,

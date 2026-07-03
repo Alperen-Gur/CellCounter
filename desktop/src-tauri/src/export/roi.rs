@@ -146,8 +146,8 @@ pub async fn export_imagej_roi(
 
     // Spawn the helper: `python _export_imagej_roi.py --in <json> --out <zip>`.
     // cwd = python dir so the helper resolves its siblings if needed.
-    let output = Command::new(&python)
-        .arg(&script)
+    let mut cmd = Command::new(&python);
+    cmd.arg(&script)
         .arg("--in")
         .arg(&input_path)
         .arg("--out")
@@ -155,7 +155,9 @@ pub async fn export_imagej_roi(
         .current_dir(store.python_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::proc::hide_console_tokio(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("failed to spawn ROI helper: {e}"))?;

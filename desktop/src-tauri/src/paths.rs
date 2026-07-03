@@ -4,10 +4,15 @@
 //! Owns the storage root and the sub-directory tree the whole backend writes
 //! into. Every file operation that isn't SQLite goes through a [`FileStore`].
 //!
-//! Storage root (ARCHITECTURE.md §3.8):
-//!   - Windows: `%APPDATA%\CellCounter\`
-//!   - macOS:   `~/Library/Application Support/CellCounter/`
-//!   - Linux:   `~/.local/share/CellCounter/` (XDG data dir)
+//! Storage root (ARCHITECTURE.md §3.8): the OS app-data dir — which Tauri
+//! already namespaces by the bundle identifier (`com.alperengur.cellcounter`) —
+//! with a `CellCounter/` sub-directory appended, so the on-disk layout is:
+//!   - Windows: `%APPDATA%\com.alperengur.cellcounter\CellCounter\`
+//!   - macOS:   `~/Library/Application Support/com.alperengur.cellcounter/CellCounter/`
+//!   - Linux:   `~/.local/share/com.alperengur.cellcounter/CellCounter/`
+//!
+//! (Tests / the importer may pass a plain parent path to [`FileStore::new`], in
+//! which case the root is simply `<that path>/CellCounter/`.)
 //!
 //! Tree:
 //!   <root>/
@@ -19,10 +24,11 @@
 //!     python/                 uv project (.venv lives here) + staged sidecar scripts
 //!       .venv/                uv-created virtual environment
 //!
-//! NOTE (decision (a)): on macOS this deliberately uses the SAME
-//! `CellCounter/` directory the Swift app uses, but we create a FRESH
-//! `store.sqlite` and never attach to the SwiftData file. The Swift app's DB
-//! and ours can coexist in the folder; we only ever open the one we create.
+//! NOTE (decision (a)): the cross-platform app lives under its OWN
+//! identifier-namespaced app-data dir (see above), so it does NOT share the
+//! Swift app's `~/Library/Application Support/CellCounter/` directory. We always
+//! create a FRESH `store.sqlite` from `db::schema` DDL and never attach to the
+//! SwiftData file — even if a user runs both, the two stores stay independent.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,9 +54,9 @@ impl FileStore {
     }
 
     /// Convenience constructor from a Tauri [`AppHandle`]. Uses the OS-correct
-    /// app-data dir. The Tauri identifier already namespaces the dir, but we
-    /// append `CellCounter` so the on-disk name matches the Swift app on macOS
-    /// and the ARCHITECTURE spec everywhere else.
+    /// app-data dir (already namespaced by the bundle identifier) and appends a
+    /// `CellCounter/` sub-directory, giving the tree documented at the module
+    /// level. This root is distinct from the Swift app's storage location.
     pub fn from_app(app: &AppHandle) -> Result<Self, String> {
         let base = app
             .path()

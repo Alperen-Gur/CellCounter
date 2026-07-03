@@ -384,11 +384,43 @@ pub fn cells_to_json(cells: &[CellDto]) -> Result<String, serde_json::Error> {
 }
 
 /// Decode a `cells_json` storage blob back into DTOs (unflattened contours).
-/// A missing/corrupt blob yields an empty vec (matches Swift's `?? []`).
+///
+/// A missing/corrupt blob yields an empty vec (matches Swift's `?? []`), but a
+/// silent empty return would make an entire detection read as 0 cells
+/// everywhere (get_detection, exports, report, summary) with no signal. So on a
+/// whole-blob decode failure we first try to salvage per-element (keeping the
+/// cells that parse), and always log the error + a short preview so a
+/// schema-drifted / corrupt blob is diagnosable rather than invisible.
 pub fn cells_from_json(json: &str) -> Vec<CellDto> {
-    serde_json::from_str::<Vec<CellPayload>>(json)
-        .map(|payload| payload.into_iter().map(CellDto::from).collect())
-        .unwrap_or_default()
+    match serde_json::from_str::<Vec<CellPayload>>(json) {
+        Ok(payload) => payload.into_iter().map(CellDto::from).collect(),
+        Err(e) => {
+            let preview: String = json.chars().take(200).collect();
+            eprintln!("[models] cells_json decode failed ({e}); attempting per-element salvage. preview: {preview}");
+            // Salvage: decode as an array of raw values and keep the elements
+            // that individually parse, so one malformed cell doesn't drop the
+            // whole detection's cells.
+            match serde_json::from_str::<Vec<serde_json::Value>>(json) {
+                Ok(values) => {
+                    let total = values.len();
+                    let cells: Vec<CellDto> = values
+                        .into_iter()
+                        .filter_map(|v| serde_json::from_value::<CellPayload>(v).ok())
+                        .map(CellDto::from)
+                        .collect();
+                    if cells.len() != total {
+                        eprintln!(
+                            "[models] salvaged {}/{} cells from a partially-corrupt cells_json blob",
+                            cells.len(),
+                            total
+                        );
+                    }
+                    cells
+                }
+                Err(_) => Vec::new(),
+            }
+        }
+    }
 }
 
 /// The denormalised `min_confidence` column: min over cells, else 1.0 for an

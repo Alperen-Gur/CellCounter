@@ -20,6 +20,7 @@ function isTauri(): boolean {
 
 export function TitleBar() {
   const [tauri, setTauri] = useState(false);
+  const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
     setTauri(isTauri());
@@ -29,6 +30,44 @@ export function TitleBar() {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     return getCurrentWindow();
   };
+
+  // Track the maximized state so the control shows the correct glyph/label
+  // ("Maximize" square vs "Restore" overlapping squares), like native Windows
+  // chrome. We read the initial state on mount and keep it live via `onResized`
+  // (fires on maximize/unmaximize/snap/drag-resize). Skipped outside Tauri.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const w = await win();
+        const sync = async () => {
+          try {
+            const m = await w.isMaximized();
+            if (!cancelled) setMaximized(m);
+          } catch {
+            /* ignore transient window API errors */
+          }
+        };
+        await sync();
+        const stop = await w.onResized(() => {
+          void sync();
+        });
+        if (cancelled) {
+          stop();
+        } else {
+          unlisten = stop;
+        }
+      } catch {
+        /* window API unavailable — leave the default (unmaximized) glyph */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const minimize = () => {
     void win().then((w) => w.minimize()).catch(() => {});
@@ -66,10 +105,14 @@ export function TitleBar() {
             type="button"
             className="cc-winctl__btn"
             onClick={toggleMaximize}
-            aria-label="Maximize"
-            title="Maximize"
+            aria-label={maximized ? "Restore" : "Maximize"}
+            title={maximized ? "Restore" : "Maximize"}
           >
-            <Icon name="windowMax" size={13} strokeWidth={1.6} />
+            <Icon
+              name={maximized ? "windowRestore" : "windowMax"}
+              size={13}
+              strokeWidth={1.6}
+            />
           </button>
           <button
             type="button"

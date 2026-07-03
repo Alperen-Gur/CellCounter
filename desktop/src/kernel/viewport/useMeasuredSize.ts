@@ -1,14 +1,16 @@
 /**
- * pages/library/useMeasuredSize.ts — measure a flex-grow container so the
- * windowed grid (react-window FixedSizeGrid) can be sized in pixels.
+ * kernel/viewport/useMeasuredSize.ts — measure a flex-grow container so a
+ * windowed list/grid (react-window) can be sized in explicit pixels.
  *
- * react-window needs an explicit pixel width + height. The Library grid lives
- * inside the shell's `.cc-content` scroll pane (which we don't own), so we let a
- * wrapper flex to fill the remaining pane height and measure it here, exactly
- * like `kernel/viewport/Viewport.tsx` measures its canvas. The virtualized grid
- * then owns its own scroll for the (potentially 100s of) thumbnails.
+ * react-window needs an explicit pixel width + height. Consumers (the Library
+ * grid, the Batch table) live inside the shell's `.cc-content` scroll pane
+ * (which they don't own), so they let a wrapper flex to fill the remaining pane
+ * height and measure it here — the same content-box measurement idiom
+ * `kernel/viewport/Viewport.tsx` uses for its canvas. The virtualized child then
+ * owns its own scroll.
  *
- * Feature-owned by feat-library-dedup; used only by this page directory.
+ * The single owner: both the Batch table and the Library grid import this hook,
+ * so the measurement logic (including the sub-pixel guard) lives in one place.
  */
 
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";

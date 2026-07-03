@@ -1,19 +1,17 @@
-//! export/csv.rs — CSV export (cells / summary / annotations / comparison) (feature `export`).
+//! export/csv.rs — CSV export (cells / summary) (feature `export`).
 //!
 //! Port of the Swift `ExportService` CSV writers. Column orders + number
 //! formats are reproduced EXACTLY from `Services/ExportService.swift` (they are
 //! the frozen output contract in tasks.json → feat-export → output):
 //!   * `cells.csv`   — per-cell measurements (Results). 23 columns.
 //!   * `summary.csv` — per-image batch summary (Batch). 18 columns.
-//!   * `annotations.csv` — ground-truth marks (id,cx_px,cy_px,cx_um,cy_um,…).
-//!   * comparison CSV — condition,bin_label,count,percent,total_cells,batches.
 //!
 //! Two commands are registered in `lib.rs` (`export_cells_csv`,
-//! `export_batch_summary_csv`); the annotation + comparison writers are exposed
-//! as `pub(crate)` builders reused by the ROI/report/panel flows and available
-//! for a future command wiring without changing this file's contract.
+//! `export_batch_summary_csv`). The Compare view's comparison CSV and the
+//! ground-truth annotations CSV are produced on the JS side (kernel/stats), so
+//! no Rust builders for them live here.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use tauri::{AppHandle, State};
 
 use crate::db::models::CellDto;
@@ -22,18 +20,6 @@ use crate::export::provenance::{
     fmt_g, fmt_thresholds_bracket, open_reader, resolve_out_path, ExportContext, Provenance,
 };
 use crate::paths::FileStore;
-
-/// What kind of CSV to write. Serialized camelCase from the UI. Retained from
-/// the stub so callers that branch on kind keep compiling; the concrete writers
-/// live below.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum CsvKind {
-    Cells,
-    BatchSummary,
-    Comparison,
-    Annotations,
-}
 
 // ---------------------------------------------------------------------------
 // shared CSV formatting helpers (mirror ExportService private helpers)
@@ -306,28 +292,13 @@ pub async fn export_batch_summary_csv(
     let store = FileStore::from_app(&app)?;
     let conn = open_reader(&store)?;
 
-    // Batch calibration + label for the config header / provenance.
-    let (px_per_um, px_per_um_source, thresholds, model_id) = conn
-        .query_row(
-            "SELECT px_per_um, px_per_um_source, thresholds_json, model_id
-               FROM batches WHERE id = ?1",
-            [&batch_id],
-            |r| {
-                Ok((
-                    r.get::<_, f64>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|e| format!("batch lookup failed: {e}"))?
-        .map(|(px, src, th, mid)| {
-            let thresholds: Vec<f64> = serde_json::from_str(&th).unwrap_or_default();
-            (px, src.unwrap_or_else(|| "default".into()), thresholds, mid)
-        })
-        .ok_or_else(|| format!("no batch with id {batch_id}"))?;
+    // Batch calibration + label for the config header / provenance. Shares the
+    // single query/mapping in `provenance.rs`; a batch-summary export of a
+    // nonexistent batch is a real error, so a missing row is surfaced here
+    // (unlike `ExportContext`, which falls back to defaults for un-batched images).
+    let (px_per_um, px_per_um_source, thresholds, model_id) =
+        crate::export::provenance::load_batch_calibration(&conn, &batch_id)?
+            .ok_or_else(|| format!("no batch with id {batch_id}"))?;
 
     let images = load_batch_summary_images(&conn, &batch_id)?;
     let body = build_summary_csv(
@@ -417,7 +388,7 @@ fn build_summary_csv(
     let large_t = thresholds.last().copied().unwrap_or(30.0);
 
     // Provenance block over the batch (image-agnostic — no per-image hash).
-    let mut prov = Provenance {
+    let prov = Provenance {
         app_version: crate::export::provenance::APP_VERSION.to_string(),
         os_version: crate::export::provenance::os_descriptor(),
         model_id: model_id.to_string(),
@@ -433,7 +404,6 @@ fn build_summary_csv(
         file_hash: None,
         detection_ran_at: None,
     };
-    prov.confidence_floor = 0.0;
 
     let mut lines: Vec<String> = Vec::new();
     lines.push(prov.as_csv_header());
@@ -571,93 +541,5 @@ fn build_summary_csv(
         lines.push(row.join(sep));
     }
 
-    lines.join("\n") + "\n"
-}
-
-// ===========================================================================
-// annotations.csv  (ground-truth marks) — builder reused by the bundle flows
-// ===========================================================================
-
-/// A ground-truth annotation as read for the annotations CSV.
-pub(crate) struct AnnotationRow {
-    pub id: String,
-    pub cx: f64,
-    pub cy: f64,
-    pub diameter_um: Option<f64>,
-    pub note: Option<String>,
-    pub created_at: String,
-}
-
-/// Build an `annotations.csv` body. Header (EXACTLY the Swift
-/// `writeAnnotationsCSV`): `id,cx_px,cy_px,cx_um,cy_um,diameter_um,note,created_at`.
-/// Centroids are emitted in both px and µm so the file overlays in ImageJ
-/// without a conversion step.
-pub(crate) fn build_annotations_csv(
-    file_name: &str,
-    annotations: &[AnnotationRow],
-    px_per_um: f64,
-) -> String {
-    let sep = ",";
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!(
-        "# image={}; n={}; pxPerUm={}",
-        file_name,
-        annotations.len(),
-        fmt_g(px_per_um)
-    ));
-    lines.push(
-        ["id", "cx_px", "cy_px", "cx_um", "cy_um", "diameter_um", "note", "created_at"].join(sep),
-    );
-    let px_to_um = if px_per_um > 0.0 { 1.0 / px_per_um } else { 0.0 };
-    for a in annotations {
-        let cx_um = a.cx * px_to_um;
-        let cy_um = a.cy * px_to_um;
-        let diam = a.diameter_um.map(|d| format!("{d:.3}")).unwrap_or_default();
-        let row: Vec<String> = vec![
-            a.id.clone(),
-            format!("{:.3}", a.cx),
-            format!("{:.3}", a.cy),
-            format!("{cx_um:.3}"),
-            format!("{cy_um:.3}"),
-            diam,
-            csv_escape(a.note.as_deref().unwrap_or(""), sep),
-            a.created_at.clone(),
-        ];
-        lines.push(row.join(sep));
-    }
-    lines.join("\n") + "\n"
-}
-
-// ===========================================================================
-// comparison CSV  (Compare view) — builder reused by feat-compare
-// ===========================================================================
-
-/// One per-condition pooled row for the comparison CSV.
-pub(crate) struct ComparisonRow {
-    pub condition: String,
-    pub bin_label: String,
-    pub count: usize,
-    pub percent: f64,
-    pub total_cells: usize,
-    pub batches: usize,
-}
-
-/// Build a comparison CSV body. Columns (EXACTLY tasks.json feat-compare →
-/// output): `condition,bin_label,count,percent,total_cells,batches`.
-pub(crate) fn build_comparison_csv(rows: &[ComparisonRow]) -> String {
-    let sep = ",";
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(["condition", "bin_label", "count", "percent", "total_cells", "batches"].join(sep));
-    for r in rows {
-        let row: Vec<String> = vec![
-            csv_escape(&r.condition, sep),
-            csv_escape(&r.bin_label, sep),
-            r.count.to_string(),
-            format!("{:.2}", r.percent),
-            r.total_cells.to_string(),
-            r.batches.to_string(),
-        ];
-        lines.push(row.join(sep));
-    }
     lines.join("\n") + "\n"
 }

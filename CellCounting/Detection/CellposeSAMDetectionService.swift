@@ -69,7 +69,12 @@ struct CellposeSAMDetectionService: DetectionService {
 
         let outcome: SidecarOutcome
         do {
-            outcome = try await Self.runSidecar(pythonURL: pythonURL, args: args)
+            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args) { line in
+                NotificationCenter.default.post(
+                    name: .ccDetectionStage,
+                    object: nil,
+                    userInfo: ["line": line])
+            }
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
@@ -137,112 +142,4 @@ struct CellposeSAMDetectionService: DetectionService {
                                imageStats: decoded.image_stats)
     }
 
-    // MARK: — Sidecar plumbing
-
-    private struct SidecarOutcome {
-        var exitCode: Int32
-        var stdout: Data
-        var stderr: Data
-    }
-
-    /// Mirror of the 3.x runner: detached Process, concurrent stdout+stderr
-    /// drainage, one-shot continuation resume, stderr lines piped to the UI
-    /// via `ccDetectionStage`. The duplication is deliberate — keeps the
-    /// hot detection path in one file per family and lets the 3.x version
-    /// stay untouched.
-    private static func runSidecar(pythonURL: URL, args: [String]) async throws -> SidecarOutcome {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SidecarOutcome, Error>) in
-            Task.detached(priority: .userInitiated) {
-                let process = Process()
-                process.executableURL = pythonURL
-                process.arguments = args
-
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
-
-                let stderrAccumulator = CellposeSAMStderrSink()
-                stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if chunk.isEmpty { return }
-                    stderrAccumulator.append(chunk)
-                    guard let text = String(data: chunk, encoding: .utf8) else { return }
-                    for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-                        let line = String(raw).trimmingCharacters(in: .whitespaces)
-                        guard !line.isEmpty else { continue }
-                        Task { @MainActor in
-                            NotificationCenter.default.post(
-                                name: .ccDetectionStage,
-                                object: nil,
-                                userInfo: ["line": line])
-                        }
-                    }
-                }
-
-                let stdoutAccumulator = CellposeSAMStderrSink()
-                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if chunk.isEmpty { return }
-                    stdoutAccumulator.append(chunk)
-                }
-
-                let resumed = CellposeSAMResumeFlag()
-
-                process.terminationHandler = { proc in
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                    if let tailOut = try? stdoutPipe.fileHandleForReading.readToEnd() {
-                        stdoutAccumulator.append(tailOut)
-                    }
-                    if let tailErr = try? stderrPipe.fileHandleForReading.readToEnd() {
-                        stderrAccumulator.append(tailErr)
-                    }
-                    if resumed.markAndCheck() {
-                        continuation.resume(returning: SidecarOutcome(
-                            exitCode: proc.terminationStatus,
-                            stdout: stdoutAccumulator.snapshot(),
-                            stderr: stderrAccumulator.snapshot()))
-                    }
-                }
-
-                do {
-                    try process.run()
-                    Task { @MainActor in
-                        ChildProcessTracker.shared.register(process, kind: .detection)
-                    }
-                } catch {
-                    stderrPipe.fileHandleForReading.readabilityHandler = nil
-                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                    if resumed.markAndCheck() {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private final class CellposeSAMStderrSink: @unchecked Sendable {
-    private let lock = NSLock()
-    private var buffer = Data()
-    func append(_ chunk: Data) {
-        lock.lock(); defer { lock.unlock() }
-        buffer.append(chunk)
-    }
-    func snapshot() -> Data {
-        lock.lock(); defer { lock.unlock() }
-        return buffer
-    }
-}
-
-private final class CellposeSAMResumeFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fired = false
-    func markAndCheck() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if fired { return false }
-        fired = true
-        return true
-    }
 }

@@ -55,7 +55,7 @@ import {
   Select,
   ConfirmDialog,
 } from "./controls";
-import { binColor } from "./binColors";
+import { binColor } from "../../kernel/theme/binColors";
 import { Icon, type IconName } from "../../components/Icon";
 import "./settings.css";
 

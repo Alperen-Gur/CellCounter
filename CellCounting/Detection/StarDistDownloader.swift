@@ -31,7 +31,7 @@ struct StarDistDownloader: ModelDownloader {
     /// Tracks whether `import stardist` succeeded already this session, so we
     /// don't shell out for `isInstalled` every time the list refreshes.
     /// Keyed by python executable path to invalidate if the venv moves.
-    private static let importCache = ImportCheckCache()
+    private static let importCache = PythonModuleImportCache(module: "stardist")
 
     /// Cheap, main-safe. The expensive `import stardist` check is
     /// only consulted from `Self.importCache`, which caches an answer per
@@ -56,7 +56,7 @@ struct StarDistDownloader: ModelDownloader {
         guard let py else { return false }
         // Deep probe runs off-main; result is cached so `isInstalled` returns truth next time.
         let importable = await Task.detached(priority: .userInitiated) {
-            Self.importCache.isStardistImportable(pythonURL: py)
+            Self.importCache.isImportable(pythonURL: py)
         }.value
         if !importable { return false }
         guard let weightsDir = Self.weightsDirURL(for: modelId) else { return false }
@@ -85,12 +85,12 @@ struct StarDistDownloader: ModelDownloader {
         }
 
         // 1) Install stardist + tensorflow + csbdeep if needed.
-        if !Self.importCache.isStardistImportable(pythonURL: pythonURL) {
+        if !Self.importCache.isImportable(pythonURL: pythonURL) {
             await progress.appendAsync("[stardist] installing python dependencies …")
             try await Self.pipInstallStarDistStack(pythonURL: pythonURL, progress: progress)
             Self.importCache.invalidate(pythonURL: pythonURL)
             // Re-check; surface a clean error if pip silently failed.
-            if !Self.importCache.isStardistImportable(pythonURL: pythonURL) {
+            if !Self.importCache.isImportable(pythonURL: pythonURL) {
                 throw NSError(domain: "StarDistDownloader", code: 2, userInfo: [
                     NSLocalizedDescriptionKey:
                         "pip install completed but `import stardist` still fails."
@@ -340,57 +340,6 @@ private final class StarDistResumeFlag: @unchecked Sendable {
         if fired { return false }
         fired = true
         return true
-    }
-}
-
-/// Caches the result of `python -c "import stardist"` per python binary path,
-/// because we ask `isInstalled` on every Models-screen refresh.
-private final class ImportCheckCache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cache: [String: Bool] = [:]
-
-    func isStardistImportable(pythonURL: URL) -> Bool {
-        let key = pythonURL.path
-        lock.lock()
-        if let cached = cache[key] {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
-
-        let ok = Self.runImportCheck(pythonURL: pythonURL)
-        lock.lock()
-        cache[key] = ok
-        lock.unlock()
-        return ok
-    }
-
-    /// Non-blocking peek into the cache. Returns nil if we've never probed.
-    /// Used by the main-safe `isInstalled` so it can answer without forking.
-    func cachedAnswer(pythonURL: URL) -> Bool? {
-        lock.lock(); defer { lock.unlock() }
-        return cache[pythonURL.path]
-    }
-
-    func invalidate(pythonURL: URL) {
-        lock.lock(); defer { lock.unlock() }
-        cache[pythonURL.path] = nil
-    }
-
-    private static func runImportCheck(pythonURL: URL) -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else { return false }
-        let process = Process()
-        process.executableURL = pythonURL
-        process.arguments = ["-c", "import stardist"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
-        }
     }
 }
 

@@ -19,6 +19,7 @@ pub mod detection;
 pub mod env;
 pub mod images;
 pub mod paths;
+pub mod proc;
 
 use detection::sidecar::SidecarManager;
 
@@ -44,8 +45,13 @@ pub fn run() {
 
             // Reap orphaned sidecar processes from a previous crashed session,
             // off the main thread so a slow `ps` can never block window
-            // creation (mirrors ChildProcessTracker.installLifecycle).
-            std::thread::spawn(detection::sidecar::sweep_orphans);
+            // creation (mirrors ChildProcessTracker.installLifecycle). Scope the
+            // sweep to THIS app's staged python dir so we only ever kill our own
+            // sidecars (never an unrelated process that mentions the basename).
+            if let Ok(store) = paths::FileStore::from_app(&handle) {
+                let python_dir = store.python_dir();
+                std::thread::spawn(move || detection::sidecar::sweep_orphans(python_dir));
+            }
 
             Ok(())
         })

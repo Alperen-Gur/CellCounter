@@ -16,7 +16,7 @@ import {
   HIST_BUCKET_COUNT,
   HIST_MIN,
   HIST_MAX,
-} from "./histogram";
+} from "../../kernel/stats/histogram";
 
 /** Fixed plot height in px (Swift used a 70pt bar area). */
 const BAR_AREA_PX = 70;

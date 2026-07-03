@@ -71,6 +71,7 @@ async fn run_helper(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut cmd);
 
     let mut child = cmd
         .spawn()

@@ -156,18 +156,13 @@ struct PDFReportGenerator {
         return NSImage(cgImage: outImage, size: NSSize(width: w, height: h))
     }
 
-    /// OKLCH values copied from `ExportService.binCGColor` so visual style matches.
-    private static let binOKLCH: [(l: Double, c: Double, h: Double)] = [
-        (0.45, 0.14, 280),
-        (0.58, 0.13, 230),
-        (0.68, 0.11, 180),
-        (0.78, 0.13, 105),
-        (0.82, 0.16,  60),
-    ]
+    /// Bin CGColor derived from the single `Tokens.binRamp` source of truth,
+    /// so the PDF's annotated overlay matches the on-screen swatches and the
+    /// PNG export.
     private static func binCGColor(_ index: Int) -> CGColor {
-        let i = max(0, min(index, binOKLCH.count - 1))
-        let v = binOKLCH[i]
-        let s = OKLCH(v.l, v.c, v.h).srgb
+        let ramp = Tokens.binRamp
+        let i = max(0, min(index, ramp.count - 1))
+        let s = ramp[i].srgb
         return CGColor(red: CGFloat(s.r), green: CGFloat(s.g), blue: CGFloat(s.b), alpha: 1)
     }
 }
@@ -218,6 +213,13 @@ struct ReportSnapshot {
             return v
         }()
 
+        // Resolve calibration from the batch first, falling back to global state —
+        // exactly as ProvenanceMetadata.capture does — so the report body and its
+        // provenance footer report the SAME px/µm, thresholds, and confidence.
+        let batch = image.batch ?? state.currentBatch
+        let pxPerUm = batch?.pxPerUm ?? state.pxPerUm
+        let thresholds = batch?.thresholds ?? state.thresholds
+
         let cutoff = state.effectiveConfidence(for: image)
         let cells: [DetectedCell] = (image.detection?.cells ?? []).filter { $0.confidence >= cutoff }
         let diameters = cells.map(\.diameter).sorted()
@@ -240,13 +242,13 @@ struct ReportSnapshot {
         let q3 = percentile(0.75)
 
         // Bin counts
-        var counts: [Int] = Array(repeating: 0, count: BinMath.bins(from: state.thresholds).count)
+        var counts: [Int] = Array(repeating: 0, count: BinMath.bins(from: thresholds).count)
         for c in cells {
-            let idx = BinMath.binIndex(for: c.diameter, thresholds: state.thresholds)
+            let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
             let clamped = max(0, min(idx, counts.count - 1))
             counts[clamped] += 1
         }
-        let bins = BinMath.bins(from: state.thresholds)
+        let bins = BinMath.bins(from: thresholds)
         var binPairs: [(label: String, count: Int)] = []
         for (i, b) in bins.enumerated() {
             binPairs.append((label: b.label, count: i < counts.count ? counts[i] : 0))
@@ -266,9 +268,9 @@ struct ReportSnapshot {
             dateISO: dateStr,
             appVersion: appVersion,
             modelName: state.activeModelName,
-            pxPerUm: state.pxPerUm,
+            pxPerUm: pxPerUm,
             confidence: cutoff,
-            thresholds: state.thresholds,
+            thresholds: thresholds,
             nCells: n,
             medianDiameter: median,
             meanDiameter: mean,

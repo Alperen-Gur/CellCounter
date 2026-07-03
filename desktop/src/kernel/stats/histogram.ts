@@ -1,23 +1,18 @@
 /**
- * pages/compare/histogram.ts — pooled-histogram math for the Compare screen
- * (feature `feat-compare`).
+ * kernel/stats/histogram.ts — the fixed size-distribution histogram math.
  *
- * Direct port of `HistogramMath` as declared in `Views/Compare/CompareView.swift`
- * (the Swift original defines it *inside* CompareView and shares it with the
- * Results DistributionPanel). Fixed 24-bucket histogram over a fixed 8–60 µm
- * diameter window so bars line up across conditions AND across the Results
- * distribution panel.
+ * Direct port of `HistogramMath` (declared in `Views/Compare/CompareView.swift`
+ * and shared by the Results `DistributionPanel`). A fixed 24-bucket histogram
+ * over a fixed 8–60 µm diameter window, so bars line up ACROSS the Results
+ * distribution panel and the Compare pooled histogram.
  *
- * This is intentionally a local copy of the same constants used by
- * `pages/results/histogram.ts` — this task owns only `pages/compare/` and must
- * not import a sibling page's module. The Swift source of truth is the same
- * `HistogramMath` enum, so the two copies are byte-for-byte identical by design;
- * if the kernel later hoists `HistogramMath`, both collapse to a re-export.
- *
- * Pure — no React, no I/O, no ports.
+ * This is the single source of truth for the window + bucketing: both the
+ * Results sidebar and the Compare screen import `HIST_*` / `histogramBuckets`
+ * from here, so the fixed window can never drift between the two views. Pure —
+ * no React, no I/O, no ports.
  */
 
-import type { CellDTO } from "../../kernel/types";
+import type { CellDTO } from "../types";
 
 /** Number of histogram buckets (Swift `HistogramMath.bucketCount`). */
 export const HIST_BUCKET_COUNT = 24;
@@ -40,6 +35,14 @@ export function histogramBuckets(cells: CellDTO[]): number[] {
     out[i] += 1;
   }
   return out;
+}
+
+/**
+ * The µm center of bucket `i` — used to pick that bar's size-bin color via
+ * `binIndex`. Mirrors the Swift `center` computation in `DistributionPanel`.
+ */
+export function bucketCenterUm(i: number): number {
+  return HIST_MIN + (i + 0.5) * ((HIST_MAX - HIST_MIN) / HIST_BUCKET_COUNT);
 }
 
 /**

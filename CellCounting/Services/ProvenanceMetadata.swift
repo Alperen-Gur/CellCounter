@@ -98,9 +98,7 @@ struct ProvenanceMetadata: Codable, Sendable {
         lines.append("# pxPerUm: \(String(format: "%g", pxPerUm))")
         lines.append("# pxPerUm_source: \(pxPerUmSource)")
         lines.append("# confidence_floor: \(String(format: "%.4f", confidenceFloor))")
-        let binsStr = "[" + thresholds.map {
-            $0.truncatingRemainder(dividingBy: 1) == 0 ? String(Int($0)) : String($0)
-        }.joined(separator: ",") + "]"
+        let binsStr = "[" + thresholds.map(\.trimmedString).joined(separator: ",") + "]"
         lines.append("# thresholds: \(binsStr)")
         lines.append("# background_subtract: \(backgroundSubtract ? "true" : "false")")
         lines.append("# watershed_split: \(watershedSplit ? "true" : "false")")

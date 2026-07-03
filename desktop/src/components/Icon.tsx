@@ -31,6 +31,7 @@ export type IconName =
   | "scope"
   | "windowMin"
   | "windowMax"
+  | "windowRestore"
   | "windowClose"
   | "close"
   | "check"
@@ -200,6 +201,13 @@ const PATHS: Record<IconName, ReactElement> = {
   ),
   windowMin: <line x1="5" y1="12" x2="19" y2="12" />,
   windowMax: <rect x="6" y="6" width="12" height="12" rx="1.5" />,
+  windowRestore: (
+    <>
+      {/* Windows "restore" glyph: two overlapping squares. */}
+      <path d="M9 9 V7.5 A1.5 1.5 0 0 1 10.5 6 H16.5 A1.5 1.5 0 0 1 18 7.5 V13.5 A1.5 1.5 0 0 1 16.5 15 H15" />
+      <rect x="6" y="9" width="9" height="9" rx="1.5" />
+    </>
+  ),
   windowClose: (
     <>
       <line x1="6" y1="6" x2="18" y2="18" />

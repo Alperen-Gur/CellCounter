@@ -38,16 +38,24 @@ def apply(img, args):
 
         radius = max(5, int(getattr(args, "rolling_ball_radius", 50)))
 
+        # Subtraction must happen in a signed/float dtype: an unsigned `pixel - bg`
+        # wraps modularly (e.g. uint8 0 - 5 == 251) BEFORE any clip can run, turning
+        # background regions into bright noise. Compute the difference wide, clip to
+        # the original dtype's valid range, then cast back.
+        info = np.iinfo(img.dtype) if np.issubdtype(img.dtype, np.integer) else None
+        hi = None if info is None else info.max
+
+        def _subtract(plane):
+            diff = plane.astype(np.float32) - bg.astype(np.float32)
+            return np.clip(diff, 0, hi).astype(img.dtype)
+
         # If multi-channel (H, W, C), run rolling ball per channel.
         if out.ndim == 3:
             for c in range(out.shape[2]):
                 bg = restoration.rolling_ball(out[..., c], radius=radius)
-                out[..., c] = out[..., c] - bg
+                out[..., c] = _subtract(out[..., c])
         else:
             bg = restoration.rolling_ball(out, radius=radius)
-            out = out - bg
-
-        # Clip negative values introduced by subtraction, restore original dtype.
-        out = np.clip(out, 0, None).astype(img.dtype)
+            out = _subtract(out)
 
     return out

@@ -505,13 +505,27 @@ async fn run_via_worker(
 
     match outcome {
         Converse::Result(payload) => {
-            // Healthy worker → return it to the pool for reuse.
-            return_worker_to_pool(app, worker).await;
+            // Healthy worker → return it to the pool for reuse — UNLESS a cancel
+            // raced in at the same instant the frame arrived: `cancel_detection`
+            // has already `start_kill()`ed this child, so recycling it would push
+            // a dead process into the idle pool (the next checkout would only
+            // discover the broken pipe). Reap it instead of repooling.
+            if was_cancelled {
+                kill_worker(&worker).await;
+            } else {
+                return_worker_to_pool(app, worker).await;
+            }
             Ok(payload.into_result_dto())
         }
         Converse::SidecarError { error, hint } => {
-            // Worker itself is fine (it framed a clean error); recycle it.
-            return_worker_to_pool(app, worker).await;
+            // Worker itself is fine (it framed a clean error); recycle it — but,
+            // as above, if a cancel already start_kill()ed the child, reap it
+            // rather than repooling a dead process.
+            if was_cancelled {
+                kill_worker(&worker).await;
+            } else {
+                return_worker_to_pool(app, worker).await;
+            }
             let combined = match hint {
                 Some(h) => format!("{error}: {h}"),
                 None => error,
@@ -525,14 +539,35 @@ async fn run_via_worker(
             kill_worker(&worker).await;
             Err(WorkerAttempt::Cancelled)
         }
-        Converse::Broken(reason) => {
-            // Pipe/parse/timeout failure. Kill the worker (it may be wedged) and
-            // ask the caller to fall back — unless a cancel raced in, in which
-            // case report cancelled.
+        Converse::Broken { reason, dispatched } => {
+            // Pipe/parse/timeout failure. Kill the worker (it may be wedged).
             kill_worker(&worker).await;
             if was_cancelled {
                 Err(WorkerAttempt::Cancelled)
+            } else if dispatched {
+                // The worker already had the request in hand (EOF / read error /
+                // timeout after a successful stdin write). Re-running one-shot
+                // here would run the most expensive work in the app a SECOND
+                // time for the same image — and a chronically-too-short
+                // REQUEST_TIMEOUT would silently double every slow image. Surface
+                // the failure instead of masking it with a hidden retry.
+                eprintln!(
+                    "[sidecar] warm worker lost after dispatch for run {} ({}); \
+                     NOT re-running one-shot (would double the eval)",
+                    run_id, reason
+                );
+                Err(WorkerAttempt::SidecarError(DetectionErrorDto::SidecarFailed {
+                    exit_code: -1,
+                    stderr: format!(
+                        "The detection worker stopped responding after the image was \
+                         sent ({reason}). The image was not re-run automatically to \
+                         avoid doubling the work; try running it again."
+                    ),
+                }))
             } else {
+                // The worker never accepted the request (stdin write/flush error)
+                // — safe to fall back to a fresh one-shot spawn with no risk of
+                // double work.
                 Err(WorkerAttempt::Fallback(reason))
             }
         }
@@ -544,7 +579,16 @@ enum Converse {
     Result(SidecarPayload),
     SidecarError { error: String, hint: Option<String> },
     Cancelled,
-    Broken(String),
+    /// The exchange failed. `dispatched` records whether the request line was
+    /// already written+flushed into the worker's stdin before the failure:
+    ///   * `dispatched == false` — the worker never accepted the work (a stdin
+    ///     write/flush error), so re-running one-shot is safe and free of the
+    ///     double-work hazard.
+    ///   * `dispatched == true`  — the worker may already be running this image
+    ///     (EOF / read error / timeout AFTER a successful write). A one-shot
+    ///     retry would then run the most expensive work in the app twice, so the
+    ///     caller does NOT retry; it surfaces the failure instead.
+    Broken { reason: String, dispatched: bool },
 }
 
 /// Write the request line, then read stdout frames until we see our `id`.
@@ -555,27 +599,54 @@ async fn converse(
     request_json: &str,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Converse {
-    // Write "<json>\n" and flush. A broken pipe here means the worker died.
+    // Write "<json>\n" and flush. A failure BEFORE the flush completes means the
+    // worker never accepted the request → the caller may safely retry one-shot.
     if let Err(e) = worker.stdin.write_all(request_json.as_bytes()).await {
-        return Converse::Broken(format!("stdin write failed: {e}"));
+        return Converse::Broken {
+            reason: format!("stdin write failed: {e}"),
+            dispatched: false,
+        };
     }
     if let Err(e) = worker.stdin.write_all(b"\n").await {
-        return Converse::Broken(format!("stdin newline write failed: {e}"));
+        return Converse::Broken {
+            reason: format!("stdin newline write failed: {e}"),
+            dispatched: false,
+        };
     }
     if let Err(e) = worker.stdin.flush().await {
-        return Converse::Broken(format!("stdin flush failed: {e}"));
+        return Converse::Broken {
+            reason: format!("stdin flush failed: {e}"),
+            dispatched: false,
+        };
     }
 
-    // Read frames until the matching id, honouring cancel + a hard timeout.
+    // From here the worker has the request and may be actively processing this
+    // image; any failure below is `dispatched: true` so we never re-run the
+    // expensive eval a second time behind the user's back.
     loop {
         if cancel_flag.load(Ordering::SeqCst) {
             return Converse::Cancelled;
         }
         let line = match tokio::time::timeout(REQUEST_TIMEOUT, worker.stdout.next_line()).await {
-            Err(_) => return Converse::Broken("request timed out".into()),
+            Err(_) => {
+                return Converse::Broken {
+                    reason: "request timed out".into(),
+                    dispatched: true,
+                }
+            }
             Ok(Ok(Some(l))) => l,
-            Ok(Ok(None)) => return Converse::Broken("worker closed stdout (EOF)".into()),
-            Ok(Err(e)) => return Converse::Broken(format!("stdout read failed: {e}")),
+            Ok(Ok(None)) => {
+                return Converse::Broken {
+                    reason: "worker closed stdout (EOF)".into(),
+                    dispatched: true,
+                }
+            }
+            Ok(Err(e)) => {
+                return Converse::Broken {
+                    reason: format!("stdout read failed: {e}"),
+                    dispatched: true,
+                }
+            }
         };
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -588,10 +659,13 @@ async fn converse(
             Err(_) => {
                 // Non-JSON on stdout should not happen in serve mode, but never
                 // let it wedge us: treat as a broken worker.
-                return Converse::Broken(format!(
-                    "unparseable worker frame: {}",
-                    trimmed.chars().take(200).collect::<String>()
-                ));
+                return Converse::Broken {
+                    reason: format!(
+                        "unparseable worker frame: {}",
+                        trimmed.chars().take(200).collect::<String>()
+                    ),
+                    dispatched: true,
+                };
             }
         };
         let ftype = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -606,12 +680,20 @@ async fn converse(
                 }
                 let payload = match frame.get("payload") {
                     Some(p) => p.clone(),
-                    None => return Converse::Broken("result frame missing payload".into()),
+                    None => {
+                        return Converse::Broken {
+                            reason: "result frame missing payload".into(),
+                            dispatched: true,
+                        }
+                    }
                 };
                 match serde_json::from_value::<SidecarPayload>(payload) {
                     Ok(pl) => return Converse::Result(pl),
                     Err(e) => {
-                        return Converse::Broken(format!("payload decode failed: {e}"))
+                        return Converse::Broken {
+                            reason: format!("payload decode failed: {e}"),
+                            dispatched: true,
+                        }
                     }
                 }
             }
@@ -692,6 +774,7 @@ async fn spawn_worker(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut cmd);
 
     let mut child: Child = cmd
         .spawn()
@@ -861,6 +944,7 @@ async fn run_one_shot(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut cmd);
 
     let mut child: Child = cmd
         .spawn()
@@ -1123,12 +1207,14 @@ pub async fn detection_availability(
     }
 
     // Probe importability.
-    let output = Command::new(&python)
-        .args(["-c", "import cellpose"])
+    let mut cmd = Command::new(&python);
+    cmd.args(["-c", "import cellpose"])
         .current_dir(store.python_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::proc::hide_console_tokio(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("availability probe failed to spawn: {e}"))?;
@@ -1157,15 +1243,35 @@ pub async fn detection_availability(
 /// Kill orphaned sidecar processes left by a previous (crashed) session.
 ///
 /// Cross-platform via the `sysinfo` crate (replaces the old Unix-only `/bin/ps`
-/// scrape). We enumerate every process, and any whose command line references
-/// one of our owned `*_detect.py` scripts — and whose pid is not one of our
-/// current live children — is killed. Because a warm/one-shot child from THIS
-/// process is tracked with `kill_on_drop` and reaped on its own path, and the
-/// sweep runs once at launch (before we have spawned anything), in practice
-/// every match is a genuine orphan. Best-effort; never blocks startup — call it
-/// from a spawned thread in `setup`.
-pub fn sweep_orphans() {
+/// scrape). We enumerate every process, and any that is running one of our owned
+/// `*_detect.py` scripts **staged under THIS app's `python_dir`** — and whose
+/// pid is not our own — is killed.
+///
+/// The scoping to `python_dir` is important: matching a bare basename
+/// (`cellpose_detect.py`) against every process's argv is global to the whole
+/// machine, so an unrelated process that merely mentions that filename (another
+/// checkout of this project, a user's own script, an editor/terminal showing the
+/// path) would be wrongly killed. By requiring the resolved script path to live
+/// under our own staged python dir, only sidecars this app actually launched
+/// (from that exact directory) are candidates.
+///
+/// Best-effort; never blocks startup — call it from a spawned thread in `setup`.
+pub fn sweep_orphans(python_dir: std::path::PathBuf) {
     use sysinfo::{ProcessesToUpdate, System};
+
+    // The set of absolute script paths this app would ever launch, canonicalized
+    // so the comparison is robust to `.`/symlink differences. If the dir doesn't
+    // resolve yet (never staged), there is nothing of ours to match.
+    let owned_paths: Vec<String> = OWNED_SCRIPTS
+        .iter()
+        .map(|name| python_dir.join(name))
+        .map(|p| {
+            std::fs::canonicalize(&p)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
 
     // Our own pid — never target ourselves even if argv somehow matched.
     let self_pid = std::process::id();
@@ -1198,7 +1304,10 @@ pub fn sweep_orphans() {
             cmdline
         };
 
-        let is_ours = OWNED_SCRIPTS.iter().any(|s| haystack.contains(s));
+        // Only a match on the FULL staged path under our python_dir counts, so
+        // we never kill an unrelated process that happens to mention the bare
+        // script basename.
+        let is_ours = owned_paths.iter().any(|p| haystack.contains(p.as_str()));
         if !is_ours {
             continue;
         }

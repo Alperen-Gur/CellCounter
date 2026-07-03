@@ -286,22 +286,33 @@ fn row_to_condition(row: &Row) -> rusqlite::Result<ConditionDto> {
 #[tauri::command]
 pub fn all_batches(db: State<'_, Db>) -> Result<Vec<BatchDto>, String> {
     let conn = db.lock()?;
-    // Collect batch ids first, then build each DTO — `row_to_batch` runs a
-    // sub-query for `image_ids`, which can't borrow the outer statement's row.
-    let ids: Vec<String> = {
-        let mut s = conn
-            .prepare("SELECT id FROM batches ORDER BY created_at DESC")
-            .map_err(|e| e.to_string())?;
-        let collected = s
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?;
-        collected
-    };
+    let ids = collect_ids(&conn, "SELECT id FROM batches ORDER BY created_at DESC", [])?;
+    fetch_batches_by_ids(&conn, &ids)
+}
+
+/// Collect a single `id` column from `sql` into a `Vec<String>`. Shared by the
+/// batch-list commands (the ids are gathered first because `row_to_batch` runs
+/// its own `image_ids` sub-query, which can't borrow the outer statement's row).
+fn collect_ids(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<String>, String> {
+    let mut s = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let ids = s
+        .query_map(params, |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
+/// Build the `BatchDto` for each id (skipping any that vanished between the id
+/// scan and the fetch). Shared by `all_batches` and `batches_matching`.
+fn fetch_batches_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<BatchDto>, String> {
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        if let Some(b) = fetch_batch(&conn, &id).map_err(|e| e.to_string())? {
+        if let Some(b) = fetch_batch(conn, id).map_err(|e| e.to_string())? {
             out.push(b);
         }
     }
@@ -360,24 +371,12 @@ pub fn create_batch(
 #[tauri::command]
 pub fn batches_matching(db: State<'_, Db>, condition: String) -> Result<Vec<BatchDto>, String> {
     let conn = db.lock()?;
-    let ids: Vec<String> = {
-        let mut s = conn
-            .prepare("SELECT id FROM batches WHERE condition = ?1 ORDER BY created_at DESC")
-            .map_err(|e| e.to_string())?;
-        let collected = s
-            .query_map(params![condition], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())?;
-        collected
-    };
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(b) = fetch_batch(&conn, &id).map_err(|e| e.to_string())? {
-            out.push(b);
-        }
-    }
-    Ok(out)
+    let ids = collect_ids(
+        &conn,
+        "SELECT id FROM batches WHERE condition = ?1 ORDER BY created_at DESC",
+        params![condition],
+    )?;
+    fetch_batches_by_ids(&conn, &ids)
 }
 
 /// Delete a batch (cascades to images/detections/corrections/rois/annotations)
@@ -761,11 +760,19 @@ pub fn record_correction(
     detection_id: String,
     c: CorrectionInput,
 ) -> Result<(), String> {
-    let conn = db.lock()?;
+    let mut conn = db.lock()?;
+    // The existence check, the INSERT, and the counter decrement must commit
+    // atomically: if the process died between the INSERT and the UPDATE, the
+    // correction row would exist while the denormalised counter was never
+    // decremented — and because `already_triaged` would then be true on retry,
+    // the decrement could never be re-applied, permanently inflating the badge.
+    // A single transaction makes the row + its counter effect all-or-nothing.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
     // Was this cell already triaged (has a prior correction row)? Capture BEFORE
     // inserting the new row so a repeat correction on the same cell doesn't
     // double-decrement the denormalised counter.
-    let already_triaged = conn
+    let already_triaged = tx
         .query_row(
             "SELECT EXISTS(
                SELECT 1 FROM corrections WHERE detection_id = ?1 AND cell_id = ?2
@@ -776,7 +783,7 @@ pub fn record_correction(
         .map_err(|e| e.to_string())?
         != 0;
 
-    conn.execute(
+    tx.execute(
         "INSERT INTO corrections
            (id, detection_id, kind, cell_id, cx, cy, diameter, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -801,7 +808,7 @@ pub fn record_correction(
     // this one — so decide from what is on disk NOW, not from ordering). Clamp at
     // zero so a stray/duplicate correction can never drive the badge negative.
     if !already_triaged {
-        let cells_json: Option<String> = conn
+        let cells_json: Option<String> = tx
             .query_row(
                 "SELECT cells_json FROM detections WHERE id = ?1",
                 params![detection_id],
@@ -814,7 +821,7 @@ pub fn record_correction(
                 .iter()
                 .any(|cell| cell.id == c.cell_id && cell.confidence < REVIEW_QUEUE_CUTOFF);
             if is_low_conf {
-                conn.execute(
+                tx.execute(
                     "UPDATE detections
                        SET uncorrected_count = MAX(uncorrected_count - 1, 0)
                      WHERE id = ?1",
@@ -824,6 +831,7 @@ pub fn record_correction(
             }
         }
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 

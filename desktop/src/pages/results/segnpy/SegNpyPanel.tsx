@@ -32,7 +32,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { CellDTO, DetectionResultDTO, ImageDTO } from "../../../kernel/types";
+import type { BatchDTO, CellDTO, DetectionResultDTO, ImageDTO } from "../../../kernel/types";
 import { getPort } from "../../../kernel/persistence";
 import { useAppStore } from "../../../kernel/store/store";
 import { Icon } from "../../../components/Icon";
@@ -92,36 +92,45 @@ async function loadDialog(): Promise<DialogModule | null> {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the current image from the store's `currentBatchId` +
- * `currentImageIdx` through the port. Read-only; returns the ImageDTO (or null).
+ * Resolve the current image AND its owning batch from the store's
+ * `currentBatchId` + `currentImageIdx` through the port. Read-only.
  * Intentionally a local copy (not imported from editing/) so this feature owns
  * disjoint files.
+ *
+ * The batch is returned alongside the image because the seg-npy measurement must
+ * size cells with the SAME calibration the batch was analyzed with
+ * (`batch.pxPerUm` / `batch.thresholds`), not the live global slider — otherwise
+ * imported cells diverge in scale/size-class from the rest of the batch.
  */
-function useCurrentImage(): ImageDTO | null {
+function useCurrentImage(): { image: ImageDTO | null; batch: BatchDTO | null } {
   const currentBatchId = useAppStore((s) => s.currentBatchId);
   const currentImageIdx = useAppStore((s) => s.currentImageIdx);
   const [image, setImage] = useState<ImageDTO | null>(null);
+  const [batch, setBatch] = useState<BatchDTO | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     if (!currentBatchId) {
       setImage(null);
+      setBatch(null);
       return;
     }
     const port = getPort();
     void (async () => {
       try {
-        const [batch, all] = await Promise.all([
+        const [b, all] = await Promise.all([
           port.batch(currentBatchId),
           port.allImages(),
         ]);
         if (cancelled) return;
-        const imageId = batch?.imageIds[currentImageIdx];
+        const imageId = b?.imageIds[currentImageIdx];
+        setBatch(b);
         setImage(imageId ? all.find((i) => i.id === imageId) ?? null : null);
       } catch (err) {
         if (!cancelled) {
           console.warn("[SegNpyPanel] resolve image failed:", err);
           setImage(null);
+          setBatch(null);
         }
       }
     })();
@@ -130,7 +139,7 @@ function useCurrentImage(): ImageDTO | null {
     };
   }, [currentBatchId, currentImageIdx]);
 
-  return image;
+  return { image, batch };
 }
 
 // ---------------------------------------------------------------------------
@@ -144,9 +153,19 @@ type Status =
   | { kind: "error"; label: string };
 
 export default function SegNpyPanel() {
-  const image = useCurrentImage();
-  const pxPerUm = useAppStore((s) => s.pxPerUm);
-  const thresholds = useAppStore((s) => s.thresholds);
+  const { image, batch } = useCurrentImage();
+  const globalPxPerUm = useAppStore((s) => s.pxPerUm);
+  const globalThresholds = useAppStore((s) => s.thresholds);
+
+  // Prefer the owning batch's calibration + thresholds so imported masks are
+  // sized/size-classed with the SAME scale the batch was analyzed with (the
+  // detection used batch.pxPerUm; useResultsData prefers batch.thresholds).
+  // Fall back to the global store only when no batch is resolved.
+  const pxPerUm = batch?.pxPerUm ?? globalPxPerUm;
+  const thresholds =
+    batch?.thresholds && batch.thresholds.length > 0
+      ? batch.thresholds
+      : globalThresholds;
 
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   // Auto-clear a success/error note after a moment so the toolbar stays tidy.

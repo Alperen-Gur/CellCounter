@@ -1077,10 +1077,12 @@ final class AppState {
             }
 
             // Pass-17 Lane C: apply EXIF-derived calibration to this batch if:
-            //  • all imported images returned the SAME px/µm value (within 0.1%)
+            //  • EVERY imported image reported EXIF calibration (no un-calibrated
+            //    image silently inheriting a scale it never carried), AND
+            //  • they all returned the SAME px/µm value (within 0.1%), AND
             //  • that value differs from the user's current global by > 5%
             if !collectedExifPxPerUm.isEmpty,
-               collectedExifPxPerUm.count == urls.count || !collectedExifPxPerUm.isEmpty {
+               collectedExifPxPerUm.count == urls.count {
                 let allSame = collectedExifPxPerUm.allSatisfy {
                     abs($0 - collectedExifPxPerUm[0]) / collectedExifPxPerUm[0] < 0.001
                 }
@@ -1226,6 +1228,24 @@ final class AppState {
             CorrectionRecord(kind: kind, cellId: cellId, cx: cx, cy: cy, diameter: diameter),
             on: det)
         NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+    }
+
+    /// Delete every cell in `ids` from the current image's detection, persist,
+    /// and record a "remove" correction per cell for the audit trail. The single
+    /// owner of this mutation — both the Results keyboard shortcut and the editor
+    /// toolbar's Remove override route through here so the two can't drift.
+    /// Empty selection (or an empty intersection) is a no-op.
+    func removeCells(_ ids: Set<UUID>) {
+        guard !ids.isEmpty,
+              let detection = currentImage?.detection else { return }
+        let victims = detection.cells.filter { ids.contains($0.id) }
+        guard !victims.isEmpty else { return }
+        detection.cells.removeAll { ids.contains($0.id) }
+        try? repos.context.save()
+        for c in victims {
+            recordCorrection(kind: "remove", cellId: c.id,
+                             cx: c.cx, cy: c.cy, diameter: c.diameter)
+        }
     }
 
     private static func shortDate() -> String {

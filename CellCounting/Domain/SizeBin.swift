@@ -14,12 +14,12 @@ enum BinMath {
             return [SizeBin(min: 0, max: .infinity, label: "all")]
         }
         var out: [SizeBin] = []
-        out.append(SizeBin(min: 0, max: first, label: "< \(fmt(first)) µm"))
+        out.append(SizeBin(min: 0, max: first, label: "< \(first.trimmedString) µm"))
         for i in 0..<(thresholds.count - 1) {
             let a = thresholds[i], b = thresholds[i+1]
-            out.append(SizeBin(min: a, max: b, label: "\(fmt(a))–\(fmt(b)) µm"))
+            out.append(SizeBin(min: a, max: b, label: "\(a.trimmedString)–\(b.trimmedString) µm"))
         }
-        out.append(SizeBin(min: last, max: .infinity, label: "> \(fmt(last)) µm"))
+        out.append(SizeBin(min: last, max: .infinity, label: "> \(last.trimmedString) µm"))
         return out
     }
 
@@ -28,11 +28,5 @@ enum BinMath {
             if diameter < t { return i }
         }
         return thresholds.count
-    }
-
-    private static func fmt(_ v: Double) -> String {
-        v.truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(v))
-            : String(format: "%.1f", v)
     }
 }

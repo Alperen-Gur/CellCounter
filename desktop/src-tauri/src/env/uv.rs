@@ -125,6 +125,7 @@ pub async fn env_install(app: AppHandle) -> Result<(), String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut cmd);
 
     let mut child = cmd
         .spawn()
@@ -238,12 +239,14 @@ pub async fn env_availability(app: AppHandle) -> Result<Availability, String> {
             reason: Some("Python environment is not installed.".into()),
         });
     }
-    let output = Command::new(&python)
-        .args(["-c", "import cellpose"])
+    let mut cmd = Command::new(&python);
+    cmd.args(["-c", "import cellpose"])
         .current_dir(store.python_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::proc::hide_console_tokio(&mut cmd);
+    let output = cmd
         .output()
         .await
         .map_err(|e| format!("availability probe failed to spawn: {e}"))?;

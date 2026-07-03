@@ -95,10 +95,19 @@ pub fn import_image(db: State<'_, Db>, source_path: String) -> Result<ImportResu
     let bytes = std::fs::read(src).map_err(|e| format!("File read error: {e}"))?;
 
     // --- 1. decode ---------------------------------------------------------
-    let fmt = ImageFormat::from_extension(&ext)
-        .ok_or_else(|| "Couldn't determine image format.".to_string())?;
-    let decoded = image::load_from_memory_with_format(&bytes, fmt)
-        .map_err(|_| "Couldn't decode the image.".to_string())?;
+    // Use the extension as the primary format hint, but fall back to sniffing
+    // the actual bytes when that fails: a file named `foo.png` that is really a
+    // JPEG (common after manual renames / camera exports) has perfectly valid,
+    // supported image bytes and should still import. `load_from_memory` picks
+    // the format from the magic bytes.
+    let decoded = match ImageFormat::from_extension(&ext) {
+        Some(fmt) => image::load_from_memory_with_format(&bytes, fmt)
+            .or_else(|_| image::load_from_memory(&bytes))
+            .map_err(|_| "Couldn't decode the image.".to_string())?,
+        None => {
+            image::load_from_memory(&bytes).map_err(|_| "Couldn't decode the image.".to_string())?
+        }
+    };
     let (width_px, height_px) = decoded.dimensions();
 
     // --- 2. whole-file SHA-256 (hex) --------------------------------------
@@ -293,9 +302,17 @@ fn parse_tiff_baseline(bytes: &[u8]) -> Option<CalibrationDto> {
     if !(px_per_um > 0.001 && px_per_um < 1000.0) {
         return None;
     }
-    // Reject exact scanner/printer default DPIs.
+    // Reject the scanner/printer default DPIs. Compare with a small epsilon
+    // rather than `==`: for cm-unit TIFFs `px_per_inch` is derived as
+    // `x_res * 2.54`, which essentially never lands on 72/96/300 exactly, so a
+    // float-equality test would silently let a bogus scanner-default calibration
+    // through on the cm path.
     let px_per_inch = if unit_raw == 2 { x_res } else { x_res * 2.54 };
-    if px_per_inch == 72.0 || px_per_inch == 96.0 || px_per_inch == 300.0 {
+    const DPI_EPS: f64 = 0.5;
+    if [72.0, 96.0, 300.0]
+        .iter()
+        .any(|d| (px_per_inch - d).abs() < DPI_EPS)
+    {
         return None;
     }
     Some(CalibrationDto {
