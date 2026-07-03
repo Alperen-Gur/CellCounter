@@ -100,6 +100,24 @@ enum EXIFCalibration {
             unit = "µm"   // OME spec default
         }
 
+        // OME-TIFFs can carry anisotropic pixels. Auto-calibration assumes a
+        // single square-pixel scale, so if a Y axis is present and disagrees with
+        // X beyond a 1% tolerance, refuse rather than silently calibrate off X
+        // (mirrors the ImageJ pixelWidth/pixelHeight guard).
+        let yUnit: String = {
+            if let m = xml.range(of: #"PhysicalSizeYUnit\s*=\s*"([^"]+)""#, options: .regularExpression),
+               let u = String(xml[m]).firstMatch(for: #"(?<=\")[^"]+(?=\")"#) { return u }
+            return unit
+        }()
+        if let yMatch = xml.range(of: #"PhysicalSizeY\s*=\s*"([0-9]*\.?[0-9]+)""#, options: .regularExpression),
+           let yStr = String(xml[yMatch]).firstMatch(for: #"[0-9]*\.?[0-9]+"#),
+           let physicalSizeY = Double(yStr),
+           let xMicrons = convertToMicrons(value: physicalSizeX, unit: unit),
+           let yMicrons = convertToMicrons(value: physicalSizeY, unit: yUnit),
+           xMicrons > 0, abs(yMicrons - xMicrons) > xMicrons * 0.01 {
+            return nil
+        }
+
         guard let pxPerUm = convertToMicrons(value: physicalSizeX, unit: unit).map({ 1.0 / $0 }) else {
             return nil
         }
@@ -131,7 +149,14 @@ enum EXIFCalibration {
             return nil   // no unit → unusable
         }
 
-        guard pxPerUm > 0.001, pxPerUm < 1000 else { return nil }
+        // The TIFF baseline result is only medium-confidence yet gets
+        // auto-applied to a whole batch. The old 0.001–1000 window spans six
+        // orders of magnitude and admits ordinary document-scanner/printer
+        // resolutions (200 dpi ≈ 0.0079 px/µm, 600 dpi ≈ 0.0236 px/µm) that no
+        // microscope objective produces. Restrict to a plausible light-
+        // microscopy range so a stack of scanned TIFFs can't silently rewrite
+        // the batch calibration to a nonsense value.
+        guard pxPerUm > 0.2, pxPerUm < 100 else { return nil }
 
         // Heuristic sanity: 72 and 96 dpi are the default screen/scanner DPI
         // values written by software without real calibration. Compare with a
@@ -158,6 +183,7 @@ enum EXIFCalibration {
     private static func parseImageJDescription(_ desc: String) -> Result? {
         let lines = desc.components(separatedBy: "\n")
         var pixelWidth: Double? = nil
+        var pixelHeight: Double? = nil
         var unit: String = "µm"
 
         for line in lines {
@@ -166,6 +192,10 @@ enum EXIFCalibration {
                let v = Double(kv.dropFirst("pixelwidth=".count).trimmingCharacters(in: .whitespaces)) {
                 pixelWidth = v
             }
+            if kv.lowercased().hasPrefix("pixelheight="),
+               let v = Double(kv.dropFirst("pixelheight=".count).trimmingCharacters(in: .whitespaces)) {
+                pixelHeight = v
+            }
             if kv.lowercased().hasPrefix("unit=") {
                 unit = String(kv.dropFirst("unit=".count)).trimmingCharacters(in: .whitespaces)
             }
@@ -173,9 +203,18 @@ enum EXIFCalibration {
 
         guard let pw = pixelWidth, pw > 0 else { return nil }
 
+        // ImageJ can carry anisotropic pixels (pixelWidth != pixelHeight after
+        // binning / aspect corrections). We only model a single square-pixel
+        // scale, so if the two axes disagree beyond a 1% tolerance, refuse to
+        // silently apply the x-axis scale to both — a wrong y-axis / µm² area
+        // is worse than no auto-calibration.
+        if let ph = pixelHeight, ph > 0, abs(ph - pw) > pw * 0.01 {
+            return nil
+        }
+
         // pw is µm-per-pixel; we want px/µm
         let umPerPx: Double
-        switch unit.lowercased() {
+        switch normalizedUnit(unit) {
         case "um", "µm", "micron", "microns": umPerPx = pw
         case "nm":                             umPerPx = pw / 1000.0
         case "mm":                             umPerPx = pw * 1000.0
@@ -225,10 +264,20 @@ enum EXIFCalibration {
 
     // MARK: — Unit conversion helper
 
+    /// Normalizes a unit string for matching: lowercases, trims whitespace, and
+    /// folds the Greek small letter mu (U+03BC) — written by many OME-XML/ImageJ
+    /// exporters — onto the canonical micro sign (U+00B5) so "µm" matches
+    /// regardless of which codepoint the source used.
+    private static func normalizedUnit(_ unit: String) -> String {
+        unit.lowercased()
+            .trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "\u{03BC}", with: "\u{00B5}")
+    }
+
     /// Converts a physical size value + unit string into µm.
     /// Returns nil for unrecognised units.
     private static func convertToMicrons(value: Double, unit: String) -> Double? {
-        switch unit.lowercased().trimmingCharacters(in: .whitespaces) {
+        switch normalizedUnit(unit) {
         case "µm", "um", "micron", "microns":
             return value
         case "nm":

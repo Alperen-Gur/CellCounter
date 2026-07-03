@@ -189,10 +189,14 @@ export default function SegNpyPanel() {
 
   const busy = status.kind === "busy";
 
-  // Size thresholds → small/large (µm). `binsFromThresholds` uses [small, large];
-  // the store default is [20, 30]. Pass the first two to the Rust command.
+  // Size thresholds → small/large (µm), passed to the sidecar's
+  // `--small-threshold` / `--large-threshold`. Use the SAME convention as the
+  // detector ran with (detectionParamsFromStore): small = first threshold,
+  // large = LAST threshold — so imported masks size-class consistently with the
+  // batch's original detection when more than two thresholds are configured.
   const smallT = thresholds[0] ?? 20;
-  const largeT = thresholds[1] ?? 30;
+  const largeT =
+    thresholds.length > 0 ? thresholds[thresholds.length - 1] : 30;
 
   // ── IMPORT ────────────────────────────────────────────────────────────────
   const onImport = useCallback(async () => {
@@ -219,6 +223,24 @@ export default function SegNpyPanel() {
     }
     const npyPath = Array.isArray(picked) ? picked[0] : picked;
     if (!npyPath) return; // user cancelled
+
+    // Guard a destructive overwrite: the import replaces this image's detection
+    // wholesale, discarding any manual mask edits / resizes / rejects. Only
+    // prompt when a detection already exists (a fresh image imports silently).
+    try {
+      const existing = await getPort().getDetection(image.id);
+      if (existing && existing.cells.length > 0) {
+        const ok =
+          typeof window === "undefined" ||
+          window.confirm(
+            "Replace this image's detection with the imported masks?\n\n" +
+              "The current detection and any manual edits on this image will be lost. This cannot be undone.",
+          );
+        if (!ok) return;
+      }
+    } catch {
+      // Couldn't read the current detection — proceed (import is still valid).
+    }
 
     flash({ kind: "busy", label: "Importing _seg.npy…" });
     try {

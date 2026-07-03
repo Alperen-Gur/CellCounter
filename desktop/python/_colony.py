@@ -82,20 +82,28 @@ def compute(labels: Any, px_per_um: float, image_shape: tuple[int, int]) -> dict
     confluency_pct = 100.0 * float(binary.sum()) / float(arr.size)
 
     # ------------------------------------------------------------------
-    # 2) Per-cell centroids (label -> centroid in pixel coords).
+    # 2) Per-cell centroids (all labels in ONE vectorised pass).
+    #
+    # A per-label ``np.where(arr == lab)`` loop is O(N·H·W) — a full frame
+    # scan per cell (see the measure_cells vectorisation note in
+    # _cellpose_common). Instead accumulate the y/x sums and pixel counts
+    # across the whole frame once via np.bincount, then divide. Labels may be
+    # sparse, so index by ``label_ids`` at the end.
     # ------------------------------------------------------------------
     label_ids = np.unique(arr)
     label_ids = label_ids[label_ids != 0]
     centroids: list[tuple[float, float]] = []  # (y, x)
-    label_to_centroid: dict[int, tuple[float, float]] = {}
-    for lab in label_ids:
-        ys, xs = np.where(arr == lab)
-        if ys.size == 0:
-            continue
-        cy = float(ys.mean())
-        cx = float(xs.mean())
-        centroids.append((cy, cx))
-        label_to_centroid[int(lab)] = (cy, cx)
+    if label_ids.size:
+        flat = arr.ravel()
+        max_label = int(label_ids.max())
+        counts = np.bincount(flat, minlength=max_label + 1).astype(np.float64)
+        yy, xx = np.indices(arr.shape)
+        sum_y = np.bincount(flat, weights=yy.ravel(), minlength=max_label + 1)
+        sum_x = np.bincount(flat, weights=xx.ravel(), minlength=max_label + 1)
+        cnt = counts[label_ids]
+        cy_all = sum_y[label_ids] / cnt
+        cx_all = sum_x[label_ids] / cnt
+        centroids = [(float(cy), float(cx)) for cy, cx in zip(cy_all, cx_all)]
 
     # ------------------------------------------------------------------
     # 3) Colony detection: dilate ~4 µm and find connected components.

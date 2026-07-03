@@ -231,6 +231,31 @@ def run_detection_once(model, model_type: str, args, channels: list[int]) -> dic
                     (img.shape[1], img.shape[0]), _PILImage.NEAREST),
                 dtype=_np.int32)
             eval_out = (masks_full,) + tuple(eval_out[1:])
+
+            # Also upsample the cellprob map (flows[2]) so measure_cells can
+            # still read per-cell confidence. Without this, flows[2] stays at
+            # half resolution, the `candidate.shape == masks.shape` guard in
+            # measure_cells fails, and every cell falls back to the flat 0.85
+            # default confidence. Bilinear preserves the continuous prob field.
+            flows_small = eval_out[1] if len(eval_out) > 1 else None
+            if flows_small is not None:
+                try:
+                    cellprob_small = flows_small[2]
+                    if (hasattr(cellprob_small, "shape")
+                            and cellprob_small.shape == masks_small.shape):
+                        cellprob_full = _np.array(
+                            _PILImage.fromarray(
+                                cellprob_small.astype(_np.float32)).resize(
+                                (img.shape[1], img.shape[0]),
+                                _PILImage.BILINEAR),
+                            dtype=_np.float32)
+                        flows_full = list(flows_small)
+                        flows_full[2] = cellprob_full
+                        eval_out = ((masks_full, flows_full)
+                                    + tuple(eval_out[2:]))
+                except Exception as exc3:  # noqa: BLE001
+                    log("[cellpose_detect] could not upsample cellprob map; "
+                        f"per-cell confidence unavailable: {exc3!r}")
             log("[cellpose_detect] half-resolution retry succeeded")
         except Exception as exc2:  # noqa: BLE001
             log(f"[cellpose_detect] half-resolution retry also failed: {exc2!r}")

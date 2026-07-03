@@ -79,67 +79,13 @@ struct CellposeSAMDetectionService: DetectionService {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
 
-        if outcome.exitCode != 0 {
-            let signalCodes: Set<Int32> = [15, -15, 143, 9, -9, 137]
-            if signalCodes.contains(outcome.exitCode) {
-                throw DetectionError.cancelled
-            }
-            let stderrText = String(data: outcome.stderr, encoding: .utf8) ?? ""
-            throw DetectionError.sidecarFailed(exitCode: outcome.exitCode, stderr: stderrText)
-        }
+        // Non-zero exit → shared mapping: host-termination signal codes become
+        // .cancelled (swallowed by callers), everything else .sidecarFailed.
+        try outcome.throwIfFailed()
 
-        if let errPayload = try? JSONDecoder().decode(SidecarError.self, from: outcome.stdout) {
-            let combined = "\(errPayload.error)\(errPayload.hint.map { ": \($0)" } ?? "")"
-            throw DetectionError.sidecarFailed(exitCode: 0, stderr: combined)
-        }
-
-        let decoded: SidecarPayload
-        do {
-            decoded = try JSONDecoder().decode(SidecarPayload.self, from: outcome.stdout)
-        } catch {
-            let stdoutText = String(data: outcome.stdout, encoding: .utf8) ?? ""
-            throw DetectionError.sidecarFailed(exitCode: outcome.exitCode,
-                                               stderr: "Unparseable stdout: \(stdoutText.prefix(400))")
-        }
-
-        let cells = decoded.cells.map { c -> DetectedCell in
-            let id = UUID(uuidString: c.id) ?? UUID()
-            let contour: [CGPoint]? = c.contour_px.flatMap { pairs in
-                let pts = pairs.compactMap { p -> CGPoint? in
-                    guard p.count >= 2 else { return nil }
-                    return CGPoint(x: p[0], y: p[1])
-                }
-                return pts.count >= 3 ? pts : nil
-            }
-            return DetectedCell(
-                id: id,
-                cx: c.cx,
-                cy: c.cy,
-                diameter: c.diameter_um,
-                diameterPx: c.diameter_px,
-                confidence: c.confidence,
-                areaMicrons2: c.area_um2,
-                perimeterMicrons: c.perimeter_um,
-                circularity: c.circularity,
-                eccentricity: c.eccentricity,
-                meanIntensity: c.mean_intensity,
-                integratedDensity: c.integrated_density,
-                centroidUmX: c.centroid_um_x,
-                centroidUmY: c.centroid_um_y,
-                aspectRatio: c.aspect_ratio,
-                solidity: c.solidity,
-                edgeTouching: c.edge_touching ?? false,
-                likelyClump: c.likely_clump ?? false,
-                likelyDebris: c.likely_debris ?? false,
-                sizeClass: c.size_class ?? "",
-                isManual: c.is_manual ?? false,
-                contourPx: contour
-            )
-        }
-        return DetectionResult(cells: cells,
-                               imageWidth: decoded.width,
-                               imageHeight: decoded.height,
-                               imageStats: decoded.image_stats)
+        // Structured-error check, payload decode, and per-cell mapping are
+        // shared across all detection families via SidecarPayload.decodeResult.
+        return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
     }
 
 }

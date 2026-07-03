@@ -93,6 +93,11 @@ pub struct ImageDto {
     pub stored_path: String,
     /// `Thumbnails/<id>.jpg`.
     pub thumb_path: String,
+    /// Denormalised cell count for this image's detection (0 if none). Read from
+    /// the `detections.cell_count` counter so the library grid can show per-image
+    /// counts without a per-image `get_detection` round-trip (N+1) or decoding
+    /// `cells_json`.
+    pub cell_count: i64,
 }
 
 // ---------------------------------------------------------------------------

@@ -24,10 +24,23 @@ final class Repositories {
                                          url: FileStore.shared.root.appendingPathComponent("store.sqlite"))
         do {
             self.container = try ModelContainer(for: schema, configurations: [config])
-        } catch {
-            // Last-ditch fall back to in-memory if disk store is unwritable.
-            self.container = try! ModelContainer(for: schema,
-                                                  configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        } catch let diskError {
+            // Last-ditch fall back to in-memory if the disk store is unwritable.
+            // If even that throws it's almost certainly a schema/migration error
+            // (not disk-related), so surface an actionable message instead of an
+            // opaque try! trap.
+            do {
+                self.container = try ModelContainer(for: schema,
+                                                    configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+            } catch let memoryError {
+                fatalError("""
+                CellCounter could not open its data store.
+                On-disk store failed: \(diskError)
+                In-memory fallback also failed: \(memoryError)
+                This usually indicates a schema/migration problem rather than a disk issue. \
+                Please report this with the messages above.
+                """)
+            }
         }
         seedDefaultsIfNeeded()
     }

@@ -9,7 +9,10 @@ struct SizeBin: Identifiable, Hashable {
 
 enum BinMath {
     /// Given thresholds like [20, 30] return bins: <20, 20–30, >30.
+    /// Thresholds are sorted ascending defensively so an out-of-order edit
+    /// (e.g. [35, 30]) can never produce empty/negative-width bins.
     static func bins(from thresholds: [Double]) -> [SizeBin] {
+        let thresholds = thresholds.sorted()
         guard let first = thresholds.first, let last = thresholds.last else {
             return [SizeBin(min: 0, max: .infinity, label: "all")]
         }
@@ -24,6 +27,7 @@ enum BinMath {
     }
 
     static func binIndex(for diameter: Double, thresholds: [Double]) -> Int {
+        let thresholds = thresholds.sorted()
         for (i, t) in thresholds.enumerated() {
             if diameter < t { return i }
         }

@@ -47,6 +47,7 @@ export default function ReviewPage() {
     current,
     next,
     loading,
+    error,
     reject,
     keep,
     editDiameter,
@@ -196,6 +197,13 @@ export default function ReviewPage() {
                 onEditChange={setEditing}
               />
             </div>
+
+            {error && (
+              <div className="cc-review__error" role="alert">
+                <Icon name="alert" size={15} />
+                <span>Couldn't save — retry.</span>
+              </div>
+            )}
 
             <div className="cc-review__actions">
               <button

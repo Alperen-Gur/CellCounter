@@ -94,8 +94,12 @@ const SIGNAL_EXIT_CODES: &[i32] = &[15, -15, 143, 9, -9, 137];
 /// then applied on top, so a 2-core box gets 2 and an 8-core box still caps at
 /// this. cellpose inference is CPU/MPS-bound; more than a few concurrent
 /// interpreters thrash rather than help, and each holds a full torch + model in
-/// RAM. 3 is a safe default for a batch workstation.
-const POOL_CAP_MAX: usize = 3;
+/// RAM. This MUST be at least the frontend's max detection concurrency
+/// (`defaultMaxParallel()` = up to 4 in `kernel/store/store.ts`); otherwise the
+/// last in-flight worker of every batch cycle is guaranteed to be evicted on
+/// `return_worker_to_pool` and pays a full cold start (torch import + model
+/// rebuild) on its next image.
+const POOL_CAP_MAX: usize = 4;
 
 /// How long we wait for a freshly-spawned worker to print `{"type":"ready"}`
 /// before giving up on it and falling back to the one-shot path. Cold start is
@@ -456,18 +460,59 @@ async fn run_via_worker(
         event_name: event_name.clone(),
     };
 
-    // 1) Get a warm worker: pop an idle one from the pool (and point its pump at
-    //    this run), else spawn + await ready with the pump already attached. On
-    //    spawn/ready failure, request a one-shot fallback.
-    let mut worker =
-        match take_or_spawn_worker(app, python, script, store, params, &sig, &initial_active).await
-        {
-            Ok(w) => w,
-            Err(reason) => return Err(WorkerAttempt::Fallback(reason)),
-        };
-
-    // 2) Register the run for cancellation, bound to THIS worker's child.
+    // 1) Register the run for cancellation BEFORE acquiring the worker. Spawning
+    //    a cold worker blocks up to READY_TIMEOUT (torch import + model build);
+    //    if the registry entry only appeared afterwards, a Cancel arriving during
+    //    that window would find no entry and be a silent no-op for up to two
+    //    minutes — exactly the (slowest, first) image a user is most likely to
+    //    cancel. We register with a `Notify` kill handle the spawn loop selects
+    //    on, then UPGRADE the handle to the real child once the worker is up.
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_notify = Arc::new(Notify::new());
+    {
+        let mgr = app.state::<SidecarManager>();
+        let mut running = mgr.running.lock().await;
+        running.insert(
+            run_id.to_string(),
+            RunHandle {
+                cancel_flag: cancel_flag.clone(),
+                kill: KillHandle::OneShot(cancel_notify.clone()),
+            },
+        );
+    }
+
+    // Get a warm worker: pop an idle one from the pool (and point its pump at
+    // this run), else spawn + await ready with the pump already attached. The
+    // spawn path polls `cancel_flag` / selects on `cancel_notify`, so a cancel
+    // during cold start aborts the spawn (its child is reaped on drop) instead
+    // of being dropped. On spawn/ready failure, request a one-shot fallback.
+    let mut worker = match take_or_spawn_worker(
+        app,
+        python,
+        script,
+        store,
+        params,
+        &sig,
+        &initial_active,
+        &cancel_flag,
+        &cancel_notify,
+    )
+    .await
+    {
+        Ok(w) => w,
+        Err(SpawnOutcome::Cancelled) => {
+            deregister_run(app, run_id).await;
+            return Err(WorkerAttempt::Cancelled);
+        }
+        Err(SpawnOutcome::Failed(reason)) => {
+            deregister_run(app, run_id).await;
+            return Err(WorkerAttempt::Fallback(reason));
+        }
+    };
+
+    // 2) Upgrade the cancel handle to bind THIS worker's child, so a cancel
+    //    during the request kills the real process (the `Notify` handle only
+    //    covered the cold-start window above).
     {
         let mgr = app.state::<SidecarManager>();
         let mut running = mgr.running.lock().await;
@@ -479,7 +524,7 @@ async fn run_via_worker(
             },
         );
     }
-    // If cancel already fired between spawn and registration, honour it.
+    // If cancel already fired between spawn and the handle upgrade, honour it.
     if cancel_flag.load(Ordering::SeqCst) {
         deregister_run(app, run_id).await;
         kill_worker(&worker).await;
@@ -623,11 +668,18 @@ async fn converse(
     // From here the worker has the request and may be actively processing this
     // image; any failure below is `dispatched: true` so we never re-run the
     // expensive eval a second time behind the user's back.
+    //
+    // A single deadline bounds the WHOLE exchange. Wrapping each `next_line()`
+    // in its own `timeout(REQUEST_TIMEOUT, …)` would reset the clock on every
+    // stray banner / non-matching frame we `continue` past, so a chattering-but-
+    // wedged worker (emitting noise, never our result id) could hold the request
+    // forever — defeating the guard's stated purpose. Compute it once.
+    let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
     loop {
         if cancel_flag.load(Ordering::SeqCst) {
             return Converse::Cancelled;
         }
-        let line = match tokio::time::timeout(REQUEST_TIMEOUT, worker.stdout.next_line()).await {
+        let line = match tokio::time::timeout_at(deadline, worker.stdout.next_line()).await {
             Err(_) => {
                 return Converse::Broken {
                     reason: "request timed out".into(),
@@ -657,15 +709,18 @@ async fn converse(
         let frame: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(_) => {
-                // Non-JSON on stdout should not happen in serve mode, but never
-                // let it wedge us: treat as a broken worker.
-                return Converse::Broken {
-                    reason: format!(
-                        "unparseable worker frame: {}",
-                        trimmed.chars().take(200).collect::<String>()
-                    ),
-                    dispatched: true,
-                };
+                // A non-JSON line on stdout should not happen in serve mode, but
+                // torch/numpy/cellpose (or an imported plugin) occasionally
+                // prints a warning or banner. Treating that as a fatal worker
+                // failure would surface a scary "worker stopped responding"
+                // error even though detection is still proceeding. Resync by
+                // skipping the stray line and reading the next frame — mirroring
+                // how one-shot mode tolerates stdout noise.
+                eprintln!(
+                    "[sidecar] skipping non-JSON worker stdout line: {}",
+                    trimmed.chars().take(200).collect::<String>()
+                );
+                continue;
             }
         };
         let ftype = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -717,9 +772,19 @@ async fn converse(
     }
 }
 
+/// Outcome of acquiring a worker: either a fatal spawn/ready failure (fall back
+/// to one-shot) or a cancel that arrived during the cold-start window.
+enum SpawnOutcome {
+    Failed(String),
+    Cancelled,
+}
+
 /// Pop an idle worker matching `sig` from the pool, or spawn a fresh one and
 /// await its `ready` handshake. Either way the returned worker's stderr pump is
-/// already pointed at `initial_active`. On failure returns a human reason.
+/// already pointed at `initial_active`. The spawn path watches `cancel_flag` /
+/// `cancel_notify` so a cancel arriving during the (up to READY_TIMEOUT) cold
+/// start aborts the spawn instead of being dropped.
+#[allow(clippy::too_many_arguments)]
 async fn take_or_spawn_worker(
     app: &AppHandle,
     python: &std::path::Path,
@@ -728,7 +793,9 @@ async fn take_or_spawn_worker(
     params: &DetectionParams,
     sig: &str,
     initial_active: &ActiveRun,
-) -> Result<Worker, String> {
+    cancel_flag: &Arc<AtomicBool>,
+    cancel_notify: &Arc<Notify>,
+) -> Result<Worker, SpawnOutcome> {
     // Fast path: reuse an idle warm worker. Point its pump at this run before
     // handing it back (a reused worker prints no cold-start lines, but any stray
     // stderr should still be attributed to the current run).
@@ -748,7 +815,17 @@ async fn take_or_spawn_worker(
     // Slow path: spawn a new one and await ready. `params` carries the
     // model-determining args; its signature is asserted to equal `sig`.
     debug_assert_eq!(&config_signature(params), sig);
-    spawn_worker(app, python, script, store, params, initial_active).await
+    spawn_worker(
+        app,
+        python,
+        script,
+        store,
+        params,
+        initial_active,
+        cancel_flag,
+        cancel_notify,
+    )
+    .await
 }
 
 /// Spawn `cellpose_detect.py --serve …`, wire its pipes, start the stderr pump
@@ -756,6 +833,7 @@ async fn take_or_spawn_worker(
 /// and block until it prints `{"type":"ready"}` (or [`READY_TIMEOUT`] elapses).
 /// The worker's signature is derived from `params` (only model-determining args
 /// reach the serve argv).
+#[allow(clippy::too_many_arguments)]
 async fn spawn_worker(
     app: &AppHandle,
     python: &std::path::Path,
@@ -763,7 +841,9 @@ async fn spawn_worker(
     store: &FileStore,
     params: &DetectionParams,
     initial_active: &ActiveRun,
-) -> Result<Worker, String> {
+    cancel_flag: &Arc<AtomicBool>,
+    cancel_notify: &Arc<Notify>,
+) -> Result<Worker, SpawnOutcome> {
     let sig = config_signature(params);
     let argv = build_serve_argv(script, params);
 
@@ -776,18 +856,23 @@ async fn spawn_worker(
         .kill_on_drop(true);
     crate::proc::hide_console_tokio(&mut cmd);
 
+    // If a cancel already landed before we even spawn, don't start the process.
+    if cancel_flag.load(Ordering::SeqCst) {
+        return Err(SpawnOutcome::Cancelled);
+    }
+
     let mut child: Child = cmd
         .spawn()
-        .map_err(|e| format!("failed to spawn serve worker: {e}"))?;
+        .map_err(|e| SpawnOutcome::Failed(format!("failed to spawn serve worker: {e}")))?;
 
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "serve worker has no stdin".to_string())?;
+        .ok_or_else(|| SpawnOutcome::Failed("serve worker has no stdin".to_string()))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "serve worker has no stdout".to_string())?;
+        .ok_or_else(|| SpawnOutcome::Failed("serve worker has no stdout".to_string()))?;
     let stderr = child.stderr.take();
 
     let mut stdout_lines = BufReader::new(stdout).lines();
@@ -807,25 +892,42 @@ async fn spawn_worker(
         });
     }
 
-    // Block on the ready handshake. The pump above is already forwarding any
-    // stderr the worker prints during import/model-build.
-    let ready_line =
-        match tokio::time::timeout(READY_TIMEOUT, stdout_lines.next_line()).await {
-            Err(_) => return Err(format!("worker did not emit ready within {:?}", READY_TIMEOUT)),
+    // Block on the ready handshake, but also race a cancel: this is the up-to-
+    // READY_TIMEOUT cold-start window (torch import + model build) during which a
+    // user's Cancel would otherwise be dropped. If `cancel_notify` fires (or the
+    // flag is already set), return `Cancelled`; dropping `child` here reaps the
+    // half-started process via `kill_on_drop`. The pump above is already
+    // forwarding any stderr the worker prints during import/model-build.
+    let ready_line = tokio::select! {
+        biased;
+        _ = cancel_notify.notified() => return Err(SpawnOutcome::Cancelled),
+        res = tokio::time::timeout(READY_TIMEOUT, stdout_lines.next_line()) => match res {
+            Err(_) => {
+                return Err(SpawnOutcome::Failed(format!(
+                    "worker did not emit ready within {:?}",
+                    READY_TIMEOUT
+                )))
+            }
             Ok(Ok(Some(l))) => l,
-            Ok(Ok(None)) => return Err("worker exited before ready".into()),
-            Ok(Err(e)) => return Err(format!("reading ready failed: {e}")),
-        };
+            Ok(Ok(None)) => return Err(SpawnOutcome::Failed("worker exited before ready".into())),
+            Ok(Err(e)) => return Err(SpawnOutcome::Failed(format!("reading ready failed: {e}"))),
+        },
+    };
+    // A cancel may have raced in just as `ready` arrived; honour it so we don't
+    // hand back a worker for a run the user already abandoned.
+    if cancel_flag.load(Ordering::SeqCst) {
+        return Err(SpawnOutcome::Cancelled);
+    }
     let trimmed = ready_line.trim();
     let ok = serde_json::from_str::<serde_json::Value>(trimmed)
         .ok()
         .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s == "ready"))
         .unwrap_or(false);
     if !ok {
-        return Err(format!(
+        return Err(SpawnOutcome::Failed(format!(
             "expected ready frame, got: {}",
             trimmed.chars().take(200).collect::<String>()
-        ));
+        )));
     }
 
     Ok(Worker {
@@ -1253,7 +1355,10 @@ pub async fn detection_availability(
 /// checkout of this project, a user's own script, an editor/terminal showing the
 /// path) would be wrongly killed. By requiring the resolved script path to live
 /// under our own staged python dir, only sidecars this app actually launched
-/// (from that exact directory) are candidates.
+/// (from that exact directory) are candidates. When `cmd()` is unavailable we
+/// fall back to matching the process's `exe()` path against `python_dir` (our
+/// staged venv interpreter lives under it) rather than `name()`, which is only
+/// the interpreter basename and can never contain a staged script path.
 ///
 /// Best-effort; never blocks startup — call it from a spawned thread in `setup`.
 pub fn sweep_orphans(python_dir: std::path::PathBuf) {
@@ -1270,6 +1375,15 @@ pub fn sweep_orphans(python_dir: std::path::PathBuf) {
         .iter()
         .map(|name| python_dir.join(name).to_string_lossy().into_owned())
         .collect();
+
+    // Fallback identifier for when `cmd()` is empty (platform/permission
+    // dependent on macOS): our sidecars are launched with the staged venv
+    // interpreter, which lives UNDER `python_dir` (`<python_dir>/.venv/bin/python`
+    // etc.). So an orphan whose executable path is rooted at our python_dir is
+    // ours even when its argv (and thus the script path) is unavailable. Matching
+    // `python_dir` (not a bare interpreter basename like `python3.11`) keeps this
+    // scoped to processes THIS app staged and launched.
+    let python_dir_prefix = python_dir.to_string_lossy().into_owned();
 
     // Our own pid — never target ourselves even if argv somehow matched.
     let self_pid = std::process::id();
@@ -1294,18 +1408,24 @@ pub fn sweep_orphans(python_dir: std::path::PathBuf) {
             .map(|s| s.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" ");
-        // Fall back to the executable name (an `&OsStr`) if cmd() is empty on
-        // this platform.
-        let haystack = if cmdline.is_empty() {
-            process.name().to_string_lossy().into_owned()
-        } else {
-            cmdline
-        };
 
-        // Only a match on the FULL staged path under our python_dir counts, so
-        // we never kill an unrelated process that happens to mention the bare
-        // script basename.
-        let is_ours = owned_paths.iter().any(|p| haystack.contains(p.as_str()));
+        let is_ours = if !cmdline.is_empty() {
+            // Preferred path: a match on the FULL staged script path under our
+            // python_dir, so we never kill an unrelated process that happens to
+            // mention the bare script basename.
+            owned_paths.iter().any(|p| cmdline.contains(p.as_str()))
+        } else {
+            // `cmd()` is empty on this platform for this process. `name()` is only
+            // the interpreter basename (e.g. `python3.11`) and can NEVER contain a
+            // staged script path, so the old name()-based fallback was a no-op.
+            // Instead match the process's executable path against our python_dir:
+            // our sidecar's interpreter is staged under it, so an exe rooted there
+            // is ours — while still being scoped to processes this app launched.
+            process
+                .exe()
+                .map(|exe| exe.to_string_lossy().contains(python_dir_prefix.as_str()))
+                .unwrap_or(false)
+        };
         if !is_ours {
             continue;
         }

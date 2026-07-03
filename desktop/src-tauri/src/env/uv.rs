@@ -48,6 +48,23 @@ fn uv_executable() -> String {
     std::env::var("UV").unwrap_or_else(|_| "uv".to_string())
 }
 
+/// Cheap "is the staged copy already current?" check: identical length and
+/// byte-for-byte contents. Reading both files is fine here — the sidecar scripts
+/// are small — and avoids re-copying (and thus locking/clobbering) a file the
+/// destination already holds verbatim.
+fn files_match(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::metadata(src), std::fs::metadata(dest)) else {
+        return false;
+    };
+    if a.len() != b.len() {
+        return false;
+    }
+    match (std::fs::read(src), std::fs::read(dest)) {
+        (Ok(sa), Ok(sb)) => sa == sb,
+        _ => false,
+    }
+}
+
 /// Stage `desktop/python/` into the writable `<root>/python/` dir. In a packaged
 /// build the sidecar scripts + `pyproject.toml` ship as resources; here we copy
 /// them so `uv sync` and the sidecar run out of one writable location.
@@ -79,13 +96,26 @@ fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String
     };
 
     // Copy all files (flat dir — the sidecar scripts + pyproject live at top level).
+    // Skip files whose contents already match the staged copy so a still-running
+    // orphan sidecar / antivirus lock on Windows can't fail the copy of a file
+    // that is already current. When a copy of an out-of-date-looking file does
+    // fail, keep going and let `uv sync` decide: aborting the whole install on a
+    // transient lock surfaces a confusing "copy" error instead of an install one.
     for entry in std::fs::read_dir(&src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if path.is_file() {
             if let Some(name) = path.file_name() {
                 let target = dest.join(name);
-                std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
+                if files_match(&path, &target) {
+                    continue; // already staged and identical — don't touch it
+                }
+                if let Err(e) = std::fs::copy(&path, &target) {
+                    eprintln!(
+                        "[env] staging copy failed for {}: {e} (continuing)",
+                        target.display()
+                    );
+                }
             }
         }
     }

@@ -121,6 +121,13 @@ export interface PersistencePort {
     imageStats?: Record<string, number>,
   ): Promise<DetectionDTO>;
   getDetection(imageId: string): Promise<DetectionDTO | null>;
+  /**
+   * Bulk-load detections for many images in ONE round-trip (avoids the N+1 of
+   * calling `getDetection` per image). Returns only the detections that exist —
+   * images without a saved detection are simply absent from the array — so
+   * callers index the result by `DetectionDTO.imageId`.
+   */
+  getDetections(imageIds: string[]): Promise<DetectionDTO[]>;
   recordCorrection(
     detectionId: string,
     c: { kind: string; cellId: string; cx: number; cy: number; diameter: number },

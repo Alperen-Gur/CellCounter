@@ -57,7 +57,7 @@ export function useRecents(): {
       const resolved: RecentRow[] = [];
       for (const batch of batches) {
         if (!batch || batch.imageIds.length === 0) continue; // skip empties
-        const { cellCount, thumbSrc } = await summarizeBatch(batch, imagesById);
+        const { cellCount, thumbSrc } = summarizeBatch(batch, imagesById);
         resolved.push({
           batch,
           cellCount,
@@ -86,30 +86,25 @@ export function useRecents(): {
 }
 
 /**
- * Compute a batch's total cell count (summing each image's saved detection) and
- * resolve its first image's thumbnail. Best-effort: missing detections count as
- * zero and a missing thumbnail is simply absent. `imagesById` is the pre-fetched
- * image index so this does no extra full-table read per batch.
+ * Compute a batch's total cell count (summing each image's denormalized
+ * `cellCount`) and resolve its first image's thumbnail. Best-effort: a missing
+ * thumbnail is simply absent. `imagesById` is the pre-fetched image index so
+ * this does no extra reads per batch — no per-image `getDetection` round-trip.
  */
-async function summarizeBatch(
+function summarizeBatch(
   batch: BatchDTO,
   imagesById: Map<string, ImageDTO>,
-): Promise<{ cellCount: number; thumbSrc?: string }> {
-  const port = getPort();
-
+): { cellCount: number; thumbSrc?: string } {
   // First image = earliest imported among the batch's images.
   const images = batch.imageIds
     .map((id) => imagesById.get(id))
     .filter((i): i is ImageDTO => i != null)
     .sort((a, b) => a.importedAt.localeCompare(b.importedAt));
 
+  // Sum the denormalized per-image cell counts (no per-image getDetection). The
+  // image table is already fetched once by the caller, so this is pure math.
   let cellCount = 0;
-  await Promise.all(
-    batch.imageIds.map(async (id) => {
-      const det = await port.getDetection(id).catch(() => null);
-      if (det) cellCount += det.cells.length;
-    }),
-  );
+  for (const img of images) cellCount += img.cellCount;
 
   const first = images[0];
   const thumbSrc = first?.thumbPath ? safeConvert(first.thumbPath) : undefined;

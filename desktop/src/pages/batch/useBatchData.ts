@@ -128,16 +128,19 @@ export function useBatchData(): BatchData {
           b.imageIds,
         );
 
-        // Fetch each image's saved detection (null when not yet run).
-        const detections = await Promise.all(
-          mine.map((img) =>
-            port.getDetection(img.id).catch(() => null),
-          ),
-        );
+        // Bulk-load the batch's saved detections in ONE round-trip (the rows +
+        // aggregates need per-cell diameters, so we fetch full detections — but
+        // via get_detections, not an N+1 getDetection per image). Only images
+        // with cells are worth requesting; the rest map to null.
+        const withCells = mine.filter((img) => img.cellCount > 0);
+        const detections = await port
+          .getDetections(withCells.map((img) => img.id))
+          .catch(() => [] as DetectionDTO[]);
         if (cancelled) return;
 
+        const detByImage = new Map(detections.map((d) => [d.imageId, d]));
         const map = new Map<string, DetectionDTO | null>();
-        mine.forEach((img, i) => map.set(img.id, detections[i] ?? null));
+        mine.forEach((img) => map.set(img.id, detByImage.get(img.id) ?? null));
 
         setBatch(b);
         setImages(mine);

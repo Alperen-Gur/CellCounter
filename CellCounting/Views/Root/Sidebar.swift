@@ -71,7 +71,12 @@ struct AppSidebar: View {
                 .padding(.horizontal, 10).padding(.bottom, 14).padding(.top, 2)
 
                 NavItemView(icon: "home",  label: "Home",  isActive: state.view == .home)  { state.view = .home }
-                NavItemView(icon: "queue", label: "Queue", isActive: state.view == .queue) { state.view = .queue }
+                // "Queue" nav item removed: detection runs inline (.processing →
+                // .results) and nothing ever populates a background queue, so the
+                // item was a permanent dead-end that could only ever show
+                // "Queue is empty". The .queue View case / QueueEmpty remain
+                // (now unreachable) so this is trivially reversible if a real
+                // background queue ships.
                 ReviewNavItem(state: state)
 
                 SidebarSectionLabel(text: "Library")

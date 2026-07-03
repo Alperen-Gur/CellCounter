@@ -85,6 +85,17 @@ struct ResultsView: View {
                         .animation(Tokens.Motion.ease, value: state.lastCalibrationNote)
                 }
             }
+            // Export feedback for the ⌘E / ⌘⇧E keyboard shortcuts — mirrors the
+            // inline confirmation the ResultsExportPanel buttons show, so a
+            // shortcut export is never silent (finding: results-export-silent-shortcuts).
+            .overlay(alignment: .bottom) {
+                if let toast = state.exportToast {
+                    ExportFeedbackToast(message: toast.message, isError: toast.isError)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.bottom, 14)
+                        .animation(Tokens.Motion.ease, value: state.exportToast?.message)
+                }
+            }
             .focusable()
             .focusEffectDisabled()
             // Space — master overlay toggle. Either both fills + outlines on,
@@ -234,15 +245,31 @@ struct ResultsView: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = (image.fileName as NSString).deletingPathExtension + "-annotated.png"
+        // Snapshot the SwiftData-backed values on the main actor before the save
+        // panel's completion closure fires, so the heavy compositing can run off
+        // the MainActor without touching the model graph.
         let conf = state.effectiveConfidence(for: image)
+        let imageURL = image.storedURL
+        let cells = detection.cells
+        let thresholds = batchThresholds
+        let pxPerUm = state.pxPerUm
+        let overlay = overlayMode
         panel.begin { resp in
             guard resp == .OK, let url = panel.url else { return }
-            try? ExportService.writeAnnotatedPNG(image: image, detection: detection,
-                                                  thresholds: batchThresholds,
-                                                  pxPerUm: state.pxPerUm,
-                                                  overlayMode: overlayMode,
-                                                  confidence: conf,
-                                                  to: url)
+            Task.detached {
+                do {
+                    try ExportService.compositeAnnotatedPNG(imageURL: imageURL,
+                                                            cells: cells,
+                                                            thresholds: thresholds,
+                                                            pxPerUm: pxPerUm,
+                                                            overlayMode: overlay,
+                                                            confidence: conf,
+                                                            to: url)
+                    await state.flashExport("Saved · \(url.lastPathComponent)", isError: false)
+                } catch {
+                    await state.flashExport("Export failed: \(error.localizedDescription)", isError: true)
+                }
+            }
         }
     }
 
@@ -252,38 +279,63 @@ struct ResultsView: View {
         let pngPanel = NSSavePanel()
         pngPanel.allowedContentTypes = [.png]
         pngPanel.nameFieldStringValue = base + "-annotated.png"
+        // Snapshot everything the writers need up front (main actor) so both
+        // file writes run off the MainActor.
         let conf = state.effectiveConfidence(for: image)
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
+        let imageURL = image.storedURL
+        let cells = detection.cells
+        let imageFileName = image.fileName
+        let thresholds = batchThresholds
+        let pxPerUm = state.pxPerUm
+        let overlay = overlayMode
         pngPanel.begin { resp in
             guard resp == .OK, let pngURL = pngPanel.url else { return }
-            try? ExportService.writeAnnotatedPNG(image: image, detection: detection,
-                                                  thresholds: batchThresholds,
-                                                  pxPerUm: state.pxPerUm,
-                                                  overlayMode: overlayMode,
-                                                  confidence: conf,
-                                                  to: pngURL)
             let csvPanel = NSSavePanel()
             csvPanel.allowedContentTypes = [.commaSeparatedText]
             csvPanel.nameFieldStringValue = base + ".csv"
             csvPanel.directoryURL = pngURL.deletingLastPathComponent()
             csvPanel.begin { resp2 in
-                guard resp2 == .OK, let csvURL = csvPanel.url else { return }
-                try? ExportService.writeCSV(detection: detection, image: image,
-                                             thresholds: batchThresholds,
-                                             pxPerUm: state.pxPerUm,
-                                             confidence: conf,
-                                             modelId: modelId,
-                                             separator: ",",
-                                             to: csvURL)
+                guard resp2 == .OK, let csvURL = csvPanel.url else {
+                    // User cancelled the CSV step — still write the PNG.
+                    Task.detached {
+                        do {
+                            try ExportService.compositeAnnotatedPNG(imageURL: imageURL, cells: cells,
+                                                                    thresholds: thresholds, pxPerUm: pxPerUm,
+                                                                    overlayMode: overlay, confidence: conf, to: pngURL)
+                            await state.flashExport("Saved · \(pngURL.lastPathComponent)", isError: false)
+                        } catch {
+                            await state.flashExport("Export failed: \(error.localizedDescription)", isError: true)
+                        }
+                    }
+                    return
+                }
+                Task.detached {
+                    do {
+                        try ExportService.compositeAnnotatedPNG(imageURL: imageURL, cells: cells,
+                                                                thresholds: thresholds, pxPerUm: pxPerUm,
+                                                                overlayMode: overlay, confidence: conf, to: pngURL)
+                        try ExportService.writeCSVCore(cells: cells, imageFileName: imageFileName,
+                                                       thresholds: thresholds, pxPerUm: pxPerUm,
+                                                       confidence: conf, modelId: modelId,
+                                                       separator: ",", to: csvURL)
+                        await state.flashExport("Saved · \(pngURL.lastPathComponent) + \(csvURL.lastPathComponent)", isError: false)
+                    } catch {
+                        await state.flashExport("Export failed: \(error.localizedDescription)", isError: true)
+                    }
+                }
             }
         }
     }
 
     private func rerunDetection() {
-        // Re-run detection on current image — post notification for backend to pick up
-        guard state.currentImage != nil else { return }
-        // Route to processing if possible; otherwise no-op pending backend wiring
-        state.view = .processing
+        // Re-run detection on the current image, mirroring the
+        // DetectionFailedBanner path. Guards on isRerunning + canRunDetection so
+        // ⌘R doesn't spawn a duplicate subprocess or land on a stuck Processing
+        // screen when no detector is available.
+        guard let image = state.currentImage else { return }
+        guard state.canRunDetection, !state.isRerunning(image) else { return }
+        state.reRunDetection(on: image)
     }
 
     /// Pass-15 (A2): delete every cell in `selectedCellIds` from the current
@@ -293,6 +345,11 @@ struct ResultsView: View {
     fileprivate func deleteSelectedCells() {
         state.removeCells(selectedCellIds)
         selectedCellIds.removeAll()
+        // removeCells mutates detection.cells directly and posts no signal, so
+        // notify observers (incl. RealImageViewer's liveCells mirror) to resync
+        // (finding: overlay-stale-after-nonhandleedit-mutations).
+        NotificationCenter.default.post(name: .ccCorrectionsChanged,
+                                        object: state.currentImage?.id)
     }
 }
 
@@ -396,6 +453,11 @@ private struct ViewerPanel: View {
                         if !selectedCellIds.isEmpty {
                             state.removeCells(selectedCellIds)
                             selectedCellIds.removeAll()
+                            // Notify observers to resync the overlay's liveCells
+                            // mirror (finding: overlay-stale-after-nonhandleedit-
+                            // mutations).
+                            NotificationCenter.default.post(name: .ccCorrectionsChanged,
+                                                            object: state.currentImage?.id)
                             return true
                         }
                         return false
@@ -427,26 +489,11 @@ private struct ViewerPanel: View {
                         .allowsHitTesting(true)
                 }
 
-                // Line-profile gesture layer — gated on profileMode; does NOT conflict with EditableOverlay
-                if profileMode, let image = state.currentImage {
-                    let srcW = max(1, CGFloat(image.widthPx))
-                    let srcH = max(1, CGFloat(image.heightPx))
-                    // Pass-15: line-profile sits above the ScrollView, so it
-                    // works in viewport coordinates. Use the fit scale only
-                    // (no zoom multiplier) since this gesture layer is not
-                    // affected by the pan/zoom of the canvas underneath.
-                    let fitScale = min(maxW / srcW, maxH / srcH)
-                    LineProfileTool(
-                        image: image,
-                        viewScale: Double(fitScale),
-                        viewOffset: .zero,
-                        mode: Binding(
-                            get: { profileMode ? .drawing : .idle },
-                            set: { if $0 == .idle { profileMode = false } }
-                        )
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                // Line-profile gesture layer now lives INSIDE RealImageViewer's
+                // image-sized ZStack (see RealImageViewer.body) so it samples the
+                // correct pixels under centering / zoom / pan — it used to sit
+                // here as a sibling with a wrong transform
+                // (finding: lineprofile-ignores-centering-offset-and-zoom).
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .leading) {
@@ -488,6 +535,7 @@ private struct ViewerPanel: View {
                             showOutlines: showOutlines,
                             editorMode: $editorMode,
                             roiMode: $roiMode,
+                            profileMode: $profileMode,
                             selectedCellIds: $selectedCellIds,
                             maxW: maxW,
                             maxH: maxH,
@@ -515,6 +563,12 @@ private struct RealImageViewer: View {
     let showOutlines: Bool
     @Binding var editorMode: EditableOverlay.EditorMode
     @Binding var roiMode: ROIMode
+    // Line-profile mode is bound in so the LineProfileTool can live INSIDE the
+    // image-sized ZStack below — that way its coordinate space already matches
+    // the rendered image (centering, zoom, and scroll-pan are handled by the
+    // wrapping ScrollView + drawW/drawH frame) instead of being sampled with a
+    // wrong transform (finding: lineprofile-ignores-centering-offset-and-zoom).
+    @Binding var profileMode: Bool
     // Pass-15 (A2): selection set is owned by ResultsView so it can be shared
     // with the EditorModeToolbar's "delete selected" override.
     @Binding var selectedCellIds: Set<UUID>
@@ -649,6 +703,23 @@ private struct RealImageViewer: View {
                             viewOffset: .zero,
                             mode: $roiMode)
                     .frame(width: drawW, height: drawH)
+
+                // Line-profile gesture layer — sits inside the image-sized ZStack
+                // so its local coordinate space is exactly the rendered image.
+                // scale = fitScale * zoom and offset = .zero are therefore the
+                // correct transform; the ScrollView handles centering + pan.
+                if profileMode {
+                    LineProfileTool(
+                        image: image,
+                        viewScale: Double(scale),
+                        viewOffset: .zero,
+                        mode: Binding(
+                            get: { profileMode ? .drawing : .idle },
+                            set: { if $0 == .idle { profileMode = false } }
+                        )
+                    )
+                    .frame(width: drawW, height: drawH)
+                }
             }
             .frame(width: drawW, height: drawH)
             .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
@@ -660,6 +731,23 @@ private struct RealImageViewer: View {
         .frame(width: drawW, height: drawH)
         .onAppear { syncFromDetection(); syncAnnotations(); loadImageAsync() }
         .onChange(of: image.id) { syncFromDetection(); syncAnnotations(); loadImageAsync() }
+        // The overlay draws from the private `liveCells` mirror, which otherwise
+        // only resyncs on image.id change. Three paths mutate `detection.cells`
+        // directly on the model while the image stays selected — multi-select
+        // delete (removeCells), ⌘R re-run, and Split — so resync the mirror when
+        // the model's cell set changes or a corrections signal fires, else the
+        // canvas keeps drawing deleted/old cells
+        // (finding: overlay-stale-after-nonhandleedit-mutations).
+        .onChange(of: image.detection?.cells.count) { syncFromDetection() }
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            // Corrections are posted with object == nil (broadcast) or the
+            // affected image id. Resync in both cases; a broadcast may follow a
+            // re-run/split that replaced this image's DetectionRecord wholesale
+            // (which .onChange on the old relationship's count can miss).
+            if note.object == nil || (note.object as? UUID) == image.id {
+                syncFromDetection()
+            }
+        }
         // Pass-17 (Lane B): the F1 sidebar panel pings this when an external
         // tool (Reset, Export, etc.) mutates annotations so we resync.
         .onReceive(NotificationCenter.default.publisher(for: .ccAnnotationsChanged)) { note in
@@ -1903,6 +1991,38 @@ private struct ExifCalibrationToast: View {
     }
 }
 
+/// Non-blocking toast for keyboard-shortcut exports (⌘E / ⌘⇧E). Mirrors the
+/// success/error styling of the ResultsExportPanel inline status row so the
+/// two export paths give consistent feedback.
+struct ExportFeedbackToast: View {
+    let message: String
+    let isError: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isError ? Tokens.danger : Tokens.success)
+            Text(message)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Tokens.text)
+                .lineLimit(2)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .fill(Tokens.bgElevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .strokeBorder(Tokens.borderStrong, lineWidth: 0.5)
+        )
+        .shadow(color: Color.black.opacity(0.14), radius: 8, y: 2)
+    }
+}
+
 // MARK: — Detection-failed banner (pass 8)
 
 /// Floating banner shown over the viewer when an image was imported but its
@@ -1982,33 +2102,64 @@ private struct GroundTruthPanel: View {
 
     @Environment(AppTheme.self) private var theme
 
-    /// Read straight from the repo so the values are always live. Computed
-    /// once per `body` and reused by all child rows.
-    private var annotations: [GroundTruthAnnotation] {
-        guard let img = state.currentImage else { return [] }
-        _ = annotationsTick  // tie this property to the notification signal
-        return state.repos.annotations(for: img.id)
-    }
+    /// Memoized annotations + matcher Score. The repo fetch and the O(N·M)
+    /// matcher used to run inside computed properties evaluated 3+ times on
+    /// every body pass — including every confidence-slider tick and ROI change,
+    /// since this panel lives in ResultsSidebar and re-renders on unrelated
+    /// sidebar invalidations. Now they recompute only when their real inputs
+    /// change (annotation tick, current image, detection set, match radius)
+    /// (finding: groundtruth-panel-redundant-fetches-and-matcher-per-render).
+    @State private var cachedAnnotations: [GroundTruthAnnotation] = []
+    @State private var cachedScore: AnnotationMatcher.Score? = nil
 
-    private var score: AnnotationMatcher.Score {
-        AnnotationMatcher.evaluate(annotations: annotations,
-                                   detections: detections,
-                                   matchRadiusFactor: matchRadiusFactor)
+    /// Single fetch + single matcher pass; caches both results.
+    private func recompute() {
+        guard let img = state.currentImage else {
+            cachedAnnotations = []
+            cachedScore = nil
+            return
+        }
+        let anns = state.repos.annotations(for: img.id)
+        cachedAnnotations = anns
+        cachedScore = AnnotationMatcher.evaluate(annotations: anns,
+                                                 detections: detections,
+                                                 matchRadiusFactor: matchRadiusFactor)
     }
 
     var body: some View {
         // Empty-annotation guard: render nothing. Avoids cluttering the
         // sidebar for users who never use this feature.
-        if annotations.isEmpty {
-            EmptyView()
-        } else {
-            content
+        Group {
+            if cachedAnnotations.isEmpty {
+                EmptyView()
+            } else {
+                content
+            }
+        }
+        .onAppear { recompute() }
+        // Recompute on the inputs that actually change the result — not on every
+        // unrelated sidebar invalidation.
+        .onChange(of: annotationsTick) { _, _ in recompute() }
+        .onChange(of: state.currentImage?.id) { _, _ in recompute() }
+        .onChange(of: detections.count) { _, _ in recompute() }
+        .onChange(of: matchRadiusFactor) { _, _ in recompute() }
+        // Recompute on annotation add/remove. ImageId-scoped — we only react
+        // when the change applies to the currently-displayed image.
+        .onReceive(NotificationCenter.default.publisher(for: .ccAnnotationsChanged)) { note in
+            if let id = note.object as? UUID, id == state.currentImage?.id {
+                annotationsTick &+= 1
+            } else if note.object == nil {
+                annotationsTick &+= 1
+            }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        let s = score
+        let s = cachedScore ?? AnnotationMatcher.evaluate(
+            annotations: cachedAnnotations,
+            detections: detections,
+            matchRadiusFactor: matchRadiusFactor)
         VStack(spacing: 0) {
             Divider().overlay(Tokens.divider)
             VStack(spacing: 0) {
@@ -2036,7 +2187,7 @@ private struct GroundTruthPanel: View {
                 // Headline counts row.
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("\(annotations.count)")
+                        Text("\(cachedAnnotations.count)")
                             .font(.system(size: 14, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Tokens.text)
                         Text("annotations · matched to")
@@ -2057,7 +2208,7 @@ private struct GroundTruthPanel: View {
                     }
 
                     if detections.isEmpty {
-                        Text("Detection ran but matched 0 of \(annotations.count) annotations (recall = 0).")
+                        Text("Detection ran but matched 0 of \(cachedAnnotations.count) annotations (recall = 0).")
                             .font(.system(size: 11.5))
                             .foregroundStyle(Tokens.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -2102,15 +2253,6 @@ private struct GroundTruthPanel: View {
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 18)
-        }
-        // Recompute on annotation add/remove. ImageId-scoped — we only react
-        // when the change applies to the currently-displayed image.
-        .onReceive(NotificationCenter.default.publisher(for: .ccAnnotationsChanged)) { note in
-            if let id = note.object as? UUID, id == state.currentImage?.id {
-                annotationsTick &+= 1
-            } else if note.object == nil {
-                annotationsTick &+= 1
-            }
         }
     }
 
@@ -2162,7 +2304,7 @@ private struct GroundTruthPanel: View {
         guard let img = state.currentImage else { return }
         let alert = NSAlert()
         alert.messageText = "Remove all ground-truth annotations?"
-        alert.informativeText = "This deletes the \(annotations.count) annotation\(annotations.count == 1 ? "" : "s") on this image. The detection itself is not affected."
+        alert.informativeText = "This deletes the \(cachedAnnotations.count) annotation\(cachedAnnotations.count == 1 ? "" : "s") on this image. The detection itself is not affected."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
@@ -2176,7 +2318,9 @@ private struct GroundTruthPanel: View {
     /// into a user-picked folder.
     private func exportAnnotations() {
         guard let img = state.currentImage else { return }
-        let anns = annotations
+        // Fetch fresh for the export (infrequent, off the render path) so the
+        // written file can't lag the cached mirror.
+        let anns = state.repos.annotations(for: img.id)
         guard !anns.isEmpty else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true

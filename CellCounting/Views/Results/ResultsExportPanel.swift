@@ -301,24 +301,32 @@ struct ResultsExportPanel: View {
     /// in sequence inside `withCustomFolderAccess` and surfaces a summary in
     /// the inline status row. Sub-writer failures don't abort the whole run.
     private func performSampleFolder(image: ImageRecord, parentDir: URL) {
-        do {
-            let result = try withCustomFolderAccess {
-                try ExportService.writeSampleFolder(image: image,
-                                                    state: state,
-                                                    overlayMode: overlayMode,
-                                                    parentDir: parentDir)
+        // `writeSampleFolder` is now async: it offloads the heavy PNG
+        // compositing, CSV building, and the ImageJ-ROI Python subprocess to
+        // background tasks so the window stays responsive during the export.
+        // We keep security-scoped access to the custom export folder open across
+        // the await (the synchronous `withCustomFolderAccess` helper can't span
+        // an async boundary because its `defer` fires too early).
+        let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
+        Task { @MainActor in
+            defer { SecurityBookmarks.stop(scoped) }
+            do {
+                let result = try await ExportService.writeSampleFolder(image: image,
+                                                                       state: state,
+                                                                       overlayMode: overlayMode,
+                                                                       parentDir: parentDir)
+                if result.errors.isEmpty {
+                    flashSaved(result.folder.path)
+                } else {
+                    let firstErr = result.errors.first!
+                    let msg = "Saved \(result.folder.lastPathComponent) (\(result.errors.count) of \(result.written.count + result.errors.count) files failed: \(firstErr.filename) — \(firstErr.error.localizedDescription))"
+                    lastSavedPath = result.folder.path
+                    lastError = msg
+                    scheduleClear()
+                }
+            } catch {
+                flashError(error.localizedDescription)
             }
-            if result.errors.isEmpty {
-                flashSaved(result.folder.path)
-            } else {
-                let firstErr = result.errors.first!
-                let msg = "Saved \(result.folder.lastPathComponent) (\(result.errors.count) of \(result.written.count + result.errors.count) files failed: \(firstErr.filename) — \(firstErr.error.localizedDescription))"
-                lastSavedPath = result.folder.path
-                lastError = msg
-                scheduleClear()
-            }
-        } catch {
-            flashError(error.localizedDescription)
         }
     }
 
@@ -355,19 +363,33 @@ struct ResultsExportPanel: View {
     private func performImageJROI(detection: DetectionRecord, image: ImageRecord, url: URL) {
         let conf = state.effectiveConfidence(for: image)
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
-        do {
-            try withCustomFolderAccess {
-                try ExportService.writeImageJROIs(image: image,
-                                                  detection: detection,
-                                                  thresholds: state.thresholds,
-                                                  pxPerUm: state.pxPerUm,
-                                                  confidence: conf,
-                                                  modelId: modelId,
-                                                  to: url)
+        // Snapshot the model values on the main actor, then run the blocking
+        // Python subprocess off-main so the UI doesn't freeze during export.
+        let cells = detection.cells
+        let widthPx = image.widthPx
+        let heightPx = image.heightPx
+        let fileName = image.fileName
+        let thresholds = state.thresholds
+        let pxPerUm = state.pxPerUm
+        let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
+        Task { @MainActor in
+            defer { SecurityBookmarks.stop(scoped) }
+            do {
+                try await Task.detached {
+                    try ExportService.writeImageJROIsCore(cells: cells,
+                                                          imageWidthPx: widthPx,
+                                                          imageHeightPx: heightPx,
+                                                          imageFileName: fileName,
+                                                          thresholds: thresholds,
+                                                          pxPerUm: pxPerUm,
+                                                          confidence: conf,
+                                                          modelId: modelId,
+                                                          to: url)
+                }.value
+                flashSaved(url.path)
+            } catch {
+                flashError(error.localizedDescription)
             }
-            flashSaved(url.path)
-        } catch {
-            flashError(error.localizedDescription)
         }
     }
 
@@ -377,20 +399,30 @@ struct ResultsExportPanel: View {
         // the row count matches what the user sees in the UI.
         let conf = state.effectiveConfidence(for: image)
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
-        do {
-            try withCustomFolderAccess {
-                try ExportService.writeCSV(detection: detection,
-                                           image: image,
-                                           thresholds: state.thresholds,
-                                           pxPerUm: state.pxPerUm,
-                                           confidence: conf,
-                                           modelId: modelId,
-                                           separator: csvSeparator.isEmpty ? "," : csvSeparator,
-                                           to: url)
+        // Snapshot on main, build + write the CSV off-main.
+        let cells = detection.cells
+        let fileName = image.fileName
+        let thresholds = state.thresholds
+        let pxPerUm = state.pxPerUm
+        let sep = csvSeparator.isEmpty ? "," : csvSeparator
+        let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
+        Task { @MainActor in
+            defer { SecurityBookmarks.stop(scoped) }
+            do {
+                try await Task.detached {
+                    try ExportService.writeCSVCore(cells: cells,
+                                                   imageFileName: fileName,
+                                                   thresholds: thresholds,
+                                                   pxPerUm: pxPerUm,
+                                                   confidence: conf,
+                                                   modelId: modelId,
+                                                   separator: sep,
+                                                   to: url)
+                }.value
+                flashSaved(url.path)
+            } catch {
+                flashError(error.localizedDescription)
             }
-            flashSaved(url.path)
-        } catch {
-            flashError(error.localizedDescription)
         }
     }
 
@@ -401,20 +433,31 @@ struct ResultsExportPanel: View {
         // Pass-15: filter the burned-in overlay to the effective cutoff too,
         // matching the on-screen render.
         let conf = state.effectiveConfidence(for: image)
-        do {
-            try withCustomFolderAccess {
-                try ExportService.writeAnnotatedPNG(image: image,
-                                                    detection: detection,
-                                                    thresholds: state.thresholds,
-                                                    pxPerUm: state.pxPerUm,
-                                                    overlayMode: overlayMode,
-                                                    confidence: conf,
-                                                    to: url)
+        // Snapshot on main, composite the full-res PNG off-main so the window
+        // doesn't freeze while a large TIFF is decoded + drawn.
+        let imageURL = image.storedURL
+        let cells = detection.cells
+        let thresholds = state.thresholds
+        let pxPerUm = state.pxPerUm
+        let overlay = overlayMode
+        let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
+        Task { @MainActor in
+            defer { SecurityBookmarks.stop(scoped) }
+            do {
+                try await Task.detached {
+                    try ExportService.compositeAnnotatedPNG(imageURL: imageURL,
+                                                            cells: cells,
+                                                            thresholds: thresholds,
+                                                            pxPerUm: pxPerUm,
+                                                            overlayMode: overlay,
+                                                            confidence: conf,
+                                                            to: url)
+                }.value
+                flashSaved(url.path)
+                then?()
+            } catch {
+                flashError(error.localizedDescription)
             }
-            flashSaved(url.path)
-            then?()
-        } catch {
-            flashError(error.localizedDescription)
         }
     }
 

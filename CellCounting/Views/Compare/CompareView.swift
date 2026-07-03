@@ -77,13 +77,22 @@ struct CompareView: View {
     }
 
     private func exportCSV(conditions: [ConditionRecord], to url: URL) {
+        // Surface success/failure consistently with the BottomBar export
+        // (finding: compare-export-silent) — the advertised ⌘E previously wrote
+        // with `try?` and reported neither outcome, so a failed comparison
+        // export looked successful.
         let thresholds = state.thresholds
         let bins = BinMath.bins(from: thresholds)
         var lines = [["condition", "bin_label", "count", "percent", "total_cells", "batches"].joined(separator: ",")]
         for cond in conditions {
             let batches = state.repos.batches(matching: cond.name)
             var cells: [DetectedCell] = []
-            for b in batches { for img in b.images { cells.append(contentsOf: img.detection?.cells ?? []) } }
+            for b in batches {
+                for img in b.images {
+                    let cutoff = state.effectiveConfidence(for: img)
+                    cells.append(contentsOf: (img.detection?.cells ?? []).filter { $0.confidence >= cutoff })
+                }
+            }
             let total = cells.count
             for (i, bin) in bins.enumerated() {
                 let c = cells.filter { BinMath.binIndex(for: $0.diameter, thresholds: thresholds) == i }.count
@@ -91,7 +100,12 @@ struct CompareView: View {
                 lines.append([cond.name, bin.label, "\(c)", String(format: "%.3f", pct), "\(total)", "\(batches.count)"].joined(separator: ","))
             }
         }
-        try? (lines.joined(separator: "\n") + "\n").data(using: .utf8)?.write(to: url, options: .atomic)
+        do {
+            try (lines.joined(separator: "\n") + "\n").data(using: .utf8)?.write(to: url, options: .atomic)
+            exportError = nil
+        } catch {
+            exportError = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     private func refresh() {
@@ -174,87 +188,126 @@ private struct ChipRow: View {
 
 // MARK: — Panels
 
+/// Fully materialized data for one condition panel. Everything the panel
+/// renders (pooled cell count, mean/σ, per-bin counts, histogram buckets) is
+/// computed ONCE in a single pass so the panel's `body` never re-fetches from
+/// SwiftData or re-scans cells (finding: compareview-pooled-recompute).
+private struct PooledCondition: Identifiable {
+    let id: String              // condition name — stable across renders
+    let condition: ConditionRecord
+    let batchCount: Int
+    let cellCount: Int
+    let mean: Double
+    let sigma: Double
+    let bins: [SizeBin]
+    let binCounts: [Int]        // parallel to `bins`
+    let buckets: [Int]          // histogram buckets (HistogramMath.bucketCount)
+}
+
 private struct PanelsScroll: View {
     @Bindable var state: AppState
     let conditions: [ConditionRecord]
 
-    /// Cells pooled by condition name. Computed once; passed to each panel.
-    private var pooled: [(condition: ConditionRecord, batches: [BatchRecord], cells: [DetectedCell])] {
-        conditions.map { cond in
-            let batches = state.repos.batches(matching: cond.name)
-            var cells: [DetectedCell] = []
-            for b in batches {
-                for img in b.images {
-                    cells.append(contentsOf: img.detection?.cells ?? [])
-                }
-            }
-            return (cond, batches, cells)
-        }
-    }
-
-    /// Shared Y-axis maximum across all panels — critical for visual comparison.
-    private var sharedYMax: Int {
-        var m = 1
-        for p in pooled {
-            let h = HistogramMath.buckets(for: p.cells)
-            m = max(m, h.max() ?? 1)
-        }
-        return m
-    }
+    /// Materialized once per (conditions × thresholds) change instead of on
+    /// every SwiftUI body pass. Recomputed via `.onAppear` / `.onChange`.
+    @State private var pooled: [PooledCondition] = []
+    @State private var sharedYMax: Int = 1
 
     var body: some View {
         ScrollView {
             HStack(alignment: .top, spacing: 16) {
-                ForEach(Array(pooled.enumerated()), id: \.offset) { _, p in
-                    ConditionPanel(
-                        condition: p.condition,
-                        batches: p.batches,
-                        cells: p.cells,
-                        thresholds: state.thresholds,
-                        sharedYMax: sharedYMax)
+                ForEach(pooled) { p in
+                    ConditionPanel(data: p, sharedYMax: sharedYMax)
                         .frame(maxWidth: .infinity)
                 }
             }
             .padding(.horizontal, 24).padding(.vertical, 18)
         }
+        .onAppear { recompute() }
+        // Recompute only when the set of conditions or the size thresholds
+        // change — not on every hover / selection-independent invalidation.
+        .onChange(of: conditions.map(\.name)) { _, _ in recompute() }
+        .onChange(of: state.thresholds) { _, _ in recompute() }
+        .onChange(of: state.confidence) { _, _ in recompute() }
+    }
+
+    /// Single-pass materialization: one SwiftData fetch + one cell scan per
+    /// condition, computing pooled stats, per-bin counts, and histogram buckets
+    /// together, plus the shared Y-axis max.
+    private func recompute() {
+        let thresholds = state.thresholds
+        let bins = BinMath.bins(from: thresholds)
+        var result: [PooledCondition] = []
+        var yMax = 1
+        for cond in conditions {
+            let batches = state.repos.batches(matching: cond.name)
+            var diameters: [Double] = []
+            for b in batches {
+                for img in b.images {
+                    if let cells = img.detection?.cells {
+                        // Same per-image confidence cutoff every other stat uses
+                        // (finding: compare-ignores-confidence-cutoff).
+                        let cutoff = state.effectiveConfidence(for: img)
+                        diameters.reserveCapacity(diameters.count + cells.count)
+                        for c in cells where c.confidence >= cutoff { diameters.append(c.diameter) }
+                    }
+                }
+            }
+            let n = diameters.count
+            // Mean / σ.
+            var mean = 0.0
+            var sigma = 0.0
+            if n > 0 {
+                let dn = Double(n)
+                mean = diameters.reduce(0, +) / dn
+                let variance = diameters.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / dn
+                sigma = sqrt(variance)
+            }
+            // Per-bin counts + histogram buckets in the same pass.
+            var binCounts = Array(repeating: 0, count: bins.count)
+            var buckets = Array(repeating: 0, count: HistogramMath.bucketCount)
+            for d in diameters {
+                let bi = BinMath.binIndex(for: d, thresholds: thresholds)
+                if bi >= 0 && bi < binCounts.count { binCounts[bi] += 1 }
+                let raw = (d - HistogramMath.histMin) / (HistogramMath.histMax - HistogramMath.histMin) * Double(HistogramMath.bucketCount)
+                let hi = min(HistogramMath.bucketCount - 1, max(0, Int(raw)))
+                buckets[hi] += 1
+            }
+            yMax = max(yMax, buckets.max() ?? 1)
+            result.append(PooledCondition(id: cond.name,
+                                          condition: cond,
+                                          batchCount: batches.count,
+                                          cellCount: n,
+                                          mean: mean,
+                                          sigma: sigma,
+                                          bins: bins,
+                                          binCounts: binCounts,
+                                          buckets: buckets))
+        }
+        pooled = result
+        sharedYMax = yMax
     }
 }
 
 private struct ConditionPanel: View {
-    let condition: ConditionRecord
-    let batches: [BatchRecord]
-    let cells: [DetectedCell]
-    let thresholds: [Double]
+    let data: PooledCondition
     let sharedYMax: Int
 
-    private var color: Color { Color(hex: condition.color) ?? .gray }
-
-    private var stats: (mean: Double, sigma: Double) {
-        guard !cells.isEmpty else { return (0, 0) }
-        let diams = cells.map(\.diameter)
-        let n = Double(diams.count)
-        let mean = diams.reduce(0, +) / n
-        let variance = diams.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / n
-        return (mean, sqrt(variance))
-    }
-
-    private var bins: [SizeBin] { BinMath.bins(from: thresholds) }
-
-    private func countFor(binIdx i: Int) -> Int {
-        cells.filter { BinMath.binIndex(for: $0.diameter, thresholds: thresholds) == i }.count
-    }
+    private var color: Color { Color(hex: data.condition.color) ?? .gray }
 
     private func pct(_ k: Int) -> Double {
-        guard !cells.isEmpty else { return 0 }
-        return Double(k) / Double(cells.count) * 100
+        guard data.cellCount > 0 else { return 0 }
+        return Double(k) / Double(data.cellCount) * 100
     }
 
     var body: some View {
+        let bins = data.bins
+        let counts = data.binCounts
         VStack(alignment: .leading, spacing: 14) {
             // Header
             HStack(spacing: 8) {
                 Circle().fill(color).frame(width: 10, height: 10)
-                Text(condition.name)
+                Text(data.condition.name)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Tokens.text)
                 Spacer(minLength: 0)
@@ -262,22 +315,22 @@ private struct ConditionPanel: View {
 
             // Pooled stats
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(cells.count) cells · \(batches.count) batch\(batches.count == 1 ? "" : "es")")
+                Text("\(data.cellCount) cells · \(data.batchCount) batch\(data.batchCount == 1 ? "" : "es")")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Tokens.textSecondary)
-                Text(String(format: "%.1f ± %.1f µm", stats.mean, stats.sigma))
+                Text(String(format: "%.1f ± %.1f µm", data.mean, data.sigma))
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Tokens.textTertiary)
             }
 
-            // Histogram (shared Y axis)
-            PooledHistogram(cells: cells, thresholds: thresholds,
+            // Histogram (shared Y axis) — buckets precomputed.
+            PooledHistogram(buckets: data.buckets, thresholds: bins.isEmpty ? [] : thresholdsFromBins,
                             color: color, sharedYMax: sharedYMax)
 
             // Bin breakdown
             VStack(spacing: 6) {
                 ForEach(Array(bins.enumerated()), id: \.element.id) { i, bin in
-                    let c = countFor(binIdx: i)
+                    let c = i < counts.count ? counts[i] : 0
                     BinBar(label: bin.label, color: Tokens.binColor(i),
                            count: c, pct: pct(c))
                 }
@@ -285,9 +338,9 @@ private struct ConditionPanel: View {
 
             // Mono trio
             HStack(spacing: 10) {
-                MonoStat(label: "% small",       value: pct(countFor(binIdx: 0)))
-                MonoStat(label: "% intermediate", value: bins.count >= 3 ? pct(countFor(binIdx: 1)) : 0)
-                MonoStat(label: "% large",       value: pct(countFor(binIdx: bins.count - 1)))
+                MonoStat(label: "% small",       value: pct(counts.first ?? 0))
+                MonoStat(label: "% intermediate", value: counts.count >= 3 ? pct(counts[1]) : 0)
+                MonoStat(label: "% large",       value: pct(counts.last ?? 0))
             }
         }
         .padding(16)
@@ -298,18 +351,29 @@ private struct ConditionPanel: View {
             RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous)
                 .strokeBorder(Tokens.border, lineWidth: 0.5))
     }
+
+    /// Reconstruct the threshold tick values for the histogram from the bin
+    /// boundaries (the interior `min` values). Cheap and avoids re-plumbing the
+    /// raw thresholds array through PooledCondition.
+    private var thresholdsFromBins: [Double] {
+        // bins are [<t0, t0–t1, …, >tn]; the interior boundaries are the
+        // thresholds. Drop the first bin's min (0) and take each bin.max that
+        // is finite.
+        data.bins.dropLast().map(\.max)
+    }
 }
 
 // MARK: — Pooled histogram (mirrors DistributionPanel in ResultsView)
 
 private struct PooledHistogram: View {
-    let cells: [DetectedCell]
+    /// Precomputed histogram buckets (from PanelsScroll.recompute) so this view
+    /// never re-scans the pooled cells on a body pass.
+    let buckets: [Int]
     let thresholds: [Double]
     let color: Color
     let sharedYMax: Int
 
     var body: some View {
-        let buckets = HistogramMath.buckets(for: cells)
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("DIAMETER")
@@ -530,7 +594,8 @@ private struct BottomBar: View {
             var cells: [DetectedCell] = []
             for b in batches {
                 for img in b.images {
-                    cells.append(contentsOf: img.detection?.cells ?? [])
+                    let cutoff = state.effectiveConfidence(for: img)
+                    cells.append(contentsOf: (img.detection?.cells ?? []).filter { $0.confidence >= cutoff })
                 }
             }
             let total = cells.count
@@ -583,19 +648,39 @@ private struct MannWhitneyPanel: View {
         let diameters: [Double]
     }
 
-    private var groups: [Pooled] {
-        conditions.map { cond in
+    /// Pooled diameters + Mann–Whitney result, materialized once per
+    /// (conditions × thresholds) change instead of on every SwiftUI body pass.
+    /// Mirrors PanelsScroll.recompute so the fetch/decode/scan/sort happens once
+    /// per data change rather than per render / confidence-slider tick
+    /// (findings: compare-groups-recompute-per-body, mannwhitney-repools-every-body-pass).
+    @State private var groups: [Pooled] = []
+    @State private var result: MannWhitneyResult? = nil
+
+    /// Single-pass materialization: one SwiftData fetch + one cell scan per
+    /// condition, applying the SAME per-image confidence cutoff every other stat
+    /// in the app uses (finding: compare-ignores-confidence-cutoff), then runs
+    /// the Mann–Whitney test on the pooled diameters.
+    private func recompute() {
+        var gs: [Pooled] = []
+        for cond in conditions {
             let batches = state.repos.batches(matching: cond.name)
             var ds: [Double] = []
             for b in batches {
                 for img in b.images {
                     if let cells = img.detection?.cells {
+                        let cutoff = state.effectiveConfidence(for: img)
                         ds.reserveCapacity(ds.count + cells.count)
-                        for c in cells { ds.append(c.diameter) }
+                        for c in cells where c.confidence >= cutoff { ds.append(c.diameter) }
                     }
                 }
             }
-            return Pooled(condition: cond, diameters: ds)
+            gs.append(Pooled(condition: cond, diameters: ds))
+        }
+        groups = gs
+        if gs.count == 2, gs[0].diameters.count >= 3, gs[1].diameters.count >= 3 {
+            result = Statistics.mannWhitneyU(gs[0].diameters, gs[1].diameters)
+        } else {
+            result = nil
         }
     }
 
@@ -622,7 +707,7 @@ private struct MannWhitneyPanel: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Tokens.textTertiary)
                     .padding(.vertical, 8)
-            } else if let r = Statistics.mannWhitneyU(gs[0].diameters, gs[1].diameters) {
+            } else if let r = result {
                 StatsBody(a: gs[0], b: gs[1], result: r)
             } else {
                 Text("Not enough data for statistical comparison")
@@ -639,6 +724,12 @@ private struct MannWhitneyPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous)
                 .strokeBorder(Tokens.border, lineWidth: 0.5))
+        .onAppear { recompute() }
+        // Recompute only when the compared conditions, size thresholds, or the
+        // confidence cutoff change — not on every hover / unrelated invalidation.
+        .onChange(of: conditions.map(\.name)) { _, _ in recompute() }
+        .onChange(of: state.thresholds) { _, _ in recompute() }
+        .onChange(of: state.confidence) { _, _ in recompute() }
     }
 
     private struct StatsBody: View {

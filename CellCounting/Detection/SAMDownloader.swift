@@ -292,6 +292,11 @@ struct SAMDownloader: ModelDownloader {
                 }
                 do {
                     try p.run()
+                    // Register so a quit mid-install SIGTERMs the pip child
+                    // instead of orphaning a multi-minute download.
+                    Task { @MainActor in
+                        ChildProcessTracker.shared.register(p, kind: .install)
+                    }
                 } catch {
                     if flag.markAndCheck() { cont.resume(throwing: error) }
                 }

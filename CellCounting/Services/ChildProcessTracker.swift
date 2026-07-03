@@ -94,22 +94,39 @@ final class ChildProcessTracker {
         let frames = Thread.callStackSymbols.prefix(6).joined(separator: "\n  ")
         NSLog("[ChildProcessTracker] terminateAll() called by:\n  \(frames)")
 
+        var pidsToEscalate: [pid_t] = []
         for key in live {
             guard let proc = registry[key], proc.isRunning else { continue }
             let k = kinds[key].map { "\($0)" } ?? "other"
             NSLog("[ChildProcessTracker] SIGTERM pid=\(proc.processIdentifier) kind=\(k)")
             proc.terminate()
-        }
-        // Give them a beat to exit cleanly, then SIGKILL stragglers.
-        Thread.sleep(forTimeInterval: 0.3)
-        for key in live {
-            guard let proc = registry[key], proc.isRunning else { continue }
-            NSLog("[ChildProcessTracker] SIGKILL pid=\(proc.processIdentifier)")
-            kill(proc.processIdentifier, SIGKILL)
+            pidsToEscalate.append(proc.processIdentifier)
         }
         live.removeAll()
         registry.removeAll()
         kinds.removeAll()
+        // Give them a beat to exit cleanly, then SIGKILL stragglers — off the
+        // main actor so the UI thread is never parked for 0.3s.
+        Self.escalateToKill(pidsToEscalate)
+    }
+
+    /// Pass-15: schedule the SIGTERM→SIGKILL escalation without blocking the
+    /// caller (the MainActor). We SIGTERM synchronously above, then wait the
+    /// grace period on a detached Task before SIGKILLing anything still alive.
+    /// `kill(pid, 0)` probes liveness by pid so we don't need the Process
+    /// objects (which may already be forgotten by their terminationHandler).
+    private static func escalateToKill(_ pids: [pid_t]) {
+        guard !pids.isEmpty else { return }
+        Task.detached(priority: .userInitiated) {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            for pid in pids {
+                // kill(pid, 0) returns 0 only if the process still exists and
+                // we can signal it; skip already-reaped pids.
+                guard kill(pid, 0) == 0 else { continue }
+                NSLog("[ChildProcessTracker] SIGKILL pid=\(pid)")
+                kill(pid, SIGKILL)
+            }
+        }
     }
 
     /// Pass-14: SIGTERM only `.detection`-kind processes. Used by the Cancel
@@ -125,17 +142,16 @@ final class ChildProcessTracker {
         // Snapshot the keys to terminate so we don't mutate while iterating
         // (terminationHandler → forget can race with this loop).
         let detectionKeys = live.filter { kinds[$0] == .detection }
+        var pidsToEscalate: [pid_t] = []
         for key in detectionKeys {
             guard let proc = registry[key], proc.isRunning else { continue }
             NSLog("[ChildProcessTracker] SIGTERM pid=\(proc.processIdentifier) kind=detection")
             proc.terminate()
+            pidsToEscalate.append(proc.processIdentifier)
         }
-        Thread.sleep(forTimeInterval: 0.3)
-        for key in detectionKeys {
-            guard let proc = registry[key], proc.isRunning else { continue }
-            NSLog("[ChildProcessTracker] SIGKILL pid=\(proc.processIdentifier) kind=detection")
-            kill(proc.processIdentifier, SIGKILL)
-        }
+        // Escalate to SIGKILL after a grace period without parking the
+        // MainActor — pressing Cancel stays instantly responsive.
+        Self.escalateToKill(pidsToEscalate)
         // Don't drop entries here — the chained terminationHandler calls
         // `forget` for each Process once the kernel reaps it. Forcing removal
         // would race that and leak the Kind tag for any survivors.

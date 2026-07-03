@@ -1,5 +1,40 @@
 import SwiftUI
 
+// MARK: — Demo banner
+
+/// Persistent banner shown on every Fine-tune step. The wizard runs on
+/// procedurally-generated synthetic data and (when no sidecar is installed)
+/// simulated training, so every panel here is an illustrative preview — NOT
+/// real training on the user's dataset. This makes that unmistakable.
+struct FTDemoBanner: View {
+    var message: String = "Preview only — this is an illustrative demo on synthetic data. The images, annotations, and metrics shown here are not from your dataset and are not real training results."
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Icon("triangle-alert", size: 13)
+                .foregroundStyle(Tokens.warning)
+                .padding(.top, 1)
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(Tokens.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .fill(Tokens.warning.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .strokeBorder(Tokens.warning.opacity(0.35), lineWidth: 0.5)
+        )
+        .padding(.bottom, 16)
+    }
+}
+
 // MARK: — STEP 0: Dataset
 
 struct StepDataset: View {
@@ -246,6 +281,8 @@ struct StepAnnotate: View {
                         desc: "Click cells the current model missed, or correct boxes that are wrong. You can also pre-label everything with the active model and just review it — much faster."
                     )
 
+                    FTDemoBanner(message: "Preview only — this canvas shows synthetic sample cells, not your images. Annotations made here are illustrative and are not used to train a model.")
+
                     HStack(alignment: .top, spacing: 16) {
                         // canvas
                         GeometryReader { geo in
@@ -469,7 +506,22 @@ struct StepSplit: View {
     private var valN: Int { imageCount * valPct / 100 }
     private var testN: Int { imageCount - trainN - valN }
 
-    private let shuffled: [Int]
+    /// Number of preview tiles — the real image count, clamped so very large
+    /// datasets stay a readable grid.
+    private static let maxPreviewTiles = 120
+    private var previewCount: Int { min(imageCount, Self.maxPreviewTiles) }
+
+    /// Re-shuffles on demand (the "Re-shuffle" button bumps the seed).
+    @State private var shuffleSeed: Int = 42
+
+    /// Shuffled preview indices for `previewCount` tiles.
+    private var shuffled: [Int] {
+        var rng = SeededRNG(shuffleSeed)
+        var arr = Array(0..<max(0, previewCount))
+        arr.sort { _, _ in rng.next() < 0.5 }
+        return arr
+    }
+
     init(imageCount: Int, trainPct: Binding<Int>, valPct: Binding<Int>,
          onNext: @escaping () -> Void, onBack: @escaping () -> Void) {
         self.imageCount = imageCount
@@ -477,10 +529,6 @@ struct StepSplit: View {
         self._valPct = valPct
         self.onNext = onNext
         self.onBack = onBack
-        var rng = SeededRNG(42)
-        var arr = Array(0..<56)
-        arr.sort { _, _ in rng.next() < 0.5 }
-        self.shuffled = arr
     }
 
     var body: some View {
@@ -489,8 +537,10 @@ struct StepSplit: View {
                 VStack(alignment: .leading, spacing: 0) {
                     FTSectionTitle(
                         title: "Split your dataset",
-                        desc: "Train on the largest portion. Validate during training to catch overfitting. Hold a test set back — we only touch it once, at the very end, to give an honest accuracy number."
+                        desc: "Train on the largest portion. Validate during training to catch overfitting. Hold a test set back — a real fine-tune only touches it once, at the very end, to report accuracy."
                     )
+
+                    FTDemoBanner()
 
                     // Tri-segment bar
                     GeometryReader { geo in
@@ -562,13 +612,17 @@ struct StepSplit: View {
                     // Preview grid
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Preview · \(imageCount) images, shuffled")
+                            Text(previewCount < imageCount
+                                 ? "Preview · \(previewCount) of \(imageCount) images, shuffled"
+                                 : "Preview · \(imageCount) images, shuffled")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Tokens.textSecondary)
                                 .tracking(0.04 * 13)
                                 .textCase(.uppercase)
                             Spacer()
-                            Button {} label: {
+                            Button {
+                                shuffleSeed &+= 1
+                            } label: {
                                 HStack(spacing: 4) {
                                     Icon("settings", size: 11)
                                     Text("Re-shuffle")
@@ -1019,6 +1073,8 @@ struct StepTrain: View {
                     }
                     .padding(.bottom, 18)
 
+                    FTDemoBanner(message: "Preview only — the fine-tune wizard is a non-functional demo. The loss curve and metrics below are illustrative and do not reflect real training on your dataset.")
+
                     // progress bar
                     GeometryReader { geo in
                         let pct = min(1.0, Double(training.epoch) / Double(max(1, epochs)))
@@ -1047,11 +1103,8 @@ struct StepTrain: View {
                                    value: String(format: "%.3f", training.vloss),
                                    color: Tokens.bin3, unit: nil)
                         LiveMetric(label: "Best epoch",
-                                   value: "\(max(1, Int(Double(training.epoch) * 0.78)))",
+                                   value: bestEpoch.map { "\($0)" } ?? "—",
                                    color: nil, unit: nil)
-                        LiveMetric(label: "Throughput",
-                                   value: "\(Int(38 + Double.random(in: 0..<4)))",
-                                   color: nil, unit: "img/s")
                         LiveMetric(label: "Device",
                                    value: (trainer.device ?? "—").uppercased(),
                                    color: nil, unit: nil)
@@ -1073,6 +1126,16 @@ struct StepTrain: View {
         case .available: return "running cellpose locally"
         default: return "running simulated training"
         }
+    }
+
+    /// 1-based epoch with the lowest validation loss so far, or nil until we
+    /// have a val curve. Derived from the actual plotted curve rather than a
+    /// fixed fraction of the current epoch.
+    private var bestEpoch: Int? {
+        guard let minIdx = curve.val.indices.min(by: { curve.val[$0] < curve.val[$1] }) else {
+            return nil
+        }
+        return minIdx + 1
     }
 
     private func startIfNeeded() {
@@ -1227,7 +1290,9 @@ struct LiveMetric: View {
 struct BigMetric: View {
     let name: String
     let value: String
-    let delta: String
+    /// Optional "vs baseline" delta. nil when there is no real baseline to
+    /// compare against (e.g. the demo/synthetic path), so we never invent one.
+    var delta: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -1238,9 +1303,11 @@ struct BigMetric: View {
             Text(value)
                 .font(.system(size: 20, weight: .semibold, design: .monospaced))
                 .foregroundStyle(Tokens.text)
-            Text("↑ \(delta) vs baseline")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Tokens.success)
+            if let delta {
+                Text("↑ \(delta) vs baseline")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Tokens.success)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14).padding(.vertical, 12)
@@ -1281,28 +1348,27 @@ struct StepEvaluate: View {
                             Text("Training complete")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(Tokens.text)
-                            Text("Evaluated on the held-out test set — never seen during training. Numbers below are honest.")
+                            Text("This is a preview of what the evaluation summary looks like.")
                                 .font(.system(size: 13))
                                 .foregroundStyle(Tokens.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
-                    sectionHeader("Test set performance").padding(.top, 22)
+                    FTDemoBanner(message: "Preview only — these figures are illustrative demo values on synthetic data, not a real evaluation of a model trained on your dataset. Do not cite these numbers.")
+                        .padding(.top, 18)
+
+                    sectionHeader("Test set performance").padding(.top, 4)
 
                     HStack(spacing: 10) {
                         BigMetric(name: "AP @ 0.5 IoU",
-                                  value: metrics.map { String(format: "%.3f", $0.ap50) } ?? "—",
-                                  delta: "+0.118")
+                                  value: metrics.map { String(format: "%.3f", $0.ap50) } ?? "—")
                         BigMetric(name: "F1",
-                                  value: metrics.map { String(format: "%.3f", $0.f1) } ?? "—",
-                                  delta: "+0.094")
+                                  value: metrics.map { String(format: "%.3f", $0.f1) } ?? "—")
                         BigMetric(name: "Precision",
-                                  value: metrics.map { String(format: "%.3f", $0.precision) } ?? "—",
-                                  delta: "+0.072")
+                                  value: metrics.map { String(format: "%.3f", $0.precision) } ?? "—")
                         BigMetric(name: "Recall",
-                                  value: metrics.map { String(format: "%.3f", $0.recall) } ?? "—",
-                                  delta: "+0.110")
+                                  value: metrics.map { String(format: "%.3f", $0.recall) } ?? "—")
                     }
                     .padding(.top, 10)
 
@@ -1310,7 +1376,7 @@ struct StepEvaluate: View {
                         (Text("Mean diameter error: ").font(.system(size: 12.5, weight: .bold)).foregroundColor(Tokens.text)
                          + Text(metrics.map { String(format: "%.2f µm", $0.meanDiamError) } ?? "—")
                             .font(.system(size: 12.5, weight: .bold, design: .monospaced)).foregroundColor(Tokens.text)
-                         + Text(" — well below your smallest bin width. Bin assignments will be accurate.")
+                         + Text(" — illustrative demo value. A real fine-tune would report this against your held-out test set.")
                             .font(.system(size: 12.5)).foregroundColor(Tokens.textSecondary))
                         .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)

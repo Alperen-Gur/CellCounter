@@ -74,6 +74,7 @@ pub fn run() {
             // ── persistence: detections & corrections ──
             db::repo::save_detection,
             db::repo::get_detection,
+            db::repo::get_detections,
             db::repo::record_correction,
             // ── persistence: rois ──
             db::repo::rois,

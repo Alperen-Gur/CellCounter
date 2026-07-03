@@ -19,7 +19,7 @@ const COPY: Record<string, { icon: IconName; blurb: string; tag: string }> = {
     icon: "trash",
     tag: "Coming soon",
     blurb:
-      "Images and batches you delete will rest here so you can restore them before they're gone for good.",
+      "A recycle bin for deleted images and batches is planned. Until it ships, deleting is permanent — an image or batch you remove, and its files on disk, cannot be restored.",
   },
   support: {
     icon: "support",

@@ -20,13 +20,17 @@
  * Viewport supplies the view transform to MaskOverlay via context.
  */
 
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { Viewport } from "../../kernel/viewport/Viewport";
 import { MaskOverlay } from "../../kernel/overlay/MaskOverlay";
 import { useAppStore } from "../../kernel/store/store";
 import { Icon } from "../../components/Icon";
+import { ExportPanel } from "../../components/ExportPanel";
+import { navigate as shellNavigate } from "../../components/useHashRoute";
+import { useKeymap } from "../../components/useKeymap";
+import { rerunDetection, isImporting } from "../home/importFlow";
 
 import { useResultsData } from "./useResultsData";
 import { applyRoiFilter } from "./roiFilter";
@@ -82,6 +86,20 @@ export default function ResultsPage() {
   const setCurrentImageIdx = useAppStore((s) => s.setCurrentImageIdx);
   const nextImage = useAppStore((s) => s.nextImage);
   const prevImage = useAppStore((s) => s.prevImage);
+  const currentBatchId = useAppStore((s) => s.currentBatchId);
+
+  // Export sheet (per-image export of the open image) + re-run detection.
+  const [exportOpen, setExportOpen] = useState(false);
+
+  const onRerun = useCallback(() => {
+    if (!currentImage || !batch || isImporting()) return;
+    void rerunDetection(
+      currentImage,
+      batch,
+      { navigate: (id) => shellNavigate(id), onDuplicates: async () => null },
+      { getState: () => useAppStore.getState() },
+    );
+  }, [currentImage, batch]);
 
   // ---- shared mask-editing engine (feat-mask-editing) ----
   // One editor instance for the current image drives the toolbar, the live
@@ -138,67 +156,28 @@ export default function ResultsPage() {
   }, [setZoom, setPan]);
 
   // ---- keyboard: overlay toggles (Space/X/Z) + directory nav (←/→) ----
-  // The shell binds only "?" / Escape; the Viewport binds ⌘0. These bindings
-  // are disjoint from both. The full keymap (feat-directory-nav-keyboard) will
-  // supersede these; until then the task's required toggles work here.
-  useEffect(() => {
-    const isTyping = (t: EventTarget | null): boolean => {
-      const el = t as HTMLElement | null;
-      return (
-        !!el &&
-        (el.tagName === "INPUT" ||
-          el.tagName === "TEXTAREA" ||
-          el.isContentEditable)
-      );
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (isTyping(e.target)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return; // leave modified chords alone
-      switch (e.key) {
-        case " ": {
-          e.preventDefault();
-          const next = !(showMaskFills || showOutlines);
-          setShowMaskFills(next);
-          setShowOutlines(next);
-          break;
-        }
-        case "x":
-        case "X":
-          e.preventDefault();
-          setShowMaskFills(!showMaskFills);
-          break;
-        case "z":
-        case "Z":
-          e.preventDefault();
-          setShowOutlines(!showOutlines);
-          break;
-        case "ArrowRight":
-          if (images.length > 0) {
-            e.preventDefault();
-            nextImage();
-          }
-          break;
-        case "ArrowLeft":
-          if (images.length > 0) {
-            e.preventDefault();
-            prevImage();
-          }
-          break;
-        default:
-          break;
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [
-    images.length,
-    showMaskFills,
-    showOutlines,
-    setShowMaskFills,
-    setShowOutlines,
-    nextImage,
-    prevImage,
-  ]);
+  // Drive these through the shared keymap (the frozen `overlay` + `navigation`
+  // scopes) rather than a hand-rolled window keydown switch, so the chords stay
+  // the single source of truth: rebinding e.g. "toggle outlines" in keymap.ts
+  // updates both this page and the KeyboardShortcutsSheet together. useKeymap
+  // already ignores events from text fields and calls preventDefault.
+  useKeymap("overlay", {
+    toggleOverlay: () => {
+      const next = !(showMaskFills || showOutlines);
+      setShowMaskFills(next);
+      setShowOutlines(next);
+    },
+    toggleMaskFills: () => setShowMaskFills(!showMaskFills),
+    toggleOutlines: () => setShowOutlines(!showOutlines),
+  });
+  useKeymap(
+    "navigation",
+    {
+      nextImage: () => nextImage(),
+      prevImage: () => prevImage(),
+    },
+    { enabled: images.length > 0 },
+  );
 
   // ---- empty / loading states ----
   if (!batch && !loading) {
@@ -240,6 +219,17 @@ export default function ResultsPage() {
           <Suspense fallback={null}>
             <SegNpyPanel />
           </Suspense>
+          {currentImage && (
+            <button
+              type="button"
+              className="rv-export-btn"
+              onClick={() => setExportOpen(true)}
+              title="Export this image (CSV, ImageJ ROIs, provenance, PDF)"
+            >
+              <Icon name="download" size={16} />
+              <span>Export</span>
+            </button>
+          )}
         </div>
 
         <div className="rv-canvas">
@@ -289,10 +279,21 @@ export default function ResultsPage() {
               <div className="rv-detbanner__text">
                 <strong>No detection for this image</strong>
                 <span>
-                  Detection hasn't run (or produced no result). Re-run it from
-                  Home or the Models page.
+                  Detection hasn't run (or produced no result). Re-run it below
+                  with the batch's saved parameters.
                 </span>
               </div>
+              {batch && (
+                <button
+                  type="button"
+                  className="rv-detbanner__action"
+                  onClick={onRerun}
+                  title="Re-run detection on this image"
+                >
+                  <Icon name="refresh" size={16} />
+                  <span>Re-run detection</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -357,6 +358,36 @@ export default function ResultsPage() {
         reloadRois={reloadRois}
         reloadAnnotations={reloadAnnotations}
       />
+
+      {/* Per-image export sheet — mounts feat-export's ExportPanel pinned to the
+          open image so its Cells CSV / ImageJ ROIs / Provenance / PDF are
+          reachable from the only per-image analysis view. */}
+      {exportOpen && currentImage && (
+        <div
+          className="rv-export-overlay"
+          role="dialog"
+          aria-label="Export"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setExportOpen(false);
+          }}
+        >
+          <div className="rv-export-sheet">
+            <div className="rv-export-sheet__head">
+              <span className="rv-export-sheet__title">Export image</span>
+              <button
+                type="button"
+                className="rv-export-sheet__close"
+                onClick={() => setExportOpen(false)}
+                title="Close"
+                aria-label="Close"
+              >
+                <Icon name="close" size={18} />
+              </button>
+            </div>
+            <ExportPanel imageId={currentImage.id} batchId={currentBatchId ?? undefined} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

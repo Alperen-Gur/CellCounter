@@ -11,7 +11,7 @@
  *   - the priority contract (`CALIBRATION_PRIORITY`) the Rust importer follows,
  *   - unit → µm conversion (`unitToUm`),
  *   - the built-in preset ladder + objective labelling,
- *   - µm size-binning (`binsFromThresholds`, `binIndex`, `sizeClass`).
+ *   - µm size-binning (`binsFromThresholds`, `binIndex`).
  *
  * No platform deps.
  */
@@ -158,21 +158,4 @@ export function binIndex(diameterUm: number, thresholds: number[]): number {
     if (diameterUm < thresholds[i]) return i;
   }
   return thresholds.length;
-}
-
-/**
- * Size class from the small / large thresholds (the Python sidecar's
- * `--small-threshold` / `--large-threshold` semantics, mirrored client-side):
- *   diameter < smallT              → "small"
- *   smallT ≤ diameter < largeT     → "intermediate"
- *   diameter ≥ largeT              → "large"
- */
-export function sizeClass(
-  diameterUm: number,
-  smallT: number,
-  largeT: number,
-): "small" | "intermediate" | "large" {
-  if (diameterUm < smallT) return "small";
-  if (diameterUm < largeT) return "intermediate";
-  return "large";
 }

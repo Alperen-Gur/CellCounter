@@ -24,6 +24,7 @@
 //! returned to the UI (the Swift host logs+ignores low at import; here we let
 //! the TS layer decide — the DTO carries the `confidence` field).
 
+use std::fmt::Write as _;
 use std::io::Cursor;
 
 use image::{GenericImageView, ImageFormat};
@@ -42,14 +43,41 @@ const SUPPORTED: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "bmp"];
 /// unaffected by the fs plugin's path scoping). Returns sorted absolute paths.
 #[tauri::command]
 pub fn list_images_in_dir(dir: String) -> Result<Vec<String>, String> {
-    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+    // Guard against symlink loops (e.g. `dir/self -> dir`, common in synced /
+    // backup folders): never follow a symlinked directory, cap recursion depth,
+    // and track visited canonical paths so a real dir cannot be revisited via a
+    // second path. Without this an unbounded recursion overflows the stack and
+    // aborts the whole app process.
+    const MAX_DEPTH: usize = 64;
+
+    fn walk(
+        dir: &std::path::Path,
+        out: &mut Vec<String>,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+        depth: usize,
+    ) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        // Canonicalize so the same real directory reached via different paths is
+        // only walked once; if canonicalization fails, fall back to the raw path.
+        let key = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        if !visited.insert(key) {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
+            // `file_type()` does NOT follow symlinks, so a symlinked directory
+            // reports as a symlink here and is skipped for recursion.
+            let is_real_dir = entry
+                .file_type()
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false);
+            if is_real_dir {
+                walk(&path, out, visited, depth + 1);
             } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if SUPPORTED.contains(&ext.to_ascii_lowercase().as_str()) {
                     if let Some(s) = path.to_str() {
@@ -60,7 +88,8 @@ pub fn list_images_in_dir(dir: String) -> Result<Vec<String>, String> {
         }
     }
     let mut out = Vec::new();
-    walk(std::path::Path::new(&dir), &mut out);
+    let mut visited = std::collections::HashSet::new();
+    walk(std::path::Path::new(&dir), &mut out, &mut visited, 0);
     out.sort();
     Ok(out)
 }
@@ -158,7 +187,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let digest = hasher.finalize();
     let mut out = String::with_capacity(digest.len() * 2);
     for b in digest {
-        out.push_str(&format!("{b:02x}"));
+        // Write in place into the pre-allocated buffer — no per-byte String alloc.
+        let _ = write!(out, "{b:02x}");
     }
     out
 }

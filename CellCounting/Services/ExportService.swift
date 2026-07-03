@@ -80,7 +80,7 @@ enum ExportService {
     static func writeSampleFolder(image: ImageRecord,
                                   state: AppState,
                                   overlayMode: OverlayMode,
-                                  parentDir: URL) throws -> SampleFolderResult {
+                                  parentDir: URL) async throws -> SampleFolderResult {
         let baseName = sanitizeFilename((image.fileName as NSString).deletingPathExtension)
         let folderName = "\(baseName)_\(folderTimestamp())"
         let folder = parentDir.appendingPathComponent(folderName, isDirectory: true)
@@ -96,6 +96,9 @@ enum ExportService {
         var errors: [(String, Error)] = []
 
         let conf = state.effectiveConfidence(for: image)
+        // Global cutoff (not the exported image's override) — the per-image
+        // summary writer resolves each row's own override against this fallback.
+        let globalConf = state.confidence
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
         let pxPerUm = state.pxPerUm
         let thresholds = state.thresholds
@@ -119,37 +122,51 @@ enum ExportService {
             errors.append((originalDest.lastPathComponent, error))
         }
 
-        // 2) annotated.png — only with a detection.
-        if let detection = image.detection {
+        // Snapshot the SwiftData-backed values ONCE on the main actor so the
+        // heavy PNG compositing + CSV building + ROI subprocess below can run
+        // off the MainActor (via Task.detached) without touching the model
+        // graph. This keeps the whole window responsive during a sample export.
+        let srcImageURL = image.storedURL
+        let imageFileName = image.fileName
+        let imageWidthPx = image.widthPx
+        let imageHeightPx = image.heightPx
+        let detectionCells: [DetectedCell]? = image.detection?.cells
+
+        // 2) annotated.png — only with a detection. Composited off-main.
+        if let cells = detectionCells {
             let pngURL = folder.appendingPathComponent("annotated.png")
             do {
-                try writeAnnotatedPNG(image: image,
-                                      detection: detection,
-                                      thresholds: thresholds,
-                                      pxPerUm: pxPerUm,
-                                      overlayMode: overlayMode,
-                                      confidence: conf,
-                                      provenance: provenance,
-                                      to: pngURL)
+                try await Task.detached {
+                    try compositeAnnotatedPNG(imageURL: srcImageURL,
+                                              cells: cells,
+                                              thresholds: thresholds,
+                                              pxPerUm: pxPerUm,
+                                              overlayMode: overlayMode,
+                                              confidence: conf,
+                                              provenance: provenance,
+                                              to: pngURL)
+                }.value
                 written.append(pngURL.lastPathComponent)
             } catch {
                 errors.append((pngURL.lastPathComponent, error))
             }
         }
 
-        // 3) cells.csv
-        if let detection = image.detection {
+        // 3) cells.csv — built + written off-main.
+        if let cells = detectionCells {
             let csvURL = folder.appendingPathComponent("cells.csv")
             do {
-                try writeCSV(detection: detection,
-                             image: image,
-                             thresholds: thresholds,
-                             pxPerUm: pxPerUm,
-                             confidence: conf,
-                             modelId: modelId,
-                             separator: ",",
-                             provenance: provenance,
-                             to: csvURL)
+                try await Task.detached {
+                    try writeCSVCore(cells: cells,
+                                     imageFileName: imageFileName,
+                                     thresholds: thresholds,
+                                     pxPerUm: pxPerUm,
+                                     confidence: conf,
+                                     modelId: modelId,
+                                     separator: ",",
+                                     provenance: provenance,
+                                     to: csvURL)
+                }.value
                 written.append(csvURL.lastPathComponent)
             } catch {
                 errors.append((csvURL.lastPathComponent, error))
@@ -163,7 +180,7 @@ enum ExportService {
                 try writePerImageSummaryCSV(batch: batch,
                                             thresholds: thresholds,
                                             pxPerUm: pxPerUm,
-                                            confidence: conf,
+                                            confidence: globalConf,
                                             separator: ",",
                                             provenance: provenance,
                                             to: summaryURL)
@@ -174,17 +191,22 @@ enum ExportService {
         }
 
         // 5) imagej_rois.zip — best-effort; skipped if the Python venv is
-        // missing or there are no cells to export.
-        if let detection = image.detection, !detection.cells.isEmpty {
+        // missing or there are no cells to export. The blocking Python
+        // subprocess wait runs off-main.
+        if let cells = detectionCells, !cells.isEmpty {
             let roiURL = folder.appendingPathComponent("imagej_rois.zip")
             do {
-                try writeImageJROIs(image: image,
-                                    detection: detection,
-                                    thresholds: thresholds,
-                                    pxPerUm: pxPerUm,
-                                    confidence: conf,
-                                    modelId: modelId,
-                                    to: roiURL)
+                try await Task.detached {
+                    try writeImageJROIsCore(cells: cells,
+                                            imageWidthPx: imageWidthPx,
+                                            imageHeightPx: imageHeightPx,
+                                            imageFileName: imageFileName,
+                                            thresholds: thresholds,
+                                            pxPerUm: pxPerUm,
+                                            confidence: conf,
+                                            modelId: modelId,
+                                            to: roiURL)
+                }.value
                 written.append(roiURL.lastPathComponent)
             } catch {
                 errors.append((roiURL.lastPathComponent, error))
@@ -242,13 +264,17 @@ enum ExportService {
             errors.append((mdURL.lastPathComponent, error))
         }
 
-        // 8) report.pdf
+        // 8) report.pdf — capture the inputs on the MainActor (cheap), then run
+        // the heavy render (full-res decode + composite + draw) off it via
+        // Task.detached so the one-click sample export doesn't freeze the UI on
+        // its single heaviest step. PDFReportGenerator is pure CoreGraphics now,
+        // so it's safe to render off the main actor.
         let pdfURL = folder.appendingPathComponent("report.pdf")
+        let pdfInputs = PDFReportGenerator.makeInputs(image: image, state: state)
         do {
-            try PDFReportGenerator.writeReport(image: image,
-                                               state: state,
-                                               annotations: nil,
-                                               to: pdfURL)
+            try await Task.detached {
+                try PDFReportGenerator.writeReport(inputs: pdfInputs, to: pdfURL)
+            }.value
             written.append(pdfURL.lastPathComponent)
         } catch {
             errors.append((pdfURL.lastPathComponent, error))
@@ -320,6 +346,8 @@ enum ExportService {
         - F1 vs ground truth: \(f1Line)
 
         See report.pdf for full layout including image and histogram.
+
+        \(ProvenanceMetadata.capture(for: image, state: state).asMarkdown)
         """
         guard let data = md.data(using: .utf8) else { throw ExportError.encodeFailed }
         do {
@@ -340,6 +368,31 @@ enum ExportService {
                          separator: String = ",",
                          provenance: ProvenanceMetadata? = nil,
                          to url: URL) throws {
+        // Snapshot the SwiftData-backed values on the caller's actor, then hand
+        // off to the `nonisolated` core so the row-building + write can run off
+        // the MainActor when called from a `Task.detached`.
+        try writeCSVCore(cells: detection.cells,
+                         imageFileName: image.fileName,
+                         thresholds: thresholds,
+                         pxPerUm: pxPerUm,
+                         confidence: confidence,
+                         modelId: modelId ?? detection.detectorId,
+                         separator: separator,
+                         provenance: provenance,
+                         to: url)
+    }
+
+    /// Off-main-safe CSV writer: builds every row + writes the file from Sendable
+    /// value types only (no SwiftData `@Model` access).
+    nonisolated static func writeCSVCore(cells: [DetectedCell],
+                                         imageFileName: String,
+                                         thresholds: [Double],
+                                         pxPerUm: Double,
+                                         confidence: Double? = nil,
+                                         modelId: String,
+                                         separator: String = ",",
+                                         provenance: ProvenanceMetadata? = nil,
+                                         to url: URL) throws {
         let bins = BinMath.bins(from: thresholds)
         let header = ["id", "cx_px", "cy_px", "diameter_um", "diameter_px", "bin_label", "confidence",
                       "area_um2", "perimeter_um", "circularity", "eccentricity",
@@ -361,14 +414,14 @@ enum ExportService {
         lines.append(configHeaderComment(thresholds: thresholds,
                                           pxPerUm: pxPerUm,
                                           confidence: confidence ?? 0.0,
-                                          modelId: modelId ?? detection.detectorId))
+                                          modelId: modelId))
         lines.append(header.joined(separator: separator))
 
         // Pass-15: filter rows by the effective confidence cutoff. The CSV is
         // an analytical artifact, not the raw detection — it must match what
         // the user sees on screen.
         let cutoff = confidence ?? 0.0
-        let visibleCells = detection.cells.filter { $0.confidence >= cutoff }
+        let visibleCells = cells.filter { $0.confidence >= cutoff }
         for cell in visibleCells {
             let idx = BinMath.binIndex(for: cell.diameter, thresholds: thresholds)
             let safeIdx = max(0, min(idx, bins.count - 1))
@@ -395,7 +448,7 @@ enum ExportService {
                 fmt(cell.meanIntensity),
                 fmt(cell.integratedDensity),
                 // pass-6 quality flags
-                csvEscape(image.fileName, separator: separator),
+                csvEscape(imageFileName, separator: separator),
                 fmt(cell.centroidUmX),
                 fmt(cell.centroidUmY),
                 fmt(cell.aspectRatio),
@@ -418,7 +471,7 @@ enum ExportService {
         }
     }
 
-    private static func csvEscape(_ s: String, separator: String) -> String {
+    nonisolated private static func csvEscape(_ s: String, separator: String) -> String {
         let needsQuote = s.contains(separator) || s.contains("\"") || s.contains("\n") || s.contains("\r")
         if !needsQuote { return s }
         let escaped = s.replacingOccurrences(of: "\"", with: "\"\"")
@@ -429,7 +482,7 @@ enum ExportService {
     /// of every CSV (and at the head of `RoiSet.config.txt`) so the analysis is
     /// self-describing. Format:
     ///   `# confidence=0.85; bins=[20,30]; model=cellpose-cyto3; pxPerUm=2.6`
-    static func configHeaderComment(thresholds: [Double],
+    nonisolated static func configHeaderComment(thresholds: [Double],
                                     pxPerUm: Double,
                                     confidence: Double,
                                     modelId: String) -> String {
@@ -449,7 +502,32 @@ enum ExportService {
                                   confidence: Double = 0.0,
                                   provenance: ProvenanceMetadata? = nil,
                                   to url: URL) throws {
-        guard let loaded = ImageLoader.loadStored(image) else { throw ExportError.missingImageBitmap }
+        // Snapshot the SwiftData-backed values (source URL + decoded cells) on
+        // the caller's actor, then hand off to the `nonisolated` compositor.
+        // Callers that want to keep the MainActor free run the compositor inside
+        // a `Task.detached` with these same value-type snapshots.
+        try compositeAnnotatedPNG(imageURL: image.storedURL,
+                                  cells: detection.cells,
+                                  thresholds: thresholds,
+                                  pxPerUm: pxPerUm,
+                                  overlayMode: overlayMode,
+                                  confidence: confidence,
+                                  provenance: provenance,
+                                  to: url)
+    }
+
+    /// Off-main-safe PNG compositor: full-res decode + overlay draw + encode
+    /// operating purely on Sendable value types (no SwiftData `@Model` access),
+    /// so it can run inside a `Task.detached` without touching the MainActor.
+    nonisolated static func compositeAnnotatedPNG(imageURL: URL,
+                                                  cells: [DetectedCell],
+                                                  thresholds: [Double],
+                                                  pxPerUm: Double,
+                                                  overlayMode: OverlayMode,
+                                                  confidence: Double = 0.0,
+                                                  provenance: ProvenanceMetadata? = nil,
+                                                  to url: URL) throws {
+        guard let loaded = try? ImageLoader.load(imageURL) else { throw ExportError.missingImageBitmap }
         let cg = loaded.cgImage
         let w = cg.width
         let h = cg.height
@@ -483,7 +561,7 @@ enum ExportService {
         // on-screen overlay. `confidence == 0.0` (the default) means "include
         // everything" — used by code paths that haven't been migrated yet.
         let cutoff = confidence
-        let drawableCells = detection.cells.filter { $0.confidence >= cutoff }
+        let drawableCells = cells.filter { $0.confidence >= cutoff }
         for cell in drawableCells {
             let idx = BinMath.binIndex(for: cell.diameter, thresholds: thresholds)
             let color = binCGColor(idx)
@@ -540,7 +618,7 @@ enum ExportService {
 
     // MARK: — Scale bar
 
-    private static func drawScaleBar(into ctx: CGContext,
+    nonisolated private static func drawScaleBar(into ctx: CGContext,
                                      imageWidth w: Int,
                                      imageHeight h: Int,
                                      pxPerUm: Double) {
@@ -613,17 +691,24 @@ enum ExportService {
 
     // MARK: — Bin colors
 
-    /// CGColor for bin `index`, derived from the single `Tokens.binRamp` source
-    /// of truth (OKLCH → sRGB) so exported overlays never drift from the
-    /// on-screen SwiftUI swatches.
-    private static func binCGColor(_ index: Int) -> CGColor {
-        let ramp = Tokens.binRamp
-        let i = max(0, min(index, ramp.count - 1))
-        let s = ramp[i].srgb
+    /// Bin CGColors precomputed once from `Tokens.binRamp`. `.srgb` runs
+    /// cos/sin + three pow() per call, and `binCGColor` is invoked once per
+    /// drawn cell on the heaviest export path — caching the (fixed, 5-entry)
+    /// ramp avoids re-running the OKLCH→sRGB conversion thousands of times.
+    nonisolated private static let binCGColors: [CGColor] = Tokens.binRamp.map { color in
+        let s = color.srgb
         return CGColor(red: CGFloat(s.r),
                        green: CGFloat(s.g),
                        blue: CGFloat(s.b),
                        alpha: 1)
+    }
+
+    /// CGColor for bin `index`, derived from the single `Tokens.binRamp` source
+    /// of truth (OKLCH → sRGB) so exported overlays never drift from the
+    /// on-screen SwiftUI swatches.
+    nonisolated private static func binCGColor(_ index: Int) -> CGColor {
+        let i = max(0, min(index, binCGColors.count - 1))
+        return binCGColors[i]
     }
 
     // MARK: — Per-image summary CSV (C2 pass-6)
@@ -715,9 +800,13 @@ enum ExportService {
         lines.append(header.joined(separator: separator))
 
         for image in sortedImages {
-            // Pass-15: filter per-image cells by the effective cutoff so the
-            // summary row aggregates over the same cells visible in the UI.
-            let cells = (image.detection?.cells ?? []).filter { $0.confidence >= confidence }
+            // Filter per-image cells by THIS image's own effective cutoff so
+            // each summary row aggregates over the same cells visible for that
+            // image. `confidence` is the global fallback; an image with its own
+            // `confidenceOverride` must use that, not one image's cutoff applied
+            // batch-wide (matches AppState.effectiveConfidence semantics).
+            let effectiveConf = image.confidenceOverride ?? confidence
+            let cells = (image.detection?.cells ?? []).filter { $0.confidence >= effectiveConf }
             let nCells = cells.count
             let diameters = cells.map(\.diameter)
 
@@ -865,6 +954,32 @@ enum ExportService {
                                 confidence: Double = 0.0,
                                 modelId: String? = nil,
                                 to url: URL) throws {
+        // Snapshot the SwiftData-backed values on the caller's actor, then hand
+        // off to the `nonisolated` core so the (blocking) Python subprocess wait
+        // runs off the MainActor when invoked from a `Task.detached`.
+        try writeImageJROIsCore(cells: detection.cells,
+                                imageWidthPx: image.widthPx,
+                                imageHeightPx: image.heightPx,
+                                imageFileName: image.fileName,
+                                thresholds: thresholds,
+                                pxPerUm: pxPerUm,
+                                confidence: confidence,
+                                modelId: modelId ?? detection.detectorId,
+                                to: url)
+    }
+
+    /// Off-main-safe ROI writer: encodes the wire blob, spawns + waits on the
+    /// Python helper, and writes the sibling config file, all from Sendable
+    /// value types (no SwiftData `@Model` access).
+    nonisolated static func writeImageJROIsCore(cells rawCells: [DetectedCell],
+                                                imageWidthPx: Int,
+                                                imageHeightPx: Int,
+                                                imageFileName: String,
+                                                thresholds: [Double] = [],
+                                                pxPerUm: Double = 1.0,
+                                                confidence: Double = 0.0,
+                                                modelId: String,
+                                                to url: URL) throws {
         // Resolve the venv python + the helper script via the same path the
         // detection sidecars use.
         let availability = CellposeAvailability.detect()
@@ -888,7 +1003,7 @@ enum ExportService {
 
         // Pass-15: filter to cells above the effective cutoff so the ROI zip
         // matches the visible overlay / CSV.
-        let cells = detection.cells.filter { $0.confidence >= confidence }
+        let cells = rawCells.filter { $0.confidence >= confidence }
         guard !cells.isEmpty else {
             throw ExportError.roiExportFailed("There are no detected cells to export.")
         }
@@ -907,8 +1022,8 @@ enum ExportService {
                 name: nil
             )
         }
-        let blob = ROIWireBlob(width: image.widthPx,
-                               height: image.heightPx,
+        let blob = ROIWireBlob(width: imageWidthPx,
+                               height: imageHeightPx,
                                cells: wireCells)
 
         let inputURL = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -972,8 +1087,8 @@ enum ExportService {
         let header = configHeaderComment(thresholds: thresholds,
                                          pxPerUm: pxPerUm,
                                          confidence: confidence,
-                                         modelId: modelId ?? detection.detectorId)
-        let body = "\(header)\n# image=\(image.fileName); n_rois=\(cells.count)\n"
+                                         modelId: modelId)
+        let body = "\(header)\n# image=\(imageFileName); n_rois=\(cells.count)\n"
         try? body.data(using: .utf8)?.write(to: configURL, options: [.atomic])
     }
 

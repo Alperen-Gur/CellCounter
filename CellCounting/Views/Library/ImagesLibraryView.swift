@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SwiftData
 
 // MARK: — Main View
 
@@ -106,8 +107,11 @@ struct ImagesLibraryView: View {
         .overlay(
             Group {
                 Button("") {
+                    // Only delete when there's an explicit selection. Previously
+                    // a bare Delete with nothing selected targeted images.first —
+                    // an arbitrary image the user almost certainly wasn't focused
+                    // on. With no selection this is now a no-op.
                     if !selectedIDs.isEmpty { deleteSelected() }
-                    else if let first = images.first { confirmDelete(image: first) }
                 }
                 .keyboardShortcut(.delete, modifiers: [])
                 .hidden()
@@ -150,22 +154,30 @@ struct ImagesLibraryView: View {
 
         isHashingForDupes = true
 
-        // Snapshot storedURLs and ids off-main-safe values.
+        // Snapshot only Sendable values (ids + URLs) to cross the actor
+        // boundary. Previously the loop re-fetched the entire images table
+        // (`allImages()`) on every iteration and did an individual
+        // `context.save()` per hash — O(N·M) fetches + N saves. Now it's N
+        // hashes off-main, then ONE fetch + one map build + one save on-main.
         let pairs: [(UUID, URL)] = needsHash.map { ($0.id, $0.storedURL) }
         let reposRef = state.repos
 
         Task.detached(priority: .userInitiated) {
+            // Hash off the main thread, then apply all writes + a single save.
+            var computed: [(UUID, String)] = []
             for (imageId, url) in pairs {
                 guard let hash = ImageLoader.sha256Hex(of: url) else { continue }
-                await MainActor.run {
-                    // Look up the live record by id and write the hash.
-                    let all = reposRef.allImages()
-                    if let img = all.first(where: { $0.id == imageId }) {
-                        reposRef.setFileHash(hash, on: img)
-                    }
-                }
+                computed.append((imageId, hash))
             }
             await MainActor.run {
+                // Single fetch, single map, single save — instead of per-image.
+                let byId = Dictionary(
+                    reposRef.allImages().map { ($0.id, $0) },
+                    uniquingKeysWith: { first, _ in first })
+                for (imageId, hash) in computed {
+                    byId[imageId]?.fileHash = hash
+                }
+                try? reposRef.context.save()
                 isHashingForDupes = false
                 showFindDuplicates = true
             }

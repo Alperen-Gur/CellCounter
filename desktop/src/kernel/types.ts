@@ -104,6 +104,14 @@ export interface ImageDTO {
   notes?: string;
   storedPath: string; // resolved by backend (Images/<id>.<ext>)
   thumbPath: string; // Thumbnails/<id>.jpg
+  /**
+   * Number of cells in this image's saved detection (0 when none ran). Denormalized
+   * onto the image row by the Rust `all_images` query so count-only reads
+   * (Library / Batch / Review badges) don't need a per-image `getDetection`
+   * round-trip. Per-cell data (diameters, corrections) still comes from
+   * `getDetection` / `getDetections`.
+   */
+  cellCount: number;
 }
 
 // ---------------------------------------------------------------------------

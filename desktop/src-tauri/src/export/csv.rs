@@ -27,7 +27,32 @@ use crate::paths::FileStore;
 
 /// RFC-4180-style quoting: quote when the value contains the separator, a quote,
 /// or a newline; double embedded quotes. Mirrors `ExportService.csvEscape`.
+///
+/// Additionally neutralizes spreadsheet formula-injection: a free-text field that
+/// begins with `=`, `+`, `-`, `@`, tab, or CR is treated by Excel/LibreOffice as
+/// a formula on open. Since attacker-influenceable values (e.g. a source image
+/// filename like `=HYPERLINK(...)` or `+cmd|'/c calc'!A1.tif`) flow verbatim into
+/// the CSV, we prefix a `'` guard so the cell is imported as literal text. This
+/// intentionally diverges from the frozen Swift output contract, which has the
+/// same gap. All free-text columns (filename, size_class, detector_id, ran_at,
+/// bin labels) route through here; purely numeric columns are formatted directly
+/// and never reach this function, so numbers are unaffected.
 pub(crate) fn csv_escape(s: &str, separator: &str) -> String {
+    let first_dangerous = matches!(
+        s.chars().next(),
+        Some('=') | Some('+') | Some('-') | Some('@') | Some('\t') | Some('\r')
+    );
+    // Guard by prefixing an apostrophe (the conventional "force text" marker).
+    let guarded = if first_dangerous {
+        let mut g = String::with_capacity(s.len() + 1);
+        g.push('\'');
+        g.push_str(s);
+        std::borrow::Cow::Owned(g)
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    };
+    let s = guarded.as_ref();
+
     let needs_quote =
         s.contains(separator) || s.contains('"') || s.contains('\n') || s.contains('\r');
     if !needs_quote {

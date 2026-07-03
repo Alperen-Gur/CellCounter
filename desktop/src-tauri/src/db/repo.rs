@@ -201,6 +201,10 @@ fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<ImageDto> {
         .to_ascii_lowercase();
     let stored_path = store.image_path(&id, &ext).to_string_lossy().into_owned();
     let thumb_path = store.thumb_path(&id).to_string_lossy().into_owned();
+    // `cell_count` is only present when the query joins `detections` (e.g.
+    // `all_images`). For plain `SELECT * FROM images` queries the column is
+    // absent, so fall back to 0 rather than erroring.
+    let cell_count: i64 = row.get("cell_count").unwrap_or(0);
     Ok(ImageDto {
         id,
         file_name,
@@ -212,6 +216,7 @@ fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<ImageDto> {
         notes: row.get("notes")?,
         stored_path,
         thumb_path,
+        cell_count,
     })
 }
 
@@ -440,8 +445,16 @@ pub fn cleanup_empty_batches(db: State<'_, Db>) -> Result<(), String> {
 #[tauri::command]
 pub fn all_images(db: State<'_, Db>) -> Result<Vec<ImageDto>, String> {
     let conn = db.lock()?;
+    // LEFT JOIN the 1:1 detection so each image carries its denormalised
+    // `cell_count` (0 when there is no detection) — the frontend library grid
+    // reads this instead of issuing a `get_detection` per image (N+1).
     let mut stmt = conn
-        .prepare("SELECT * FROM images ORDER BY imported_at DESC")
+        .prepare(
+            "SELECT images.*, COALESCE(detections.cell_count, 0) AS cell_count
+             FROM images
+             LEFT JOIN detections ON detections.image_id = images.id
+             ORDER BY images.imported_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let out = stmt
         .query_map([], |r| row_to_image(r, &db.store))
@@ -752,6 +765,50 @@ pub fn get_detection(db: State<'_, Db>, image_id: String) -> Result<Option<Detec
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(det)
+}
+
+/// Bulk-fetch the detections for many images in ONE round-trip. Mirrors
+/// `get_detection` per row, but lets the frontend fetch a whole batch's
+/// detections without an IPC call per image (N+1). Images with no detection are
+/// simply absent from the result; the returned order is unspecified.
+#[tauri::command]
+pub fn get_detections(
+    db: State<'_, Db>,
+    image_ids: Vec<String>,
+) -> Result<Vec<DetectionDto>, String> {
+    if image_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = db.lock()?;
+    // Build a `?,?,…` placeholder list so the IN-clause is a single prepared
+    // statement (no string interpolation of ids).
+    let placeholders = std::iter::repeat("?")
+        .take(image_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT * FROM detections WHERE image_id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params = rusqlite::params_from_iter(image_ids.iter());
+    let out = stmt
+        .query_map(params, |r| {
+            let cells_json: String = r.get("cells_json")?;
+            let stats_json: Option<String> = r.get("image_stats_json")?;
+            let image_stats = stats_json.and_then(|s| serde_json::from_str(&s).ok());
+            Ok(DetectionDto {
+                id: r.get("id")?,
+                image_id: r.get("image_id")?,
+                detector_id: r.get("detector_id")?,
+                ran_at: r.get("ran_at")?,
+                cells: cells_from_json(&cells_json),
+                image_stats,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 #[tauri::command]

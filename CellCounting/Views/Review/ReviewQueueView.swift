@@ -42,6 +42,11 @@ struct ReviewQueueView: View {
     /// `advance()` already moved the cursor and a rebuild would clobber it).
     @State private var suppressNextRebuild: Bool = false
 
+    /// The most recent Reject/Keep, retained so a single mistaken keystroke is
+    /// reversible (Cmd+Z or the on-screen "Undo"). Cleared once undone, or when
+    /// the queue is rebuilt from a foreign correction.
+    @State private var lastAction: UndoableAction? = nil
+
     /// Canonical Review-queue cutoff. Mirrors `AppState.reviewQueueConfidenceCutoff`
     /// (private there) so this view doesn't need a getter on AppState. If you
     /// change one, change the other — both feed the sidebar badge and the
@@ -88,9 +93,18 @@ struct ReviewQueueView: View {
             }
             // Mid-edit? Keep the user's slider state and let them finish.
             if editingDiameter != nil { return }
+            // A correction from a different surface invalidates our undo target.
+            lastAction = nil
             rebuild(preservingCursor: true)
         }
         .onKeyPress(.escape) { state.view = .home; return .handled }
+        // Cmd+Z — reverse the last Reject/Keep so a mistaken keystroke isn't
+        // permanent. No-op when there's nothing to undo.
+        .onKeyPress(keys: [.init("z")]) { press in
+            guard press.modifiers.contains(.command), lastAction != nil else { return .ignored }
+            undoLastAction()
+            return .handled
+        }
         // → Next without action
         .onKeyPress(.rightArrow) {
             guard cursor < queue.count else { return .ignored }
@@ -157,6 +171,22 @@ struct ReviewQueueView: View {
             actionRow
                 .frame(maxWidth: 560)
 
+            // Undo affordance — visible right after a Reject/Keep so a mistaken
+            // action is recoverable without knowing the Cmd+Z shortcut.
+            if lastAction != nil {
+                Button(action: undoLastAction) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(lastAction?.action == .reject ? "Undo reject (⌘Z)" : "Undo keep (⌘Z)")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundStyle(Tokens.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+            }
+
             // Always-visible escape hatch — user should never feel trapped in the queue
             Button {
                 state.view = .home
@@ -213,7 +243,21 @@ struct ReviewQueueView: View {
         }
     }
 
-    private enum Action { case reject, keep }
+    private enum Action: Equatable { case reject, keep }
+
+    /// Snapshot of the last Reject/Keep sufficient to fully reverse it.
+    private struct UndoableAction {
+        let action: Action
+        let correction: CorrectionRecord
+        let detection: DetectionRecord
+        /// The cell removed by a Reject (nil for Keep), retained so it can be
+        /// re-inserted on undo.
+        let removedCell: DetectedCell?
+        /// Its original index in `detection.cells`, so undo restores order.
+        let removedIndex: Int?
+        /// Cursor position before the action, restored on undo.
+        let cursorBefore: Int
+    }
 
     private func startEditing() {
         guard cursor < queue.count else { return }
@@ -275,18 +319,63 @@ struct ReviewQueueView: View {
         // `EditableOverlay → handleEdit`. Keep ("accept") deliberately leaves
         // `detection.cells` untouched — the user kept the detection; only
         // the audit trail records that it's been triaged.
+        var removedIndex: Int? = nil
         if action == .reject {
             var cells = item.detection.cells
             if let i = cells.firstIndex(where: { $0.id == item.cell.id }) {
                 cells.remove(at: i)
                 item.detection.cells = cells
                 try? state.repos.context.save()
+                removedIndex = i
             }
         }
+
+        // Retain everything needed to reverse this action so a fat-fingered
+        // Reject/Keep is recoverable (Cmd+Z / the "Undo" affordance) instead of
+        // silently and permanently dropping the cell.
+        lastAction = UndoableAction(action: action,
+                                    correction: c,
+                                    detection: item.detection,
+                                    removedCell: action == .reject ? item.cell : nil,
+                                    removedIndex: removedIndex,
+                                    cursorBefore: cursor)
 
         suppressNextRebuild = true
         NotificationCenter.default.post(name: Notification.Name("ccCorrectionsChanged"), object: nil)
         advance()
+    }
+
+    /// Reverse the most recent Reject/Keep: delete its audit-trail correction,
+    /// re-insert a rejected cell at its original index, and return the cursor to
+    /// where it was so the card reappears for re-triage.
+    private func undoLastAction() {
+        guard let undo = lastAction else { return }
+        // Remove the correction record so the cell is no longer marked triaged.
+        state.repos.context.delete(undo.correction)
+        // Restore a rejected cell into detection.cells at its original slot.
+        if undo.action == .reject, let cell = undo.removedCell {
+            var cells = undo.detection.cells
+            if !cells.contains(where: { $0.id == cell.id }) {
+                let insertAt = min(undo.removedIndex ?? cells.count, cells.count)
+                cells.insert(cell, at: insertAt)
+                undo.detection.cells = cells
+            }
+        }
+        try? state.repos.context.save()
+        lastAction = nil
+
+        // Rebuild so the restored cell reappears, then land the cursor on it so
+        // the user sees exactly what they just un-rejected (the queue is sorted
+        // by confidence, so its index isn't necessarily cursorBefore).
+        // suppressNextRebuild guards the notification round-trip.
+        suppressNextRebuild = true
+        NotificationCenter.default.post(name: Notification.Name("ccCorrectionsChanged"), object: nil)
+        rebuild(preservingCursor: false)
+        if let cell = undo.removedCell, let idx = queue.firstIndex(where: { $0.cell.id == cell.id }) {
+            cursor = idx
+        } else {
+            cursor = min(undo.cursorBefore, max(queue.count - 1, 0))
+        }
     }
 
     private func advance() {

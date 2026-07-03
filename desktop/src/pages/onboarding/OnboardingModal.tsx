@@ -38,12 +38,12 @@ const STEPS: Step[] = [
   {
     icon: "edit",
     title: "Correct detections, improve your model",
-    desc: "Add, remove, or merge cells directly on the image. Build a ground-truth set, get live Precision/Recall/F1 scores, and fine-tune a custom model on your own samples when built-ins fall short.",
+    desc: "Add, remove, or merge cells directly on the image. Build a ground-truth set and get live Precision/Recall/F1 scores against it. Fine-tuning a custom model on your own samples is coming soon.",
   },
   {
     icon: "histogram",
     title: "Bin by size, export for publication",
-    desc: "Set your own µm thresholds and cells are colored, counted, and charted by bin. Export an annotated PNG, a CSV, ImageJ ROIs, or a full PDF lab-journal report with a reproducibility stamp.",
+    desc: "Set your own µm thresholds and cells are colored, counted, and charted by bin. Export a cells CSV, a batch summary CSV, ImageJ ROIs, a provenance record, or a full PDF lab-journal report with a reproducibility stamp.",
   },
   {
     icon: "checkCircle",

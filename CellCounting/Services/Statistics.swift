@@ -13,7 +13,8 @@ import Foundation
 //   U2 = n1*n2 - U1
 //   U_stat = min(U1, U2)
 //   mu_U = n1*n2 / 2
-//   sigma_U = sqrt(n1*n2*(n1+n2+1)/12)   // no tie correction; negligible for our N
+//   sigma_U = sqrt( (n1*n2/12) * ((n+1) - sum(t^3 - t)/(n*(n-1))) )  // n=n1+n2,
+//             with the standard tie correction over tie-group sizes t
 //   z = (U_stat - mu_U + 0.5) / sigma_U   // continuity correction
 //   p_two = 2 * (1 - Phi(|z|))            // Phi via erf
 //   rB    = 1 - 2*U1 / (n1*n2)            // rank-biserial effect size
@@ -64,6 +65,8 @@ enum Statistics {
         pooled.sort { $0.v < $1.v }
 
         var ranks = [Double](repeating: 0, count: pooled.count)
+        // Accumulate sum(t^3 - t) over tie-group sizes t for the tie correction.
+        var tieCorrection: Double = 0
         var i = 0
         while i < pooled.count {
             var j = i
@@ -71,6 +74,8 @@ enum Statistics {
             // tied positions [i...j] share average rank (1-based)
             let avg = Double((i + 1) + (j + 1)) / 2.0
             for k in i...j { ranks[k] = avg }
+            let t = Double(j - i + 1)
+            if t > 1 { tieCorrection += t * t * t - t }
             i = j + 1
         }
 
@@ -85,7 +90,14 @@ enum Statistics {
 
         // 3) Normal approximation.
         let muU = n1n2 / 2.0
-        let sigmaU = sqrt(n1n2 * Double(n1 + n2 + 1) / 12.0)
+        // Variance with the standard tie correction:
+        //   σ_U = sqrt( (n1*n2/12) * ((n+1) - Σ(t³−t)/(n(n−1))) )
+        // where the sum runs over tie-group sizes t and n = n1+n2. Reduces to the
+        // untied sqrt(n1*n2*(n+1)/12) when there are no ties (tieCorrection == 0).
+        let n = n1 + n2
+        let dn = Double(n)
+        let tieTerm = dn > 1 ? tieCorrection / (dn * (dn - 1.0)) : 0
+        let sigmaU = sqrt((n1n2 / 12.0) * ((dn + 1.0) - tieTerm))
 
         // Continuity correction: pull |U_stat - mu| toward mu by 0.5.
         // Equivalent to (U_stat - mu + 0.5) since U_stat <= mu by construction.

@@ -39,7 +39,7 @@ import {
   type DetectionProgress,
 } from "../../kernel/transport";
 import type { AppStore } from "../../kernel/store/store";
-import type { ImageDTO, CalibrationDTO } from "../../kernel/types";
+import type { ImageDTO, BatchDTO, CalibrationDTO } from "../../kernel/types";
 
 // ---------------------------------------------------------------------------
 // Supported inputs (mirror ImageLoader.supported)
@@ -571,6 +571,104 @@ async function runDetection(
   await storeAccess.getState().refreshLibraryStats();
 
   return anyImported ? batch.id : null;
+}
+
+// ---------------------------------------------------------------------------
+// Re-run detection on a single, already-imported image
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-run detection on one image that already lives in a batch (Results "Re-run
+ * detection"). Reuses the same transport + ProcessingSlice plumbing as the
+ * import flow, but skips import/dedup entirely: the image row and its batch
+ * already exist, so we only re-detect and overwrite the saved detection.
+ *
+ * Params snapshot the batch's own calibration (px/µm) so a re-run reproduces the
+ * scale the batch was analysed under, falling back to the live global; every
+ * other analysis param comes from the live store (a re-run is exactly the way a
+ * user tries new parameters). Drives the Processing screen via `hooks.navigate`
+ * and the store's progress/stage/device/error setters, then returns to Results.
+ *
+ * Cancellation shares the module `activeController`, so the Processing screen's
+ * Cancel (`abortActiveImport`) aborts a re-run just like an import.
+ */
+export async function rerunDetection(
+  image: ImageDTO,
+  batch: BatchDTO,
+  hooks: ImportFlowHooks,
+  storeAccess: StoreAccess,
+): Promise<void> {
+  const port = getPort();
+  const transport = getTransport();
+  const store = storeAccess.getState();
+
+  // Enter the Processing view with a clean slate (mirrors runDetection).
+  store.resetProcessing();
+  store.setDetectionError(undefined);
+  hooks.navigate("processing");
+
+  // Reproduce the batch's calibration; other params come from the live store.
+  const params: DetectionParams = {
+    ...detectionParamsFromStore(store),
+    pxPerUm: batch.pxPerUm,
+  };
+  const detectorId = detectorIdFor(store.activeModelId);
+
+  const controller = new AbortController();
+  activeController = controller;
+
+  let cancelled = false;
+  let error: string | undefined;
+
+  const onProgress = (p: DetectionProgress) => {
+    const st = storeAccess.getState();
+    switch (p.kind) {
+      case "stage":
+        st.setStageLine(p.line);
+        break;
+      case "device":
+        st.setDevice(p.device);
+        break;
+      case "weights":
+        st.setStageLine(
+          `Downloading weights… ${Math.round(p.doneMB)}/${Math.round(p.totalMB)} MB`,
+        );
+        break;
+    }
+  };
+
+  try {
+    const result = await transport.detect(
+      image.storedPath,
+      params,
+      onProgress,
+      controller.signal,
+    );
+    await port.saveDetection(
+      image.id,
+      detectorId,
+      result.cells,
+      result.imageStats,
+    );
+    storeAccess.getState().setProgress(1);
+  } catch (err) {
+    if (isDetectionError(err) && err.detail.kind === "cancelled") {
+      cancelled = true;
+    } else {
+      error = isDetectionError(err) ? err.message : String(err);
+    }
+  }
+
+  activeController = null;
+
+  if (error) storeAccess.getState().setDetectionError(error);
+
+  // Return to Results unless the user cancelled before any result landed
+  // (Cancel already routes back to the prior view via history.back(), so only
+  // navigate here for the completed/errored path to avoid double navigation).
+  if (!cancelled) hooks.navigate("results");
+
+  await storeAccess.getState().refreshLibraryStats();
 }
 
 // ---------------------------------------------------------------------------

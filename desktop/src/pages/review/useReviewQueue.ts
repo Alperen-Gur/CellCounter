@@ -137,30 +137,35 @@ async function buildQueue(
     }
   }
 
-  // For each preferred image, load its detection and collect qualifying cells.
+  // Bulk-load the preferred images' detections in ONE round-trip (the triage
+  // cards need full detections — id/cells/detectorId — so we fetch detections,
+  // not counts, but via get_detections rather than an N+1 getDetection). Only
+  // request images that carry cells; the rest can't contribute a review card.
   const prefs = Array.from(preferredByFile.values());
-  const perImage = await Promise.all(
-    prefs.map(async (pref) => {
-      const detection = await port
-        .getDetection(pref.image.id)
-        .catch(() => null);
-      if (!detection) return [] as ReviewItem[];
-      const items: ReviewItem[] = [];
-      for (const cell of detection.cells) {
-        if (cell.confidence >= cutoff) continue;
-        if (sessionTriaged.has(cell.id)) continue;
-        items.push({
-          key: `${detection.id}:${cell.id}`,
-          cell,
-          image: pref.image,
-          detection,
-          pxPerUm: pref.pxPerUm,
-          batchName: pref.batchName,
-        });
-      }
-      return items;
-    }),
-  );
+  const withCells = prefs.filter((p) => p.image.cellCount > 0);
+  const detections = await port
+    .getDetections(withCells.map((p) => p.image.id))
+    .catch(() => [] as DetectionDTO[]);
+  const detByImage = new Map(detections.map((d) => [d.imageId, d]));
+
+  const perImage = prefs.map((pref) => {
+    const detection = detByImage.get(pref.image.id) ?? null;
+    if (!detection) return [] as ReviewItem[];
+    const items: ReviewItem[] = [];
+    for (const cell of detection.cells) {
+      if (cell.confidence >= cutoff) continue;
+      if (sessionTriaged.has(cell.id)) continue;
+      items.push({
+        key: `${detection.id}:${cell.id}`,
+        cell,
+        image: pref.image,
+        detection,
+        pxPerUm: pref.pxPerUm,
+        batchName: pref.batchName,
+      });
+    }
+    return items;
+  });
 
   const items = perImage.flat();
   items.sort((a, b) => a.cell.confidence - b.cell.confidence);

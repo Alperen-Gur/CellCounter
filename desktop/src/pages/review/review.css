@@ -308,6 +308,22 @@
 
 /* ---- action row ---- */
 
+/* Shown when a triage write fails: the cursor stays on this card so the user
+   can retry the same decision (see useReviewQueue's error field). */
+.cc-review__error {
+  display: flex;
+  align-items: center;
+  gap: var(--cc-space-2);
+  width: 100%;
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: 1px solid var(--cc-danger);
+  border-radius: var(--cc-radius-md);
+  background: color-mix(in srgb, var(--cc-danger) 8%, transparent);
+  color: var(--cc-danger);
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+}
+
 .cc-review__actions {
   display: flex;
   align-items: center;

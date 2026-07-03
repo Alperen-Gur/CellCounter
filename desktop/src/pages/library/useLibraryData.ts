@@ -8,8 +8,9 @@
  *     computed server-side from the whole-file hash stored at import. Per the
  *     feat-library-dedup boundary, hashing lives in the Rust importer
  *     (kernel-persistence) — we NEVER re-hash here, only surface the groups.
- *   - a per-image cell count + 5-bin size mini-distribution derived from each
- *     image's persisted detection (`getDetection`).
+ *   - a per-image cell count (from the denormalized `image.cellCount`) + a 5-bin
+ *     size mini-distribution derived from each image's persisted detection,
+ *     bulk-loaded in one round-trip via `getDetections` (no per-image N+1).
  *   - `disambiguatedNames` — images that share an original filename get
  *     `_2`, `_3`, … appended so every grid label is unique (Swift
  *     `disambiguatedNames()`).
@@ -141,34 +142,44 @@ export function useLibraryData(): LibraryData {
       setImages(all);
       setDuplicateGroups(groups);
 
-      // Per-image detection summary (count + mini-distribution). Best-effort:
-      // an image with no detection simply gets a zero/null entry.
+      // Per-image detection summary (count + mini-distribution). The cell COUNT
+      // comes from the denormalized `image.cellCount` (no per-image read); the
+      // mini-distribution needs per-cell diameters, so we bulk-load detections
+      // for images that have any cells in ONE round-trip (get_detections),
+      // instead of an N+1 getDetection per image.
       const stats = new Map<string, ImageStats>();
-      await Promise.all(
-        all.map(async (img) => {
-          const det = await port.getDetection(img.id).catch(() => null);
-          if (!det || det.cells.length === 0) {
-            stats.set(img.id, {
-              cellCount: 0,
-              hasDetection: det !== null,
-              distNorm: null,
-            });
-            return;
-          }
-          const bins = new Array<number>(MINI_DIST_BINS).fill(0);
-          for (const c of det.cells) {
-            bins[miniBinIndex(c.diameterUm, globalThresholds)] += 1;
-          }
-          const max = Math.max(...bins);
-          const distNorm =
-            max > 0 ? bins.map((v) => v / max) : bins.map(() => 0);
+      const withCells = all.filter((img) => img.cellCount > 0);
+      const detections = await port
+        .getDetections(withCells.map((img) => img.id))
+        .catch(() => []);
+      if (req !== reqRef.current) return;
+      const detByImage = new Map(detections.map((d) => [d.imageId, d]));
+
+      for (const img of all) {
+        const det = detByImage.get(img.id) ?? null;
+        if (!det || det.cells.length === 0) {
           stats.set(img.id, {
-            cellCount: det.cells.length,
-            hasDetection: true,
-            distNorm,
+            // A positive cellCount with no returned detection still means a
+            // detection exists; only 0 means "none ran".
+            cellCount: img.cellCount,
+            hasDetection: img.cellCount > 0 || det !== null,
+            distNorm: null,
           });
-        }),
-      );
+          continue;
+        }
+        const bins = new Array<number>(MINI_DIST_BINS).fill(0);
+        for (const c of det.cells) {
+          bins[miniBinIndex(c.diameterUm, globalThresholds)] += 1;
+        }
+        const max = Math.max(...bins);
+        const distNorm =
+          max > 0 ? bins.map((v) => v / max) : bins.map(() => 0);
+        stats.set(img.id, {
+          cellCount: det.cells.length,
+          hasDetection: true,
+          distNorm,
+        });
+      }
       if (req !== reqRef.current) return;
       setStatsById(stats);
     } finally {

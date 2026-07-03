@@ -273,6 +273,11 @@ struct YOLODownloader: ModelDownloader {
 
                 do {
                     try proc.run()
+                    // Register so a quit mid-install SIGTERMs the pip child
+                    // instead of orphaning a multi-minute download.
+                    Task { @MainActor in
+                        ChildProcessTracker.shared.register(proc, kind: .install)
+                    }
                 } catch {
                     outPipe.fileHandleForReading.readabilityHandler = nil
                     errPipe.fileHandleForReading.readabilityHandler = nil
@@ -285,30 +290,27 @@ struct YOLODownloader: ModelDownloader {
     }
 
     /// Spawns `python -c "from ultralytics import YOLO; YOLO('<path>').info()"`.
+    ///
+    /// Routed through `SidecarProcessRunner.run`, which drains both pipes
+    /// CONCURRENTLY. `.info()` prints a multi-line model summary to stdout; a
+    /// bare `Pipe()` + `waitUntilExit()` (the previous implementation) would
+    /// deadlock the install once that output exceeds the OS pipe buffer. The
+    /// runner also registers the child with `ChildProcessTracker` so it is
+    /// SIGTERM'd on app quit.
     private static func verifyCheckpoint(pythonURL: URL, weightsPath: URL) async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            Task.detached(priority: .userInitiated) {
-                let proc = Process()
-                proc.executableURL = pythonURL
-                // Single-quote-safe: the weights path comes from FileStore (no user input),
-                // but escape backslashes/quotes defensively anyway.
-                let escaped = weightsPath.path
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "'", with: "\\'")
-                proc.arguments = [
-                    "-c",
-                    "from ultralytics import YOLO; YOLO('\(escaped)').info()"
-                ]
-                proc.standardOutput = Pipe()
-                proc.standardError = Pipe()
-                do {
-                    try proc.run()
-                    proc.waitUntilExit()
-                    continuation.resume(returning: proc.terminationStatus == 0)
-                } catch {
-                    continuation.resume(returning: false)
-                }
-            }
+        // Single-quote-safe: the weights path comes from FileStore (no user input),
+        // but escape backslashes/quotes defensively anyway.
+        let escaped = weightsPath.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        do {
+            let outcome = try await SidecarProcessRunner.run(
+                pythonURL: pythonURL,
+                args: ["-c", "from ultralytics import YOLO; YOLO('\(escaped)').info()"],
+                trackerKind: .install)
+            return outcome.exitCode == 0
+        } catch {
+            return false
         }
     }
 }

@@ -358,17 +358,39 @@ struct AnnotatedJpeg {
 /// JPEG. Returns `None` when the image can't be decoded (the PDF then omits the
 /// image panel rather than failing the whole report).
 fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJpeg> {
+    // Longest-side cap for the embedded bitmap. The image renders into an ~590×1180
+    // pt box at 144 dpi, so ~1600 px comfortably exceeds print resolution while
+    // avoiding embedding a full 17 MB / multi-thousand-pixel TIFF verbatim (the
+    // Swift path likewise downscales before compositing into the report). All cell
+    // coordinates are in SOURCE pixels, so we scale them by the same factor.
+    const MAX_DIM: u32 = 1600;
+
     let img = image::open(&ctx.stored_path).ok()?;
-    let (w, h) = img.dimensions();
-    let mut rgb = img.to_rgb8();
+    let (src_w, src_h) = img.dimensions();
+    let longest = src_w.max(src_h).max(1);
+
+    let (mut rgb, scale) = if longest > MAX_DIM {
+        let s = MAX_DIM as f64 / longest as f64;
+        let tw = ((src_w as f64 * s).round() as u32).max(1);
+        let th = ((src_h as f64 * s).round() as u32).max(1);
+        // `resize` (Lanczos3) gives a clean downscale; exact scale is derived from
+        // the realized dimensions so ellipse coords line up with the pixels.
+        let resized = img.resize_exact(tw, th, image::imageops::FilterType::Lanczos3);
+        let sx = tw as f64 / src_w as f64;
+        (resized.to_rgb8(), sx)
+    } else {
+        (img.to_rgb8(), 1.0)
+    };
+    let (w, h) = rgb.dimensions();
 
     // Route through `visible_cells` so the on-screen/overlay visibility rule
-    // (confidence >= cutoff) lives in exactly one place.
+    // (confidence >= cutoff) lives in exactly one place. Cell centers/radii are in
+    // source pixels; multiply by `scale` to land on the (possibly downscaled) buffer.
     for cell in ctx.visible_cells(cutoff) {
         let idx = bin_index(cell.diameter_um, &ctx.thresholds);
         let (cr, cg, cb) = bin_rgb8(idx);
-        let r = (cell.diameter_px / 2.0).max(1.0);
-        draw_ellipse(&mut rgb, cell.cx, cell.cy, r, (cr, cg, cb));
+        let r = (cell.diameter_px / 2.0 * scale).max(1.0);
+        draw_ellipse(&mut rgb, cell.cx * scale, cell.cy * scale, r, (cr, cg, cb));
     }
 
     // Encode JPEG. `DynamicImage::write_to(.., ImageFormat::Jpeg)` is the
@@ -531,8 +553,11 @@ impl Content {
     }
 }
 
-/// Escape a string for a PDF literal `( … )`. Non-ASCII is dropped to stay
-/// inside the WinAnsi/Standard encoding of the base-14 fonts.
+/// Escape a string for a PDF literal `( … )`. The base-14 fonts are WinAnsi, so
+/// arbitrary Unicode can't be rendered directly; rather than silently DROPPING
+/// non-ASCII (which would make a file/model name like `résumé.tif` or `Müller`
+/// vanish or turn into gibberish in the report header), we TRANSLITERATE to the
+/// closest ASCII so the name still survives and stays recognizable.
 fn pdf_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -543,15 +568,70 @@ fn pdf_escape(s: &str) -> String {
             '\n' => out.push(' '),
             '\r' => {}
             c if (c as u32) < 128 => out.push(c),
-            // Map the common µ to "u" so "µm" reads as "um" rather than vanishing.
-            'µ' => out.push('u'),
+            // Common typographic punctuation.
             '±' => out.push('~'),
             '–' | '—' => out.push('-'),
-            '·' => out.push('-'),
-            _ => {} // drop other non-ASCII
+            '·' | '•' => out.push('-'),
+            '“' | '”' | '„' | '«' | '»' => out.push('"'),
+            '‘' | '’' | '‚' => out.push('\''),
+            '…' => out.push_str("..."),
+            '×' => out.push('x'),
+            '÷' => out.push('/'),
+            '°' => out.push_str("deg"),
+            // Micro sign / Greek mu → "u" so "µm"/"μm" read as "um".
+            'µ' | 'μ' => out.push('u'),
+            // Best-effort Latin-1 / common accented transliteration so names
+            // survive rather than disappear.
+            other => {
+                let t = translit_latin(other);
+                if t.is_empty() {
+                    out.push('?');
+                } else {
+                    out.push_str(t);
+                }
+            }
         }
     }
     out
+}
+
+/// Map a non-ASCII char to a best-effort ASCII transliteration. Returns an empty
+/// string when there's no sensible mapping (the caller substitutes `?` so the
+/// character is never silently dropped). Covers the common accented Latin letters
+/// (and German ß) that show up in researcher file/model names.
+fn translit_latin(c: char) -> &'static str {
+    match c {
+        'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' => "A",
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'Æ' => "AE",
+        'æ' => "ae",
+        'Ç' | 'Ć' | 'Č' | 'Ĉ' => "C",
+        'ç' | 'ć' | 'č' | 'ĉ' => "c",
+        'Ð' | 'Đ' => "D",
+        'ð' | 'đ' => "d",
+        'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => "E",
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => "e",
+        'Ì' | 'Í' | 'Î' | 'Ï' | 'Ī' | 'Į' => "I",
+        'ì' | 'í' | 'î' | 'ï' | 'ī' | 'į' | 'ı' => "i",
+        'Ñ' | 'Ń' | 'Ň' => "N",
+        'ñ' | 'ń' | 'ň' => "n",
+        'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ő' => "O",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ő' => "o",
+        'Œ' => "OE",
+        'œ' => "oe",
+        'Ś' | 'Š' | 'Ş' => "S",
+        'ś' | 'š' | 'ş' => "s",
+        'ß' => "ss",
+        'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ū' | 'Ů' | 'Ű' | 'Ų' => "U",
+        'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ů' | 'ű' | 'ų' => "u",
+        'Ý' | 'Ÿ' => "Y",
+        'ý' | 'ÿ' => "y",
+        'Ź' | 'Ż' | 'Ž' => "Z",
+        'ź' | 'ż' | 'ž' => "z",
+        'Þ' => "TH",
+        'þ' => "th",
+        _ => "",
+    }
 }
 
 /// Colors (mirror the Swift PDFReportPage palette).

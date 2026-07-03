@@ -248,6 +248,101 @@
   font-size: var(--cc-text-xs);
   color: var(--cc-text-secondary);
 }
+.rv-detbanner__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 6px 12px;
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.rv-detbanner__action:hover {
+  background: var(--cc-bg-hover);
+  border-color: var(--cc-border-focus);
+}
+
+/* ---- export button (toolbar) ---- */
+
+.rv-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 6px 12px;
+  font-size: var(--cc-text-sm);
+  font-weight: 550;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.rv-export-btn:hover {
+  background: var(--cc-bg-hover);
+  border-color: var(--cc-border-focus);
+}
+
+/* ---- export sheet (per-image export) ---- */
+
+.rv-export-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh var(--cc-space-4) var(--cc-space-4);
+  background: rgba(15, 18, 22, 0.32);
+}
+.rv-export-sheet {
+  display: flex;
+  flex-direction: column;
+  max-height: 84vh;
+  overflow: auto;
+  background: var(--cc-bg-elevated);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-lg);
+  box-shadow: var(--cc-shadow-2);
+}
+.rv-export-sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cc-space-3);
+  padding: var(--cc-space-3) var(--cc-space-4);
+  border-bottom: 1px solid var(--cc-border);
+}
+.rv-export-sheet__title {
+  font-family: var(--cc-font-display);
+  font-size: var(--cc-text-md);
+  font-weight: 650;
+  color: var(--cc-text);
+}
+.rv-export-sheet__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  cursor: pointer;
+}
+.rv-export-sheet__close:hover {
+  background: var(--cc-bg-hover);
+  color: var(--cc-text);
+}
 
 /* ---- directory nav strip ---- */
 

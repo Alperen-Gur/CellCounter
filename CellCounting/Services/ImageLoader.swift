@@ -52,12 +52,18 @@ enum ImageLoader {
     /// Imports a user-dropped file: copies into FileStore.imagesDir, decodes, computes SHA-256,
     /// and returns an ImportResult (record + image + hash + reserved EXIF slot for Lane C).
     /// Must be called off the MainActor (it does file I/O).
-    nonisolated static func importFile(_ url: URL) throws -> ImportResult {
+    ///
+    /// `precomputedHash`: pass the SHA-256 already computed by the dedup pass in
+    /// `AppState.importAndAnalyze` so we don't re-read and re-hash the whole file
+    /// a second time. Nil (the default) recomputes it here, preserving the old
+    /// behavior for any caller that doesn't have the hash on hand.
+    nonisolated static func importFile(_ url: URL, precomputedHash: String? = nil) throws -> ImportResult {
         let loaded = try load(url)
         let fileName = url.lastPathComponent
 
         // Compute SHA-256 of the raw file bytes (full file — typical 17 MB TIFFs hash in <50 ms).
-        let fileHash = sha256Hex(of: url)
+        // Reuse the dedup-pass hash when the caller threads it through.
+        let fileHash = precomputedHash ?? sha256Hex(of: url)
 
         let record = ImageRecord(fileName: fileName,
                                   originalPath: url.path,

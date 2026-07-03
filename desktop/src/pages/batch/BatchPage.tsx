@@ -228,9 +228,11 @@ export default function BatchPage() {
               </button>
             </div>
             {/* The export feature (feat-export) owns the actual per-image
-                summary CSV flow + save location. We mount its entry point here;
-                until it lands this shows the export stub. */}
-            <ExportPanel />
+                summary CSV flow + save location. Pass the batch id so its
+                summary export is unambiguous and its per-image formats expose an
+                explicit image picker instead of silently targeting a stale
+                current index. */}
+            <ExportPanel batchId={currentBatchId ?? undefined} showImagePicker />
           </div>
         </div>
       ) : null}

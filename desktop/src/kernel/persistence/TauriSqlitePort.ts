@@ -120,6 +120,10 @@ export class TauriSqlitePort implements PersistencePort {
     return invoke<DetectionDTO | null>("get_detection", { imageId });
   }
 
+  getDetections(imageIds: string[]): Promise<DetectionDTO[]> {
+    return invoke<DetectionDTO[]>("get_detections", { imageIds });
+  }
+
   recordCorrection(
     detectionId: string,
     c: { kind: string; cellId: string; cx: number; cy: number; diameter: number },

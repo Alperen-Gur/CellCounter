@@ -12,7 +12,7 @@
  *
  * Every count-driven panel reads the SAME `cells` list (confidence + ROI
  * filtered) the parent computes, exactly like the Swift `cells` property. All
- * math comes from the kernel: `binsFromThresholds` / `binIndex` / `sizeClass`
+ * math comes from the kernel: `binsFromThresholds` / `binIndex`
  * (calibration), `evaluateF1` (stats). Writes (confidence override, notes, ROIs,
  * annotations reset) go through `PersistencePort` + the store.
  *
@@ -275,6 +275,15 @@ function ConfidencePanel({
   // Optimistic slider value so dragging is smooth regardless of the persist
   // round-trip; re-seeded whenever the effective cutoff / image changes.
   const [local, setLocal] = useState(cutoff);
+  // Trailing-debounce timer for the persist + reload (the drag fires onChange
+  // for every intermediate value; without coalescing each tick would await a
+  // SQLite write AND a full detection re-read — mirrors NotesPanel's saveTimer).
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The value + image awaiting a debounced persist, so unmount / image-switch
+  // can flush it instead of discarding a settled drag.
+  const pendingRef = useRef<{ imageId: string; value: number | null } | null>(
+    null,
+  );
   useEffect(() => {
     setLocal(cutoff);
   }, [cutoff, image?.id]);
@@ -282,9 +291,12 @@ function ConfidencePanel({
   const hasOverride =
     image?.confidenceOverride !== undefined && image?.confidenceOverride !== null;
 
+  // Persist a value for a SPECIFIC image id (captured when the write was
+  // scheduled) so a flush after an image switch targets the right image, not
+  // whatever image the component now shows.
   const commitOverride = useCallback(
-    async (value: number | null) => {
-      if (!image) {
+    async (imageId: string | null, value: number | null) => {
+      if (!imageId) {
         // No image open → the slider drives the GLOBAL cutoff (store setter).
         if (value !== null) setGlobalConfidence(value);
         return;
@@ -294,16 +306,73 @@ function ConfidencePanel({
       // the port uses (command mirrors AppState.setConfidenceOverride).
       // Recorded as a kernel gap; the call is swallowed if the backend command
       // isn't wired yet, and the optimistic `local` keeps the UI consistent.
-      await setImageConfidenceOverride(image.id, value);
+      await setImageConfidenceOverride(imageId, value);
       await onImageChanged();
     },
-    [image, onImageChanged, setGlobalConfidence],
+    [onImageChanged, setGlobalConfidence],
   );
+
+  // Flush any pending debounced persist immediately (used on unmount / image
+  // switch and by discrete clicks), targeting the image it was scheduled for.
+  const flushPending = useCallback(() => {
+    if (commitTimer.current) {
+      clearTimeout(commitTimer.current);
+      commitTimer.current = null;
+    }
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    if (pending) void commitOverride(pending.imageId, pending.value);
+  }, [commitOverride]);
+
+  // Trailing-debounced persist: the optimistic `local` gives immediate visual
+  // feedback while dragging; the SQLite write + reloadImageData round-trip runs
+  // once, ~300ms after the drag settles, instead of on every onChange tick.
+  const scheduleCommit = useCallback(
+    (value: number | null) => {
+      // Capture the current image so a flush after switching writes correctly.
+      const imgId = image?.id ?? "";
+      pendingRef.current = { imageId: image ? imgId : "", value };
+      // For the no-image global path we still want live store updates, so
+      // apply the global setter optimistically on every tick.
+      if (!image && value !== null) setGlobalConfidence(value);
+      if (commitTimer.current) clearTimeout(commitTimer.current);
+      commitTimer.current = setTimeout(() => {
+        commitTimer.current = null;
+        const pending = pendingRef.current;
+        pendingRef.current = null;
+        if (pending) void commitOverride(pending.imageId || null, pending.value);
+      }, 300);
+    },
+    [image, commitOverride, setGlobalConfidence],
+  );
+
+  // Flush a pending persist on unmount / image switch so the last dragged value
+  // is never dropped inside the debounce window.
+  const flushPendingRef = useRef(flushPending);
+  flushPendingRef.current = flushPending;
+  useEffect(() => {
+    return () => {
+      flushPendingRef.current();
+    };
+  }, [image?.id]);
 
   const onSlide = (value: number) => {
     setLocal(value);
-    void commitOverride(value);
+    scheduleCommit(value);
   };
+
+  // "Reset to global" is a discrete click, not a hot drag — persist at once.
+  const commitImmediate = useCallback(
+    (value: number | null) => {
+      if (commitTimer.current) {
+        clearTimeout(commitTimer.current);
+        commitTimer.current = null;
+      }
+      pendingRef.current = null;
+      void commitOverride(image?.id ?? null, value);
+    },
+    [commitOverride, image],
+  );
 
   return (
     <section className="rv-panel rv-confidence">
@@ -343,7 +412,7 @@ function ConfidencePanel({
               <button
                 type="button"
                 className="rv-linkbtn"
-                onClick={() => void commitOverride(null)}
+                onClick={() => commitImmediate(null)}
               >
                 Reset to global
               </button>
@@ -523,17 +592,9 @@ function NotesPanel({
   const [draft, setDraft] = useState(image.notes ?? "");
   const draftImageId = useRef(image.id);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Reload the draft when the image changes; flush any pending save first.
-  useEffect(() => {
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-    }
-    draftImageId.current = image.id;
-    setDraft(image.notes ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [image.id]);
+  // The text currently awaiting a debounced save, so a flush on image-switch /
+  // unmount persists the final draft instead of discarding it.
+  const pendingText = useRef<string | null>(null);
 
   const commit = useCallback(
     async (text: string, imageId: string) => {
@@ -544,21 +605,50 @@ function NotesPanel({
     [onSaved],
   );
 
+  // Flush any pending save synchronously (fire-and-forget the async write) for
+  // the image it was queued against, then clear the timer + pending buffer.
+  const flush = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (pendingText.current !== null) {
+      const text = pendingText.current;
+      pendingText.current = null;
+      void commit(text, draftImageId.current);
+    }
+  }, [commit]);
+
+  // Keep a stable ref to the latest `flush` so the switch/unmount effects don't
+  // re-run (and prematurely flush) every time `onSaved` identity changes.
+  const flushRef = useRef(flush);
+  flushRef.current = flush;
+
+  // Reload the draft when the image changes; FLUSH any pending save first so a
+  // note typed then immediately switched-away-from is persisted, not dropped.
+  useEffect(() => {
+    flushRef.current();
+    draftImageId.current = image.id;
+    setDraft(image.notes ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image.id]);
+
   const onChange = (text: string) => {
     setDraft(text);
+    pendingText.current = text;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const id = draftImageId.current;
     saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      pendingText.current = null;
       void commit(text, id);
     }, 500);
   };
 
-  // Flush on unmount.
+  // Flush on unmount so a note typed just before navigating away is persisted.
   useEffect(() => {
     return () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current);
-      }
+      flushRef.current();
     };
   }, []);
 

@@ -10,7 +10,17 @@ private struct BatchMockRow {
     let count: Int?
     let meanDiameter: Double?
     let distNorm: [Double]?
+    /// Raw per-bin counts (5 bins) for this image, or nil if undetected.
+    /// Aggregated across the batch to drive the summary Distribution card.
+    let distCounts: [Double]?
     let seed: Int
+    /// Real per-image metadata for the thumbnail + subline (never fabricated).
+    let imageId: UUID
+    let thumbURL: URL
+    let widthPx: Int
+    let heightPx: Int
+    /// On-disk size of our stored copy, in bytes. nil when the file can't be stat'd.
+    let fileSizeBytes: Int64?
 }
 
 private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [BatchMockRow] {
@@ -25,7 +35,7 @@ private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [Bat
                 guard done, !cells.isEmpty else { return nil }
                 return cells.reduce(0) { $0 + $1.diameter } / Double(cells.count)
             }()
-            let distNorm: [Double]? = {
+            let distCounts: [Double]? = {
                 guard done, !cells.isEmpty else { return nil }
                 var bins = Array(repeating: 0.0, count: max(thresholds.count + 1, 5))
                 for c in cells {
@@ -33,15 +43,27 @@ private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [Bat
                     bins[idx] += 1
                 }
                 while bins.count < 5 { bins.append(0) }
-                let m = bins.prefix(5).max() ?? 1
-                return Array(bins.prefix(5)).map { m > 0 ? $0 / m * 100 : 0 }
+                return Array(bins.prefix(5))
             }()
+            let distNorm: [Double]? = distCounts.map { bins in
+                let m = bins.max() ?? 1
+                return bins.map { m > 0 ? $0 / m * 100 : 0 }
+            }
+            let fileSizeBytes: Int64? = (try? img.storedURL.resourceValues(forKeys: [.fileSizeKey]))
+                .flatMap { $0.fileSize }
+                .map(Int64.init)
             return BatchMockRow(name: img.fileName,
                                 status: done ? .done : .queued,
                                 count: count,
                                 meanDiameter: meanDiam,
                                 distNorm: distNorm,
-                                seed: i * 7 + 3)
+                                distCounts: distCounts,
+                                seed: i * 7 + 3,
+                                imageId: img.id,
+                                thumbURL: img.thumbURL,
+                                widthPx: img.widthPx,
+                                heightPx: img.heightPx,
+                                fileSizeBytes: fileSizeBytes)
         }
 }
 
@@ -56,11 +78,17 @@ struct BatchView: View {
     /// forces `rows` to recompute.
     @State private var refreshKey: Int = 0
 
-    private var rows: [BatchMockRow] {
-        _ = refreshKey // ensure read participates in body's dependency graph
-        guard let batch = state.currentBatch else { return [] }
-        return buildRealRows(for: batch, thresholds: batch.thresholds)
+    /// Materialized once per change (batch switch / refreshKey bump) rather than
+    /// on every SwiftUI body pass. `buildRealRows` is O(images × cells); the old
+    /// computed `rows` re-ran it for every derived property (doneRows, totals,
+    /// sigmas, …), rescanning the whole detection 5-7× per invalidation.
+    @State private var rows: [BatchMockRow] = []
+
+    private func recomputeRows() {
+        guard let batch = state.currentBatch else { rows = []; return }
+        rows = buildRealRows(for: batch, thresholds: batch.thresholds)
     }
+
     private var doneRows: [BatchMockRow] { rows.filter { $0.status == .done } }
     private var totalCells: Int { doneRows.compactMap(\.count).reduce(0, +) }
     private var meanCells: Int {
@@ -87,6 +115,19 @@ struct BatchView: View {
         return sqrt(vals.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(vals.count))
     }
 
+    /// Real per-bin cell totals summed across every detected image in the batch,
+    /// using the same 5-bin `BinMath` split the per-row bars use. nil when no
+    /// detected image has any cells, so the card can show a neutral placeholder.
+    private var distTotals: [Double]? {
+        let counts = doneRows.compactMap(\.distCounts)
+        guard !counts.isEmpty else { return nil }
+        var totals = Array(repeating: 0.0, count: 5)
+        for c in counts {
+            for i in 0..<min(5, c.count) { totals[i] += c[i] }
+        }
+        return totals.reduce(0, +) > 0 ? totals : nil
+    }
+
     var body: some View {
         if state.currentBatch == nil {
             EmptyStateView(
@@ -109,7 +150,8 @@ struct BatchView: View {
                         doneCount: doneRows.count,
                         total: rows.count,
                         sigmaCells: sigmaCells,
-                        sigmaDiam: sigmaDiam
+                        sigmaDiam: sigmaDiam,
+                        distTotals: distTotals
                     )
                     .padding(.bottom, 20)
 
@@ -133,12 +175,22 @@ struct BatchView: View {
                         .allowsHitTesting(false)
                 }
             )
+            .overlay(alignment: .bottom) {
+                if let toast = state.exportToast {
+                    ExportFeedbackToast(message: toast.message, isError: toast.isError)
+                        .padding(.bottom, 24)
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
                 refreshKey &+= 1
+                recomputeRows()
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccLibraryChanged"))) { _ in
                 refreshKey &+= 1
+                recomputeRows()
             }
+            .onAppear { recomputeRows() }
+            .onChange(of: state.currentBatchId) { _, _ in recomputeRows() }
         }
     }
 
@@ -171,13 +223,18 @@ struct BatchView: View {
         if let utype = UTType(filenameExtension: "csv") { panel.allowedContentTypes = [utype] }
         panel.begin { resp in
             guard resp == .OK, let url = panel.url else { return }
-            try? ExportService.writePerImageSummaryCSV(
-                batch: batch,
-                thresholds: batch.thresholds,
-                pxPerUm: state.pxPerUm,
-                separator: csvSep.isEmpty ? "," : csvSep,
-                to: url
-            )
+            do {
+                try ExportService.writePerImageSummaryCSV(
+                    batch: batch,
+                    thresholds: batch.thresholds,
+                    pxPerUm: state.pxPerUm,
+                    separator: csvSep.isEmpty ? "," : csvSep,
+                    to: url
+                )
+                state.flashExport("Saved \(url.lastPathComponent)", isError: false)
+            } catch {
+                state.flashExport("Export failed: \(error.localizedDescription)", isError: true)
+            }
         }
     }
 }
@@ -378,6 +435,7 @@ private struct StatsRow: View {
     let total: Int
     let sigmaCells: Double?
     let sigmaDiam: Double?
+    let distTotals: [Double]?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -392,7 +450,7 @@ private struct StatsRow: View {
                 sub: sigmaCells.map { String(format: "σ = %.0f cells", $0) }
             )
             MeanDiamCard(meanDiam: meanDiam, sigmaDiam: sigmaDiam)
-            DistributionCard()
+            DistributionCard(totals: distTotals)
         }
     }
 }
@@ -462,7 +520,19 @@ private struct MeanDiamCard: View {
 }
 
 private struct DistributionCard: View {
-    private let heights: [CGFloat] = [18, 34, 56, 42, 22]
+    /// Real per-bin cell totals across the batch (5 bins), or nil when nothing
+    /// has been detected yet — in which case we show a neutral placeholder
+    /// rather than a fabricated shape.
+    let totals: [Double]?
+
+    /// Bar heights (0–32pt) normalised to the largest bin so the tallest bar
+    /// always fills the card.
+    private var heights: [CGFloat] {
+        guard let totals, let maxV = totals.max(), maxV > 0 else {
+            return Array(repeating: 0, count: 5)
+        }
+        return totals.map { CGFloat($0 / maxV) * 32 }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -470,16 +540,27 @@ private struct DistributionCard: View {
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.04 * 11)
                 .foregroundStyle(Tokens.textTertiary)
-            HStack(alignment: .bottom, spacing: 3) {
-                ForEach(0..<5, id: \.self) { i in
-                    Tokens.binColor(i)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 32 * heights[i] / 100)
-                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+            if totals == nil {
+                HStack {
+                    Text("—")
+                        .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Tokens.textTertiary)
+                    Spacer()
                 }
+                .frame(height: 32)
+                .padding(.top, 4)
+            } else {
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(0..<5, id: \.self) { i in
+                        Tokens.binColor(i)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: max(0, heights[i]))
+                            .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                    }
+                }
+                .frame(height: 32)
+                .padding(.top, 4)
             }
-            .frame(height: 32)
-            .padding(.top, 4)
             Text("across all bins")
                 .font(.system(size: 11))
                 .foregroundStyle(Tokens.textTertiary)
@@ -500,7 +581,11 @@ private struct BatchTable: View {
     let onTap: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        // LazyVStack so only visible rows are constructed — a batch of several
+        // hundred images no longer materializes every TableRow (with its badges,
+        // mini-bars, hover state) up front. The whole table already lives inside
+        // the parent ScrollView, so lazy loading works as intended.
+        LazyVStack(spacing: 0) {
             TableHead()
             ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
                 TableRow(row: row, isFirst: i == 0, onTap: onTap)
@@ -542,6 +627,7 @@ private struct TableRow: View {
     let isFirst: Bool
     let onTap: () -> Void
     @State private var hovered = false
+    @State private var thumb: NSImage? = nil
 
     var body: some View {
         Button {
@@ -551,17 +637,27 @@ private struct TableRow: View {
                 // Status dot
                 HStack { StatusDot(status: row.status) }
 
-                // Thumbnail
-                ThumbDots(seed: row.seed)
-                    .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                // Thumbnail — real per-image thumbnail, falling back to the
+                // stylized ThumbDots only while it loads or if it's missing.
+                Group {
+                    if let thumb {
+                        Image(nsImage: thumb)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        ThumbDots(seed: row.seed)
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .onAppear { loadThumb() }
 
                 // Filename
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.name)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Tokens.text)
-                    Text(fileSubline(for: row.status))
+                    Text(fileSubline(for: row))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Tokens.textTertiary)
                 }
@@ -625,12 +721,32 @@ private struct TableRow: View {
         }
     }
 
-    private func fileSubline(for status: BatchRowStatus) -> String {
-        switch status {
-        case .done:    return "2048 × 2048 · 16 MB"
-        case .running: return "2048 × 2048 · processing…"
-        case .queued:  return "2048 × 2048 · queued"
-        case .error:   return "2048 × 2048 · error"
+    private func fileSubline(for row: BatchMockRow) -> String {
+        // Real pixel dimensions (from the ImageRecord); "—" when unknown so we
+        // never invent a size. Real on-disk file size when we could stat it.
+        let dims: String = (row.widthPx > 0 && row.heightPx > 0)
+            ? "\(row.widthPx) × \(row.heightPx)"
+            : "—"
+        let size: String? = row.fileSizeBytes.map {
+            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+        }
+        let trailing: String
+        switch row.status {
+        case .done:    trailing = size ?? ""
+        case .running: trailing = "processing…"
+        case .queued:  trailing = "queued"
+        case .error:   trailing = "error"
+        }
+        return trailing.isEmpty ? dims : "\(dims) · \(trailing)"
+    }
+
+    private func loadThumb() {
+        // Capture the URL on the MainActor before hopping off the actor —
+        // matches the RecentRow/ImageThumbCell thumbnail-loading pattern.
+        let url = row.thumbURL
+        Task.detached(priority: .utility) {
+            let img = NSImage(contentsOf: url)
+            await MainActor.run { thumb = img }
         }
     }
 }

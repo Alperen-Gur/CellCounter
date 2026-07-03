@@ -49,3 +49,73 @@ struct SidecarError: Decodable {
     let error: String
     let hint: String?
 }
+
+extension SidecarPayload {
+    /// Single source of truth for turning a sidecar's stdout into a
+    /// `DetectionResult`. Every detection family (Cellpose, CellposeSAM, SAM,
+    /// StarDist, YOLO) funnels through this so the structured-error check, the
+    /// payload decode, and the per-cell field mapping (including every `?? …`
+    /// default) live in exactly one place and can't drift between detectors.
+    ///
+    /// - Parameters:
+    ///   - stdout: the sidecar's raw stdout bytes.
+    ///   - exitCode: the sidecar's exit code, used only for the parse-failure
+    ///     error message.
+    /// - Throws: `DetectionError.sidecarFailed` on a structured `SidecarError`
+    ///   payload or an unparseable payload.
+    static func decodeResult(stdout: Data, exitCode: Int32) throws -> DetectionResult {
+        if let errPayload = try? JSONDecoder().decode(SidecarError.self, from: stdout) {
+            let combined = "\(errPayload.error)\(errPayload.hint.map { ": \($0)" } ?? "")"
+            throw DetectionError.sidecarFailed(exitCode: 0, stderr: combined)
+        }
+
+        let decoded: SidecarPayload
+        do {
+            decoded = try JSONDecoder().decode(SidecarPayload.self, from: stdout)
+        } catch {
+            let stdoutText = String(data: stdout, encoding: .utf8) ?? ""
+            throw DetectionError.sidecarFailed(exitCode: exitCode,
+                                               stderr: "Unparseable stdout: \(stdoutText.prefix(400))")
+        }
+
+        let cells = decoded.cells.map { c -> DetectedCell in
+            let id = UUID(uuidString: c.id) ?? UUID()
+            // Lift contour pairs into a CGPoint array (skip malformed pairs).
+            let contour: [CGPoint]? = c.contour_px.flatMap { pairs in
+                let pts = pairs.compactMap { p -> CGPoint? in
+                    guard p.count >= 2 else { return nil }
+                    return CGPoint(x: p[0], y: p[1])
+                }
+                return pts.count >= 3 ? pts : nil
+            }
+            return DetectedCell(
+                id: id,
+                cx: c.cx,
+                cy: c.cy,
+                diameter: c.diameter_um,
+                diameterPx: c.diameter_px,
+                confidence: c.confidence,
+                areaMicrons2: c.area_um2,
+                perimeterMicrons: c.perimeter_um,
+                circularity: c.circularity,
+                eccentricity: c.eccentricity,
+                meanIntensity: c.mean_intensity,
+                integratedDensity: c.integrated_density,
+                centroidUmX: c.centroid_um_x,
+                centroidUmY: c.centroid_um_y,
+                aspectRatio: c.aspect_ratio,
+                solidity: c.solidity,
+                edgeTouching: c.edge_touching ?? false,
+                likelyClump: c.likely_clump ?? false,
+                likelyDebris: c.likely_debris ?? false,
+                sizeClass: c.size_class ?? "",
+                isManual: c.is_manual ?? false,
+                contourPx: contour
+            )
+        }
+        return DetectionResult(cells: cells,
+                               imageWidth: decoded.width,
+                               imageHeight: decoded.height,
+                               imageStats: decoded.image_stats)
+    }
+}

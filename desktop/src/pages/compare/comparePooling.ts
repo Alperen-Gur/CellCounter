@@ -67,36 +67,37 @@ export async function poolConditions(
     allImages.map((img) => [img.id, img]),
   );
 
-  // Memoise detection reads: the same image can belong to only one batch, but
-  // guarding is cheap and avoids a duplicate IPC round-trip if ids repeat.
-  const detCache = new Map<string, CellDTO[]>();
-  const cellsForImage = async (imageId: string): Promise<CellDTO[]> => {
-    const cached = detCache.get(imageId);
-    if (cached) return cached;
-    // Only fetch detections for images we actually know about.
-    if (!imageById.has(imageId)) {
-      detCache.set(imageId, []);
-      return [];
+  // Resolve every condition's batches first, then gather the FULL set of image
+  // ids that carry cells across all of them, and bulk-load their detections in
+  // ONE round-trip (get_detections) — instead of an N+1 getDetection per image.
+  const batchesByCondition = new Map<string, BatchDTO[]>();
+  const wantedImageIds = new Set<string>();
+  for (const condition of conditions) {
+    const batches = await port.batchesMatching(condition);
+    batchesByCondition.set(condition, batches);
+    for (const b of batches) {
+      for (const imageId of b.imageIds) {
+        const img = imageById.get(imageId);
+        if (img && img.cellCount > 0) wantedImageIds.add(imageId);
+      }
     }
-    let cells: CellDTO[] = [];
-    try {
-      const det = await port.getDetection(imageId);
-      cells = det?.cells ?? [];
-    } catch {
-      cells = [];
-    }
-    detCache.set(imageId, cells);
-    return cells;
-  };
+  }
+
+  const detections = await port
+    .getDetections(Array.from(wantedImageIds))
+    .catch(() => []);
+  const cellsByImage = new Map<string, CellDTO[]>(
+    detections.map((d) => [d.imageId, d.cells]),
+  );
 
   const pools: PooledCondition[] = [];
   for (const condition of conditions) {
-    const batches = await port.batchesMatching(condition);
+    const batches = batchesByCondition.get(condition) ?? [];
     const cells: CellDTO[] = [];
     for (const b of batches) {
       for (const imageId of b.imageIds) {
-        const imgCells = await cellsForImage(imageId);
-        if (imgCells.length > 0) cells.push(...imgCells);
+        const imgCells = cellsByImage.get(imageId);
+        if (imgCells && imgCells.length > 0) cells.push(...imgCells);
       }
     }
     pools.push({ condition, color: colorFor(condition), batches, cells });

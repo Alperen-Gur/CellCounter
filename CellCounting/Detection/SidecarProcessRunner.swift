@@ -24,6 +24,25 @@ struct SidecarOutcome {
     var exitCode: Int32
     var stdout: Data
     var stderr: Data
+
+    /// SIGTERM (15) / SIGKILL (9) and their Process-API mirrored values
+    /// (-15, -9, 143, 137) mean the host terminated the subprocess on purpose —
+    /// Cancel button, app quit, or ChildProcessTracker.terminateAll().
+    private static let signalCodes: Set<Int32> = [15, -15, 143, 9, -9, 137]
+
+    /// Throw the correct `DetectionError` for a non-zero exit code, shared by
+    /// every detection family so a user-initiated cancel maps to
+    /// `.cancelled` (which callers swallow silently) instead of a false
+    /// `.sidecarFailed` "detection failed" banner. Returns normally when the
+    /// exit code is 0.
+    func throwIfFailed() throws {
+        guard exitCode != 0 else { return }
+        if Self.signalCodes.contains(exitCode) {
+            throw DetectionError.cancelled
+        }
+        let stderrText = String(data: stderr, encoding: .utf8) ?? ""
+        throw DetectionError.sidecarFailed(exitCode: exitCode, stderr: stderrText)
+    }
 }
 
 enum SidecarProcessRunner {
@@ -60,15 +79,19 @@ enum SidecarProcessRunner {
                 // stderr — accumulate the full buffer for error surfacing, and
                 // optionally tap each line as it arrives for live progress.
                 let stderrAccumulator = SidecarDataSink()
+                // readabilityHandler fires on arbitrary byte boundaries, so a
+                // multi-byte UTF-8 sequence (or a whole line) can straddle two
+                // chunks. Buffer raw bytes and only emit COMPLETE
+                // newline-terminated lines, carrying the trailing partial line
+                // to the next chunk — otherwise split characters decode to nil
+                // and the progress line is silently dropped.
+                let stderrLineBuffer = SidecarLineBuffer()
                 stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                     let chunk = handle.availableData
                     if chunk.isEmpty { return } // EOF
                     stderrAccumulator.append(chunk)
-                    guard let onStderrLine,
-                          let text = String(data: chunk, encoding: .utf8) else { return }
-                    for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-                        let line = String(raw).trimmingCharacters(in: .whitespaces)
-                        guard !line.isEmpty else { continue }
+                    guard let onStderrLine else { return }
+                    for line in stderrLineBuffer.appendAndTakeLines(chunk) {
                         Task { @MainActor in onStderrLine(line) }
                     }
                 }
@@ -96,6 +119,16 @@ enum SidecarProcessRunner {
                     }
                     if let tailErr = try? stderrPipe.fileHandleForReading.readToEnd() {
                         stderrAccumulator.append(tailErr)
+                        if let onStderrLine {
+                            for line in stderrLineBuffer.appendAndTakeLines(tailErr) {
+                                Task { @MainActor in onStderrLine(line) }
+                            }
+                        }
+                    }
+                    // Flush any final line the child emitted without a trailing
+                    // newline so the last progress message isn't lost.
+                    if let onStderrLine, let last = stderrLineBuffer.takeRemainder() {
+                        Task { @MainActor in onStderrLine(last) }
                     }
                     if resumed.markAndCheck() {
                         continuation.resume(returning: SidecarOutcome(
@@ -139,6 +172,48 @@ private final class SidecarDataSink: @unchecked Sendable {
     func snapshot() -> Data {
         lock.lock(); defer { lock.unlock() }
         return buffer
+    }
+}
+
+/// Rolling stderr line splitter. `readabilityHandler` delivers arbitrary byte
+/// boundaries, so we buffer raw bytes and only hand back COMPLETE
+/// newline-terminated lines — decoding each line as a whole (never a partial
+/// multi-byte character) so split progress lines aren't dropped. Accessed only
+/// from the pipe's serial readability queue and the termination handler, but
+/// guarded by a lock for safety.
+private final class SidecarLineBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    /// Append a raw chunk and return every complete line now available (each
+    /// trimmed, empties dropped), leaving any trailing partial line buffered.
+    func appendAndTakeLines(_ chunk: Data) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        buffer.append(chunk)
+        var lines: [String] = []
+        let newline = UInt8(ascii: "\n")
+        let carriage = UInt8(ascii: "\r")
+        while let idx = buffer.firstIndex(where: { $0 == newline || $0 == carriage }) {
+            let lineData = buffer[buffer.startIndex..<idx]
+            if let text = String(data: lineData, encoding: .utf8) {
+                let trimmed = text.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { lines.append(trimmed) }
+            }
+            // Drop the separator byte and re-slice from a fresh 0-based buffer.
+            buffer = Data(buffer[buffer.index(after: idx)...])
+        }
+        return lines
+    }
+
+    /// Return any buffered bytes that never got a trailing newline, as a final
+    /// line. Clears the buffer.
+    func takeRemainder() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard !buffer.isEmpty else { return nil }
+        defer { buffer = Data() }
+        guard let text = String(data: buffer, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

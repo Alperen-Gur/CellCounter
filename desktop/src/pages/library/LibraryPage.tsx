@@ -100,23 +100,19 @@ export default function LibraryPage() {
   }, []);
 
   // ── open an image in Results ───────────────────────────────────────────
-  // Find the batch owning the image, focus it at the right index (images sorted
-  // by importedAt — exactly how Results/useResultsData orders them), then route.
+  // Find the batch owning the image and focus it at the right index. The index
+  // MUST be computed in `owner.imageIds` order — the exact order Results reads
+  // (useResultsData resolves images by batch.imageIds and warns that any other
+  // ordering opens a different image than the one clicked). Sorting by
+  // importedAt here would hand off an index that resolves to the wrong image
+  // whenever imageIds order differs from import-timestamp order.
   const openInResults = useCallback(async (image: ImageDTO) => {
     const port = getPort();
     const batches = await port.allBatches();
     const owner = batches.find((b) => b.imageIds.includes(image.id));
     if (!owner) return;
 
-    const all = await port.allImages();
-    const byId = new Map(all.map((im) => [im.id, im]));
-    const ordered = owner.imageIds
-      .map((id) => byId.get(id))
-      .filter((im): im is ImageDTO => im !== undefined)
-      .sort((a, c) =>
-        a.importedAt < c.importedAt ? -1 : a.importedAt > c.importedAt ? 1 : 0,
-      );
-    const idx = ordered.findIndex((im) => im.id === image.id);
+    const idx = owner.imageIds.indexOf(image.id);
 
     const store = useAppStore.getState();
     store.openBatch(owner.id);
@@ -204,12 +200,14 @@ export default function LibraryPage() {
         return;
       }
 
-      // Delete / Backspace — remove selected (else the first image), confirmed.
+      // Delete / Backspace — remove the SELECTED images only. With nothing
+      // selected the key is a no-op: deleting an arbitrary first image on a
+      // reflexive Backspace (with no clear target the user chose) is surprising
+      // and risky, even behind a confirm.
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (images.length === 0) return;
+        if (selectedIds.size === 0) return;
         e.preventDefault();
-        if (selectedIds.size > 0) confirmDeleteSelected();
-        else if (images[0]) confirmDeleteSingle(images[0]);
+        confirmDeleteSelected();
       }
     };
     window.addEventListener("keydown", onKey);

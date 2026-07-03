@@ -235,6 +235,30 @@ final class AppState {
     /// `proceedWithImport`). Nil when no note is pending.
     var lastCalibrationNote: String? = nil
 
+    // MARK: — Export feedback (keyboard-shortcut exports)
+
+    /// Non-blocking toast shown after a keyboard-shortcut export (⌘E / ⌘⇧E in
+    /// Results, ⌘E in Compare). Mirrors the inline confirmation the
+    /// ResultsExportPanel buttons already show, so shortcut exports aren't
+    /// silent. `isError` picks the success (check) vs failure (warning) styling.
+    /// Nil when no toast is pending; auto-dismissed by `flashExport`.
+    var exportToast: (message: String, isError: Bool)? = nil
+    private var exportToastToken: Int = 0
+
+    /// Show an export result toast and auto-dismiss it after 2 s, matching the
+    /// ResultsExportPanel feedback timing. Safe to call from the main actor from
+    /// any export shortcut handler.
+    func flashExport(_ message: String, isError: Bool) {
+        exportToast = (message, isError)
+        exportToastToken &+= 1
+        let token = exportToastToken
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.exportToastToken == token else { return }
+            withAnimation(Tokens.Motion.ease) { self.exportToast = nil }
+        }
+    }
+
     // MARK: — Pass-17: Duplicate import prompt
 
     /// When a drop session contains files that already exist in the library,
@@ -745,6 +769,12 @@ final class AppState {
             }()
             await MainActor.run {
                 guard let self else { return }
+                // The probe ran off-actor and may finish AFTER the user switched
+                // models (or a newer refreshDetector already resolved). Bail if
+                // the active model is no longer the one we probed, so a stale
+                // late completion can't install the previous model's detector
+                // (or nil it) over the current one — a detector/model mismatch.
+                guard self.activeModelId == activeId else { return }
                 if isAvailable {
                     self.detector = registry.detector(for: activeId, models: modelsSnapshot)
                 } else {
@@ -914,6 +944,13 @@ final class AppState {
                 return DuplicateCandidate(url: url, hash: hash, existingRecord: existing)
             }
 
+            // Reuse the hashes we just computed so the import pipeline doesn't
+            // read + SHA-256 every file a second time (audit: double-hash-per-import).
+            var knownHashes: [URL: String] = [:]
+            for (url, hash) in hashPairs {
+                if let hash, !hash.isEmpty { knownHashes[url] = hash }
+            }
+
             if !dupes.isEmpty {
                 // Present the sheet — block the import until user decides.
                 self.pendingDuplicateSession = DuplicateImportSession(
@@ -921,13 +958,13 @@ final class AppState {
                     condition: condition,
                     duplicates: dupes,
                     onProceed: { [weak self] urlsToImport in
-                        self?.proceedWithImport(urls: urlsToImport, condition: condition, svc: svc)
+                        self?.proceedWithImport(urls: urlsToImport, condition: condition, svc: svc, knownHashes: knownHashes)
                     }
                 )
                 self.showDuplicateImportSheet = true
             } else {
                 // No duplicates — proceed immediately.
-                self.proceedWithImport(urls: supported, condition: condition, svc: svc)
+                self.proceedWithImport(urls: supported, condition: condition, svc: svc, knownHashes: knownHashes)
             }
         }
 
@@ -938,7 +975,7 @@ final class AppState {
 
     /// Internal: actually creates the batch and runs the import/detect pipeline.
     /// Called either directly (no duplicates) or from the duplicate sheet's confirm action.
-    func proceedWithImport(urls: [URL], condition: String?, svc: DetectionService) {
+    func proceedWithImport(urls: [URL], condition: String?, svc: DetectionService, knownHashes: [URL: String] = [:]) {
         guard !urls.isEmpty else { return }
 
         let displayName = urls.count == 1
@@ -983,6 +1020,7 @@ final class AppState {
             let modelIdSnap = self.activeModelId
             let useGPUSnap = self.useGPU
             let svcRef = svc
+            let knownHashesSnap = knownHashes
 
             // Pass-17 Lane C: collect EXIF px/µm from each import result so we
             // can auto-apply a batch-level calibration when all images agree.
@@ -996,7 +1034,7 @@ final class AppState {
                     group.addTask {
                         do {
                             let imported = try await Task.detached(priority: .utility) {
-                                try ImageLoader.importFile(url)
+                                try ImageLoader.importFile(url, precomputedHash: knownHashesSnap[url])
                             }.value
                             let input = DetectionInput(imageURL: imported.record.storedURL,
                                                        modelId: modelIdSnap,

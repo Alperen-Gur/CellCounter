@@ -229,6 +229,11 @@ struct CellposeSAMDownloader: ModelDownloader {
 
                 do {
                     try process.run()
+                    // Register so a quit mid-install SIGTERMs the pip child
+                    // instead of orphaning a multi-minute download.
+                    Task { @MainActor in
+                        ChildProcessTracker.shared.register(process, kind: .install)
+                    }
                 } catch {
                     outHandle.readabilityHandler = nil
                     errHandle.readabilityHandler = nil
