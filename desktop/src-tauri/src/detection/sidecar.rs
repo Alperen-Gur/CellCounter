@@ -1259,18 +1259,16 @@ pub async fn detection_availability(
 pub fn sweep_orphans(python_dir: std::path::PathBuf) {
     use sysinfo::{ProcessesToUpdate, System};
 
-    // The set of absolute script paths this app would ever launch, canonicalized
-    // so the comparison is robust to `.`/symlink differences. If the dir doesn't
-    // resolve yet (never staged), there is nothing of ours to match.
+    // The set of absolute script paths this app would ever launch. Built from
+    // the SAME `python_dir.join(name)` the app spawns with — deliberately NOT
+    // canonicalized: the process argv we match against below is the un-resolved
+    // launch path, so canonicalizing only this side (e.g. /var -> /private/var,
+    // or a symlinked app-data dir) would make `contains` miss a genuine orphan.
+    // The exact staged path is still specific enough to never touch an unrelated
+    // process.
     let owned_paths: Vec<String> = OWNED_SCRIPTS
         .iter()
-        .map(|name| python_dir.join(name))
-        .map(|p| {
-            std::fs::canonicalize(&p)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .into_owned()
-        })
+        .map(|name| python_dir.join(name).to_string_lossy().into_owned())
         .collect();
 
     // Our own pid — never target ourselves even if argv somehow matched.

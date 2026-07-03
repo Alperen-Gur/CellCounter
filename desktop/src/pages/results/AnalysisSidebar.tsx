@@ -35,7 +35,7 @@ import {
   binIndex,
   objectiveLabel,
 } from "../../kernel/calibration/calibration";
-import { evaluateF1 } from "../../kernel/stats/stats";
+import { evaluateF1, mean, stdDev } from "../../kernel/stats/stats";
 import { Icon } from "../../components/Icon";
 
 import { binColor } from "../../kernel/theme/binColors";
@@ -72,16 +72,6 @@ function KeyValueRow({ label, value, unit }: { label: string; value: string; uni
   );
 }
 
-function mean(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  return xs.reduce((a, b) => a + b, 0) / xs.length;
-}
-function stdev(xs: number[]): number {
-  if (xs.length <= 1) return 0;
-  const m = mean(xs);
-  return Math.sqrt(xs.reduce((a, b) => a + (b - m) * (b - m), 0) / xs.length);
-}
-
 // ---------------------------------------------------------------------------
 // Count summary (Swift TotalBlock)
 // ---------------------------------------------------------------------------
@@ -89,7 +79,7 @@ function stdev(xs: number[]): number {
 function TotalBlock({ cells }: { cells: CellDTO[] }) {
   const diameters = cells.map((c) => c.diameterUm);
   const m = mean(diameters);
-  const s = stdev(diameters);
+  const s = stdDev(diameters);
   return (
     <div className="rv-total">
       <span className="rv-total__count">{cells.length.toLocaleString()}</span>

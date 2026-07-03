@@ -6,7 +6,7 @@ CellCounter is a desktop app for counting cells in phase-contrast (and fluoresce
 
 It was built for one concrete job: counting patient-derived oral keratinocytes and comparing their size distributions across conditions. But nothing in it is tied to that cell type. If Cellpose can segment your cells, CellCounter can count and measure them.
 
-> **Status — July 2026.** The current download is **CellCounter 1.0.1 for macOS** — a native, verified app (Apple-silicon + Intel universal build). A cross-platform rebuild (Windows, Linux, and an in-browser WebGPU version) is built and green in CI, but is still in preview pending real-world verification — see [Roadmap](#roadmap).
+> **Status — July 2026.** The current download is **CellCounter 1.0.2 for macOS** — a native, audited app (Apple-silicon + Intel universal build). A cross-platform rebuild (Windows, Linux, and an in-browser WebGPU version) is built and green in CI, but is still in preview pending real-world verification — see [Roadmap](#roadmap).
 
 _Screenshot: to be added using public / synthetic images (never patient data)._
 
@@ -48,9 +48,9 @@ Cellpose already has an excellent GUI, and CellCounter isn't trying to replace i
 
 ## Install
 
-### macOS (v1.0.1 — current release)
+### macOS (v1.0.2 — current release)
 
-1. Download `CellCounter-v1.0.1.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
+1. Download `CellCounter-v1.0.2.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
 2. Unzip it and drag **CellCounter** into your Applications folder.
 3. The first launch is blocked by Gatekeeper because the app isn't yet notarized. To allow it:
    open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough in [docs/INSTALL.md](docs/INSTALL.md).
