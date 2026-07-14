@@ -190,6 +190,25 @@ private struct GeneralSection: View {
         (1, "1"), (2, "2"), (4, "4"), (8, "8")
     ]
 
+    /// Models the user can actually pick as a default: installed and not a
+    /// roadmap ("coming soon") placeholder. The old menu listed every catalog
+    /// entry, including models that don't exist on disk. Keeps the current
+    /// selection visible even if it isn't installed, and falls back to the
+    /// built-in models when nothing is installed yet so the menu is never empty.
+    private var selectableModels: [DetectionModelInfo] {
+        let installed = allModels.filter {
+            !$0.comingSoon && state.detectorRegistry.isInstalled($0.id, models: state.models)
+        }
+        var list = installed.isEmpty
+            ? allModels.filter { $0.builtIn && !$0.comingSoon }
+            : installed
+        if !list.contains(where: { $0.id == defaultModel }),
+           let current = allModels.first(where: { $0.id == defaultModel }) {
+            list.insert(current, at: 0)
+        }
+        return list
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: "General",
@@ -197,7 +216,7 @@ private struct GeneralSection: View {
             SetRow(label: "Default model",
                    desc: "Used at first launch when no model has been activated yet") {
                 Menu {
-                    ForEach(allModels) { m in
+                    ForEach(selectableModels) { m in
                         Button(m.name) { defaultModel = m.id }
                     }
                 } label: {
@@ -941,11 +960,82 @@ private struct ModelsSection: View {
     /// Bumps to force a re-read of disk usage after Remove.
     @State private var storageTick: Int = 0
 
-    private var installedModels: [DetectionModelInfo] {
+    /// One on-disk resource, possibly shared by several model ids.
+    private struct StorageGroup: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String?
+        let iconName: String
+        let modelIds: [String]
+        let sizeBytes: Int64
+    }
+
+    /// Installed models grouped by the storage they actually share. All Cellpose
+    /// variants (cyto3 / cyto2 / nuclei / restore) and Cellpose-SAM share the one
+    /// `~/.cellpose/models` weight cache, so they collapse into a single row
+    /// instead of five identical "1.39 GB" lines. Families with distinct storage
+    /// keep their own rows.
+    private var storageGroups: [StorageGroup] {
         _ = storageTick
-        return state.models.filter {
+        let installed = state.models.filter {
             state.detectorRegistry.isInstalled($0.id, models: state.models)
         }
+        var groups: [StorageGroup] = []
+
+        let cellposeLike = installed.filter { $0.family == .cellpose || $0.family == .cellpose4 }
+        if let rep = cellposeLike.first {
+            groups.append(StorageGroup(
+                id: "cellpose-shared",
+                title: "Cellpose models",
+                subtitle: "Shared weight cache · " + cellposeLike.map(\.name).joined(separator: ", "),
+                iconName: "cpu",
+                modelIds: cellposeLike.map(\.id),
+                sizeBytes: state.detectorRegistry.diskUsageBytes(rep.id, models: state.models)
+            ))
+        }
+
+        for m in installed where m.family != .cellpose && m.family != .cellpose4 {
+            groups.append(StorageGroup(
+                id: m.id,
+                title: m.name,
+                subtitle: nil,
+                iconName: Self.iconName(for: m),
+                modelIds: [m.id],
+                sizeBytes: state.detectorRegistry.diskUsageBytes(m.id, models: state.models)
+            ))
+        }
+        return groups
+    }
+
+    private static func iconName(for m: DetectionModelInfo) -> String {
+        if m.custom { return "sparkles" }
+        switch m.family {
+        case .cellpose:  return "cpu"
+        case .cellpose4: return "cpu"
+        case .stardist:  return "star"
+        case .sam:       return "flask"
+        case .custom:    return "sparkles"
+        case .all:       return "cpu"
+        }
+    }
+
+    private func removeStorage(_ group: StorageGroup) {
+        for id in group.modelIds {
+            try? state.detectorRegistry.uninstall(id, models: state.models)
+            if let i = state.models.firstIndex(where: { $0.id == id }),
+               state.models[i].state != .off {
+                state.models[i].state = .off
+            }
+        }
+        // Reclaim the shared Cellpose weight cache this row actually measured, so
+        // "Remove" frees the space it reported instead of doing nothing. Safe: it
+        // lives inside the app container and cellpose re-downloads on demand.
+        if group.id == "cellpose-shared" {
+            let weights = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".cellpose/models", isDirectory: true)
+            try? FileManager.default.removeItem(at: weights)
+        }
+        storageTick &+= 1
     }
 
     var body: some View {
@@ -976,8 +1066,8 @@ private struct ModelsSection: View {
                 .padding(.top, 22)
                 .padding(.bottom, 10)
 
-            let installed = installedModels
-            if installed.isEmpty {
+            let groups = storageGroups
+            if groups.isEmpty {
                 Text("Nothing installed yet — pick a model on the Models tab.")
                     .font(.system(size: 12))
                     .foregroundStyle(Tokens.textTertiary)
@@ -990,19 +1080,13 @@ private struct ModelsSection: View {
                     )
             } else {
                 VStack(spacing: 0) {
-                    ForEach(installed) { m in
+                    ForEach(groups) { g in
                         StorageRow(
-                            model: m,
-                            sizeBytes: state.detectorRegistry.diskUsageBytes(m.id, models: state.models),
-                            onRemove: {
-                                try? state.detectorRegistry.uninstall(m.id, models: state.models)
-                                if let i = state.models.firstIndex(where: { $0.id == m.id }) {
-                                    if state.models[i].state != .off {
-                                        state.models[i].state = .off
-                                    }
-                                }
-                                storageTick &+= 1
-                            }
+                            title: g.title,
+                            subtitle: g.subtitle,
+                            iconName: g.iconName,
+                            sizeBytes: g.sizeBytes,
+                            onRemove: { removeStorage(g) }
                         )
                     }
                 }
@@ -1016,26 +1100,15 @@ private struct ModelsSection: View {
 }
 
 private struct StorageRow: View {
-    let model: DetectionModelInfo
+    let title: String
+    var subtitle: String? = nil
+    let iconName: String
     let sizeBytes: Int64
     let onRemove: () -> Void
     @Environment(AppTheme.self) private var theme
 
-    private var iconName: String {
-        if model.custom { return "sparkles" }
-        switch model.family {
-        case .cellpose:  return "cpu"
-        // Pass-16: Cellpose-SAM (4.x). See ModelsView for the same case.
-        case .cellpose4: return "flame"
-        case .stardist:  return "star"
-        case .sam:       return "flask"
-        case .custom:    return "sparkles"
-        case .all:       return "cpu"
-        }
-    }
-
     private var sizeLabel: String {
-        if sizeBytes <= 0 { return model.sizeLabel }
+        if sizeBytes <= 0 { return "—" }
         let f = ByteCountFormatter()
         f.allowedUnits = [.useMB, .useGB, .useKB]
         f.countStyle = .file
@@ -1047,9 +1120,18 @@ private struct StorageRow: View {
             Icon(iconName, size: 13)
                 .foregroundStyle(Tokens.textSecondary)
                 .frame(width: 16)
-            Text(model.name)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Tokens.text)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Tokens.text)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tokens.textTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
             Spacer(minLength: 0)
             Text(sizeLabel)
                 .font(.system(size: 11.5, design: .monospaced))
@@ -1538,7 +1620,10 @@ private struct AcknowledgementsContent: View {
             }
             .padding(14)
         }
-        .frame(maxHeight: 340)
+        // Definite height, not maxHeight: a vertical ScrollView nested inside the
+        // outer Settings ScrollView is proposed an unbounded height and collapses
+        // to ~0 with only a maxHeight, which made this content render as nothing.
+        .frame(height: 340)
         .background(Tokens.bgSunken)
         .overlay(alignment: .bottom) { Rectangle().fill(Tokens.divider).frame(height: 0.5) }
     }

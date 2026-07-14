@@ -65,7 +65,7 @@ struct SupportSheet: View {
                     VStack(spacing: 0) {
                         SupportInfoRow(label: "App version", value: appVersion)
                         SupportInfoRow(label: "macOS", value: osVersion)
-                        SupportInfoRow(label: "Contact", value: "support@cellcounter.local")
+                        SupportInfoRow(label: "Issues", value: "github.com/Alperen-Gur/CellCounter")
                     }
                     .background(
                         RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
@@ -81,13 +81,18 @@ struct SupportSheet: View {
 
                         HStack(spacing: 8) {
                             Button {
+                                // No support mailbox exists; route bug reports to
+                                // the public GitHub issue tracker instead, with the
+                                // version/OS prefilled into the new-issue body.
+                                let body = "App version: \(appVersion)\nmacOS: \(osVersion)\n\n(Describe the problem here.)"
+                                    .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                                 NSWorkspace.shared.open(
-                                    URL(string: "mailto:support@cellcounter.local?subject=CellCounter%20support%20request&body=App%20version%3A%20\(appVersion)%0AmacOS%3A%20\(osVersion)")!
+                                    URL(string: "https://github.com/Alperen-Gur/CellCounter/issues/new?body=\(body)")!
                                 )
                             } label: {
                                 HStack(spacing: 6) {
-                                    Icon("mail", size: 13)
-                                    Text("Email support")
+                                    Icon("info", size: 13)
+                                    Text("Report an issue on GitHub")
                                 }
                             }
                             .appButton(.primary, size: .sm)
