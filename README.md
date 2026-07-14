@@ -21,15 +21,16 @@ Cellpose provides its own graphical interface, and CellCounter does not replace 
 
 Counting and segmentation
 
-- Cellpose `cyto3`, `cyto2`, `nuclei`, and `cyto3 + restore` models, plus Cellpose-SAM.
+- Cellpose `cyto3`, `cyto2`, `nuclei`, and `cyto3 + restore` models, plus Cellpose-SAM for large or irregular cells.
 - Single-image runs or batch processing of a folder.
-- Manual correction of the model output: add a missed cell or delete a false positive. The exported count is the corrected count.
+- An explicit expected-cell-diameter control, separate from the size bins. On Auto the diameter is inferred; set to a value, it is passed to the segmentation model as the size prior. The size prior mainly affects large or isolated cells, which are otherwise under-segmented.
+- Manual correction of the model output: add a missed cell, delete a false positive, merge or split, resize, or trace a cell outline by hand. Corrections persist, and the exported count is the corrected count.
 
 Measurement
 
 - Automatic calibration (µm/pixel) from OME-TIFF or EXIF metadata, with a manual override when metadata is absent.
-- Size classification into configurable bins.
-- Per-cell area, per-image counts, and size histograms.
+- Size classification into any number of configurable bins. Bins are applied after segmentation, so adding, editing, or removing a bin re-classifies the existing cells at once and does not re-run detection.
+- Per-cell area, per-image counts, per-bin counts, and size histograms.
 
 Comparison and statistics
 
@@ -38,9 +39,9 @@ Comparison and statistics
 
 Output
 
-- PDF report.
+- PDF report and annotated images, with cells drawn along their segmented outlines.
 - ImageJ-compatible ROI sets.
-- CSV of per-cell measurements.
+- CSV of per-cell measurements, and a per-image summary CSV with one count column per size bin.
 - Duplicate-image detection (SHA-256), so the same field is not counted twice.
 
 Privacy
