@@ -4,7 +4,7 @@ CellCounter is a desktop application for counting cells in phase-contrast and fl
 
 The tool was written for one task: counting patient-derived oral keratinocytes and comparing their size distributions across conditions. It is not tied to that cell type. If Cellpose can segment a given cell type, CellCounter can count and measure it.
 
-Status, July 2026. The current download is CellCounter 1.0.2 for macOS, a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild for Windows and Linux (version 0.1.0) compiles in continuous integration but has not been verified at runtime on real data, so it is a preview. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
+Status, July 2026. The current download is CellCounter 1.0.3 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild for Windows and Linux (version 0.1.1) compiles in continuous integration but has not been verified at runtime on real data, so it is a preview. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
 
 _Screenshot: to be added._
 
@@ -50,9 +50,9 @@ Privacy
 
 ## Install
 
-### macOS (v1.0.2, current release)
+### macOS (v1.0.3, current release)
 
-1. Download `CellCounter-v1.0.2.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
+1. Download `CellCounter-v1.0.3.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
 2. Unzip it and move CellCounter into the Applications folder.
 3. The first launch is blocked by Gatekeeper because the app is not notarized. To allow it, open System Settings, Privacy and Security, scroll to the bottom, and click Open Anyway. A full walkthrough is in [docs/INSTALL.md](docs/INSTALL.md).
 4. On first use, click Install Cellpose in the Models tab. The app downloads and sets up its own Python environment. This takes a few minutes and happens once.
