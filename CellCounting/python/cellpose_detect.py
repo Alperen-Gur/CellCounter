@@ -54,6 +54,13 @@ def parse_args():
         help="Enable Cellpose 3.x image restoration "
              "(restore_type='denoise_cyto3'). Used by the cp-cyto3-r model.",
     )
+    parser.add_argument(
+        "--diameter", type=float, default=0.0,
+        help="Explicit expected cell diameter in micrometers (µm), supplied "
+             "by the user. When > 0, overrides the diameter prior otherwise "
+             "derived from --small-threshold/--large-threshold bins. "
+             "Default 0.0 (disabled; falls back to the bins-derived value).",
+    )
     return parser.parse_args()
 
 
@@ -148,11 +155,19 @@ def main() -> None:
     # predictor (size_cyto3.npy) to auto-estimate diameter; that codepath has a
     # known IndexError on larger images (e.g. 2880x2048). Passing an explicit
     # `diameter` skips the size predictor entirely.
-    expected_diam_um = (float(args.small_threshold) + float(args.large_threshold)) / 2.0
+    #
+    # If the user supplied an explicit --diameter (> 0), it takes priority over
+    # the bins-derived prior — the bins are for size classification, not
+    # necessarily the segmentation prior the user wants.
+    if args.diameter > 0:
+        expected_diam_um = float(args.diameter)
+        diam_source = f"explicit --diameter={expected_diam_um:.2f}µm"
+    else:
+        expected_diam_um = (float(args.small_threshold) + float(args.large_threshold)) / 2.0
+        diam_source = f"bins {args.small_threshold}-{args.large_threshold}µm"
     expected_diam_px = max(15.0, expected_diam_um * float(args.pxPerUm))
     log(f"[cellpose_detect] using fixed diameter={expected_diam_px:.1f}px "
-        f"(from bins {args.small_threshold}-{args.large_threshold}µm "
-        f"@ {args.pxPerUm}px/µm)")
+        f"(from {diam_source} @ {args.pxPerUm}px/µm)")
 
     # Pass-14: surface the device the model will actually run on. The UI
     # parses this stage line and shows the real device instead of the

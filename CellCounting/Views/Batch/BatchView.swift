@@ -25,7 +25,13 @@ private struct BatchMockRow {
 
 private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [BatchMockRow] {
     batch.images
-        .sorted(by: { $0.importedAt < $1.importedAt })
+        // Researcher feedback #5: rows previously followed import order,
+        // which is effectively random for a folder drop (filesystem
+        // enumeration order, not alphabetical) and made clicking through a
+        // batch disorienting. `localizedStandardCompare` is the same
+        // natural/alphanumeric comparator Finder uses, so "img2" sorts
+        // before "img10" instead of after it.
+        .sorted(by: { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending })
         .enumerated()
         .map { i, img in
             let cells = img.detection?.cells ?? []
@@ -67,6 +73,36 @@ private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [Bat
         }
 }
 
+// MARK: — Display helpers
+
+/// Best-effort "uploaded folder" name for a batch, derived from its images'
+/// original (pre-import) file paths — NOT `batch.displayName`. For
+/// multi-file imports `displayName` is a generic "Batch · N images · <date>"
+/// string (see `AppState.proceedWithImport`), which is exactly the "labels
+/// each batch 'Batch'" complaint from researcher feedback #7a. Returns the
+/// shared parent directory's last path component when every image in the
+/// batch was imported from the same folder; nil when that can't be
+/// determined (single image, mixed-origin batch, or blank original paths) —
+/// callers fall back to `displayName` in that case.
+private func batchFolderLabel(for batch: BatchRecord) -> String? {
+    guard batch.images.count > 1 else { return nil }
+    let parents = Set(batch.images.compactMap { img -> String? in
+        guard !img.originalPath.isEmpty else { return nil }
+        let parent = (img.originalPath as NSString).deletingLastPathComponent
+        return parent.isEmpty ? nil : parent
+    })
+    guard parents.count == 1, let common = parents.first else { return nil }
+    let name = (common as NSString).lastPathComponent
+    return name.isEmpty ? nil : name
+}
+
+/// Short absolute date string ("Jan 5, 14:32") — matches `HeaderRow.subtitle`'s format.
+private func shortBatchDate(_ date: Date) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "MMM d, HH:mm"
+    return f.string(from: date)
+}
+
 // MARK: — Main view
 
 struct BatchView: View {
@@ -84,9 +120,38 @@ struct BatchView: View {
     /// sigmas, …), rescanning the whole detection 5-7× per invalidation.
     @State private var rows: [BatchMockRow] = []
 
+    /// All batches, most-recent-first (mirrors `Repositories.allBatches()`).
+    /// Fix (researcher #7b): the Batches tab previously only ever showed
+    /// `state.currentBatch` — the single most-recently-opened batch — with no
+    /// way to reach any other batch except by going back to Home. This backs
+    /// the always-visible `BatchListSidebar` so every batch is one click away.
+    @State private var allBatches: [BatchRecord] = []
+
     private func recomputeRows() {
         guard let batch = state.currentBatch else { rows = []; return }
         rows = buildRealRows(for: batch, thresholds: batch.thresholds)
+    }
+
+    private func reloadBatches() {
+        allBatches = state.repos.allBatches()
+    }
+
+    /// Open Results at the tapped row's image. Bug fix: a table-row tap
+    /// previously ran `state.view = .results` with no reference to the clicked
+    /// row, so Results opened whatever `currentImageIdx` already pointed at
+    /// (image 0, or the last-viewed image) instead of the row the user clicked.
+    /// Resolve the tapped row's image id to its index in the SAME `importedAt`-
+    /// sorted order `AppState.currentImage` indexes into — NOT the
+    /// `localizedStandardCompare` order the table is displayed in — set
+    /// `currentImageIdx`, then navigate. Mirrors `ImagesLibraryView.handleTap`,
+    /// so table display order and Results resolution can't drift.
+    private func openImage(_ imageId: UUID) {
+        guard let batch = state.currentBatch else { return }
+        let sorted = batch.images.sorted { $0.importedAt < $1.importedAt }
+        if let idx = sorted.firstIndex(where: { $0.id == imageId }) {
+            state.currentImageIdx = idx
+        }
+        state.view = .results
     }
 
     private var doneRows: [BatchMockRow] { rows.filter { $0.status == .done } }
@@ -99,7 +164,14 @@ struct BatchView: View {
         let vals = doneRows.compactMap(\.meanDiameter)
         return vals.isEmpty ? 0 : vals.reduce(0, +) / Double(vals.count)
     }
-    private var queueCount: Int { rows.filter { $0.status != .done }.count }
+    /// Images in the batch with no saved detection yet. Detection runs INLINE
+    /// (`AppState.proceedWithImport` analyzes a batch on the foreground
+    /// `.processing` screen, then routes to Results) — there is no background
+    /// job queue, so this is NOT a live queue count: by the time a batch is
+    /// viewed here every image has already been through the pipeline, and a
+    /// still-undetected image is un-analyzed (detection failed/cancelled), not
+    /// "waiting". Drives the honest "N of M analyzed" header readout below.
+    private var pendingCount: Int { rows.filter { $0.status != .done }.count }
 
     private var sigmaCells: Double? {
         let counts = doneRows.compactMap(\.count).map { Double($0) }
@@ -128,70 +200,99 @@ struct BatchView: View {
         return totals.reduce(0, +) > 0 ? totals : nil
     }
 
+    /// Human-readable range labels for the first five bins of the active batch
+    /// (matches the `BinMath` split the per-row bars and summary card use), so
+    /// the Distribution card can title each bar's exact count with its range.
+    private var binLabels: [String] {
+        BinMath.bins(from: state.currentBatch?.thresholds ?? state.thresholds).map(\.label)
+    }
+
     var body: some View {
-        if state.currentBatch == nil {
-            EmptyStateView(
-                title: "No batch open",
-                subtitle: "Drop a folder of microscope images on the Home screen to create a batch.",
-                symbol: "books.vertical"
+        HStack(spacing: 0) {
+            // Fix (researcher #7b): persistent list of every batch, not just
+            // the currently-open one — see `allBatches` above.
+            BatchListSidebar(
+                batches: allBatches,
+                selectedId: state.currentBatchId,
+                onSelect: { batch in state.currentBatchId = batch.id }
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Tokens.bg)
-        } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    HeaderRow(state: state, queueCount: queueCount, totalImages: rows.count)
-                        .padding(.bottom, 18)
 
-                    StatsRow(
-                        totalCells: totalCells,
-                        meanCells: meanCells,
-                        meanDiam: meanDiam,
-                        doneCount: doneRows.count,
-                        total: rows.count,
-                        sigmaCells: sigmaCells,
-                        sigmaDiam: sigmaDiam,
-                        distTotals: distTotals
-                    )
-                    .padding(.bottom, 20)
+            if state.currentBatch == nil {
+                EmptyStateView(
+                    title: allBatches.isEmpty ? "No batch open" : "No batch selected",
+                    subtitle: allBatches.isEmpty
+                        ? "Drop a folder of microscope images on the Home screen to create a batch."
+                        : "Choose a batch from the list on the left to view its images and results.",
+                    symbol: "books.vertical"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Tokens.bg)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HeaderRow(state: state, pendingCount: pendingCount, totalImages: rows.count)
+                            .padding(.bottom, 18)
 
-                    BatchTable(rows: rows, onTap: { state.view = .results })
+                        StatsRow(
+                            totalCells: totalCells,
+                            meanCells: meanCells,
+                            meanDiam: meanDiam,
+                            doneCount: doneRows.count,
+                            total: rows.count,
+                            sigmaCells: sigmaCells,
+                            sigmaDiam: sigmaDiam,
+                            distTotals: distTotals,
+                            binLabels: binLabels
+                        )
+                        .padding(.bottom, 20)
+
+                        BatchTable(rows: rows, binLabels: binLabels, onTap: openImage)
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: 1100)
                 }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 24)
-                .frame(maxWidth: 1100)
-            }
-            .frame(maxWidth: .infinity)
-            // Delete — confirm-delete current batch
-            .overlay(
-                Group {
-                    Button("") { deleteBatchShortcut() }
-                        .keyboardShortcut(.delete, modifiers: [])
-                        .hidden()
-                        .allowsHitTesting(false)
-                    Button("") { exportBatchShortcut() }
-                        .keyboardShortcut("e", modifiers: [.command])
-                        .hidden()
-                        .allowsHitTesting(false)
-                }
-            )
-            .overlay(alignment: .bottom) {
-                if let toast = state.exportToast {
-                    ExportFeedbackToast(message: toast.message, isError: toast.isError)
-                        .padding(.bottom, 24)
+                .frame(maxWidth: .infinity)
+                // Delete — confirm-delete current batch
+                .overlay(
+                    Group {
+                        Button("") { deleteBatchShortcut() }
+                            .keyboardShortcut(.delete, modifiers: [])
+                            .hidden()
+                            .allowsHitTesting(false)
+                        Button("") { exportBatchShortcut() }
+                            .keyboardShortcut("e", modifiers: [.command])
+                            .hidden()
+                            .allowsHitTesting(false)
+                    }
+                )
+                .overlay(alignment: .bottom) {
+                    if let toast = state.exportToast {
+                        ExportFeedbackToast(message: toast.message, isError: toast.isError)
+                            .padding(.bottom, 24)
+                    }
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
-                refreshKey &+= 1
-                recomputeRows()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccLibraryChanged"))) { _ in
-                refreshKey &+= 1
-                recomputeRows()
-            }
-            .onAppear { recomputeRows() }
-            .onChange(of: state.currentBatchId) { _, _ in recomputeRows() }
         }
+        // Moved off the (conditionally-present) detail ScrollView and onto the
+        // outer HStack so they stay live — and the sidebar keeps refreshing —
+        // even while no batch is selected. Previously these lived only inside
+        // the `else` branch, so the empty-state screen never heard about
+        // newly created/deleted batches until the user navigated away and back.
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
+            refreshKey &+= 1
+            recomputeRows()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccLibraryChanged"))) { _ in
+            refreshKey &+= 1
+            recomputeRows()
+            reloadBatches()
+        }
+        .onAppear {
+            recomputeRows()
+            reloadBatches()
+        }
+        .onChange(of: state.currentBatchId) { _, _ in recomputeRows() }
     }
 
     /// Keyboard shortcut wrappers — delegate to HeaderRow logic via AppState
@@ -239,11 +340,113 @@ struct BatchView: View {
     }
 }
 
+// MARK: — Batches rail
+//
+// Researcher feedback #7b: the Batches tab could only ever show the single
+// most-recently-opened batch (`state.currentBatch`) — every OTHER batch was
+// reachable only via Home → Recents, which just routes back to this same
+// view showing the same one batch. This rail lists every batch
+// (`Repositories.allBatches()`, newest first) so the Batches tab is a real
+// browsing surface on its own, independent of Home.
+private struct BatchListSidebar: View {
+    let batches: [BatchRecord]
+    let selectedId: UUID?
+    let onSelect: (BatchRecord) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("All batches")
+                .font(.system(size: 10.5, weight: .semibold))
+                .tracking(0.04 * 10.5)
+                .foregroundStyle(Tokens.textTertiary)
+                .textCase(.uppercase)
+                .padding(.horizontal, 14)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+
+            if batches.isEmpty {
+                Text("No batches yet.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .padding(.horizontal, 14)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(batches, id: \.id) { batch in
+                            BatchListRow(batch: batch,
+                                        isSelected: batch.id == selectedId,
+                                        onSelect: { onSelect(batch) })
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 12)
+                }
+            }
+        }
+        .frame(width: 220)
+        .frame(maxHeight: .infinity)
+        .background(Tokens.bgSidebar)
+        .background(.regularMaterial.opacity(0.4))
+        .overlay(alignment: .trailing) { Rectangle().fill(Tokens.border).frame(width: 0.5) }
+    }
+}
+
+private struct BatchListRow: View {
+    let batch: BatchRecord
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @Environment(AppTheme.self) private var theme
+    @State private var hovered = false
+
+    private var subtitle: String {
+        let n = batch.images.count
+        return "\(n) image\(n == 1 ? "" : "s") · \(shortBatchDate(batch.createdAt))"
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(batchFolderLabel(for: batch) ?? batch.displayName)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(isSelected ? theme.accentColor : Tokens.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .lineLimit(1)
+                if let cond = batch.condition, !cond.isEmpty {
+                    Text(cond)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(theme.accentColor)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(theme.accentSoft))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                    .fill(isSelected ? theme.accentSoft : (hovered ? Tokens.hover : Color.clear))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .animation(Tokens.Motion.easeFast, value: hovered)
+    }
+}
+
 // MARK: — Header
 
 private struct HeaderRow: View {
     @Bindable var state: AppState
-    let queueCount: Int
+    let pendingCount: Int
     let totalImages: Int
     @Environment(AppTheme.self) private var theme
 
@@ -262,22 +465,36 @@ private struct HeaderRow: View {
         return "\(totalImages) image\(totalImages == 1 ? "" : "s") · started \(when) · \(modelName)"
     }
 
+    /// Researcher feedback #7a: this used to render `batch.displayName`
+    /// directly, which for multi-image imports is a generic
+    /// "Batch · N images · <date>" string — literally the word "Batch" the
+    /// researcher was pointing at. Prefer the folder the user actually
+    /// dropped (derived from the images' original paths); fall back to
+    /// `displayName` (e.g. the single-file case) when no common folder can
+    /// be determined.
+    private var title: String {
+        guard let batch = state.currentBatch else { return "Batch" }
+        return batchFolderLabel(for: batch) ?? batch.displayName
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(state.currentBatch?.displayName ?? "Batch")
+                    Text(title)
                         .font(.system(size: 22, weight: .bold))
                         .tracking(-0.02 * 22)
                         .foregroundStyle(Tokens.text)
                     Text(subtitle)
                         .font(.system(size: 13))
                         .foregroundStyle(Tokens.textTertiary)
+                    BatchConditionControl(state: state)
+                        .padding(.top, 4)
                 }
                 Spacer()
                 HStack(spacing: 8) {
-                    if queueCount > 0 {
-                        QueueBadge(count: queueCount)
+                    if pendingCount > 0 {
+                        AnalysisProgress(done: totalImages - pendingCount, total: totalImages)
                     }
                     Button {
                         exportBatch()
@@ -408,20 +625,148 @@ private struct HeaderRow: View {
     }
 }
 
-private struct QueueBadge: View {
-    let count: Int
+// MARK: — Condition tag control
+//
+// `BatchRecord.condition` already exists and is exactly what Compare pools
+// batches by (`Repositories.batches(matching:)`), but the only path that
+// ever set it was the optional "Tag this batch" picker shown after a
+// drag-and-drop import on Home. Every button-driven import (⌘O, ⌘⇧O, Home's
+// "Choose images…"/"Choose folder…" buttons) skips that picker entirely,
+// and once a batch existed there was no way to tag or retag it — so Compare
+// stayed empty for most users. This is a small always-visible control on the
+// batch header that sets/clears `condition` directly and saves immediately.
+private struct BatchConditionControl: View {
+    @Bindable var state: AppState
+    @Environment(AppTheme.self) private var theme
+
+    @State private var conditions: [ConditionRecord] = []
+    @State private var showingNewField = false
+    @State private var newName = ""
+
+    private var currentCondition: String? { state.currentBatch?.condition }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Menu {
+                Button("No condition") { setCondition(nil) }
+                if !conditions.isEmpty {
+                    Divider()
+                    ForEach(conditions, id: \.id) { c in
+                        Button {
+                            setCondition(c.name)
+                        } label: {
+                            if c.name == currentCondition {
+                                Label(c.name, systemImage: "checkmark")
+                            } else {
+                                Text(c.name)
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button("New condition…") {
+                    newName = ""
+                    showingNewField = true
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Icon("flask", size: 10)
+                    Text(currentCondition ?? "No condition")
+                        .font(.system(size: 11.5, weight: .medium))
+                    Icon("chevron", size: 9)
+                }
+                .foregroundStyle(currentCondition != nil ? theme.accentColor : Tokens.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(currentCondition != nil ? theme.accentSoft : Tokens.bgSunken)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Tag this batch with an experimental condition. Compare groups batches by this tag.")
+
+            if showingNewField {
+                HStack(spacing: 6) {
+                    TextField("Condition name…", text: $newName)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: Tokens.Radius.sm, style: .continuous)
+                                .fill(Tokens.bgElevated))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Tokens.Radius.sm, style: .continuous)
+                                .strokeBorder(Tokens.borderStrong, lineWidth: 0.5))
+                        .frame(width: 150)
+                        .onSubmit { addAndSetNewCondition() }
+                    Button("Add") { addAndSetNewCondition() }
+                        .appButton(.primary, size: .sm)
+                        .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Cancel") { showingNewField = false; newName = "" }
+                        .appButton(.ghost, size: .sm)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(Tokens.Motion.easeFast, value: showingNewField)
+        .onAppear { refresh() }
+        .onChange(of: state.currentBatchId) { _, _ in
+            // The sidebar can switch batches while an in-progress "new
+            // condition" entry is open; SwiftUI reuses this view's @State
+            // across that switch (same position in the tree), so without
+            // this reset a half-typed name from batch A could get applied
+            // to batch B after the user clicks over.
+            showingNewField = false
+            newName = ""
+            refresh()
+        }
+    }
+
+    private func refresh() {
+        conditions = state.repos.conditions()
+    }
+
+    private func setCondition(_ name: String?) {
+        guard let batch = state.currentBatch else { return }
+        batch.condition = name
+        try? state.repos.context.save()
+    }
+
+    private func addAndSetNewCondition() {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // Cycle a palette-ish hue so new conditions get distinct colors —
+        // mirrors HomeView's ConditionPickerOverlay.
+        let palette = ["#4db3a8", "#d97757", "#7b88e0", "#c074b8", "#e0b04d"]
+        let color = palette[conditions.count % palette.count]
+        state.repos.createCondition(name: trimmed, color: color)
+        setCondition(trimmed)
+        newName = ""
+        showingNewField = false
+        refresh()
+    }
+}
+
+// Honest replacement for the old "N in queue" pill. Detection runs INLINE
+// (`AppState.proceedWithImport` analyzes a batch on the foreground `.processing`
+// screen, then routes to Results) — there is no background job queue, so a
+// spinning "in queue" badge on a batch shown here implied active work that
+// isn't happening. This reports the real done/total split instead, and shows
+// only while some image is still un-analyzed (hidden once every image has a
+// detection). Determinate wording, no perpetual spinner.
+private struct AnalysisProgress: View {
+    let done: Int
+    let total: Int
     @Environment(AppTheme.self) private var theme
 
     var body: some View {
-        HStack(spacing: 6) {
-            AppSpinner()
-            Text("\(count) in queue")
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(theme.accentColor)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(theme.accentSoft))
+        Text("\(done) of \(total) analyzed")
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(theme.accentColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(theme.accentSoft))
     }
 }
 
@@ -436,6 +781,7 @@ private struct StatsRow: View {
     let sigmaCells: Double?
     let sigmaDiam: Double?
     let distTotals: [Double]?
+    let binLabels: [String]
 
     var body: some View {
         HStack(spacing: 12) {
@@ -450,7 +796,7 @@ private struct StatsRow: View {
                 sub: sigmaCells.map { String(format: "σ = %.0f cells", $0) }
             )
             MeanDiamCard(meanDiam: meanDiam, sigmaDiam: sigmaDiam)
-            DistributionCard(totals: distTotals)
+            DistributionCard(totals: distTotals, labels: binLabels)
         }
     }
 }
@@ -524,14 +870,23 @@ private struct DistributionCard: View {
     /// has been detected yet — in which case we show a neutral placeholder
     /// rather than a fabricated shape.
     let totals: [Double]?
+    /// Range labels ("< 20 µm", "20–30 µm", …) aligned to `totals` by index,
+    /// used to title each bar's exact count. May be shorter/longer than five;
+    /// callers guard by index.
+    var labels: [String] = []
 
-    /// Bar heights (0–32pt) normalised to the largest bin so the tallest bar
-    /// always fills the card.
+    /// Bar heights (0–28pt) normalised to the largest bin so the tallest bar
+    /// always fills the card. Capped a touch below the old 32pt to leave room
+    /// for the per-bin count label above each bar.
     private var heights: [CGFloat] {
         guard let totals, let maxV = totals.max(), maxV > 0 else {
             return Array(repeating: 0, count: 5)
         }
-        return totals.map { CGFloat($0 / maxV) * 32 }
+        return totals.map { CGFloat($0 / maxV) * 28 }
+    }
+
+    private func label(for i: Int) -> String {
+        labels.indices.contains(i) ? labels[i] : "bin \(i + 1)"
     }
 
     var body: some View {
@@ -540,28 +895,41 @@ private struct DistributionCard: View {
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.04 * 11)
                 .foregroundStyle(Tokens.textTertiary)
-            if totals == nil {
+            if let totals {
+                // Each bin renders its exact cell count above a normalised bar,
+                // so the batch-level split is legible without opening any image.
+                HStack(alignment: .bottom, spacing: 3) {
+                    ForEach(0..<5, id: \.self) { i in
+                        let count = i < totals.count ? Int(totals[i]) : 0
+                        VStack(spacing: 2) {
+                            Text(count.formatted())
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(count > 0 ? Tokens.textSecondary : Tokens.textQuaternary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                            Spacer(minLength: 0)
+                            Tokens.binColor(i)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: max(2, heights[i]))
+                                .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .help("\(label(for: i)): \(count) cell\(count == 1 ? "" : "s")")
+                    }
+                }
+                .frame(height: 42)
+                .padding(.top, 4)
+            } else {
                 HStack {
                     Text("—")
                         .font(.system(size: 22, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Tokens.textTertiary)
                     Spacer()
                 }
-                .frame(height: 32)
-                .padding(.top, 4)
-            } else {
-                HStack(alignment: .bottom, spacing: 3) {
-                    ForEach(0..<5, id: \.self) { i in
-                        Tokens.binColor(i)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: max(0, heights[i]))
-                            .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
-                    }
-                }
-                .frame(height: 32)
+                .frame(height: 42)
                 .padding(.top, 4)
             }
-            Text("across all bins")
+            Text("cells per bin")
                 .font(.system(size: 11))
                 .foregroundStyle(Tokens.textTertiary)
                 .padding(.top, 2)
@@ -578,7 +946,10 @@ private struct DistributionCard: View {
 
 private struct BatchTable: View {
     let rows: [BatchMockRow]
-    let onTap: () -> Void
+    var binLabels: [String] = []
+    /// Called with the tapped row's image id (not just a bare "open") so the
+    /// parent can resolve it to the correct Results index — see `openImage`.
+    let onTap: (UUID) -> Void
 
     var body: some View {
         // LazyVStack so only visible rows are constructed — a batch of several
@@ -588,7 +959,7 @@ private struct BatchTable: View {
         LazyVStack(spacing: 0) {
             TableHead()
             ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
-                TableRow(row: row, isFirst: i == 0, onTap: onTap)
+                TableRow(row: row, isFirst: i == 0, binLabels: binLabels, onTap: onTap)
             }
         }
         .background(RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous).fill(Tokens.bgElevated))
@@ -625,13 +996,14 @@ private struct TableHead: View {
 private struct TableRow: View {
     let row: BatchMockRow
     let isFirst: Bool
-    let onTap: () -> Void
+    var binLabels: [String] = []
+    let onTap: (UUID) -> Void
     @State private var hovered = false
     @State private var thumb: NSImage? = nil
 
     var body: some View {
         Button {
-            if row.status == .done { onTap() }
+            if row.status == .done { onTap(row.imageId) }
         } label: {
             TableGrid {
                 // Status dot
@@ -671,8 +1043,8 @@ private struct TableRow: View {
                     .foregroundStyle(Tokens.text)
                     .frame(maxWidth: .infinity, alignment: .trailing)
 
-                // Bin distribution bars
-                BinStack(distNorm: row.distNorm)
+                // Bin distribution bars with exact per-bin counts
+                BinStack(distNorm: row.distNorm, distCounts: row.distCounts, labels: binLabels)
 
                 // Mean diameter
                 Text(row.meanDiameter.map { String(format: "%.1f µm", $0) } ?? "—")
@@ -711,7 +1083,10 @@ private struct TableRow: View {
         case .running:
             RunningLabel()
         case .queued:
-            Text("Queued")
+            // Inline detection means an undetected image here is un-analyzed
+            // (failed/cancelled), not sitting in a live queue — say so plainly
+            // rather than implying it's about to be picked up.
+            Text("Not analyzed")
                 .font(.system(size: 12))
                 .foregroundStyle(Tokens.textTertiary)
         case .error:
@@ -733,8 +1108,8 @@ private struct TableRow: View {
         let trailing: String
         switch row.status {
         case .done:    trailing = size ?? ""
-        case .running: trailing = "processing…"
-        case .queued:  trailing = "queued"
+        case .running: trailing = "analyzing…"
+        case .queued:  trailing = ""          // status column already reads "Not analyzed"
         case .error:   trailing = "error"
         }
         return trailing.isEmpty ? dims : "\(dims) · \(trailing)"
@@ -757,7 +1132,12 @@ private struct RunningLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             AppSpinner()
-            Text("Analyzing 64%")
+            // Honest live label — no fabricated percentage. Cellpose 3.x has no
+            // granular numeric progress callback (see AppState.processingStageLine),
+            // so a hard-coded "64%" was fiction; the spinner already conveys "in
+            // progress". Note: `buildRealRows` never emits `.running` today, so
+            // this stays latent until AppState exposes the in-flight image id.
+            Text("Analyzing…")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(theme.accentColor)
         }
@@ -766,15 +1146,38 @@ private struct RunningLabel: View {
 
 private struct BinStack: View {
     let distNorm: [Double]?
+    /// Raw per-bin cell counts (5 bins) for this image, aligned to `distNorm`.
+    /// Rendered as an exact number above each bar so a batch's per-image split
+    /// is readable in the table without opening each image.
+    let distCounts: [Double]?
+    /// Range labels for tooltips, aligned by index. May be empty.
+    var labels: [String] = []
+
+    private func label(for i: Int) -> String {
+        labels.indices.contains(i) ? labels[i] : "bin \(i + 1)"
+    }
 
     var body: some View {
         if let norm = distNorm {
-            HStack(alignment: .center, spacing: 3) {
+            HStack(alignment: .bottom, spacing: 5) {
                 ForEach(0..<5, id: \.self) { i in
-                    let w = max(4, norm[i] * 0.5)
-                    Tokens.binColor(i)
-                        .frame(width: w, height: 10)
-                        .clipShape(RoundedRectangle(cornerRadius: 1, style: .continuous))
+                    let count = (distCounts?.indices.contains(i) == true) ? Int(distCounts![i]) : 0
+                    // Bar height (not width) now encodes the fraction so the
+                    // exact count can sit directly above each bin.
+                    let h = max(3, CGFloat(norm[i]) / 100 * 16)
+                    VStack(spacing: 2) {
+                        Text(count.formatted())
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(count > 0 ? Tokens.textSecondary : Tokens.textQuaternary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        Tokens.binColor(i)
+                            .frame(height: h)
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 1, style: .continuous))
+                    }
+                    .frame(maxWidth: 34)
+                    .help("\(label(for: i)): \(count) cell\(count == 1 ? "" : "s")")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

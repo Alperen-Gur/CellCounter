@@ -114,6 +114,13 @@ def parse_args():
         default_model="cpsam",
     )
     # v4 has no separate restore model — no --restore flag here.
+    parser.add_argument(
+        "--diameter", type=float, default=0.0,
+        help="Explicit expected cell diameter in micrometers (µm), supplied "
+             "by the user. When > 0, overrides the diameter prior otherwise "
+             "derived from --small-threshold/--large-threshold bins. "
+             "Default 0.0 (disabled; falls back to the bins-derived value).",
+    )
     return parser.parse_args()
 
 
@@ -221,11 +228,18 @@ def main() -> None:
             log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
 
     # Explicit diameter — v4 has no size predictor, and `None` means "no resize".
-    expected_diam_um = (float(args.small_threshold) + float(args.large_threshold)) / 2.0
+    # If the user supplied an explicit --diameter (> 0), it takes priority over
+    # the bins-derived prior — the bins are for size classification, not
+    # necessarily the segmentation prior the user wants.
+    if args.diameter > 0:
+        expected_diam_um = float(args.diameter)
+        diam_source = f"explicit --diameter={expected_diam_um:.2f}µm"
+    else:
+        expected_diam_um = (float(args.small_threshold) + float(args.large_threshold)) / 2.0
+        diam_source = f"bins {args.small_threshold}-{args.large_threshold}µm"
     expected_diam_px = max(15.0, expected_diam_um * float(args.pxPerUm))
     log(f"[cellpose_detect] using fixed diameter={expected_diam_px:.1f}px "
-        f"(from bins {args.small_threshold}-{args.large_threshold}µm "
-        f"@ {args.pxPerUm}px/µm)")
+        f"(from {diam_source} @ {args.pxPerUm}px/µm)")
 
     resolved_device = "cpu"
     try:

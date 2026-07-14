@@ -583,16 +583,34 @@ enum ExportService {
             let fill = color.copy(alpha: 0.18) ?? color
             ctx.setFillColor(fill)
 
-            let r = cell.diameterPx / 2
-            let rect = CGRect(x: cell.cx - r, y: cell.cy - r, width: cell.diameterPx, height: cell.diameterPx)
+            // Fix (researcher #2): render the TRUE per-cell contour polygon
+            // whenever one exists — this is exactly what the on-screen overlay
+            // (EditableOverlay.CellsCanvas) draws. The exported PNG previously
+            // always drew a box ("Vierecke") or ellipse from the diameter, so it
+            // never matched the outlines the user saw and reviewer-drew. Cells
+            // without a contour (legacy detections, manual markers) keep the
+            // diameter-derived bbox/outline fallback.
+            if let contour = cell.contourPx, contour.count >= 3 {
+                let poly = CGMutablePath()
+                poly.move(to: CGPoint(x: contour[0].x, y: contour[0].y))
+                for i in 1..<contour.count {
+                    poly.addLine(to: CGPoint(x: contour[i].x, y: contour[i].y))
+                }
+                poly.closeSubpath()
+                ctx.addPath(poly)
+                ctx.drawPath(using: .fillStroke)
+            } else {
+                let r = cell.diameterPx / 2
+                let rect = CGRect(x: cell.cx - r, y: cell.cy - r, width: cell.diameterPx, height: cell.diameterPx)
 
-            switch overlayMode {
-            case .bbox:
-                ctx.fill(rect)
-                ctx.stroke(rect)
-            case .outline:
-                ctx.fillEllipse(in: rect)
-                ctx.strokeEllipse(in: rect)
+                switch overlayMode {
+                case .bbox:
+                    ctx.fill(rect)
+                    ctx.stroke(rect)
+                case .outline:
+                    ctx.fillEllipse(in: rect)
+                    ctx.strokeEllipse(in: rect)
+                }
             }
         }
         ctx.restoreGState()
@@ -726,12 +744,47 @@ enum ExportService {
 
     // MARK: — Per-image summary CSV (C2 pass-6)
 
+    /// Turn a `SizeBin.label` (e.g. `"< 20 µm"`, `"20–30 µm"`, `"> 30 µm"`, or
+    /// the thresholds-empty fallback `"all"`) into a stable, ASCII,
+    /// spreadsheet-safe column-name fragment: `"lt_20um"`, `"20_30um"`,
+    /// `"gt_30um"`, `"all"`. Multi-character tokens (`" µm"`, `"<"`, `">"`,
+    /// dashes) are substituted before the generic space→`"_"` pass; a
+    /// defensive final pass strips anything left that isn't
+    /// alphanumeric/underscore, so this stays safe even if `SizeBin.label`
+    /// phrasing changes upstream.
+    nonisolated private static func sanitizeBinLabel(_ label: String) -> String {
+        var s = label
+        s = s.replacingOccurrences(of: " µm", with: "um")
+        s = s.replacingOccurrences(of: "<", with: "lt_")
+        s = s.replacingOccurrences(of: ">", with: "gt_")
+        s = s.replacingOccurrences(of: "–", with: "_")   // en dash (range)
+        s = s.replacingOccurrences(of: "—", with: "_")   // em dash, just in case
+        s = s.replacingOccurrences(of: "-", with: "_")   // ascii hyphen, just in case
+        s = s.replacingOccurrences(of: "µ", with: "u")   // any leftover micro sign
+        s = s.replacingOccurrences(of: " ", with: "_")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+        s = s.components(separatedBy: allowed.inverted).joined()
+        while s.contains("__") {
+            s = s.replacingOccurrences(of: "__", with: "_")
+        }
+        s = s.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return s.isEmpty ? "bin" : s
+    }
+
     /// Write a one-row-per-image summary CSV for the entire batch.
     ///
     /// Columns match the user-specified order exactly:
-    ///   image, n_cells, mean_diameter, sd_diameter, n_small, n_intermediate, n_large,
+    ///   image, n_cells, mean_diameter, sd_diameter,
+    ///   n_bin1_<range>, n_bin2_<range>, … n_binN_<range>,
     ///   pct_clumps, pct_debris, pct_edge, confluency, n_colonies, mean_colony_size,
     ///   largest_colony, focus_score, illumination_residual, model_used, ran_at
+    ///
+    /// The `n_bin*` block is generated dynamically from `BinMath.bins(from:
+    /// thresholds)` — one count column per size bin, so it scales to any
+    /// number of thresholds rather than the historical hardcoded low/high
+    /// pair. Column names encode the bin's 1-based index plus its sanitized
+    /// label (see `sanitizeBinLabel`), e.g. thresholds `[20, 30]` produce
+    /// `n_bin1_lt_20um, n_bin2_20_30um, n_bin3_gt_30um`.
     ///
     /// - Per-cell aggregations (counts, percentages, mean/sd diameter) come from
     ///   `image.detection?.cells`.
@@ -741,7 +794,7 @@ enum ExportService {
     /// - When C1 quality flags are not populated on legacy detections, the
     ///   corresponding cells contribute "false" to count denominators but no
     ///   row is dropped. When a detection is missing entirely, the per-image
-    ///   columns emit empty strings.
+    ///   columns (including every `n_bin*` column) emit empty strings.
     ///
     /// `model_used` = the detection's `detectorId`; `ran_at` = ISO 8601 from
     /// `detection.ranAt`. Writes atomically as UTF-8.
@@ -752,9 +805,19 @@ enum ExportService {
                                          separator: String = ",",
                                          provenance: ProvenanceMetadata? = nil,
                                          to url: URL) throws {
+        // Size bins are the single source of truth shared with the per-cell
+        // CSV and the on-screen overlay (`BinMath.bins`). Deriving the header
+        // from this array — instead of a hardcoded small/intermediate/large
+        // triple — guarantees exactly one count column per bin, for any
+        // number of thresholds.
+        let bins = BinMath.bins(from: thresholds)
+        let binColumnNames: [String] = bins.enumerated().map { i, bin in
+            "n_bin\(i + 1)_\(sanitizeBinLabel(bin.label))"
+        }
+
         let header = [
             "image", "n_cells", "mean_diameter", "sd_diameter",
-            "n_small", "n_intermediate", "n_large",
+        ] + binColumnNames + [
             "pct_clumps", "pct_debris", "pct_edge",
             "confluency", "n_colonies", "mean_colony_size", "largest_colony",
             "focus_score", "illumination_residual",
@@ -834,30 +897,19 @@ enum ExportService {
                 return sqrt(variance)
             }()
 
-            // Size-class counts. Prefer the C1 `sizeClass` field; fall back to
-            // computing class from `thresholds` when sizeClass is empty so legacy
-            // detections still aggregate correctly.
-            let smallT = thresholds.first ?? 20.0
-            let largeT = thresholds.last ?? 30.0
-            var nSmall = 0
-            var nInter = 0
-            var nLarge = 0
+            // Size-bin counts. Compute LIVE from the batch's current
+            // thresholds rather than the per-cell `sizeClass` string frozen at
+            // detection time. Bins are a reclassification of stored
+            // measurements, so the summary must track a post-hoc re-binning the
+            // same way the on-screen bins do — otherwise the exported n_bin*
+            // columns would silently disagree with the UI. Mirrors the
+            // per-cell CSV's bucketing (`writeCSVCore` above): bucket with
+            // `BinMath.binIndex`, clamped into range.
+            var binCounts = [Int](repeating: 0, count: bins.count)
             for c in cells {
-                let cls: String
-                if !c.sizeClass.isEmpty {
-                    cls = c.sizeClass
-                } else if c.diameter < smallT {
-                    cls = "small"
-                } else if c.diameter >= largeT {
-                    cls = "large"
-                } else {
-                    cls = "intermediate"
-                }
-                switch cls {
-                case "small": nSmall += 1
-                case "large": nLarge += 1
-                default: nInter += 1
-                }
+                let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
+                let safeIdx = max(0, min(idx, bins.count - 1))
+                binCounts[safeIdx] += 1
             }
 
             // Flag percentages — denominator is total cells; 0 when no cells.
@@ -883,9 +935,13 @@ enum ExportService {
             let nCellsStr     = hasDetection ? String(nCells) : ""
             let meanDStr      = (hasDetection && nCells > 0) ? fmt(meanD, decimals: 3) : ""
             let sdDStr        = (hasDetection && nCells > 1) ? fmt(sdD, decimals: 3) : ""
-            let smallStr      = hasDetection ? String(nSmall) : ""
-            let interStr      = hasDetection ? String(nInter) : ""
-            let largeStr      = hasDetection ? String(nLarge) : ""
+            // One count string per bin, aligned 1:1 (same order, same count)
+            // with `binColumnNames` in the header, so this stays correct for
+            // any number of bins. Same "blank when unanalyzed" convention as
+            // nCellsStr above.
+            let binCountStrs: [String] = hasDetection
+                ? binCounts.map { String($0) }
+                : Array(repeating: "", count: bins.count)
             let clumpsStr     = (hasDetection && nCells > 0) ? fmtPct(pctClumps) : ""
             let debrisStr     = (hasDetection && nCells > 0) ? fmtPct(pctDebris) : ""
             let edgeStr       = (hasDetection && nCells > 0) ? fmtPct(pctEdge)   : ""
@@ -895,9 +951,7 @@ enum ExportService {
                 nCellsStr,
                 meanDStr,
                 sdDStr,
-                smallStr,
-                interStr,
-                largeStr,
+            ] + binCountStrs + [
                 clumpsStr,
                 debrisStr,
                 edgeStr,

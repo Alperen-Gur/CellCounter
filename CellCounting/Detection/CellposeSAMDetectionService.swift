@@ -63,6 +63,18 @@ struct CellposeSAMDetectionService: DetectionService {
             "--small-threshold", String(input.smallThreshold),
             "--large-threshold", String(input.largeThreshold),
         ]
+        // Explicit expected-diameter override (µm) — same wiring as the 3.x
+        // service. A non-Auto diameter makes the sidecar use THIS value as the
+        // Cellpose-SAM size prior instead of deriving it from the size bins
+        // ((small+large)/2), decoupling segmentation from the bins. Read from
+        // UserDefaults (mirrored by `AppState.expectedDiameterUm`) because
+        // `DetectionInput` is owned elsewhere; 0 == "Auto" == omit the arg, so
+        // Python keeps its current behavior (matches the shared `--diameter`
+        // CLI contract).
+        let expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
+        if expectedDiameterUm > 0 {
+            args += ["--diameter", String(expectedDiameterUm)]
+        }
         if !input.useGPU {
             args += ["--no-gpu"]
         }
