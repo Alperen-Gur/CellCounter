@@ -1293,6 +1293,19 @@ private struct AboutSection: View {
     @State private var showAcknowledgements = false
     @State private var showPrivacy = false
 
+    /// Real version / build / min-OS from the bundle, instead of a stale literal
+    /// that drifted from the actual project settings.
+    private var versionLine: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let b = info?["CFBundleVersion"] as? String ?? "1"
+        let base = "Version \(v) (build \(b))"
+        if let minOS = info?["LSMinimumSystemVersion"] as? String {
+            return "\(base) · macOS \(minOS)+"
+        }
+        return base
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 18) {
@@ -1313,7 +1326,7 @@ private struct AboutSection: View {
                         .font(.system(size: 22, weight: .bold))
                         .tracking(-0.02 * 22)
                         .foregroundStyle(Tokens.text)
-                    Text("Version 1.0 (build 142) · macOS 14+")
+                    Text(versionLine)
                         .font(.system(size: 13))
                         .foregroundStyle(Tokens.textTertiary)
                     Text("Counts and size-bins cells in microscope images. Local-only — your data never leaves this Mac.")
