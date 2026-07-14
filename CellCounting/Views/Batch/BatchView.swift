@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SwiftData
 
 // MARK: — Row model (built from real `ImageRecord`s)
 
