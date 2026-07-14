@@ -140,7 +140,18 @@ struct ImagesLibraryView: View {
     // MARK: — Helpers
 
     private func reload() {
+        // Researcher feedback #5: `allImages()` returns import order, which
+        // is effectively random across a folder drop (filesystem enumeration
+        // order, not alphabetical) and made scanning the grid disorienting.
+        // Sort by filename with Finder's natural/alphanumeric comparator so
+        // "img2" sorts before "img10". Display order only — `handleTap`
+        // below still resolves `currentImageIdx` against a separate
+        // `importedAt`-sorted array to match `AppState.currentImage`'s
+        // indexing scheme (Shared/AppState.swift), so that sort must NOT be
+        // changed independently or tapping a thumbnail would open the wrong
+        // image in Results.
         images = state.repos.allImages()
+            .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
     }
 
     /// Pass-17: back-fill hashes for any un-hashed images, then present FindDuplicatesSheet.

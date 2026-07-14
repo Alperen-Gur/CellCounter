@@ -13,6 +13,15 @@ import SwiftUI
 /// refreshed by `refreshLibraryStats()` on app launch, after each detection
 /// import, after `recordCorrection`, and on `ccCorrectionsChanged` /
 /// `ccLibraryChanged` notifications. No local cache, no sync repo call in body.
+///
+/// `reviewQueueCount` traces back to `Repositories.uncorrectedCellCount(below:)`,
+/// which now walks the identical `allBatches() → batch.images → image.detection
+/// → detection.cells` path (and the identical confidence/corrected-exclusion
+/// predicates) that `ReviewQueueView.rebuild()` uses to build the on-screen
+/// cards — so this number and the queue's card count are guaranteed to agree.
+/// `count == 0 ? nil : count` below only hides the numeral when the badge is
+/// zero; it never re-derives the value, so keep the two counting functions in
+/// lockstep if either one's membership rule ever changes.
 struct ReviewNavItem: View {
     @Bindable var state: AppState
 

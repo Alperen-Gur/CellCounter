@@ -371,11 +371,31 @@ struct PDFReportGenerator {
                 ctx.setStrokeColor(color)
                 let fill = color.copy(alpha: 0.18) ?? color
                 ctx.setFillColor(fill)
-                let r = cell.diameterPx / 2
-                let rect = CGRect(x: cell.cx - r, y: cell.cy - r,
-                                   width: cell.diameterPx, height: cell.diameterPx)
-                ctx.fillEllipse(in: rect)
-                ctx.strokeEllipse(in: rect)
+
+                // Fix (same class as the PNG export bug): draw the TRUE per-cell
+                // contour polygon whenever one exists, matching the on-screen
+                // overlay (EditableOverlay.CellsCanvas) and
+                // ExportService.compositeAnnotatedPNG. The PDF's embedded image
+                // previously always drew a diameter-derived ellipse here, so it
+                // never matched the real cell outline the user sees on screen or
+                // in the annotated PNG. Cells without a contour (legacy
+                // detections, manual markers) keep the ellipse fallback.
+                if let contour = cell.contourPx, contour.count >= 3 {
+                    let poly = CGMutablePath()
+                    poly.move(to: CGPoint(x: contour[0].x, y: contour[0].y))
+                    for i in 1..<contour.count {
+                        poly.addLine(to: CGPoint(x: contour[i].x, y: contour[i].y))
+                    }
+                    poly.closeSubpath()
+                    ctx.addPath(poly)
+                    ctx.drawPath(using: .fillStroke)
+                } else {
+                    let r = cell.diameterPx / 2
+                    let rect = CGRect(x: cell.cx - r, y: cell.cy - r,
+                                       width: cell.diameterPx, height: cell.diameterPx)
+                    ctx.fillEllipse(in: rect)
+                    ctx.strokeEllipse(in: rect)
+                }
             }
             ctx.restoreGState()
         }

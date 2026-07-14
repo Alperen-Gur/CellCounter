@@ -56,6 +56,20 @@ final class AppState {
             UserDefaults.standard.set(confidence, forKey: "cc-confidence")
         }
     }
+    /// Explicit expected cell diameter in MICROMETERS, used as the Cellpose
+    /// size prior. `0` means "Auto": the Python sidecar derives the prior from
+    /// the size bins (`(small_threshold + large_threshold)/2`) — the historical
+    /// behavior, where editing the bins silently re-steers segmentation. Any
+    /// value `> 0` is forwarded to the sidecar as `--diameter <µm>`, decoupling
+    /// segmentation from the size-bin breakpoints (the large-cell accuracy fix).
+    /// Persisted under `cc-expected-diameter` with the same didSet +
+    /// writeback-guard pattern as `confidence`/`pxPerUm`.
+    var expectedDiameterUm: Double {
+        didSet {
+            guard !suppressDefaultsWriteback else { return }
+            UserDefaults.standard.set(expectedDiameterUm, forKey: "cc-expected-diameter")
+        }
+    }
     /// The currently active detector. Persisted under `cc-active-model`.
     /// Distinct from `cc-default-model` (Settings → General "Default model"),
     /// which is the *fallback* model id used at first launch when no active
@@ -346,6 +360,11 @@ final class AppState {
         self.pxPerUm = storedPx > 0 ? storedPx : 2.6
         let storedConf = UserDefaults.standard.double(forKey: "cc-confidence")
         self.confidence = storedConf > 0 ? storedConf : 0.50
+        // Explicit expected diameter defaults to 0 == "Auto" (bin-derived size
+        // prior — current behavior). `UserDefaults.double` returns 0 for a
+        // missing key, which is exactly the Auto default; only a value the user
+        // explicitly set (> 0) overrides the sidecar's bin-derived prior.
+        self.expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
         self.activeModelId = UserDefaults.standard.string(forKey: "cc-active-model") ?? "cp-cyto3"
 
         if let data = UserDefaults.standard.data(forKey: "cc-channels-cyto"),
@@ -596,6 +615,10 @@ final class AppState {
         if storedPx > 0 && storedPx != pxPerUm { pxPerUm = storedPx }
         let storedConf = ud.double(forKey: "cc-confidence")
         if storedConf > 0 && storedConf != confidence { confidence = storedConf }
+        // 0 is a valid value here ("Auto"), so compare with != rather than > 0 —
+        // the user may reset an explicit diameter back to Auto from Settings.
+        let storedDiam = ud.double(forKey: "cc-expected-diameter")
+        if storedDiam != expectedDiameterUm { expectedDiameterUm = storedDiam }
         if let id = ud.string(forKey: "cc-active-model"), id != activeModelId {
             activeModelId = id
             refreshDetector()
@@ -1199,8 +1222,16 @@ final class AppState {
             return
         }
         inFlightRerunImageIds.insert(image.id)
-        let smallT = self.thresholds.first ?? 20
-        let largeT = self.thresholds.last ?? 30
+        // Decouple re-segmentation from live bin edits: source the Cellpose
+        // diameter prior (small/large threshold → expected diameter in the
+        // sidecar) from the image's OWN batch thresholds, frozen at analysis
+        // time, instead of the live global `thresholds`. Without this, editing
+        // the global size bins after the fact silently changes what a re-run
+        // produces for an already-analyzed image — a reproducibility hazard and
+        // the mechanism behind the "changing bins re-analyzed my batch" report.
+        let rerunThresholds = image.batch?.thresholds ?? self.thresholds
+        let smallT = rerunThresholds.first ?? 20
+        let largeT = rerunThresholds.last ?? 30
         let input = DetectionInput(imageURL: image.storedURL,
                                     modelId: activeModelId,
                                     pxPerUm: pxPerUm,

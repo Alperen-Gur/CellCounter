@@ -16,9 +16,11 @@ struct CalibrationSheet: View {
 
     enum CalibTab { case direct, drawline, preset }
 
-    @State private var tab: CalibTab = .direct
+    @State private var tab: CalibTab
     @State private var val: Double
-    @State private var lineLength: Double = 312
+    /// Measured scale-bar length in image pixels. Starts at 0 ("nothing measured
+    /// yet") so the drawline tab can't Save a stale value before the user draws.
+    @State private var lineLength: Double = 0
     @State private var refUm: Double = 100
     @State private var selectedPreset: String = "Olympus IX73 — 20×"
     @State private var appeared = false
@@ -36,6 +38,11 @@ struct CalibrationSheet: View {
         self.onClose = onClose
         self.onSave = onSave
         self._val = State(initialValue: current > 0 ? current : 5.2)
+        // Reliability over cleverness: when an image is open, land on the
+        // "Draw on scale bar" tab — clicking the burnt-in scale bar is the most
+        // accurate calibration path. Fall back to manual entry when there's no
+        // image to draw on.
+        self._tab = State(initialValue: imageURL != nil ? .drawline : .direct)
     }
 
     private var derivedVal: Double { refUm > 0 ? lineLength / refUm : 0 }
@@ -268,9 +275,17 @@ private struct CalibDrawlineTab: View {
     @State private var lineStart: CGPoint? = nil
     @State private var lineEnd: CGPoint? = nil
     @State private var isDragging: Bool = false
+    /// Constrain the drawn line to the horizontal axis. Scale bars are always
+    /// horizontal, so this removes the length over-estimate you get from a
+    /// slightly-tilted drag — a genuine accuracy win. Default on.
+    @State private var snapHorizontal: Bool = true
+
+    /// Common burnt-in scale-bar lengths (µm) offered as one-tap chips so the
+    /// user never has to type the reference length.
+    private let refPresets: [Double] = [10, 20, 25, 50, 100, 200, 250, 500, 1000]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             previewArea
                 .aspectRatio(16/9, contentMode: .fit)
                 .background(Tokens.bgSunken)
@@ -280,20 +295,73 @@ private struct CalibDrawlineTab: View {
                         .strokeBorder(Tokens.border, lineWidth: 0.5)
                 )
 
+            // Snap-to-horizontal toggle.
+            HStack(spacing: 10) {
+                CustomToggle(isOn: $snapHorizontal)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Snap to horizontal")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Tokens.text)
+                    Text("Keeps the measurement level with the scale bar")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tokens.textTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+
             HStack(spacing: 10) {
                 CalibInputBox(value: $lineLength, unit: "px (line)")
                 CalibInputBox(value: $refUm, unit: "µm (real)")
             }
 
-            HStack(spacing: 4) {
+            // One-tap reference-length chips — sets the "µm (real)" value.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Scale-bar length")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Tokens.textTertiary)
+                HStack(spacing: 5) {
+                    ForEach(refPresets, id: \.self) { v in
+                        let selected = abs(refUm - v) < 0.001
+                        Button { refUm = v } label: {
+                            Text(v.trimmedString)
+                                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                                .foregroundStyle(selected ? theme.accentColor : Tokens.textSecondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                        .fill(selected ? theme.accentSoft : Tokens.bgSunken)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                        .strokeBorder(Tokens.borderStrong, lineWidth: 0.5)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            HStack(spacing: 6) {
                 Text("=")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Tokens.textSecondary)
                 Text(String(format: "%.2f px / µm", derivedVal))
                     .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Tokens.textSecondary)
+                    .foregroundStyle(derivedVal > 0 ? Tokens.text : Tokens.textTertiary)
+                if derivedVal > 0 {
+                    Text("· \(AppState.objectiveLabel(for: derivedVal))")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Tokens.textTertiary)
+                }
+                Spacer(minLength: 0)
             }
         }
+    }
+
+    /// Apply the horizontal-snap constraint to a drag end point.
+    private func snappedEnd(from start: CGPoint, to end: CGPoint) -> CGPoint {
+        snapHorizontal ? CGPoint(x: end.x, y: start.y) : end
     }
 
     // MARK: - Preview area
@@ -348,16 +416,20 @@ private struct CalibDrawlineTab: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { v in
-                            lineStart = v.startLocation
-                            lineEnd = v.location
+                            let s = v.startLocation
+                            let e = snappedEnd(from: s, to: v.location)
+                            lineStart = s
+                            lineEnd = e
                             isDragging = true
-                            updateLineLengthFromPoints(v.startLocation, v.location, in: geo.size, nsImage: nsImage)
+                            updateLineLengthFromPoints(s, e, in: geo.size, nsImage: nsImage)
                         }
                         .onEnded { v in
-                            lineStart = v.startLocation
-                            lineEnd = v.location
+                            let s = v.startLocation
+                            let e = snappedEnd(from: s, to: v.location)
+                            lineStart = s
+                            lineEnd = e
                             isDragging = false
-                            updateLineLengthFromPoints(v.startLocation, v.location, in: geo.size, nsImage: nsImage)
+                            updateLineLengthFromPoints(s, e, in: geo.size, nsImage: nsImage)
                         }
                 )
                 .cursor(.crosshair)

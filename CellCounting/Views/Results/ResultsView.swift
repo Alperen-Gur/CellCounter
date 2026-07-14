@@ -47,6 +47,20 @@ struct ResultsView: View {
         } else {
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
+                    // Pass-19: per-image filename header — the canvas below had no
+                    // indication of which image in the batch is on screen, so
+                    // clicking through BatchStrip thumbnails (or ←/→) silently
+                    // swapped the image with no visible confirmation anywhere in
+                    // Results (researcher point #4). Reads `state.currentImage`,
+                    // the same computed property ViewerPanel/RealImageViewer key
+                    // off, so it updates in lockstep with every image change.
+                    // Gated on `!fullScreenEdit` like BatchStrip/ResultsSidebar
+                    // below — full-screen edit's whole point is maximizing canvas
+                    // space (see the `fullScreenEdit` doc comment above), and the
+                    // BatchStrip click workflow this fixes is itself hidden there.
+                    if !fullScreenEdit {
+                        ImageHeaderBar(state: state)
+                    }
                     ViewerPanel(
                         state: state,
                         overlayMode: $overlayMode,
@@ -350,6 +364,51 @@ struct ResultsView: View {
         // (finding: overlay-stale-after-nonhandleedit-mutations).
         NotificationCenter.default.post(name: .ccCorrectionsChanged,
                                         object: state.currentImage?.id)
+    }
+}
+
+// MARK: — Image header bar (filename)
+
+/// Slim title strip above the viewer identifying which image in the batch is
+/// currently on screen. Pass-19 (researcher point #4): the only per-image
+/// identifier in the app used to be the *batch* display name in `AppToolbar`,
+/// which never changes as you page through images — so clicking a BatchStrip
+/// thumbnail (or pressing ←/→) swapped the canvas with nothing on screen
+/// confirming which file was now displayed. Reads `state.currentImage`
+/// directly (the same computed property the viewer and sidebar key off), so
+/// it re-renders in lockstep with every `currentImageIdx` change.
+private struct ImageHeaderBar: View {
+    @Bindable var state: AppState
+
+    var body: some View {
+        if let image = state.currentImage {
+            let total = state.currentBatch?.images.count ?? 0
+            HStack(spacing: 8) {
+                Icon("image", size: 12)
+                    .foregroundStyle(Tokens.textTertiary)
+                Text(image.fileName)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Tokens.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if total > 1 {
+                    Text("· \(state.currentImageIdx + 1) of \(total)")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Tokens.textTertiary)
+                        .fixedSize()
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(Tokens.bg)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Tokens.border)
+                    .frame(height: 0.5)
+            }
+            .help(image.fileName)
+        }
     }
 }
 
@@ -1199,6 +1258,11 @@ private struct ResultsSidebar: View {
                 Divider().overlay(Tokens.divider)
                 SizeBinsPanel(state: state, cells: cells)
                 Divider().overlay(Tokens.divider)
+                // Sits directly under the size bins so the bins→segmentation
+                // decoupling reads as one story: bins reclassify instantly,
+                // expected diameter drives the next segmentation (see panel).
+                ExpectedDiameterPanel(state: state)
+                Divider().overlay(Tokens.divider)
                 DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
                 Divider().overlay(Tokens.divider)
                 ColoniesPanel(state: state)
@@ -1302,9 +1366,30 @@ private struct SizeBinsPanel: View {
     @Bindable var state: AppState
     let cells: [DetectedCell]
 
+    /// One-level undo snapshot of the thresholds captured immediately BEFORE the
+    /// most recent add / remove / edit. Non-nil while an "Undo" chip is offered.
+    /// Makes an accidental "Add bin" (the researcher's reported foot-gun) a
+    /// single click to reverse instead of forcing an image re-upload.
+    @State private var undoSnapshot: [Double]? = nil
+
     /// Use the batch's persisted thresholds for display so the count is reproducible.
     private var displayThresholds: [Double] {
         state.currentBatch?.thresholds ?? state.thresholds
+    }
+
+    /// Apply thresholds to both the live global default and the current batch's
+    /// persisted copy in one place, so every bin mutation stays consistent.
+    private func applyThresholds(_ new: [Double]) {
+        state.thresholds = new
+        state.currentBatch?.thresholds = new
+    }
+
+    private func undoLastChange() {
+        guard let snap = undoSnapshot else { return }
+        withAnimation(Tokens.Motion.ease) {
+            applyThresholds(snap)
+            undoSnapshot = nil
+        }
     }
 
     private var bins: [SizeBin] { BinMath.bins(from: displayThresholds) }
@@ -1318,6 +1403,17 @@ private struct SizeBinsPanel: View {
         VStack(spacing: 0) {
             SectionHeader(title: "Size bins")
                 .padding(.bottom, 0)
+
+            // Reassure the user (per researcher feedback) that editing bins is a
+            // cheap, reversible reclassification of already-measured cells — not
+            // a re-segmentation. It reclassifies instantly and scopes to the batch.
+            Text("Reclassifies detected cells instantly — no re-analysis. Applies to the whole batch.")
+                .font(.system(size: 11))
+                .foregroundStyle(Tokens.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+                .padding(.bottom, 4)
 
             // Render one row per bin. The last bin ("> N µm") has no editable
             // threshold of its own — its left edge IS the previous row's right
@@ -1347,17 +1443,26 @@ private struct SizeBinsPanel: View {
                         pct: pct,
                         thresholdIndex: thresholdIndex,
                         // Must keep at least one threshold so we always have ≥ 2 bins.
-                        canDelete: thresholdIndex != nil && state.thresholds.count > 1
+                        canDelete: thresholdIndex != nil && state.thresholds.count > 1,
+                        undoSnapshot: $undoSnapshot
                     )
                 }
             }
 
             // + Add bin button — relocated here from the old SectionHeader action.
+            // Non-destructive: snapshots the current thresholds first so the add
+            // (or any earlier edit) can be reversed with the Undo chip below.
             Button {
-                let last = state.thresholds.last ?? 30
+                let before = state.thresholds
+                // No fixed cap on the number of bins — the user can add as many
+                // size classes as they need. Seed the new threshold above the
+                // current maximum and keep the array sorted so the bins stay
+                // valid and ordered for any N (BinMath and the row↔threshold
+                // mapping both assume ascending order).
+                let maxThreshold = state.thresholds.max() ?? 30
                 withAnimation(Tokens.Motion.ease) {
-                    state.thresholds.append(last + 10)
-                    state.currentBatch?.thresholds = state.thresholds
+                    undoSnapshot = before
+                    applyThresholds((state.thresholds + [maxThreshold + 10]).sorted())
                 }
             } label: {
                 HStack(spacing: 6) {
@@ -1369,7 +1474,25 @@ private struct SizeBinsPanel: View {
             }
             .appButton(.standard, size: .sm)
             .padding(.top, 12)
+
+            // Undo chip — appears after any add / remove / threshold edit so an
+            // accidental change is a single click to reverse (researcher point #1).
+            if undoSnapshot != nil {
+                HStack(spacing: 6) {
+                    Icon("refresh", size: 11)
+                        .foregroundStyle(Tokens.textTertiary)
+                    Text("Bins changed")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tokens.textTertiary)
+                    Spacer(minLength: 0)
+                    Button("Undo", action: undoLastChange)
+                        .appButton(.ghost, size: .sm)
+                }
+                .padding(.top, 8)
+                .transition(.opacity)
+            }
         }
+        .animation(Tokens.Motion.easeFast, value: undoSnapshot != nil)
         .padding(.horizontal, 18)
         .padding(.vertical, 18)
     }
@@ -1390,6 +1513,9 @@ private struct SizeBinRow: View {
     /// right edge. `nil` for the last "> N" bin (no editable threshold).
     let thresholdIndex: Int?
     let canDelete: Bool
+    /// Written with the pre-change thresholds before this row edits/removes a
+    /// threshold, so the panel can offer a one-click Undo.
+    @Binding var undoSnapshot: [Double]?
 
     @State private var hovering: Bool = false
     @State private var editing: Bool = false
@@ -1446,18 +1572,20 @@ private struct SizeBinRow: View {
                     .foregroundStyle(Tokens.textTertiary)
                     .frame(minWidth: 40, alignment: .trailing)
 
-                // Trash icon — reserved as a fixed-width slot so the row layout
-                // doesn't shift between hover states. Only rendered when this
-                // row maps to a deletable threshold and the pointer is over it.
+                // Remove-bin control — reserved as a fixed-width slot so the row
+                // layout doesn't shift. Shown for every deletable threshold (not
+                // hover-gated) so a bin is always removable in place, without
+                // re-uploading the image (researcher point #1). Subtle at rest,
+                // emphasised on hover.
                 ZStack {
-                    if canDelete && hovering {
+                    if canDelete {
                         Button(action: deleteThreshold) {
                             Icon("minus", size: 12)
-                                .foregroundStyle(Tokens.textSecondary)
+                                .foregroundStyle(hovering ? Tokens.textSecondary : Tokens.textTertiary)
                                 .frame(width: 24, height: 24)
                         }
                         .buttonStyle(.plain)
-                        .help("Remove this threshold")
+                        .help("Remove this bin threshold")
                     }
                 }
                 .frame(width: 24, height: 24)
@@ -1482,7 +1610,9 @@ private struct SizeBinRow: View {
             editing = false
             return
         }
-        if let v = Double(text) {
+        if let v = Double(text), v != state.thresholds[i] {
+            // Snapshot before mutating so the edit is reversible.
+            undoSnapshot = state.thresholds
             state.thresholds[i] = v
             // Mirror into the current batch so the histogram + binning recompute
             // immediately for this analysis (Pass-12 K4/K5).
@@ -1496,12 +1626,133 @@ private struct SizeBinRow: View {
               state.thresholds.indices.contains(i),
               state.thresholds.count > 1 else { return }
         withAnimation(Tokens.Motion.ease) {
+            // Snapshot before removing so the bin can be restored with one click
+            // (researcher point #1: removing a bin must not require re-uploading).
+            undoSnapshot = state.thresholds
             state.thresholds.remove(at: i)
             // Mirror the change into the current batch (Pass-12 K4/K5).
             state.currentBatch?.thresholds = state.thresholds
         }
     }
 
+}
+
+// MARK: — Expected diameter panel (segmentation size prior)
+
+/// Explicit expected-cell-diameter control — the fix for the bins→segmentation
+/// coupling. With "Auto", the Python sidecar derives Cellpose's size prior from
+/// the size-bin breakpoints ((small+large)/2), so editing bins silently
+/// re-steers segmentation. Setting an explicit diameter here forwards
+/// `--diameter <µm>` to the sidecar, which then ignores the bins for sizing.
+/// Recommended when cells are large or uniform. Applies on the NEXT detection /
+/// re-run (⌘R) — it does not reclassify already-detected cells. Writes the
+/// global `state.expectedDiameterUm`; both detection services read it back
+/// through the persisted `cc-expected-diameter` key.
+private struct ExpectedDiameterPanel: View {
+    @Bindable var state: AppState
+
+    /// Local mirror of the numeric field text, committed to
+    /// `state.expectedDiameterUm` on submit / focus loss.
+    @State private var text: String = ""
+    @FocusState private var focused: Bool
+
+    private var isAuto: Bool { state.expectedDiameterUm <= 0 }
+
+    /// Auto (0) ↔ Custom (1) selection derived from the stored value.
+    private var modeBinding: Binding<Int> {
+        Binding(
+            get: { isAuto ? 0 : 1 },
+            set: { sel in
+                if sel == 0 {
+                    state.expectedDiameterUm = 0        // back to Auto
+                } else if state.expectedDiameterUm <= 0 {
+                    // Seed a sensible starting diameter from the current bins'
+                    // midpoint so "Custom" never begins blank/zero — this is the
+                    // same value the sidecar would otherwise derive itself.
+                    let t = state.currentBatch?.thresholds ?? state.thresholds
+                    let mid = ((t.first ?? 20) + (t.last ?? 30)) / 2
+                    state.expectedDiameterUm = mid
+                    text = mid.trimmedString
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(title: "Expected cell diameter")
+
+            // The key decoupling explanation — copy switches with the mode.
+            Text(isAuto
+                 ? "Auto derives the size prior from your size bins (current behavior) — so editing bins can re-steer segmentation."
+                 : "Segmentation uses this diameter and ignores the size bins — the recommended fix when cells are large or uniform. Applies on the next detection / re-run (⌘R).")
+                .font(.system(size: 11))
+                .foregroundStyle(Tokens.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 10)
+
+            HStack(spacing: 10) {
+                SegmentedPicker(
+                    value: modeBinding,
+                    options: [(value: 0, label: "Auto"), (value: 1, label: "Custom")]
+                )
+                Spacer(minLength: 0)
+                if !isAuto {
+                    TextField("", text: $text)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .textFieldStyle(.plain)
+                        .frame(width: 56)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: Tokens.Radius.sm, style: .continuous)
+                                .fill(Tokens.bgElevated)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Tokens.Radius.sm, style: .continuous)
+                                .strokeBorder(Tokens.borderStrong, lineWidth: 0.5)
+                        )
+                        .focused($focused)
+                        .onSubmit { commit() }
+                        .onChange(of: focused) { if !focused { commit() } }
+                    Text("µm")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Tokens.textTertiary)
+                }
+            }
+
+            // Cellpose-SAM discoverability (light touch — no model restructuring).
+            HStack(alignment: .top, spacing: 6) {
+                Icon("flame", size: 11)
+                    .foregroundStyle(Tokens.textTertiary)
+                Text("Large or irregular cells? Cellpose-SAM (install from the Models tab) usually segments them better.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 18)
+        .onAppear { text = isAuto ? "" : state.expectedDiameterUm.trimmedString }
+    }
+
+    /// Parse + clamp the field. Blank or ≤ 0 falls back to Auto (0).
+    private func commit() {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if let v = Double(trimmed), v > 0 {
+            state.expectedDiameterUm = v
+            text = v.trimmedString
+        } else if trimmed.isEmpty {
+            state.expectedDiameterUm = 0
+        } else {
+            // Invalid entry — revert the field to the last good value.
+            text = state.expectedDiameterUm > 0 ? state.expectedDiameterUm.trimmedString : ""
+        }
+    }
 }
 
 // MARK: — Distribution panel

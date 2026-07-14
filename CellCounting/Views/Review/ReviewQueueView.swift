@@ -399,38 +399,40 @@ struct ReviewQueueView: View {
             : nil
         let previousIndex = cursor
 
-        // Pass-16: dedupe by `image.fileName`. The user often re-imports the
-        // same physical file multiple times (we've seen 11 ImageRecord rows
-        // share an MD5 in the wild), each with its own DetectionRecord and
-        // its own set of cells to triage. The Review queue then iterates the
-        // *same* visual field repeatedly — that's the "resurfaces the same
-        // image twice back to back" they reported. Pick the most recent
-        // import per fileName (highest importedAt), skip the rest. The
-        // user can still triage older copies from Results view if they want.
-        var preferredByFile: [String: (image: ImageRecord, batch: BatchRecord)] = [:]
+        // Fix (researcher #3) — badge/queue count mismatch:
+        //
+        // The sidebar badge (AppState.reviewQueueCount ←
+        // Repositories.uncorrectedCellCount) counts the uncorrected
+        // low-confidence cells of EVERY stored detection. This rebuild used to
+        // dedupe by `image.fileName` (Pass-16), keeping only the most recent
+        // import per file. So when the same file was imported more than once
+        // (the "11 ImageRecord rows share an MD5" case), the badge counted all
+        // copies while the queue showed only one — the badge could read
+        // "hundreds" while the tab showed "nothing to review" if that single
+        // most-recent copy happened to be fully triaged.
+        //
+        // Iterate the exact same set the badge counts (all detections, no
+        // fileName dedupe) so the count in the sidebar and the number of cards
+        // in the queue can never drift apart — the invariant this file's header
+        // documents. (Deduping BOTH the badge and the queue is the nicer long-
+        // term behavior but must also change Repositories.uncorrectedCellCount;
+        // see the audit's recommendations.)
+        var items: [ReviewItem] = []
         for batch in state.repos.allBatches() {
             for image in batch.images {
-                guard image.detection != nil else { continue }
-                let prior = preferredByFile[image.fileName]
-                if prior == nil || image.importedAt > prior!.image.importedAt {
-                    preferredByFile[image.fileName] = (image, batch)
+                guard let detection = image.detection else { continue }
+                let correctedIds = Set(detection.corrections.map { $0.cellId })
+                for cell in detection.cells {
+                    guard cell.confidence < cutoff else { continue }
+                    guard !correctedIds.contains(cell.id) else { continue }
+                    items.append(ReviewItem(
+                        cell: cell,
+                        image: image,
+                        detection: detection,
+                        pxPerUm: batch.pxPerUm,
+                        batchName: batch.displayName
+                    ))
                 }
-            }
-        }
-        var items: [ReviewItem] = []
-        for (_, pair) in preferredByFile {
-            guard let detection = pair.image.detection else { continue }
-            let correctedIds = Set(detection.corrections.map { $0.cellId })
-            for cell in detection.cells {
-                guard cell.confidence < cutoff else { continue }
-                guard !correctedIds.contains(cell.id) else { continue }
-                items.append(ReviewItem(
-                    cell: cell,
-                    image: pair.image,
-                    detection: detection,
-                    pxPerUm: pair.batch.pxPerUm,
-                    batchName: pair.batch.displayName
-                ))
             }
         }
         items.sort { $0.cell.confidence < $1.cell.confidence }
@@ -661,9 +663,56 @@ private struct ReviewCardView: View {
                     }
                 }
                 .frame(width: renderedW, height: renderedH)
+
+                // Fix (researcher #3): size-scale reference so the reviewer can
+                // judge the cell's real dimensions. Sits at the crop's
+                // bottom-left, matching the main viewer's ScaleBar affordance.
+                reviewScaleBar(pxPerUm: item.pxPerUm, scale: scale, availableWidth: renderedW)
+                    .padding(8)
+                    .frame(width: renderedW, height: renderedH, alignment: .bottomLeading)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
+    }
+
+    /// Fix (researcher #3): adaptive scale bar for the review crop. `scale` maps
+    /// source pixels → view points; `item.pxPerUm` maps µm → source pixels. The
+    /// bar length targets ~a third of the crop width, snapped to a human-friendly
+    /// µm value so the reviewer gets an honest size reference at any zoom.
+    @ViewBuilder
+    private func reviewScaleBar(pxPerUm: Double, scale: Double, availableWidth: Double) -> some View {
+        if pxPerUm > 0, scale > 0, availableWidth > 60 {
+            let targetUm = (availableWidth * 0.33) / (pxPerUm * scale)
+            let niceUm = Self.niceScaleLength(targetUm)
+            let barPt = max(6, niceUm * pxPerUm * scale)
+            HStack(spacing: 6) {
+                Rectangle()
+                    .fill(.white)
+                    .frame(width: barPt, height: 2)
+                Text(Self.formatScaleLabel(niceUm))
+                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.black.opacity(0.55))
+            )
+        }
+    }
+
+    /// Largest "nice" µm length not exceeding `target` (falls back to the
+    /// smallest candidate for very high-magnification crops).
+    private static func niceScaleLength(_ target: Double) -> Double {
+        let candidates: [Double] = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500]
+        var chosen = candidates.first ?? 1
+        for c in candidates where c <= target { chosen = c }
+        return chosen
+    }
+
+    private static func formatScaleLabel(_ um: Double) -> String {
+        um >= 1 ? String(format: "%.0f µm", um) : String(format: "%.1f µm", um)
     }
 
     /// Build a view-space `Path` from image-pixel contour points.

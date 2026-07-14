@@ -353,7 +353,10 @@ private struct BinsSection: View {
                     )
                 }
                 Button {
-                    state.thresholds.append((state.thresholds.last ?? 30) + 10)
+                    // No fixed cap on the number of thresholds — append above the
+                    // current max so the array stays sorted and the bins stay
+                    // valid for any N.
+                    state.thresholds.append((state.thresholds.max() ?? 30) + 10)
                 } label: {
                     HStack(spacing: 6) {
                         Icon("plus", size: 12)
@@ -1376,7 +1379,8 @@ private struct AboutSection: View {
             "cc-export-folder", "cc-export-organize-by-batch",
             "cc-export-timestamp", "cc-export-csv-sep",
             "cc-export-folder-bookmark",
-            "cc-thresholds", "cc-pxperum", "cc-confidence", "cc-active-model",
+            "cc-thresholds", "cc-pxperum", "cc-confidence", "cc-expected-diameter",
+            "cc-active-model",
             "cc-model-filter", "cc-onboarded", "cc-current-batch",
             "cc-models-banner-dismissed", "cc-install-banner-dismissed",
             "cc-manual-diameter", "cc-cellpose-importable",
@@ -1389,6 +1393,7 @@ private struct AboutSection: View {
 
         // Reset live in-memory state so the UI reflects cleared defaults immediately.
         state.thresholds = [20, 30]
+        state.expectedDiameterUm = 0   // back to Auto (bin-derived size prior)
         state.activeModelId = "cp-cyto3"
         state.modelFilter = .all
         state.showOnboarding = true

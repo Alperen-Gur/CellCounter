@@ -385,20 +385,43 @@ final class Repositories {
         try? context.save()
     }
 
-    /// Counts individual low-confidence CELLS (not detections) across all stored
-    /// detections, subtracting any cells the user has already triaged.
-    /// A cell is "triaged" when a CorrectionRecord exists for its `cellId` with
-    /// any kind — "remove", "accept", "resize", "move", or "add". This keeps the
-    /// sidebar badge consistent with the ReviewQueueView's `correctedIds` filter.
+    /// Counts individual low-confidence CELLS (not detections) across every
+    /// detection reachable from the library, subtracting any cells the user
+    /// has already triaged. A cell is "triaged" when a CorrectionRecord exists
+    /// for its `cellId` — any kind ("remove", "accept", "resize", "move",
+    /// "add", "manual") — recorded against that SAME detection.
+    ///
+    /// Badge/queue mismatch fix: this used to run a `FetchDescriptor<DetectionRecord>`
+    /// predicate against the denormalised `minConfidence` field, fetching
+    /// stored `DetectionRecord`s directly. `ReviewQueueView.rebuild()` (the
+    /// source of truth for what cards actually appear) has never worked that
+    /// way — it walks `allBatches() → batch.images → image.detection →
+    /// detection.cells`, so it only ever sees detections reachable from a
+    /// live batch/image. The two were only "the same set" by convention
+    /// (and by every mutation path happening to keep `minConfidence` and the
+    /// object graph in lockstep) — nothing enforced it, which is exactly the
+    /// kind of drift the "Fix (researcher #3)" note atop `rebuild()` warns
+    /// about and flags as still open ("must also change
+    /// Repositories.uncorrectedCellCount; see the audit's recommendations").
+    ///
+    /// Now this walks the identical path with the identical predicates
+    /// (`cell.confidence < confidence`, same per-detection `correctedIds`
+    /// exclusion, no fileName dedupe — the queue doesn't dedupe either) so
+    /// the badge and the queue's card count are derived from one rule, not
+    /// two hand-synced copies of it. If the membership rule ever changes,
+    /// change it in both places — see the matching note atop
+    /// `ReviewQueueView.rebuild()`.
     func uncorrectedCellCount(below confidence: Double) -> Int {
-        let desc = FetchDescriptor<DetectionRecord>(
-            predicate: #Predicate { $0.minConfidence < confidence })
-        let detections = (try? context.fetch(desc)) ?? []
-        return detections.reduce(0) { sum, det in
-            let correctedIds = Set(det.corrections.map { $0.cellId })
-            return sum + det.cells.filter {
-                $0.confidence < confidence && !correctedIds.contains($0.id)
-            }.count
+        var count = 0
+        for batch in allBatches() {
+            for image in batch.images {
+                guard let detection = image.detection else { continue }
+                let correctedIds = Set(detection.corrections.map { $0.cellId })
+                count += detection.cells.filter {
+                    $0.confidence < confidence && !correctedIds.contains($0.id)
+                }.count
+            }
         }
+        return count
     }
 }

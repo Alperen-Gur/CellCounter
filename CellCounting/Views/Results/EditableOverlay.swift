@@ -39,7 +39,10 @@ struct EditableOverlay: View {
     /// (toggle-to-delete behavior).
     var onRemoveAnnotation: ((GroundTruthAnnotation) -> Void)? = nil
 
-    enum EditorMode: String, Hashable, CaseIterable { case view, add, remove, merge, manualCount, annotate }
+    // `trace` (Fix #1): a first-class, visible outline-drawing mode. Left-drag
+    // traces a freeform polygon that becomes a real contour cell — the same
+    // capability that used to be hidden behind an undiscoverable right-click.
+    enum EditorMode: String, Hashable, CaseIterable { case view, add, remove, merge, manualCount, annotate, trace }
 
     enum EditEvent {
         case removed(DetectedCell)
@@ -102,6 +105,9 @@ struct EditableOverlay: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             cellsLayer
+            selectionRingLayer       // Responsiveness: single-cell/merge ring, split
+                                     // out of cellsLayer so a click doesn't repaint
+                                     // every cell/contour (see CellsCanvas).
             multiSelectionHighlight  // Pass-15 (A2): selection set outline overlay
             selectRectOverlay        // Pass-15 (A2): dashed rect for lasso selection
             dragPreview
@@ -132,6 +138,8 @@ struct EditableOverlay: View {
         .onKeyPress(.init("c")) { setMode(.manualCount); return .handled }
         // Pass-17 (Lane B): "g" for ground-truth annotation mode.
         .onKeyPress(.init("g")) { setMode(.annotate); return .handled }
+        // Fix #1: "t" for the trace / outline-drawing mode.
+        .onKeyPress(.init("t")) { setMode(.trace); return .handled }
         // Bug #6 / Pass-15 (A2): Delete / Backspace — remove selection (multi or single)
         .onKeyPress(.delete) {
             guard interactive else { return .ignored }
@@ -172,7 +180,8 @@ struct EditableOverlay: View {
         .onHover { inside in
             // Pass-17 (Lane B): annotate mode also wants a crosshair cursor —
             // it's the same "you are about to place a point" affordance.
-            if inside && (mode == .manualCount || mode == .annotate) {
+            // Fix #1: trace mode wants it too — the crosshair signals "draw here".
+            if inside && (mode == .manualCount || mode == .annotate || mode == .trace) {
                 NSCursor.crosshair.push()
             } else {
                 NSCursor.pop()
@@ -180,7 +189,7 @@ struct EditableOverlay: View {
         }
         .onChange(of: mode) { _, newMode in
             // If mode changes while hovering, update cursor immediately.
-            if newMode != .manualCount && newMode != .annotate {
+            if newMode != .manualCount && newMode != .annotate && newMode != .trace {
                 NSCursor.pop()
             }
         }
@@ -189,88 +198,46 @@ struct EditableOverlay: View {
     // MARK: — Cell rendering (Canvas) — non-hit-testing layer
 
     /// Fixed visual radius (in points) for manual count markers — independent of cell diameter.
-    private static let manualMarkerRadius: Double = 7.0  // 14pt diameter
+    /// `fileprivate` so the extracted `CellsCanvas` shares this single source of truth.
+    fileprivate static let manualMarkerRadius: Double = 7.0  // 14pt diameter
 
+    /// The heavy per-cell render, extracted into an `Equatable` child view and
+    /// wrapped with `.equatable()` so a selection change (which mutates
+    /// `selectedCellId`/`mergeFirstId`, NOT `cells`) no longer forces a
+    /// full-canvas repaint of every cell and contour. `CellsCanvas` redraws only
+    /// when its actual drawing inputs change (cells edited, zoom, re-bin).
     private var cellsLayer: some View {
+        CellsCanvas(cells: cells,
+                    thresholds: thresholds,
+                    overlayMode: overlayMode,
+                    uncertaintyThreshold: uncertaintyThreshold,
+                    viewScale: viewScale,
+                    viewOffset: viewOffset)
+            .equatable()
+            .allowsHitTesting(false)
+    }
+
+    /// Single-cell selection ring + merge-staged ring. Split out of `cellsLayer`
+    /// so it can repaint on every selection change without dragging the whole
+    /// (potentially hundreds-of-contours) cell layer along with it.
+    private var selectionRingLayer: some View {
         Canvas { ctx, _ in
-            var manualSequence = 0
+            guard selectedCellId != nil || mergeFirstId != nil else { return }
             for c in cells {
-                let isManual = c.isManual
+                let isMergeStaged = (mergeFirstId == c.id)
+                let isSelected = (selectedCellId == c.id)
+                guard isSelected || isMergeStaged else { continue }
                 let r = (c.diameterPx * viewScale) / 2
                 let cxv = c.cx * viewScale + viewOffset.x
                 let cyv = c.cy * viewScale + viewOffset.y
                 let rect = CGRect(x: cxv - r, y: cyv - r, width: r * 2, height: r * 2)
-
-                if isManual {
-                    // Manual marker: fixed 14pt pin — small circle with sequential number.
-                    // Visual size is FIXED regardless of cell diameter (diameter still used for stats).
-                    manualSequence += 1
-                    let mr = Self.manualMarkerRadius
-                    let pinRect = CGRect(x: cxv - mr, y: cyv - mr, width: mr * 2, height: mr * 2)
-                    let circlePath = Path(ellipseIn: pinRect)
-                    ctx.fill(circlePath, with: .color(.accentColor))
-                    ctx.stroke(circlePath, with: .color(.white), style: StrokeStyle(lineWidth: 1.5))
-
-                    // Draw sequential number centered inside the pin
-                    let label = "\(manualSequence)"
-                    let resolved = ctx.resolve(
-                        Text(label)
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                    )
-                    let textSize = resolved.measure(in: CGSize(width: 28, height: 20))
-                    ctx.draw(resolved, at: CGPoint(x: cxv - textSize.width / 2,
-                                                   y: cyv - textSize.height / 2))
-                } else {
-                    // Standard ML-detected cell rendering
-                    let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
-                    let col = Tokens.binColor(idx)
-                    let isUncertain = c.confidence < uncertaintyThreshold
-
-                    if let contour = c.contourPx, contour.count >= 3 {
-                        // Pass-14: paint the per-cell mask as a filled polygon
-                        // in the bin color. Independent of OverlayMode — whenever
-                        // contour data is present we use it.
-                        var poly = Path()
-                        let first = contour[0]
-                        poly.move(to: CGPoint(
-                            x: first.x * viewScale + viewOffset.x,
-                            y: first.y * viewScale + viewOffset.y))
-                        for i in 1..<contour.count {
-                            let p = contour[i]
-                            poly.addLine(to: CGPoint(
-                                x: p.x * viewScale + viewOffset.x,
-                                y: p.y * viewScale + viewOffset.y))
-                        }
-                        poly.closeSubpath()
-                        ctx.fill(poly, with: .color(col.opacity(0.25)))
-                        let style: StrokeStyle = isUncertain
-                            ? StrokeStyle(lineWidth: 1, dash: [3.5, 3])
-                            : StrokeStyle(lineWidth: 1)
-                        ctx.stroke(poly, with: .color(col), style: style)
-                    } else {
-                        let path = overlayMode == .outline
-                            ? Path(ellipseIn: rect)
-                            : Path(roundedRect: rect, cornerRadius: 2)
-                        ctx.fill(path, with: .color(col.opacity(overlayMode == .outline ? 0.18 : 0.10)))
-                        let style: StrokeStyle = isUncertain
-                            ? StrokeStyle(lineWidth: 1.5, dash: [3.5, 3])
-                            : StrokeStyle(lineWidth: 1.5)
-                        ctx.stroke(path, with: .color(col), style: style)
-                    }
-                }
-
-                let isMergeStaged = (mergeFirstId == c.id)
-                let isSelected = (selectedCellId == c.id)
-                if isSelected || isMergeStaged {
-                    let ringRect = rect.insetBy(dx: -2, dy: -2)
-                    let ringPath = overlayMode == .outline
-                        ? Path(ellipseIn: ringRect)
-                        : Path(roundedRect: ringRect, cornerRadius: 3)
-                    ctx.stroke(ringPath,
-                               with: .color(isMergeStaged ? Tokens.warning : .accentColor),
-                               style: StrokeStyle(lineWidth: 2))
-                }
+                let ringRect = rect.insetBy(dx: -2, dy: -2)
+                let ringPath = overlayMode == .outline
+                    ? Path(ellipseIn: ringRect)
+                    : Path(roundedRect: ringRect, cornerRadius: 3)
+                ctx.stroke(ringPath,
+                           with: .color(isMergeStaged ? Tokens.warning : .accentColor),
+                           style: StrokeStyle(lineWidth: 2))
             }
         }
         .allowsHitTesting(false)
@@ -425,9 +392,32 @@ struct EditableOverlay: View {
         let dy = point.y - cell.cy
         let newRadiusPx = max(4, hypot(dx, dy))
         let newDiameterPx = newRadiusPx * 2
-        let newDiameterUm = pxPerUm > 0 ? newDiameterPx / pxPerUm : cell.diameter
-        cells[i].diameterPx = newDiameterPx
-        cells[i].diameter = newDiameterUm
+
+        // Preserve a traced contour across a resize. Scale every vertex about the
+        // cell centroid by the linear factor newDiameter/oldDiameter, reading the
+        // CURRENT contour + diameter each drag step so the two move in lockstep:
+        // area scales with the square of a linear scale, so the per-step ratios
+        // compose multiplicatively and dragging in and back out lands exactly on
+        // the original outline. The equivalent diameter is then re-derived from
+        // the scaled polygon's area (shoelace) — the same way endFreeform makes
+        // it — so contour and diameter can never drift apart. A cell with no
+        // contour keeps the plain circle/box behavior unchanged.
+        let oldDiameterPx = cells[i].diameterPx
+        if let contour = cells[i].contourPx, contour.count >= 3, oldDiameterPx > 0 {
+            let scale = newDiameterPx / oldDiameterPx
+            let scaled = contour.map { pt in
+                CGPoint(x: cell.cx + (pt.x - cell.cx) * scale,
+                        y: cell.cy + (pt.y - cell.cy) * scale)
+            }
+            let area = abs(polygonAreaShoelace(scaled))
+            let equivDiameterPx = area > 1 ? 2.0 * sqrt(area / .pi) : newDiameterPx
+            cells[i].contourPx = scaled
+            cells[i].diameterPx = equivDiameterPx
+            cells[i].diameter = pxPerUm > 0 ? equivDiameterPx / pxPerUm : cell.diameter
+        } else {
+            cells[i].diameterPx = newDiameterPx
+            cells[i].diameter = pxPerUm > 0 ? newDiameterPx / pxPerUm : cell.diameter
+        }
     }
 
     // MARK: — Floating delete button next to selected cell
@@ -472,6 +462,17 @@ struct EditableOverlay: View {
 
     private func handleDragChanged(start: CGPoint, current: CGPoint) {
         let dist = hypot(current.x - start.x, current.y - start.y)
+
+        // Fix #1: trace mode — a plain left-drag builds a freeform outline.
+        // This is the discoverable, visible replacement for the old hidden
+        // right-click gesture; it reuses the same freeform path machinery.
+        if mode == .trace {
+            if !freeformActive {
+                beginFreeform(at: viewToSource(start))
+            }
+            updateFreeform(to: viewToSource(current))
+            return
+        }
 
         // Pass-14 (F2): bulk-delete rectangle drag in .remove mode.
         // Differentiate click vs drag at distance >= 6.
@@ -541,6 +542,14 @@ struct EditableOverlay: View {
             selectRectCurrent = nil
             selectRectBaseline = []
             selectRectExtend = false
+        }
+
+        // Fix #1: trace mode — close the freeform outline into a real contour cell.
+        if mode == .trace {
+            if freeformActive {
+                endFreeform(at: viewToSource(end))
+            }
+            return
         }
 
         // Pass-14 (F2): handle bulk-delete drag end.
@@ -665,6 +674,11 @@ struct EditableOverlay: View {
             } else {
                 onAddAnnotation?(p)
             }
+        case .trace:
+            // Fix #1: outline drawing is a drag gesture (handleDragChanged /
+            // handleDragEnded). A bare click has no polygon to close, so it's a
+            // no-op here — the drag path owns all trace behavior.
+            break
         }
     }
 
@@ -695,20 +709,67 @@ struct EditableOverlay: View {
     }
 
     private func mergeCells(_ a: DetectedCell, _ b: DetectedCell) {
-        let cx = (a.cx + b.cx) / 2
-        let cy = (a.cy + b.cy) / 2
-        let diam = (a.diameter + b.diameter) / 2
-        let diamPx = (a.diameterPx + b.diameterPx) / 2
-        let merged = DetectedCell(
-            cx: cx, cy: cy,
-            diameter: diam, diameterPx: diamPx,
-            confidence: max(a.confidence, b.confidence)
-        )
+        let merged = mergedCell(a, b)
         cells.removeAll { $0.id == a.id || $0.id == b.id }
         cells.append(merged)
         selectedCellId = merged.id
         pushUndo(.merged(removed: [a, b], added: merged))
         onEdit?(.merged(removed: [a, b], added: merged))
+    }
+
+    /// Builds the single cell that replaces a merged pair. When EITHER input
+    /// carries a traced contour, the two footprints are fused into one convex
+    /// hull that wraps them both — real contour vertices where present, a ring of
+    /// sampled perimeter points for a plain circular cell — and the merged
+    /// equivalent diameter is re-derived from the hull's area (shoelace), exactly
+    /// as endFreeform does, so contour and diameter stay self-consistent. The hull
+    /// is always convex (robust, never self-intersecting); a gap between two
+    /// far-apart cells is bridged by straight edges. When NEITHER input has a
+    /// contour, or the hull degenerates to < 3 points, it falls back to the legacy
+    /// averaged circle/box.
+    private func mergedCell(_ a: DetectedCell, _ b: DetectedCell) -> DetectedCell {
+        let aHasContour = (a.contourPx?.count ?? 0) >= 3
+        let bHasContour = (b.contourPx?.count ?? 0) >= 3
+
+        if aHasContour || bHasContour {
+            var points = Self.footprintPoints(of: a)
+            points.append(contentsOf: Self.footprintPoints(of: b))
+            let hull = Self.convexHull(points)
+            if hull.count >= 3 {
+                // Bounding-box center + area-equivalent diameter, matching how a
+                // traced (endFreeform) cell defines its center and diameter.
+                var minX = hull[0].x, maxX = hull[0].x
+                var minY = hull[0].y, maxY = hull[0].y
+                for p in hull {
+                    if p.x < minX { minX = p.x }
+                    if p.x > maxX { maxX = p.x }
+                    if p.y < minY { minY = p.y }
+                    if p.y > maxY { maxY = p.y }
+                }
+                let cx = (minX + maxX) / 2
+                let cy = (minY + maxY) / 2
+                let area = abs(polygonAreaShoelace(hull))
+                let equivDiameterPx = area > 1 ? 2.0 * sqrt(area / .pi) : max(maxX - minX, maxY - minY)
+                let diameterUm = pxPerUm > 0 ? equivDiameterPx / pxPerUm : (a.diameter + b.diameter) / 2
+                var merged = DetectedCell(
+                    cx: cx, cy: cy,
+                    diameter: diameterUm, diameterPx: equivDiameterPx,
+                    confidence: max(a.confidence, b.confidence)
+                )
+                merged.contourPx = hull
+                return merged
+            }
+            // Degenerate hull — fall through to the averaged circle/box below.
+        }
+
+        // Legacy behavior: average the two centers and diameters, no contour.
+        return DetectedCell(
+            cx: (a.cx + b.cx) / 2,
+            cy: (a.cy + b.cy) / 2,
+            diameter: (a.diameter + b.diameter) / 2,
+            diameterPx: (a.diameterPx + b.diameterPx) / 2,
+            confidence: max(a.confidence, b.confidence)
+        )
     }
 
     private func removeCell(id: UUID, emit: Bool) {
@@ -812,8 +873,14 @@ struct EditableOverlay: View {
                 let hitRadiusSrc = Self.manualMarkerRadius / max(viewScale, 0.0001)
                 if (dx * dx + dy * dy) <= hitRadiusSrc * hitRadiusSrc { return c }
             } else if let contour = c.contourPx, contour.count >= 3 {
-                // Pass-14: point-in-polygon when contour data is present so
-                // selection matches the filled shape rather than the bbox.
+                // Responsiveness: point-in-polygon is O(vertices) per cell, so a
+                // click over N contour cells is O(N·V). Reject the far-away cells
+                // with a cheap centroid-distance test first — a contour vertex
+                // can't sit more than ~one diameter from the centroid, so this
+                // pre-filter never discards a true hit. Only survivors pay the
+                // full ray-cast (Pass-14 semantics: match the filled shape).
+                let bound = c.diameterPx
+                if (dx * dx + dy * dy) > bound * bound { continue }
                 if Self.pointInPolygon(p, polygon: contour) { return c }
             } else {
                 let r = c.diameterPx / 2
@@ -863,8 +930,9 @@ struct EditableOverlay: View {
     // MARK: — Pass-14 (F2) freeform draw (right-click)
 
     private func beginFreeform(at p: CGPoint) {
-        // Only in .add mode; ignore otherwise.
-        guard mode == .add else { return }
+        // `.add` keeps the legacy right-click freeform (back-compat); `.trace`
+        // is the visible left-drag path added in Fix #1. Ignore other modes.
+        guard mode == .add || mode == .trace else { return }
         freeformActive = true
         freeformPath = [p]
     }
@@ -950,6 +1018,63 @@ struct EditableOverlay: View {
         return sum / 2.0
     }
 
+    // MARK: — Contour geometry helpers (resize scaling + merge hull)
+
+    /// Footprint points for a hull-based merge: a cell's traced contour when it
+    /// has one, otherwise a ring of points sampled around its equivalent circle
+    /// so a contour-less cell still contributes its whole area to the hull.
+    private static func footprintPoints(of cell: DetectedCell) -> [CGPoint] {
+        if let contour = cell.contourPx, contour.count >= 3 {
+            return contour
+        }
+        return circlePerimeterPoints(cx: cell.cx, cy: cell.cy, radius: cell.diameterPx / 2)
+    }
+
+    /// Evenly-spaced points around a circle, used to approximate a contour-less
+    /// cell's outline. Returns just the center if the radius is non-positive.
+    private static func circlePerimeterPoints(cx: Double, cy: Double, radius: Double, samples: Int = 16) -> [CGPoint] {
+        guard radius > 0, samples >= 3 else { return [CGPoint(x: cx, y: cy)] }
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(samples)
+        for k in 0..<samples {
+            let t = (2.0 * .pi * Double(k)) / Double(samples)
+            pts.append(CGPoint(x: cx + radius * cos(t), y: cy + radius * sin(t)))
+        }
+        return pts
+    }
+
+    /// Andrew's monotone-chain convex hull (source-pixel space). Returns the hull
+    /// vertices in counter-clockwise order. Fewer than three unique/non-collinear
+    /// inputs collapse to < 3 points, which callers treat as degenerate and skip.
+    private static func convexHull(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= 3 else { return points }
+        // Sort lexicographically by x, then y.
+        let sorted = points.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
+        // Cross product of OA × OB; > 0 means a counter-clockwise turn at O.
+        func cross(_ o: CGPoint, _ a: CGPoint, _ b: CGPoint) -> Double {
+            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        }
+        // Build the lower and upper chains, dropping vertices that don't turn CCW.
+        var lower: [CGPoint] = []
+        for p in sorted {
+            while lower.count >= 2 && cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(p)
+        }
+        var upper: [CGPoint] = []
+        for p in sorted.reversed() {
+            while upper.count >= 2 && cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(p)
+        }
+        // Concatenate; each chain's last point is the other chain's first, so drop it.
+        lower.removeLast()
+        upper.removeLast()
+        return lower + upper
+    }
+
     private func setMode(_ m: EditorMode) {
         guard let binding = editorMode else { return }
         binding.wrappedValue = m
@@ -969,6 +1094,12 @@ struct EditableOverlay: View {
             removeRectCurrent = nil
             selectRectStart = nil
             selectRectCurrent = nil
+        }
+        // Fix #1: leaving trace mid-stroke must cancel the in-progress outline
+        // so a stray dashed path doesn't linger over the image.
+        if m != .trace {
+            freeformActive = false
+            freeformPath = []
         }
     }
 
@@ -1175,6 +1306,107 @@ private extension EditableOverlay.DragSession.Corner {
     }
 }
 
+// MARK: — Cell render layer (extracted for redraw isolation)
+
+/// The per-cell drawing (manual pins, filled contours, bbox/outline fallbacks),
+/// pulled out of `EditableOverlay` into its own `Equatable` view. Wrapped with
+/// `.equatable()` at the call site so SwiftUI skips repainting it when only
+/// interaction state (selection, drag rectangles, hover) changes — the layer
+/// redraws only when a drawing input actually differs. This is the "avoid
+/// full-canvas redraws" win: previously every click re-rendered all contours.
+private struct CellsCanvas: View, Equatable {
+    let cells: [DetectedCell]
+    let thresholds: [Double]
+    let overlayMode: OverlayMode
+    let uncertaintyThreshold: Double
+    let viewScale: Double
+    let viewOffset: CGPoint
+
+    var body: some View {
+        Canvas { ctx, _ in
+            var manualSequence = 0
+            for c in cells {
+                let isManual = c.isManual
+                let r = (c.diameterPx * viewScale) / 2
+                let cxv = c.cx * viewScale + viewOffset.x
+                let cyv = c.cy * viewScale + viewOffset.y
+                let rect = CGRect(x: cxv - r, y: cyv - r, width: r * 2, height: r * 2)
+
+                if isManual {
+                    // Manual marker: fixed 14pt pin — small circle with sequential number.
+                    // Visual size is FIXED regardless of cell diameter (diameter still used for stats).
+                    manualSequence += 1
+                    let mr = EditableOverlay.manualMarkerRadius
+                    let pinRect = CGRect(x: cxv - mr, y: cyv - mr, width: mr * 2, height: mr * 2)
+                    let circlePath = Path(ellipseIn: pinRect)
+                    ctx.fill(circlePath, with: .color(.accentColor))
+                    ctx.stroke(circlePath, with: .color(.white), style: StrokeStyle(lineWidth: 1.5))
+
+                    // Draw sequential number centered inside the pin
+                    let label = "\(manualSequence)"
+                    let resolved = ctx.resolve(
+                        Text(label)
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                    )
+                    let textSize = resolved.measure(in: CGSize(width: 28, height: 20))
+                    ctx.draw(resolved, at: CGPoint(x: cxv - textSize.width / 2,
+                                                   y: cyv - textSize.height / 2))
+                } else {
+                    // Standard ML-detected cell rendering
+                    let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
+                    let col = Tokens.binColor(idx)
+                    let isUncertain = c.confidence < uncertaintyThreshold
+
+                    if let contour = c.contourPx, contour.count >= 3 {
+                        // Pass-14: paint the per-cell mask as a filled polygon
+                        // in the bin color. Independent of OverlayMode — whenever
+                        // contour data is present we use it.
+                        var poly = Path()
+                        let first = contour[0]
+                        poly.move(to: CGPoint(
+                            x: first.x * viewScale + viewOffset.x,
+                            y: first.y * viewScale + viewOffset.y))
+                        for i in 1..<contour.count {
+                            let p = contour[i]
+                            poly.addLine(to: CGPoint(
+                                x: p.x * viewScale + viewOffset.x,
+                                y: p.y * viewScale + viewOffset.y))
+                        }
+                        poly.closeSubpath()
+                        ctx.fill(poly, with: .color(col.opacity(0.25)))
+                        let style: StrokeStyle = isUncertain
+                            ? StrokeStyle(lineWidth: 1, dash: [3.5, 3])
+                            : StrokeStyle(lineWidth: 1)
+                        ctx.stroke(poly, with: .color(col), style: style)
+                    } else {
+                        let path = overlayMode == .outline
+                            ? Path(ellipseIn: rect)
+                            : Path(roundedRect: rect, cornerRadius: 2)
+                        ctx.fill(path, with: .color(col.opacity(overlayMode == .outline ? 0.18 : 0.10)))
+                        let style: StrokeStyle = isUncertain
+                            ? StrokeStyle(lineWidth: 1.5, dash: [3.5, 3])
+                            : StrokeStyle(lineWidth: 1.5)
+                        ctx.stroke(path, with: .color(col), style: style)
+                    }
+                }
+            }
+        }
+    }
+
+    // Custom equality (all stored properties are value types) so `.equatable()`
+    // can short-circuit repaints. `OverlayMode` compares with `==` exactly as the
+    // rest of the codebase already relies on.
+    static func == (l: CellsCanvas, r: CellsCanvas) -> Bool {
+        l.viewScale == r.viewScale
+            && l.viewOffset == r.viewOffset
+            && l.overlayMode == r.overlayMode
+            && l.uncertaintyThreshold == r.uncertaintyThreshold
+            && l.thresholds == r.thresholds
+            && l.cells == r.cells
+    }
+}
+
 // MARK: — Pass-14 (F2) right-click capture (AppKit bridge)
 
 /// Transparent NSView that captures right-mouse events so SwiftUI gestures —
@@ -1275,6 +1507,10 @@ struct EditorModeToolbar: View {
         HStack(spacing: 2) {
             modeButton(.view, icon: "eye", label: "View")
             modeButton(.add, icon: "plus", label: "Add")
+            // Fix #1: promote freeform outline-drawing to a first-class, visible
+            // mode. A raw SF Symbol (contains a ".") signals "draw an outline";
+            // `modeIcon` renders it directly rather than through the token map.
+            modeButton(.trace, icon: "pencil.and.outline", label: "Draw")
             modeButton(.remove, icon: "minus", label: "Remove")
             modeButton(.merge, icon: "layers", label: "Merge")
             // A5: Manual count button — keyboard shortcut C
@@ -1328,6 +1564,19 @@ struct EditorModeToolbar: View {
                 .padding(.horizontal, 4)
                 .frame(height: 24)
             }
+
+            // Fix #1: inline discoverability hint so it's obvious the visible
+            // "Draw" mode traces outlines with a drag (not a click/box).
+            if mode == .trace {
+                Divider()
+                    .frame(height: 16)
+                    .padding(.horizontal, 2)
+                Text("Drag to trace an outline")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Tokens.textSecondary)
+                    .fixedSize()
+                    .padding(.horizontal, 6)
+            }
         }
         .padding(4)
         .background(
@@ -1354,7 +1603,7 @@ struct EditorModeToolbar: View {
             mode = m
         } label: {
             HStack(spacing: 4) {
-                Icon(icon, size: 12)
+                modeIcon(icon)
                 Text(label).font(.system(size: 11.5, weight: .medium))
             }
             .padding(.horizontal, 8)
@@ -1367,5 +1616,21 @@ struct EditorModeToolbar: View {
         }
         .buttonStyle(.plain)
         .help(label)
+    }
+
+    /// Icon names in the design's token map are single words (e.g. "plus"); a
+    /// name containing a "." is a literal SF Symbol (e.g. "pencil.and.outline")
+    /// and is rendered directly, mirroring how `ROIModePicker` draws its icons.
+    /// This lets the "Draw" mode use a real pencil glyph without editing the
+    /// shared Iconography token map.
+    @ViewBuilder
+    private func modeIcon(_ icon: String) -> some View {
+        if icon.contains(".") {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .regular))
+                .frame(width: 12, height: 12)
+        } else {
+            Icon(icon, size: 12)
+        }
     }
 }

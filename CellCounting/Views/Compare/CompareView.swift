@@ -21,12 +21,20 @@ struct CompareView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Purpose banner — always visible, regardless of selection state,
+            // so the tab explains itself the instant it's opened (researcher
+            // feedback #6: "I don't know what it does — maybe it doesn't
+            // work for me"). Previously nothing in the UI ever stated what
+            // Compare does; the closest was a code comment no user sees.
+            CompareIntroStrip()
+                .padding(.horizontal, 24).padding(.top, 14).padding(.bottom, 2)
+
             ChipRow(
                 conditions: conditions,
                 selected: $selected,
                 maxSelected: maxSelected
             )
-            .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
+            .padding(.horizontal, 24).padding(.top, 10).padding(.bottom, 14)
 
             Rectangle().fill(Tokens.divider).frame(height: 0.5)
 
@@ -36,12 +44,29 @@ struct CompareView: View {
                 EmptySelectionState()
             } else {
                 let activeConditions = conditions.filter { selected.contains($0.name) }
+
+                // Statistical honesty note (researcher feedback #6). Shown any
+                // time there's pooled condition data on screen — not only
+                // when a p-value is — since the per-condition mean/σ panels
+                // below pool cells the same way the Mann–Whitney test does.
+                PseudoreplicationCaveat()
+                    .padding(.horizontal, 24).padding(.top, 14)
+
                 PanelsScroll(state: state, conditions: activeConditions)
 
                 // Mann–Whitney U panel only makes sense for pairwise comparison.
-                // Show it when exactly two conditions are selected.
+                // Show it when exactly two conditions are selected; otherwise
+                // explain why it's absent instead of silently omitting it
+                // (finding: compare-stats-silently-missing — selecting 1, 3,
+                // or 4 conditions previously made the whole statistics
+                // section vanish with zero explanation, which reads as
+                // "broken" rather than "not applicable").
                 if activeConditions.count == 2 {
                     MannWhitneyPanel(state: state, conditions: activeConditions)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 18)
+                } else {
+                    NotPairwiseHint(count: activeConditions.count)
                         .padding(.horizontal, 24)
                         .padding(.bottom, 18)
                 }
@@ -117,6 +142,32 @@ struct CompareView: View {
     }
 }
 
+// MARK: — Purpose banner
+
+/// Always-visible, one-glance explanation of what Compare does — shown above
+/// the chip row no matter what's selected. See the researcher feedback note
+/// on `CompareView.body` for why this can't live only in the empty states:
+/// Compare auto-selects up to two conditions on open (`refresh()` below), so
+/// a first-time visitor usually never sees `EmptySelectionState` at all.
+private struct CompareIntroStrip: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Icon("compare", size: 13)
+                .foregroundStyle(Tokens.textTertiary)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Compares cell-size distributions and counts between conditions.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Tokens.textSecondary)
+                Text("Cells are pooled per condition from every batch tagged with it. Select exactly two conditions below to also run a Mann–Whitney significance test between them.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 // MARK: — Chip row
 
 private struct ChipRow: View {
@@ -124,6 +175,7 @@ private struct ChipRow: View {
     @Binding var selected: Set<String>
     let maxSelected: Int
     @State private var showMinHint = false
+    @State private var showMaxHint = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -143,6 +195,16 @@ private struct ChipRow: View {
                             }
                         } else if selected.count < maxSelected {
                             selected.insert(cond.name)
+                        } else {
+                            // At the cap, tapping another chip previously did
+                            // nothing at all (finding:
+                            // compare-max-chip-silent-noop) — a button that
+                            // silently no-ops reads as broken. Flash a hint,
+                            // mirroring the minSelected floor above.
+                            withAnimation(Tokens.Motion.easeFast) { showMaxHint = true }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                withAnimation(Tokens.Motion.easeFast) { showMaxHint = false }
+                            }
                         }
                     } label: {
                         HStack(spacing: 6) {
@@ -172,6 +234,11 @@ private struct ChipRow: View {
 
                 if showMinHint {
                     Text("Select at least one")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Tokens.danger)
+                        .transition(.opacity)
+                } else if showMaxHint {
+                    Text("Up to \(maxSelected) at a time — deselect one first")
                         .font(.system(size: 11.5))
                         .foregroundStyle(Tokens.danger)
                         .transition(.opacity)
@@ -313,34 +380,51 @@ private struct ConditionPanel: View {
                 Spacer(minLength: 0)
             }
 
-            // Pooled stats
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(data.cellCount) cells · \(data.batchCount) batch\(data.batchCount == 1 ? "" : "es")")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Tokens.textSecondary)
-                Text(String(format: "%.1f ± %.1f µm", data.mean, data.sigma))
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Tokens.textTertiary)
-            }
-
-            // Histogram (shared Y axis) — buckets precomputed.
-            PooledHistogram(buckets: data.buckets, thresholds: bins.isEmpty ? [] : thresholdsFromBins,
-                            color: color, sharedYMax: sharedYMax)
-
-            // Bin breakdown
-            VStack(spacing: 6) {
-                ForEach(Array(bins.enumerated()), id: \.element.id) { i, bin in
-                    let c = i < counts.count ? counts[i] : 0
-                    BinBar(label: bin.label, color: Tokens.binColor(i),
-                           count: c, pct: pct(c))
+            if data.cellCount == 0 {
+                // finding: compare-zero-data-looks-broken. A condition with
+                // no tagged batches (or tagged batches with nothing detected
+                // yet) used to fall straight through to "0 cells · 0
+                // batches", "0.0 ± 0.0 µm", an all-empty histogram, and a
+                // column of 0% bin bars — indistinguishable from a
+                // crash/regression at a glance, and the most likely concrete
+                // cause behind researcher feedback #6 ("maybe it doesn't
+                // work for me"): Compare always opens with the auto-seeded
+                // "Control" condition selected (see `refresh()` on
+                // CompareView), but batches are only tagged with a condition
+                // via the optional, skippable drag-and-drop import picker —
+                // so a wall of zeros is what most users see the first time
+                // they open this tab.
+                NoDataHint(conditionName: data.condition.name)
+            } else {
+                // Pooled stats
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(data.cellCount) cells · \(data.batchCount) batch\(data.batchCount == 1 ? "" : "es")")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Tokens.textSecondary)
+                    Text(String(format: "%.1f ± %.1f µm", data.mean, data.sigma))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Tokens.textTertiary)
                 }
-            }
 
-            // Mono trio
-            HStack(spacing: 10) {
-                MonoStat(label: "% small",       value: pct(counts.first ?? 0))
-                MonoStat(label: "% intermediate", value: counts.count >= 3 ? pct(counts[1]) : 0)
-                MonoStat(label: "% large",       value: pct(counts.last ?? 0))
+                // Histogram (shared Y axis) — buckets precomputed.
+                PooledHistogram(buckets: data.buckets, thresholds: bins.isEmpty ? [] : thresholdsFromBins,
+                                color: color, sharedYMax: sharedYMax)
+
+                // Bin breakdown
+                VStack(spacing: 6) {
+                    ForEach(Array(bins.enumerated()), id: \.element.id) { i, bin in
+                        let c = i < counts.count ? counts[i] : 0
+                        BinBar(label: bin.label, color: Tokens.binColor(i),
+                               count: c, pct: pct(c))
+                    }
+                }
+
+                // Mono trio
+                HStack(spacing: 10) {
+                    MonoStat(label: "% small",       value: pct(counts.first ?? 0))
+                    MonoStat(label: "% intermediate", value: counts.count >= 3 ? pct(counts[1]) : 0)
+                    MonoStat(label: "% large",       value: pct(counts.last ?? 0))
+                }
             }
         }
         .padding(16)
@@ -360,6 +444,27 @@ private struct ConditionPanel: View {
         // thresholds. Drop the first bin's min (0) and take each bin.max that
         // is finite.
         data.bins.dropLast().map(\.max)
+    }
+}
+
+/// Shown inside a `ConditionPanel` when the condition has zero pooled cells.
+/// Replaces a confusing wall of zeros with an explanation and a concrete next
+/// step — batch → condition tagging only happens through the optional
+/// drag-and-drop import picker today; there's no way to tag/retag an existing
+/// batch's condition from the Batches tab (out of scope here — see the
+/// REPORTED section of the audit for the Batches-view owner).
+private struct NoDataHint: View {
+    let conditionName: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("No cells tagged \"\(conditionName)\" yet.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Tokens.textSecondary)
+            Text("A batch only counts toward a condition when it's tagged with one at import time (drag files onto Home and choose a condition). Tag a batch with \"\(conditionName)\" to populate this panel.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Tokens.textTertiary)
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -505,13 +610,22 @@ private struct EmptyConditionsState: View {
     @Bindable var state: AppState
     var body: some View {
         VStack(spacing: 10) {
+            Icon("compare", size: 36)
+                .foregroundStyle(Tokens.textQuaternary.opacity(0.7))
+                .padding(.bottom, 2)
             Text("No conditions yet")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Tokens.textSecondary)
+            Text("Conditions (e.g. \"Control\", \"Drug A\") group your batches so Compare can pool and contrast their cell sizes.")
+                .font(.system(size: 12))
+                .foregroundStyle(Tokens.textTertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 340)
             Text("Create conditions in Settings → Conditions, then tag your batches when importing.")
                 .font(.system(size: 12))
                 .foregroundStyle(Tokens.textTertiary)
                 .multilineTextAlignment(.center)
+                .frame(maxWidth: 340)
             Button("Open Settings") { state.view = .settings }
                 .appButton(.primary, size: .sm)
                 .padding(.top, 4)
@@ -524,12 +638,17 @@ private struct EmptyConditionsState: View {
 private struct EmptySelectionState: View {
     var body: some View {
         VStack(spacing: 8) {
+            Icon("compare", size: 36)
+                .foregroundStyle(Tokens.textQuaternary.opacity(0.7))
+                .padding(.bottom, 2)
             Text("Pick at least one condition")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Tokens.textSecondary)
-            Text("Tap a chip above to add it to the comparison.")
+            Text("Tap a chip above to add it to the comparison. Select two to also see a Mann–Whitney significance test between them.")
                 .font(.system(size: 12))
                 .foregroundStyle(Tokens.textTertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -633,6 +752,75 @@ private struct BottomBar: View {
 }
 
 // Color(hex:) is defined in Theme/OKLCH.swift
+
+// MARK: — Comparison guidance / statistical caveat
+
+/// Shown above the pooled per-condition panels whenever 1+ conditions are
+/// selected — i.e. any time pooled numbers are on screen, not only when a
+/// p-value is. Researcher feedback (#6) asked for a visible, honest caveat:
+/// the Mann–Whitney test (and the mean/σ shown above it in each
+/// `ConditionPanel`) pools every individual segmented cell as if it were an
+/// independent replicate. The true unit of replication is the image / well /
+/// patient, not the cell — pooling this way inflates n and produces
+/// spuriously small p-values. This mirrors the longer disclosure already in
+/// the repo's README.md ("Before you publish" section) — same limitation,
+/// condensed for in-app display. This is a known, already-documented
+/// limitation; the actual fix (aggregating to one value per replicate before
+/// testing) is a statistics/workflow change out of scope for this pass.
+private struct PseudoreplicationCaveat: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Icon("info", size: 12)
+                .foregroundStyle(Tokens.warning)
+                .padding(.top, 1)
+            Text("Statistical note: this pools individual cells as independent replicates, not images, wells, or patients. Aggregate to one value per replicate (e.g. median diameter per image) before drawing condition-level conclusions — treat the test below as descriptive, not confirmatory.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Tokens.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .fill(Tokens.warning.opacity(0.10)))
+        .overlay(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .strokeBorder(Tokens.warning.opacity(0.28), lineWidth: 0.5))
+    }
+}
+
+/// Shown in place of `MannWhitneyPanel` when the active selection isn't
+/// exactly two conditions. Previously the whole statistics section just
+/// disappeared with no explanation when 1, 3, or 4 conditions were selected
+/// (finding: compare-stats-silently-missing) — indistinguishable from a bug.
+private struct NotPairwiseHint: View {
+    let count: Int
+
+    private var message: String {
+        count <= 1
+            ? "Select a second condition above to run a Mann–Whitney significance test between them."
+            : "The significance test compares exactly two conditions at a time. Narrow your selection to 2 to see it."
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Icon("info", size: 12)
+                .foregroundStyle(Tokens.textTertiary)
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(Tokens.textTertiary)
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous)
+                .fill(Tokens.bgElevated))
+        .overlay(
+            RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous)
+                .strokeBorder(Tokens.border, lineWidth: 0.5))
+    }
+}
 
 // MARK: — Mann–Whitney U panel (pairwise comparison)
 
