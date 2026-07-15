@@ -83,8 +83,48 @@ fn files_match(src: &std::path::Path, dest: &std::path::Path) -> bool {
 /// `\Lib\site-packages\` (~19) plus a nested package file path (torch ships files
 /// well over 150 chars deep), so we flag once the venv base alone leaves too
 /// little headroom under 260.
+/// Whether Windows long-path support is switched on, i.e.
+/// `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` = 1.
+///
+/// When it is, the legacy 260-char `MAX_PATH` ceiling no longer applies and the
+/// budget in [`long_path_warning`] is moot. Reading it back matters: enabling
+/// this key is the exact workaround our own error message tells the user to
+/// apply, and before this we ignored it — so following the advice changed
+/// nothing and the install stayed blocked. Any failure to read is treated as
+/// "not enabled", which keeps the conservative guard.
+#[cfg(windows)]
+fn long_paths_enabled() -> bool {
+    let mut cmd = std::process::Command::new("reg");
+    cmd.args([
+        "query",
+        r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem",
+        "/v",
+        "LongPathsEnabled",
+    ]);
+    crate::proc::hide_console_std(&mut cmd);
+    match cmd.output() {
+        // Output looks like: "    LongPathsEnabled    REG_DWORD    0x1"
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|l| l.contains("LongPathsEnabled"))
+            .and_then(|l| l.split_whitespace().last())
+            .is_some_and(|v| v != "0x0"),
+        _ => false,
+    }
+}
+
+#[cfg(not(windows))]
+fn long_paths_enabled() -> bool {
+    true
+}
+
 fn long_path_warning(venv_dir: &std::path::Path) -> Option<String> {
     if !cfg!(windows) {
+        return None;
+    }
+    // Honour the workaround this function's own message recommends: with long
+    // paths enabled the 260-char ceiling is lifted, so don't refuse the install.
+    if long_paths_enabled() {
         return None;
     }
     const MAX_PATH: usize = 260;

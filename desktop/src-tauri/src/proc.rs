@@ -29,3 +29,18 @@ pub fn hide_console_tokio(cmd: &mut tokio::process::Command) {
         let _ = cmd;
     }
 }
+
+/// Apply `CREATE_NO_WINDOW` to a `std::process::Command` on Windows; no-op
+/// elsewhere. Same contract as [`hide_console_tokio`], for the synchronous
+/// one-shot probes (e.g. reading a registry value via `reg query`).
+pub fn hide_console_std(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
