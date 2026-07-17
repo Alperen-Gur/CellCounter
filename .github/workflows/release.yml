@@ -48,6 +48,39 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # Bundle uv as a Tauri externalBin sidecar so the installer is
+      # self-contained (no `uv` on PATH required). Files must be named
+      # `uv-<target-triple>[.exe]` for tauri to match them to the build target.
+      - name: Fetch uv sidecar (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p binaries
+          base=https://github.com/astral-sh/uv/releases/latest/download
+          curl -fL -o uv.zip "$base/uv-x86_64-pc-windows-msvc.zip"
+          unzip -o uv.zip uv.exe -d binaries
+          mv binaries/uv.exe binaries/uv-x86_64-pc-windows-msvc.exe
+          ls -l binaries
+
+      - name: Fetch uv sidecar (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p binaries
+          base=https://github.com/astral-sh/uv/releases/latest/download
+          curl -fL -o uv-arm.tar.gz "$base/uv-aarch64-apple-darwin.tar.gz"
+          curl -fL -o uv-x64.tar.gz "$base/uv-x86_64-apple-darwin.tar.gz"
+          tar xzf uv-arm.tar.gz
+          tar xzf uv-x64.tar.gz
+          lipo -create -output binaries/uv-universal-apple-darwin \
+            uv-aarch64-apple-darwin/uv uv-x86_64-apple-darwin/uv
+          chmod +x binaries/uv-universal-apple-darwin
+          ls -l binaries
+
       - name: Build app + publish release
         uses: tauri-apps/tauri-action@v0
         env:

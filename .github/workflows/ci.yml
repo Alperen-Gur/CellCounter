@@ -66,6 +66,35 @@ jobs:
           npx tsc --noEmit
           npm run build
 
+      # The uv externalBin sidecar must exist for the host target, or
+      # tauri-build's config validation fails the cargo check below.
+      - name: Fetch uv sidecar (host target)
+        shell: bash
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p binaries
+          base=https://github.com/astral-sh/uv/releases/latest/download
+          case "${{ matrix.os }}" in
+            windows-latest)
+              curl -fL -o uv.zip "$base/uv-x86_64-pc-windows-msvc.zip"
+              unzip -o uv.zip uv.exe -d binaries
+              mv binaries/uv.exe binaries/uv-x86_64-pc-windows-msvc.exe ;;
+            ubuntu-latest)
+              curl -fL -o uv.tgz "$base/uv-x86_64-unknown-linux-gnu.tar.gz"
+              tar xzf uv.tgz
+              mv uv-x86_64-unknown-linux-gnu/uv binaries/uv-x86_64-unknown-linux-gnu
+              chmod +x binaries/uv-x86_64-unknown-linux-gnu ;;
+            macos-latest)
+              arch=$(uname -m)
+              if [ "$arch" = "arm64" ]; then triple=aarch64-apple-darwin; else triple=x86_64-apple-darwin; fi
+              curl -fL -o uv.tgz "$base/uv-$triple.tar.gz"
+              tar xzf uv.tgz
+              mv "uv-$triple/uv" "binaries/uv-$triple"
+              chmod +x "binaries/uv-$triple" ;;
+          esac
+          ls -l binaries
+
       # Backend gate — compiles the Rust/Tauri crate on every OS. The
       # windows-latest leg is the Windows-portability check.
       - name: Backend cargo check

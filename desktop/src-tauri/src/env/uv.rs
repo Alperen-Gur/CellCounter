@@ -44,10 +44,25 @@ pub struct InstallLogLine {
     pub line: String,
 }
 
-/// Resolve the `uv` executable. Prefer an explicit `UV` env var (set by CI /
-/// packaging), then fall back to `uv` on PATH.
+/// Resolve the `uv` executable: an explicit `UV` env var wins (set by CI /
+/// packaging), then the uv bundled beside the app binary (externalBin sidecar),
+/// then `uv` on PATH.
 fn uv_executable() -> String {
-    std::env::var("UV").unwrap_or_else(|_| "uv".to_string())
+    if let Ok(uv) = std::env::var("UV") {
+        return uv;
+    }
+    // Tauri drops the externalBin next to the main binary: `uv.exe` beside the
+    // `.exe` on Windows, `Contents/MacOS/uv` on macOS. Prefer it so a fresh
+    // install needs no `uv` on PATH.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let bundled = dir.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+            if bundled.exists() {
+                return bundled.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "uv".to_string()
 }
 
 /// Interpreter pin for the sidecar env. `pyproject.toml` allows
