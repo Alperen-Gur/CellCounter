@@ -67,6 +67,12 @@ def parse_args():
              "(restore_type='denoise_cyto3'). Used by the cp-cyto3-r model.",
     )
     parser.add_argument(
+        "--diameter", type=float, default=0.0,
+        help="Explicit expected cell diameter in µm for the Cellpose size prior. "
+             "0 (default) derives it from the size bins ((small+large)/2), "
+             "decoupling the prior from the bins when set.",
+    )
+    parser.add_argument(
         "--serve", action="store_true",
         help="Persistent-worker mode: build the model ONCE from the "
              "model-determining args, print {\"type\":\"ready\"}, then service "
@@ -189,16 +195,20 @@ def run_detection_once(model, model_type: str, args, channels: list[int]) -> dic
     log(f"[cellpose_detect] image is {width_px}x{height_px} (ndim={img.ndim}); "
         f"model={model_type}; channels={channels}")
 
-    # Pass-13: derive an explicit expected diameter (in pixels) from the user's
-    # bin thresholds and calibration. Without this, cellpose 3.x runs its size
-    # predictor (size_cyto3.npy) to auto-estimate diameter; that codepath has a
-    # known IndexError on larger images (e.g. 2880x2048). Passing an explicit
-    # `diameter` skips the size predictor entirely.
-    expected_diam_um = (float(args.small_threshold) + float(args.large_threshold)) / 2.0
+    # Pass-13: derive an explicit expected diameter (in pixels) from an explicit
+    # user diameter when set, else the bin thresholds, and calibration. Without
+    # this, cellpose 3.x runs its size predictor (size_cyto3.npy) to auto-estimate
+    # diameter; that codepath has a known IndexError on larger images (e.g.
+    # 2880x2048). Passing an explicit `diameter` skips the size predictor entirely.
+    if args.diameter > 0:
+        expected_diam_um = float(args.diameter)
+        diam_source = f"user diameter {expected_diam_um:g}µm"
+    else:
+        expected_diam_um = (float(args.small_threshold) + float(args.large_threshold)) / 2.0
+        diam_source = f"bins {args.small_threshold}-{args.large_threshold}µm"
     expected_diam_px = max(15.0, expected_diam_um * float(args.pxPerUm))
     log(f"[cellpose_detect] using fixed diameter={expected_diam_px:.1f}px "
-        f"(from bins {args.small_threshold}-{args.large_threshold}µm "
-        f"@ {args.pxPerUm}px/µm)")
+        f"(from {diam_source} @ {args.pxPerUm}px/µm)")
 
     log("[cellpose_detect] running eval ...")
     try:
@@ -313,6 +323,7 @@ _PER_IMAGE_KEYS = (
     "pxPerUm",
     "small_threshold",
     "large_threshold",
+    "diameter",
     "bg_subtract",
     "rolling_ball_radius",
     "watershed",

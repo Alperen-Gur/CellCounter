@@ -171,7 +171,18 @@ export function useBatchData(): BatchData {
     const processingActive =
       (progress > 0 && progress < 1) || stageLine.trim().length > 0;
 
-    return images.map((img) => {
+    // Natural alphanumeric display order (img2 before img10), independent of
+    // `images`' canonical `batch.imageIds` order — which `currentImageIdx`
+    // (above) and Results (useResultsData) both index into. BatchTable
+    // resolves a row click back to that canonical order by image id, so the
+    // two orderings can diverge safely.
+    const displayOrder = images
+      .slice()
+      .sort((a, b) =>
+        a.fileName.localeCompare(b.fileName, undefined, { numeric: true }),
+      );
+
+    return displayOrder.map((img) => {
       const det = detectionByImage.get(img.id) ?? null;
       let status: BatchRowStatus;
       const isCurrent = img.id === currentImageId;
@@ -199,7 +210,7 @@ export function useBatchData(): BatchData {
 
   const aggregates = useMemo<BatchAggregates | null>(() => {
     if (!batch) return null;
-    return aggregatesFor(images, detectionByImage);
+    return aggregatesFor(images, detectionByImage, batch.thresholds);
   }, [batch, images, detectionByImage]);
 
   return { batch, images, rows, aggregates, loading, error, reload };

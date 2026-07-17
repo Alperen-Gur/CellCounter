@@ -135,6 +135,130 @@ function SizeBinsPanel({ cells, thresholds }: { cells: CellDTO[]; thresholds: nu
 }
 
 // ---------------------------------------------------------------------------
+// Expected cell diameter (Swift ExpectedDiameterPanel) — the segmentation size
+// prior, decoupled from the display bins. 0 = Auto (bins-derived, current
+// behavior); a set value forwards the explicit diameter to the sidecar and
+// applies on the next detection / re-run. cyto3-only build: no Cellpose-SAM hint.
+// ---------------------------------------------------------------------------
+
+function ExpectedDiameterPanel({ thresholds }: { thresholds: number[] }) {
+  const expectedDiameterUm = useAppStore((s) => s.expectedDiameterUm);
+  const setExpectedDiameterUm = useAppStore((s) => s.setExpectedDiameterUm);
+  const isAuto = expectedDiameterUm <= 0;
+
+  // Text buffer so the field can be cleared / partially typed without the store
+  // snapping it back; re-seeded from the store when not actively editing.
+  const [text, setText] = useState(() =>
+    expectedDiameterUm > 0 ? fmtDiameter(expectedDiameterUm) : "",
+  );
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) {
+      setText(expectedDiameterUm > 0 ? fmtDiameter(expectedDiameterUm) : "");
+    }
+  }, [expectedDiameterUm]);
+
+  // Seed Custom from the bins' midpoint — the same prior the sidecar would
+  // otherwise derive itself — so switching to Custom never starts blank/zero.
+  const seedFromBins = () => {
+    const first = thresholds.length > 0 ? thresholds[0] : 20;
+    const last = thresholds.length > 0 ? thresholds[thresholds.length - 1] : 30;
+    return Math.round(((first + last) / 2) * 10) / 10;
+  };
+
+  const setMode = (custom: boolean) => {
+    if (!custom) {
+      setExpectedDiameterUm(0); // back to Auto
+    } else if (expectedDiameterUm <= 0) {
+      const mid = seedFromBins();
+      setExpectedDiameterUm(mid);
+      setText(fmtDiameter(mid));
+    }
+  };
+
+  const onEdit = (raw: string) => {
+    setText(raw);
+    if (raw.trim() === "") return; // allow clearing mid-type; blur reverts
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return; // 0/negative reachable only via Auto
+    setExpectedDiameterUm(parsed);
+  };
+
+  return (
+    <section className="rv-panel">
+      <SectionHeader title="Expected cell diameter" />
+      <p className="rv-confidence__sub" style={{ margin: "0 0 10px" }}>
+        {isAuto
+          ? "Auto derives the size prior from your size bins (current behavior) — editing bins can re-steer segmentation."
+          : "Segmentation uses this diameter and ignores the size bins — recommended when cells are large or uniform. Applies on the next detection / re-run."}
+      </p>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "10px",
+        }}
+      >
+        <div className="rv-seg" role="group" aria-label="Expected diameter mode">
+          <button
+            type="button"
+            className={"rv-seg__btn" + (isAuto ? " rv-seg__btn--on" : "")}
+            aria-pressed={isAuto}
+            onClick={() => setMode(false)}
+          >
+            Auto
+          </button>
+          <button
+            type="button"
+            className={"rv-seg__btn" + (!isAuto ? " rv-seg__btn--on" : "")}
+            aria-pressed={!isAuto}
+            onClick={() => setMode(true)}
+          >
+            Custom
+          </button>
+        </div>
+        {!isAuto && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <input
+              type="text"
+              inputMode="decimal"
+              className="rv-mono"
+              aria-label="Expected cell diameter"
+              value={text}
+              onFocus={() => {
+                focused.current = true;
+              }}
+              onBlur={() => {
+                focused.current = false;
+                setText(expectedDiameterUm > 0 ? fmtDiameter(expectedDiameterUm) : "");
+              }}
+              onChange={(e) => onEdit(e.target.value)}
+              style={{
+                width: "56px",
+                textAlign: "right",
+                padding: "5px 8px",
+                border: "1px solid var(--cc-border)",
+                borderRadius: "var(--cc-radius-sm)",
+                background: "var(--cc-bg-elevated)",
+                color: "var(--cc-text)",
+                fontSize: "var(--cc-text-sm)",
+              }}
+            />
+            <span className="rv-kv__unit">µm</span>
+          </span>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** Compact µm formatting for the diameter field (integer or one decimal). */
+function fmtDiameter(v: number): string {
+  return String(Math.round(v * 10) / 10);
+}
+
+// ---------------------------------------------------------------------------
 // Distribution histogram (Swift DistributionPanel) — fixed 8–60 µm window.
 // ---------------------------------------------------------------------------
 
@@ -809,6 +933,8 @@ export function AnalysisSidebar(props: AnalysisSidebarProps) {
       <TotalBlock cells={cells} />
       <div className="rv-divider" />
       <SizeBinsPanel cells={cells} thresholds={thresholds} />
+      <div className="rv-divider" />
+      <ExpectedDiameterPanel thresholds={thresholds} />
       <div className="rv-divider" />
       <DistributionPanel cells={cells} thresholds={thresholds} />
       <div className="rv-divider" />

@@ -28,6 +28,7 @@ import { useAppStore } from "../../kernel/store/store";
 import { BatchTable } from "./BatchTable";
 import { batchLabel, meanPmSd } from "./batchStats";
 import { useBatchData } from "./useBatchData";
+import { SizeDistBar } from "./SizeDistBar";
 import "./BatchPage.css";
 
 function AggregateCard({
@@ -44,6 +45,24 @@ function AggregateCard({
       <div className="cc-batch__stat-value">{value}</div>
       <div className="cc-batch__stat-label">{label}</div>
       {hint ? <div className="cc-batch__stat-hint">{hint}</div> : null}
+    </div>
+  );
+}
+
+/** Batch-wide twin of the per-row `SizeDistBar`: exact cell counts per size
+ *  bin, summed across every analyzed image, so the split is readable from the
+ *  Aggregate overview without opening any row. */
+function DistributionCard({
+  binCounts,
+  thresholds,
+}: {
+  binCounts: number[];
+  thresholds: number[];
+}) {
+  return (
+    <div className="cc-batch__stat">
+      <SizeDistBar binCounts={binCounts} thresholds={thresholds} />
+      <div className="cc-batch__stat-label">Distribution</div>
     </div>
   );
 }
@@ -175,6 +194,10 @@ export default function BatchPage() {
               )}
               hint="mean ± σ"
             />
+            <DistributionCard
+              binCounts={aggregates.binCounts}
+              thresholds={batch?.thresholds ?? []}
+            />
           </div>
         </div>
       ) : null}
@@ -199,7 +222,11 @@ export default function BatchPage() {
             This batch has no images yet.
           </div>
         ) : (
-          <BatchTable rows={rows} thresholds={batch?.thresholds ?? []} />
+          <BatchTable
+            rows={rows}
+            thresholds={batch?.thresholds ?? []}
+            imageIds={batch?.imageIds ?? []}
+          />
         )}
       </div>
 

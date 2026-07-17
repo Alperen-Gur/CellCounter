@@ -34,6 +34,7 @@ export interface DetectionParams {
   watershedMinDistanceUm: number; // default 8
   smallThresholdUm: number; // default 20
   largeThresholdUm: number; // default 30
+  expectedDiameterUm: number; // explicit Cellpose size prior (µm); 0 ⇒ Auto (bins-derived)
   useGpu: boolean; // false ⇒ --no-gpu
 }
 

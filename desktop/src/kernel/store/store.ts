@@ -31,6 +31,7 @@ export interface AnalysisParamsSlice {
   thresholds: number[]; // default [20,30]
   pxPerUm: number; // default 2.6 (10× preset)
   confidence: number; // default 0.50 — analysis filter, not destructive
+  expectedDiameterUm: number; // default 0 = Auto (segmentation size prior µm; >0 decouples from bins)
   activeModelId: string; // default "cp-cyto3"
   channels: [number, number]; // default [0,0]
   manualMarkerDiameterUm: number; // default 20
@@ -44,6 +45,7 @@ export interface AnalysisParamsSlice {
   setThresholds(t: number[]): void;
   setPxPerUm(v: number): void;
   setConfidence(v: number): void;
+  setExpectedDiameterUm(v: number): void;
   setActiveModelId(id: string): void;
   setChannels(c: [number, number]): void;
   setManualMarkerDiameterUm(v: number): void;
@@ -218,6 +220,7 @@ export const useAppStore = create<AppStore>()(
       thresholds: [20, 30],
       pxPerUm: 2.6,
       confidence: 0.5,
+      expectedDiameterUm: 0,
       activeModelId: "cp-cyto3",
       channels: [0, 0],
       manualMarkerDiameterUm: 20,
@@ -235,6 +238,7 @@ export const useAppStore = create<AppStore>()(
       setThresholds: (t) => set({ thresholds: t.slice().sort((a, b) => a - b) }),
       setPxPerUm: (v) => set({ pxPerUm: v }),
       setConfidence: (v) => set({ confidence: v }),
+      setExpectedDiameterUm: (v) => set({ expectedDiameterUm: v }),
       setActiveModelId: (id) => set({ activeModelId: id }),
       setChannels: (c) => set({ channels: c }),
       setManualMarkerDiameterUm: (v) => set({ manualMarkerDiameterUm: v }),
@@ -344,6 +348,7 @@ export const useAppStore = create<AppStore>()(
         | "thresholds"
         | "pxPerUm"
         | "confidence"
+        | "expectedDiameterUm"
         | "activeModelId"
         | "channels"
         | "manualMarkerDiameterUm"
@@ -357,6 +362,7 @@ export const useAppStore = create<AppStore>()(
         thresholds: state.thresholds,
         pxPerUm: state.pxPerUm,
         confidence: state.confidence,
+        expectedDiameterUm: state.expectedDiameterUm,
         activeModelId: state.activeModelId,
         channels: state.channels,
         manualMarkerDiameterUm: state.manualMarkerDiameterUm,

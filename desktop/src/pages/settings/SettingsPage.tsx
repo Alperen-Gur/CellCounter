@@ -81,6 +81,7 @@ const PARAM_DEFAULTS = {
   thresholds: [20, 30] as number[],
   pxPerUm: 2.6,
   confidence: 0.5,
+  expectedDiameterUm: 0,
   activeModelId: "cp-cyto3",
   channels: [0, 0] as [number, number],
   manualMarkerDiameterUm: 20,
@@ -175,6 +176,7 @@ function GeneralSection() {
   const activeModelId = useAppStore((st) => st.activeModelId);
   const maxParallel = useAppStore((st) => st.maxParallel);
   const confidence = useAppStore((st) => st.confidence);
+  const expectedDiameterUm = useAppStore((st) => st.expectedDiameterUm);
   const channels = useAppStore((st) => st.channels);
   const backgroundSubtract = useAppStore((st) => st.backgroundSubtract);
   const rollingBallRadius = useAppStore((st) => st.rollingBallRadius);
@@ -186,6 +188,7 @@ function GeneralSection() {
   const setActiveModelId = useAppStore((st) => st.setActiveModelId);
   const setMaxParallel = useAppStore((st) => st.setMaxParallel);
   const setConfidence = useAppStore((st) => st.setConfidence);
+  const setExpectedDiameterUm = useAppStore((st) => st.setExpectedDiameterUm);
   const setChannels = useAppStore((st) => st.setChannels);
   const setBackgroundSubtract = useAppStore((st) => st.setBackgroundSubtract);
   const setRollingBallRadius = useAppStore((st) => st.setRollingBallRadius);
@@ -241,6 +244,19 @@ function GeneralSection() {
           onChange={setConfidence}
           format={(v) => v.toFixed(2)}
           ariaLabel="Detection confidence"
+        />
+      </SetRow>
+
+      <SetRow
+        label="Expected cell diameter"
+        desc="Segmentation size prior for new analyses (µm). 0 = Auto — derive it from the size bins; a set value decouples segmentation from the bins."
+      >
+        <NumberField
+          value={expectedDiameterUm}
+          onCommit={setExpectedDiameterUm}
+          unit="µm"
+          min={0}
+          ariaLabel="Expected cell diameter"
         />
       </SetRow>
 
@@ -830,6 +846,7 @@ function applyParamDefaults(store: AppStore): void {
   store.setThresholds(PARAM_DEFAULTS.thresholds.slice());
   store.setPxPerUm(PARAM_DEFAULTS.pxPerUm);
   store.setConfidence(PARAM_DEFAULTS.confidence);
+  store.setExpectedDiameterUm(PARAM_DEFAULTS.expectedDiameterUm);
   store.setActiveModelId(PARAM_DEFAULTS.activeModelId);
   store.setChannels([...PARAM_DEFAULTS.channels]);
   store.setManualMarkerDiameterUm(PARAM_DEFAULTS.manualMarkerDiameterUm);

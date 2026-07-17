@@ -7,10 +7,12 @@
 //!                          as `env://install/log` Tauri events (live tail).
 //!   * `env_availability` — is the venv present + `import cellpose` importable?
 //!
-//! The uv project lives at `<app-data>/CellCounter/python/` (a copy of
-//! `desktop/python/`, including `pyproject.toml` and the sidecar scripts). `uv
-//! sync` creates `<root>/python/.venv` and installs the pinned deps
-//! (cellpose>=3,<4, numpy<2, pillow, scikit-image, CPU torch/torchvision).
+//! The uv project lives at `<app-data>/py/` (a copy of `desktop/python/`,
+//! including `pyproject.toml` and the sidecar scripts) — a short sibling of the
+//! `CellCounter/` data root, kept short so the venv's deep dependency tree stays
+//! under Windows' 260-char `MAX_PATH`. `uv sync` creates `<app-data>/py/.venv`
+//! and installs the pinned deps (cellpose>=3,<4, numpy<2, pillow, scikit-image,
+//! CPU torch/torchvision).
 //!
 //! Portability decision (honored): the pyproject pins **CPU** torch/torchvision
 //! wheels so the environment is reproducible across machines without a GPU
@@ -73,16 +75,6 @@ fn files_match(src: &std::path::Path, dest: &std::path::Path) -> bool {
     }
 }
 
-/// Windows MAX_PATH guard for the venv. Returns `Some(message)` when the venv
-/// base directory is long enough that installing deep dependency trees (e.g.
-/// torch under `.venv\Lib\site-packages\…`) is likely to exceed the legacy
-/// 260-char `MAX_PATH` limit, and long-path support isn't a given. On non-Windows
-/// targets this is always `None` (no such limit).
-///
-/// `RESERVE` is a conservative budget for the tail we don't control:
-/// `\Lib\site-packages\` (~19) plus a nested package file path (torch ships files
-/// well over 150 chars deep), so we flag once the venv base alone leaves too
-/// little headroom under 260.
 /// Whether Windows long-path support is switched on, i.e.
 /// `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` = 1.
 ///
@@ -118,6 +110,20 @@ fn long_paths_enabled() -> bool {
     true
 }
 
+/// Windows `MAX_PATH` guard for the venv. Returns `Some(message)` when the venv
+/// base directory is long enough that installing deep dependency trees (e.g.
+/// torch under `.venv\Lib\site-packages\…`) is likely to exceed the legacy
+/// 260-char `MAX_PATH` limit and long-path support isn't switched on. On
+/// non-Windows targets this is always `None` (no such limit).
+///
+/// `RESERVE` budgets the tail we don't control below the venv base:
+/// `\Lib\site-packages\` (~19) plus the deepest bundled dependency file — torch's
+/// deepest header lands ~160 chars under the venv base. We warn once the base
+/// leaves less than that headroom under 260. With the venv base now at the short
+/// `<app-data>\py\.venv` (~66 chars for a typical user), a normal install clears
+/// this comfortably; the guard only trips for pathological bases (e.g. an
+/// unusually long or redirected profile path), staying a genuine safety net
+/// rather than the blanket rejection the old 200-char reserve caused.
 fn long_path_warning(venv_dir: &std::path::Path) -> Option<String> {
     if !cfg!(windows) {
         return None;
@@ -128,7 +134,10 @@ fn long_path_warning(venv_dir: &std::path::Path) -> Option<String> {
         return None;
     }
     const MAX_PATH: usize = 260;
-    const RESERVE: usize = 200; // "\Lib\site-packages\" + deepest known dep file
+    // `\Lib\site-packages\` (~19) + torch's deepest bundled file (~140) ≈ 160.
+    // NOT the old 200: that flagged any base over 60 chars — even the default
+    // ~66-char venv base — forcing the very registry edit this fix removes.
+    const RESERVE: usize = 160;
     let base_len = venv_dir.as_os_str().len();
     if base_len + RESERVE > MAX_PATH {
         Some(format!(

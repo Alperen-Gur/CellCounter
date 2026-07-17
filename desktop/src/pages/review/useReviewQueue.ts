@@ -14,9 +14,12 @@
  *   2. no correction row exists for that `cellId` yet (any kind). Triaging once
  *      is forever.
  *
- * Dedup by `image.fileName`: the user often re-imports the same physical file
- * many times, each with its own detection; keep only the most recently imported
- * copy per filename so the queue doesn't resurface the same visual field.
+ * No fileName dedup: the sidebar badge (`uncorrectedCellCount`, a SQL SUM over
+ * every `detections` row's denormalised `uncorrected_count`) counts every
+ * detection with no dedup, so the queue must walk the identical set — one
+ * entry per (batch, imageId) — or a file imported more than once (each import
+ * gets its own image row + detection) would undercount the queue relative to
+ * the badge.
  *
  * What each action writes (mirrors `EditableOverlay → handleEdit`):
  *   - reject → `recordCorrection(kind:"remove")` AND removes the cell from
@@ -115,41 +118,38 @@ async function buildQueue(
   ]);
   const imageById = new Map(allImages.map((im) => [im.id, im]));
 
-  // Dedup by fileName → keep the most recently imported copy (Swift Pass-16).
-  interface Pref {
+  // Every (batch, imageId) pair — no fileName dedup (see file header: the
+  // badge SUM doesn't dedup either, so the queue must walk the same set).
+  interface QueueImage {
     image: ImageDTO;
     pxPerUm: number;
     batchName: string;
   }
-  const preferredByFile = new Map<string, Pref>();
+  const queueImages: QueueImage[] = [];
   for (const batch of batches) {
     for (const imageId of batch.imageIds) {
       const image = imageById.get(imageId);
       if (!image) continue;
-      const prior = preferredByFile.get(image.fileName);
-      if (!prior || image.importedAt > prior.image.importedAt) {
-        preferredByFile.set(image.fileName, {
-          image,
-          pxPerUm: batch.pxPerUm,
-          batchName: batch.displayName,
-        });
-      }
+      queueImages.push({
+        image,
+        pxPerUm: batch.pxPerUm,
+        batchName: batch.displayName,
+      });
     }
   }
 
-  // Bulk-load the preferred images' detections in ONE round-trip (the triage
+  // Bulk-load every eligible image's detection in ONE round-trip (the triage
   // cards need full detections — id/cells/detectorId — so we fetch detections,
   // not counts, but via get_detections rather than an N+1 getDetection). Only
   // request images that carry cells; the rest can't contribute a review card.
-  const prefs = Array.from(preferredByFile.values());
-  const withCells = prefs.filter((p) => p.image.cellCount > 0);
+  const withCells = queueImages.filter((q) => q.image.cellCount > 0);
   const detections = await port
-    .getDetections(withCells.map((p) => p.image.id))
+    .getDetections(withCells.map((q) => q.image.id))
     .catch(() => [] as DetectionDTO[]);
   const detByImage = new Map(detections.map((d) => [d.imageId, d]));
 
-  const perImage = prefs.map((pref) => {
-    const detection = detByImage.get(pref.image.id) ?? null;
+  const perImage = queueImages.map((q) => {
+    const detection = detByImage.get(q.image.id) ?? null;
     if (!detection) return [] as ReviewItem[];
     const items: ReviewItem[] = [];
     for (const cell of detection.cells) {
@@ -158,10 +158,10 @@ async function buildQueue(
       items.push({
         key: `${detection.id}:${cell.id}`,
         cell,
-        image: pref.image,
+        image: q.image,
         detection,
-        pxPerUm: pref.pxPerUm,
-        batchName: pref.batchName,
+        pxPerUm: q.pxPerUm,
+        batchName: q.batchName,
       });
     }
     return items;

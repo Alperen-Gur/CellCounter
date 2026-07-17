@@ -28,6 +28,7 @@ import type { ReviewItem } from "./useReviewQueue";
 import {
   cellIntersectsCrop,
   computeCropRect,
+  computeScaleBar,
   cropScale,
   reviewBinIndex,
   reviewBinLabel,
@@ -236,6 +237,11 @@ export function ReviewCard({
     }
 
     ctx.restore();
+
+    // Size reference: a µm scale bar anchored to the crop's bottom-left,
+    // matching the main viewer's calibration (item.pxPerUm).
+    const bar = computeScaleBar(item.pxPerUm, scale, renderedW);
+    if (bar) drawScaleBar(ctx, bar, offX + 8, offY + renderedH - 8);
   }, [img, item, thresholds, binIdx, activeDiameter]);
 
   const confidencePct = Math.round(item.cell.confidence * 100);
@@ -378,6 +384,55 @@ function strokeCircle(
     ctx.strokeStyle = style.stroke;
     ctx.stroke();
   }
+}
+
+/** Pill-backed µm scale bar anchored at `(x, bottomY)` — white bar + label on
+ *  a dark rounded chip, mirroring the Swift `reviewScaleBar` affordance. */
+function drawScaleBar(
+  ctx: CanvasRenderingContext2D,
+  bar: { barPx: number; label: string },
+  x: number,
+  bottomY: number,
+): void {
+  ctx.font = `600 10px ${cssVar("--cc-font-mono", "monospace")}`;
+  const padX = 7;
+  const padY = 3;
+  const gap = 6;
+  const barH = 2;
+  const lineH = 11;
+  const textW = ctx.measureText(bar.label).width;
+  const w = padX * 2 + bar.barPx + gap + textW;
+  const h = padY * 2 + lineH;
+  const y = bottomY - h;
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+  roundedRectPath(ctx, x, y, w, h, 4);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(x + padX, y + h / 2 - barH / 2, bar.barPx, barH);
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(bar.label, x + padX + bar.barPx + gap, y + h / 2 + 0.5);
+}
+
+/** Rounded-rect path (avoids relying on the newer `ctx.roundRect` API). */
+function roundedRectPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 /**
