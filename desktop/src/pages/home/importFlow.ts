@@ -199,13 +199,40 @@ function shortDateStamp(d = new Date()): string {
 }
 
 /** Batch display name: single image → its base name; else "Batch · N images · <date>". */
-export function batchDisplayName(imageNames: string[]): string {
+export function batchDisplayName(imageNames: string[], sourcePaths?: string[]): string {
   if (imageNames.length === 1) {
     const name = imageNames[0];
     const dot = name.lastIndexOf(".");
     return dot > 0 ? name.slice(0, dot) : name;
   }
+  const folder = sourcePaths ? commonFolderName(sourcePaths) : null;
+  if (folder) return folder;
   return `Batch · ${imageNames.length} images · ${shortDateStamp()}`;
+}
+
+/**
+ * Shared parent-folder name of a set of source paths, or null when they don't
+ * share one. Handles both `/` and `\` separators so a Windows import is titled
+ * by its folder too.
+ */
+function commonFolderName(paths: string[]): string | null {
+  if (paths.length === 0) return null;
+  const dirs = paths.map((p) => {
+    const norm = p.replace(/\\/g, "/");
+    const slash = norm.lastIndexOf("/");
+    return slash >= 0 ? norm.slice(0, slash) : "";
+  });
+  let common = dirs[0];
+  for (let i = 1; i < dirs.length && common; i++) {
+    const d = dirs[i];
+    while (common && d !== common && !d.startsWith(common + "/")) {
+      const slash = common.lastIndexOf("/");
+      common = slash >= 0 ? common.slice(0, slash) : "";
+    }
+  }
+  if (!common) return null;
+  const seg = common.slice(common.lastIndexOf("/") + 1);
+  return seg || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +450,7 @@ async function runDetection(
   const store = storeAccess.getState();
 
   const names = keep.map((p) => p.image.fileName);
-  const displayName = batchDisplayName(names);
+  const displayName = batchDisplayName(names, keep.map((p) => p.sourcePath));
 
   // Batch px/µm: an agreeing EXIF calibration overrides the global for this
   // batch only (Swift Lane C); the global store.pxPerUm is untouched.
