@@ -64,7 +64,7 @@ jobs:
           mv binaries/uv.exe binaries/uv-x86_64-pc-windows-msvc.exe
           ls -l binaries
 
-      - name: Fetch uv sidecar (macOS universal)
+      - name: Fetch uv sidecar (macOS)
         if: matrix.platform == 'macos-latest'
         shell: bash
         working-directory: desktop/src-tauri
@@ -76,9 +76,15 @@ jobs:
           curl -fL -o uv-x64.tar.gz "$base/uv-x86_64-apple-darwin.tar.gz"
           tar xzf uv-arm.tar.gz
           tar xzf uv-x64.tar.gz
+          # A universal build compiles each arch separately, and each per-arch
+          # build validates its own externalBin, so both per-arch binaries must
+          # exist; tauri lipos them into the universal .app. The universal file
+          # is provided too, harmlessly, in case a tauri version wants it.
+          mv uv-aarch64-apple-darwin/uv binaries/uv-aarch64-apple-darwin
+          mv uv-x86_64-apple-darwin/uv binaries/uv-x86_64-apple-darwin
           lipo -create -output binaries/uv-universal-apple-darwin \
-            uv-aarch64-apple-darwin/uv uv-x86_64-apple-darwin/uv
-          chmod +x binaries/uv-universal-apple-darwin
+            binaries/uv-aarch64-apple-darwin binaries/uv-x86_64-apple-darwin
+          chmod +x binaries/uv-aarch64-apple-darwin binaries/uv-x86_64-apple-darwin binaries/uv-universal-apple-darwin
           ls -l binaries
 
       - name: Build app + publish release
