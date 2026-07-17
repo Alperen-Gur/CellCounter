@@ -140,6 +140,7 @@ export interface ImportFlowHooks {
  *   - modelId ← activeModelId
  *   - confidenceThreshold ← confidence (analysis filter; never destructive)
  *   - small/largeThresholdUm ← thresholds.first / thresholds.last
+ *   - expectedDiameterUm ← expectedDiameterUm (0 = Auto; >0 decouples segmentation from bins)
  */
 export function detectionParamsFromStore(store: AppStore): DetectionParams {
   const smallThresholdUm = store.thresholds[0] ?? 20;
@@ -158,6 +159,7 @@ export function detectionParamsFromStore(store: AppStore): DetectionParams {
     watershedMinDistanceUm: store.watershedMinDistanceUm,
     smallThresholdUm,
     largeThresholdUm,
+    expectedDiameterUm: store.expectedDiameterUm,
     useGpu: store.useGpu,
   };
 }

@@ -255,6 +255,10 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
     args.push(p.small_threshold_um.to_string());
     args.push("--large-threshold".into());
     args.push(p.large_threshold_um.to_string());
+    if p.expected_diameter_um > 0.0 {
+        args.push("--diameter".into());
+        args.push(p.expected_diameter_um.to_string());
+    }
     if !p.use_gpu {
         args.push("--no-gpu".into());
     }
@@ -315,6 +319,9 @@ fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String 
         "large_threshold".into(),
         serde_json::json!(p.large_threshold_um),
     );
+    if p.expected_diameter_um > 0.0 {
+        map.insert("diameter".into(), serde_json::json!(p.expected_diameter_um));
+    }
     map.insert("bg_subtract".into(), serde_json::json!(p.background_subtract));
     map.insert(
         "rolling_ball_radius".into(),

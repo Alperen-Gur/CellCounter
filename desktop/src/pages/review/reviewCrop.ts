@@ -124,6 +124,53 @@ export function cropScale(
   return Math.min(canvasWidth / crop.width, canvasHeight / crop.height);
 }
 
+// ── scale bar (mirror Swift reviewScaleBar / niceScaleLength) ──────────────
+
+/** Candidate "nice" µm bar lengths (Swift `niceScaleLength`'s candidates). */
+const SCALE_BAR_CANDIDATES = [1, 2, 5, 10, 20, 25, 50, 100, 200, 500];
+
+/**
+ * Largest candidate not exceeding `target` (falls back to the smallest, for
+ * very high-magnification crops). Direct port of Swift `niceScaleLength`.
+ */
+function niceScaleLength(target: number): number {
+  let chosen = SCALE_BAR_CANDIDATES[0];
+  for (const c of SCALE_BAR_CANDIDATES) {
+    if (c <= target) chosen = c;
+  }
+  return chosen;
+}
+
+/** Scale-bar label text (Swift `formatScaleLabel`). */
+function formatScaleLabel(um: number): string {
+  return um >= 1 ? `${um.toFixed(0)} µm` : `${um.toFixed(1)} µm`;
+}
+
+export interface ScaleBarSpec {
+  /** Bar length in canvas/view px. */
+  barPx: number;
+  /** e.g. "20 µm". */
+  label: string;
+}
+
+/**
+ * Scale-bar geometry for a rendered crop: a bar length (canvas px) snapped to
+ * a human-friendly µm value, targeting ~a third of `availableWidth`. Mirrors
+ * Swift `reviewScaleBar`'s sizing/guard exactly (including the size-reference
+ * fix noted there). Returns null when there's no usable calibration or the
+ * crop is too narrow to bother (matches the Swift `availableWidth > 60` guard).
+ */
+export function computeScaleBar(
+  pxPerUm: number,
+  scale: number,
+  availableWidth: number,
+): ScaleBarSpec | null {
+  if (pxPerUm <= 0 || scale <= 0 || availableWidth <= 60) return null;
+  const targetUm = (availableWidth * 0.33) / (pxPerUm * scale);
+  const niceUm = niceScaleLength(targetUm);
+  return { barPx: Math.max(6, niceUm * pxPerUm * scale), label: formatScaleLabel(niceUm) };
+}
+
 /**
  * Does a cell's bounding box overlap the crop window? Used to skip drawing
  * neighbours entirely outside the visible crop (Swift `cellIntersectsCropRect`).

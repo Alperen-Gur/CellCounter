@@ -63,6 +63,12 @@ export interface BatchAggregates {
   meanDiameterUm: number;
   /** Population σ of cell diameter (µm) pooled across every cell in the batch. */
   sdDiameterUm: number;
+  /**
+   * Cell counts per size bin, aligned 1:1 with `binsFromThresholds(thresholds)`,
+   * summed across every analyzed image in the batch — the batch-wide twin of
+   * `BatchRow.binCounts`.
+   */
+  binCounts: number[];
 }
 
 // Descriptive statistics (population mean / σ) live in `kernel/stats/stats.ts`
@@ -127,20 +133,27 @@ export function rowFor(
  * Compute batch aggregates from the loaded images + their detections. Only
  * images with a saved detection contribute (spec: "computed from saved
  * detections"). `cells-per-image` σ is over the analyzed images; diameter
- * mean/σ pool every cell across the batch.
+ * mean/σ pool every cell across the batch. `binCounts` pools every cell's
+ * size bin the same way (via `binCountsFor`); pass `[]` for `thresholds` to
+ * get a single open-top bin.
  */
 export function aggregatesFor(
   images: ImageDTO[],
   detectionByImage: Map<string, DetectionDTO | null>,
+  thresholds: number[] = [],
 ): BatchAggregates {
   const perImageCounts: number[] = [];
   const allDiameters: number[] = [];
+  const allCells: CellDTO[] = [];
 
   for (const img of images) {
     const det = detectionByImage.get(img.id) ?? null;
     if (!det) continue; // only analyzed images count toward aggregates
     perImageCounts.push(det.cells.length);
-    for (const c of det.cells) allDiameters.push(c.diameterUm);
+    for (const c of det.cells) {
+      allDiameters.push(c.diameterUm);
+      allCells.push(c);
+    }
   }
 
   const totalCells = perImageCounts.reduce((a, b) => a + b, 0);
@@ -153,6 +166,7 @@ export function aggregatesFor(
     sdCellsPerImage: stdDev(perImageCounts),
     meanDiameterUm: mean(allDiameters),
     sdDiameterUm: stdDev(allDiameters),
+    binCounts: binCountsFor(allCells, thresholds),
   };
 }
 

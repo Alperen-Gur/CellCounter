@@ -17,6 +17,7 @@
  * open, tooltips, status pills, SizeDistBar) is unchanged.
  */
 
+import { useMemo } from "react";
 import { FixedSizeList, type ListChildComponentProps } from "react-window";
 
 import { Icon } from "../../components/Icon";
@@ -81,14 +82,30 @@ const MIN_ROW_WIDTH = 160 + 110 + 72 + 108 + 220 + 40;
 interface BatchTableProps {
   rows: BatchRow[];
   thresholds: number[];
+  /**
+   * Canonical image order (`batch.imageIds`) — what `currentImageIdx` indexes
+   * into (Results / `useResultsData`), independent of `rows`' natural-sort
+   * display order. Used to resolve a clicked row to the right image.
+   */
+  imageIds: string[];
 }
 
-export function BatchTable({ rows, thresholds }: BatchTableProps) {
+export function BatchTable({ rows, thresholds, imageIds }: BatchTableProps) {
   const setCurrentImageIdx = useAppStore((s) => s.setCurrentImageIdx);
   const { ref, size } = useMeasuredSize<HTMLDivElement>();
 
-  const openInResults = (index: number) => {
-    setCurrentImageIdx(index);
+  // Resolve a row's stable image id to its position in the canonical order,
+  // so a click always opens the TAPPED row's image — never a stale index left
+  // over from the table's differently-ordered (natural-sort) display list.
+  const canonicalIndex = useMemo(
+    () => new Map(imageIds.map((id, i) => [id, i])),
+    [imageIds],
+  );
+
+  const openInResults = (imageId: string) => {
+    const idx = canonicalIndex.get(imageId);
+    if (idx === undefined) return;
+    setCurrentImageIdx(idx);
     navigate("results");
   };
 
@@ -101,12 +118,12 @@ export function BatchTable({ rows, thresholds }: BatchTableProps) {
         style={{ ...style, gridTemplateColumns: GRID_TEMPLATE }}
         className="cc-batch__row"
         role="row"
-        onClick={() => openInResults(index)}
+        onClick={() => openInResults(row.imageId)}
         tabIndex={0}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            openInResults(index);
+            openInResults(row.imageId);
           }
         }}
         title={`Open ${row.fileName} in Results`}

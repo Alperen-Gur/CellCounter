@@ -23,9 +23,17 @@ export const BIN_OKLCH: ReadonlyArray<readonly [number, number, number]> = [
   [0.82, 0.16, 60], // bin5
 ];
 
-/** Bin color for index `i`, clamped to the ramp (port of `Tokens.binColor`). */
+/**
+ * Bin color for index `i` (port of `Tokens.binColor`). Cycles through the ramp
+ * (modulo its length) so any number of bins gets a stable, defined color — bins
+ * beyond the 5 stops wrap to the start instead of all clamping to the last stop.
+ * Non-finite / negative indices fold back into range too, so it never returns
+ * undefined or crashes for N > 5.
+ */
 export function binColor(i: number): string {
-  const idx = Math.max(0, Math.min(i, BIN_OKLCH.length - 1));
+  const n = BIN_OKLCH.length;
+  const k = Number.isFinite(i) ? Math.trunc(i) : 0;
+  const idx = ((k % n) + n) % n;
   const [l, c, h] = BIN_OKLCH[idx];
   return `oklch(${l} ${c} ${h})`;
 }

@@ -4,7 +4,9 @@
 //! formats are reproduced EXACTLY from `Services/ExportService.swift` (they are
 //! the frozen output contract in tasks.json → feat-export → output):
 //!   * `cells.csv`   — per-cell measurements (Results). 23 columns.
-//!   * `summary.csv` — per-image batch summary (Batch). 18 columns.
+//!   * `summary.csv` — per-image batch summary (Batch). 15 fixed columns +
+//!     one `n_bin*` column per size bin (18 columns total for the default
+//!     2-threshold/3-bin configuration; scales to any number of thresholds).
 //!
 //! Two commands are registered in `lib.rs` (`export_cells_csv`,
 //! `export_batch_summary_csv`). The Compare view's comparison CSV and the
@@ -271,16 +273,11 @@ pub async fn export_cells_csv(
 // summary.csv  (per-image batch summary)
 // ===========================================================================
 
-/// Column header for `summary.csv`, EXACTLY as
-/// `ExportService.writePerImageSummaryCSV` + tasks.json feat-export → output.
-const SUMMARY_HEADER: &[&str] = &[
-    "image",
-    "n_cells",
-    "mean_diameter",
-    "sd_diameter",
-    "n_small",
-    "n_intermediate",
-    "n_large",
+/// Fixed `summary.csv` columns that precede the per-bin count block.
+const SUMMARY_HEADER_PREFIX: &[&str] = &["image", "n_cells", "mean_diameter", "sd_diameter"];
+
+/// Fixed `summary.csv` columns that follow the per-bin count block.
+const SUMMARY_HEADER_SUFFIX: &[&str] = &[
     "pct_clumps",
     "pct_debris",
     "pct_edge",
@@ -293,6 +290,55 @@ const SUMMARY_HEADER: &[&str] = &[
     "model_used",
     "ran_at",
 ];
+
+/// Turn a bin label (e.g. `"< 20 µm"`, `"20–30 µm"`, `"> 30 µm"`, or the
+/// thresholds-empty fallback `"all"`) into a stable, ASCII, spreadsheet-safe
+/// column-name fragment: `"lt_20um"`, `"20_30um"`, `"gt_30um"`, `"all"`. Port
+/// of `ExportService.sanitizeBinLabel` (Swift): multi-character tokens
+/// (`" µm"`, `<`, `>`, dashes) are substituted before the generic
+/// space→`_` pass; a defensive final pass strips anything left that isn't
+/// alphanumeric/underscore, collapses repeated `_`, and trims leading/
+/// trailing `_` — this stays safe even if `bin_labels` phrasing changes.
+fn sanitize_bin_label(label: &str) -> String {
+    let mut s = label.replace(" \u{b5}m", "um"); // " µm" (micro sign, U+00B5)
+    s = s.replace('<', "lt_");
+    s = s.replace('>', "gt_");
+    s = s.replace('\u{2013}', "_"); // en dash (range), e.g. "20–30 µm"
+    s = s.replace('\u{2014}', "_"); // em dash, just in case
+    s = s.replace('-', "_"); // ascii hyphen, just in case
+    s = s.replace('\u{b5}', "u"); // any leftover micro sign
+    s = s.replace(' ', "_");
+    s.retain(|c| c.is_alphanumeric() || c == '_');
+    while s.contains("__") {
+        s = s.replace("__", "_");
+    }
+    let s = s.trim_matches('_');
+    if s.is_empty() {
+        "bin".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Build the `summary.csv` column header for a batch: the fixed prefix, one
+/// `n_bin{i+1}_{sanitized_label}` column per size bin — `labels` is
+/// `bin_labels(thresholds)`, the single source of truth shared with the
+/// per-cell CSV and the on-screen overlay, so this scales to any number of
+/// thresholds instead of the historical hardcoded
+/// `n_small`/`n_intermediate`/`n_large` triple (only correct for exactly 2
+/// thresholds) — then the fixed suffix. Port of
+/// `ExportService.writePerImageSummaryCSV`'s header assembly.
+fn summary_header(labels: &[String]) -> Vec<String> {
+    let mut header: Vec<String> = SUMMARY_HEADER_PREFIX.iter().map(|s| s.to_string()).collect();
+    header.extend(
+        labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| format!("n_bin{}_{}", i + 1, sanitize_bin_label(label))),
+    );
+    header.extend(SUMMARY_HEADER_SUFFIX.iter().map(|s| s.to_string()));
+    header
+}
 
 /// One image's detection as read for the summary CSV.
 struct SummaryImage {
@@ -427,8 +473,10 @@ fn build_summary_csv(
     global_confidence: f64,
 ) -> String {
     let sep = ",";
-    let small_t = thresholds.first().copied().unwrap_or(20.0);
-    let large_t = thresholds.last().copied().unwrap_or(30.0);
+    // Bin labels are the single source of truth shared with the per-cell CSV
+    // and the on-screen overlay; computed once and reused per-row below
+    // (mirrors `build_cells_csv`).
+    let labels = bin_labels(thresholds);
 
     // Provenance block over the batch (image-agnostic — no per-image hash). The
     // confidence floor stamped here is the batch-wide global slider (mirrors the
@@ -459,7 +507,7 @@ fn build_summary_csv(
         global_confidence,
         model_id,
     ));
-    lines.push(SUMMARY_HEADER.join(sep));
+    lines.push(summary_header(&labels).join(sep));
 
     // Disambiguate duplicate filenames with _2, _3… (mirrors the Swift map).
     let mut name_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -497,26 +545,18 @@ fn build_summary_csv(
             0.0
         };
 
-        // Size-class counts: prefer the C1 sizeClass field, else compute.
-        let (mut n_small, mut n_inter, mut n_large) = (0usize, 0usize, 0usize);
+        // Size-bin counts, one entry per bin (any number of thresholds).
+        // Bucket LIVE from the batch's current thresholds via `bin_index`,
+        // clamped into range exactly like the per-cell CSV (`build_cells_csv`)
+        // and the on-screen overlay — re-binning the stored measurement on
+        // every export rather than trusting a `size_class` string frozen at
+        // detection time, so the `n_bin*` columns never silently disagree
+        // with a threshold edited after detection ran.
+        let mut bin_counts = vec![0usize; labels.len()];
         for c in &cells {
-            let cls = match c.size_class.as_deref() {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => {
-                    if c.diameter_um < small_t {
-                        "small".to_string()
-                    } else if c.diameter_um >= large_t {
-                        "large".to_string()
-                    } else {
-                        "intermediate".to_string()
-                    }
-                }
-            };
-            match cls.as_str() {
-                "small" => n_small += 1,
-                "large" => n_large += 1,
-                _ => n_inter += 1,
-            }
+            let idx = bin_index(c.diameter_um, thresholds);
+            let safe_idx = idx.min(labels.len().saturating_sub(1));
+            bin_counts[safe_idx] += 1;
         }
 
         let denom = n_cells.max(1) as f64;
@@ -547,9 +587,15 @@ fn build_summary_csv(
         let n_cells_str = if has { n_cells.to_string() } else { String::new() };
         let mean_d_str = if has && n_cells > 0 { format!("{mean_d:.3}") } else { String::new() };
         let sd_d_str = if has && n_cells > 1 { format!("{sd_d:.3}") } else { String::new() };
-        let small_str = if has { n_small.to_string() } else { String::new() };
-        let inter_str = if has { n_inter.to_string() } else { String::new() };
-        let large_str = if has { n_large.to_string() } else { String::new() };
+        // One count string per bin, aligned 1:1 (same order, same count) with
+        // the `n_bin*` columns `summary_header` emits, so this stays correct
+        // for any number of bins. Same "blank when unanalyzed" convention as
+        // `n_cells_str` above.
+        let bin_count_strs: Vec<String> = if has {
+            bin_counts.iter().map(usize::to_string).collect()
+        } else {
+            vec![String::new(); labels.len()]
+        };
         let clumps_str = if has && n_cells > 0 { format!("{pct_clumps:.2}") } else { String::new() };
         let debris_str = if has && n_cells > 0 { format!("{pct_debris:.2}") } else { String::new() };
         let edge_str = if has && n_cells > 0 { format!("{pct_edge:.2}") } else { String::new() };
@@ -573,14 +619,14 @@ fn build_summary_csv(
             img.file_name.clone()
         };
 
-        let row: Vec<String> = vec![
+        let mut row: Vec<String> = vec![
             csv_escape(&display_name, sep),
             n_cells_str,
             mean_d_str,
             sd_d_str,
-            small_str,
-            inter_str,
-            large_str,
+        ];
+        row.extend(bin_count_strs);
+        row.extend([
             clumps_str,
             debris_str,
             edge_str,
@@ -592,7 +638,7 @@ fn build_summary_csv(
             stat("illumination_residual", 4),
             csv_escape(&img.detector_id, sep),
             csv_escape(&img.ran_at, sep),
-        ];
+        ]);
         // `imported_at` is only used for the ORDER BY; keep it referenced so the
         // struct field isn't dead in release builds.
         let _ = &img.imported_at;

@@ -169,6 +169,10 @@ pub struct DetectionParams {
     pub watershed_min_distance_um: f64,
     pub small_threshold_um: f64,
     pub large_threshold_um: f64,
+    /// Explicit Cellpose expected-diameter prior (µm). 0 ⇒ Auto: derive it from
+    /// the size bins (`(small+large)/2`), preserving the legacy behaviour.
+    #[serde(default)]
+    pub expected_diameter_um: f64,
     /// false ⇒ `--no-gpu`.
     pub use_gpu: bool,
 }

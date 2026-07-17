@@ -281,7 +281,12 @@ export class MaskEditEngine {
   }
 
   /**
-   * Merge two cells into one. Center = midpoint; merged diameter
+   * Merge two cells into one. When either carries a `contourPx`, the merged cell
+   * is the convex hull of both footprints (each cell's traced contour, or ~16
+   * sampled perimeter points for a contour-less cell): center = hull bbox center
+   * and diameter = the hull's equivalent-circle diameter (area → 2√(area/π)),
+   * matching how `addFromContour` derives them. Otherwise (neither has a contour,
+   * or the hull is degenerate) center = midpoint and merged diameter
    * d = √(dₐ² + d_b²)/√2 for both µm and px (§3.5 override of the Swift
    * simple-average); confidence = max. Order in the array: originals removed,
    * merged appended.
@@ -296,18 +301,51 @@ export class MaskEditEngine {
       this.commit(noop);
       return noop;
     }
-    const cx = (a.cx + b.cx) / 2;
-    const cy = (a.cy + b.cy) / 2;
-    const diamUm = combinedDiameter(a.diameterUm, b.diameterUm);
-    const diamPx = combinedDiameter(a.diameterPx, b.diameterPx);
-    const merged: CellDTO = {
-      id: newCellId(),
-      cx,
-      cy,
-      diameterUm: diamUm,
-      diameterPx: diamPx,
-      confidence: Math.max(a.confidence, b.confidence),
-    };
+    let merged: CellDTO | undefined;
+    const aHasContour = (a.contourPx?.length ?? 0) >= 3;
+    const bHasContour = (b.contourPx?.length ?? 0) >= 3;
+    if (aHasContour || bHasContour) {
+      const hull = convexHull([...footprintPoints(a), ...footprintPoints(b)]);
+      if (hull.length >= 3) {
+        let minX = hull[0][0];
+        let maxX = hull[0][0];
+        let minY = hull[0][1];
+        let maxY = hull[0][1];
+        for (const [x, y] of hull) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        const area = Math.abs(polygonAreaShoelace(hull));
+        const equivDiameterPx =
+          area > 1
+            ? 2.0 * Math.sqrt(area / Math.PI)
+            : Math.max(maxX - minX, maxY - minY);
+        merged = {
+          id: newCellId(),
+          cx: (minX + maxX) / 2,
+          cy: (minY + maxY) / 2,
+          diameterUm:
+            this.ctx.pxPerUm > 0
+              ? equivDiameterPx / this.ctx.pxPerUm
+              : equivDiameterPx,
+          diameterPx: equivDiameterPx,
+          confidence: Math.max(a.confidence, b.confidence),
+          contourPx: hull,
+        };
+      }
+    }
+    if (!merged) {
+      merged = {
+        id: newCellId(),
+        cx: (a.cx + b.cx) / 2,
+        cy: (a.cy + b.cy) / 2,
+        diameterUm: combinedDiameter(a.diameterUm, b.diameterUm),
+        diameterPx: combinedDiameter(a.diameterPx, b.diameterPx),
+        confidence: Math.max(a.confidence, b.confidence),
+      };
+    }
     const removed = [{ ...a }, { ...b }];
     this._cells = this._cells.filter((c) => c.id !== aId && c.id !== bId);
     this._cells.push(merged);
@@ -370,6 +408,10 @@ export class MaskEditEngine {
   /**
    * Resize a cell to a new pixel diameter (min 8px → radius 4, matching the
    * Swift resize clamp). `newDiameterUm = newDiameterPx / pxPerUm` (px wins).
+   * A traced `contourPx` is scaled about the cell center by the diameter ratio
+   * and its diameter re-derived from the scaled polygon area (2√(area/π)) so
+   * contour and diameter stay consistent; a contour-less cell keeps the plain
+   * circle/box path unchanged.
    */
   resize(id: string, newDiameterPx: number): EditEvent {
     const i = this._cells.findIndex((c) => c.id === id);
@@ -380,14 +422,33 @@ export class MaskEditEngine {
     }
     const cell = this._cells[i];
     const oldDiameterUm = cell.diameterUm;
+    const oldDiameterPx = cell.diameterPx;
     const clampedPx = Math.max(8, newDiameterPx); // radius >= 4 (Swift `max(4, …)`).
-    const newDiameterUm =
-      this.ctx.pxPerUm > 0 ? clampedPx / this.ctx.pxPerUm : cell.diameterUm;
-    this._cells[i] = {
-      ...cell,
-      diameterPx: clampedPx,
-      diameterUm: newDiameterUm,
-    };
+    if (cell.contourPx && cell.contourPx.length >= 3 && oldDiameterPx > 0) {
+      const scale = clampedPx / oldDiameterPx;
+      const scaled: Array<[number, number]> = cell.contourPx.map(([x, y]) => [
+        cell.cx + (x - cell.cx) * scale,
+        cell.cy + (y - cell.cy) * scale,
+      ]);
+      const area = Math.abs(polygonAreaShoelace(scaled));
+      const equivDiameterPx = area > 1 ? 2.0 * Math.sqrt(area / Math.PI) : clampedPx;
+      this._cells[i] = {
+        ...cell,
+        contourPx: scaled,
+        diameterPx: equivDiameterPx,
+        diameterUm:
+          this.ctx.pxPerUm > 0
+            ? equivDiameterPx / this.ctx.pxPerUm
+            : cell.diameterUm,
+      };
+    } else {
+      this._cells[i] = {
+        ...cell,
+        diameterPx: clampedPx,
+        diameterUm:
+          this.ctx.pxPerUm > 0 ? clampedPx / this.ctx.pxPerUm : cell.diameterUm,
+      };
+    }
     const event: EditEvent = {
       kind: "resized",
       cell: { ...this._cells[i] },
@@ -541,6 +602,73 @@ export class MaskEditEngine {
 /** Merged diameter per §3.5: √(dₐ² + d_b²)/√2. */
 function combinedDiameter(da: number, db: number): number {
   return Math.sqrt(da * da + db * db) / Math.SQRT2;
+}
+
+/**
+ * Footprint points for a hull-based merge: the cell's traced contour when it
+ * has one, else a ring of sampled perimeter points so a contour-less cell still
+ * contributes its whole area to the hull.
+ */
+function footprintPoints(c: CellDTO): Array<[number, number]> {
+  if (c.contourPx && c.contourPx.length >= 3) return c.contourPx;
+  return circlePerimeterPoints(c.cx, c.cy, c.diameterPx / 2);
+}
+
+/** Evenly-spaced points around a circle (contour-less cell approximation). */
+function circlePerimeterPoints(
+  cx: number,
+  cy: number,
+  radius: number,
+  samples = 16,
+): Array<[number, number]> {
+  if (radius <= 0 || samples < 3) return [[cx, cy]];
+  const pts: Array<[number, number]> = [];
+  for (let k = 0; k < samples; k++) {
+    const t = (2.0 * Math.PI * k) / samples;
+    pts.push([cx + radius * Math.cos(t), cy + radius * Math.sin(t)]);
+  }
+  return pts;
+}
+
+/**
+ * Andrew's monotone-chain convex hull (source-px). Fewer than three
+ * unique/non-collinear inputs collapse to < 3 points, which callers treat as
+ * degenerate and skip.
+ */
+function convexHull(points: Array<[number, number]>): Array<[number, number]> {
+  if (points.length < 3) return points;
+  const sorted = [...points].sort((p, q) =>
+    p[0] === q[0] ? p[1] - q[1] : p[0] - q[0],
+  );
+  const cross = (
+    o: [number, number],
+    a: [number, number],
+    b: [number, number],
+  ): number => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: Array<[number, number]> = [];
+  for (const p of sorted) {
+    while (
+      lower.length >= 2 &&
+      cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
+    ) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+  const upper: Array<[number, number]> = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (
+      upper.length >= 2 &&
+      cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
+    ) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
 }
 
 /** The four bbox corners of a contour-less cell, as source-px pairs. */

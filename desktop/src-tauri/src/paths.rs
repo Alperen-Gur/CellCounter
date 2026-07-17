@@ -5,24 +5,39 @@
 //! into. Every file operation that isn't SQLite goes through a [`FileStore`].
 //!
 //! Storage root (ARCHITECTURE.md §3.8): the OS app-data dir — which Tauri
-//! already namespaces by the bundle identifier (`com.alperengur.cellcounter`) —
-//! with a `CellCounter/` sub-directory appended, so the on-disk layout is:
-//!   - Windows: `%APPDATA%\com.alperengur.cellcounter\CellCounter\`
-//!   - macOS:   `~/Library/Application Support/com.alperengur.cellcounter/CellCounter/`
-//!   - Linux:   `~/.local/share/com.alperengur.cellcounter/CellCounter/`
+//! already namespaces by the bundle identifier (`com.alperengur.cellcounter`).
+//! Under it we keep two SIBLING roots:
+//!   * `CellCounter/` — the data root (DB, images, thumbnails, models, exports).
+//!   * `py/`          — the Python env root (uv project + `.venv`). Kept as a
+//!                      short sibling on purpose: the venv buries deep dependency
+//!                      files (torch under `.venv\Lib\site-packages\…`) that,
+//!                      stacked on a longer base, overflow Windows' legacy
+//!                      260-char `MAX_PATH` and fail `uv sync`. Dropping the
+//!                      redundant `CellCounter\` segment (the app-data dir is
+//!                      already identifier-namespaced) and shortening
+//!                      `python`→`py` reclaims ~16 chars on the exact path that
+//!                      overflows, so a normal Windows user installs without any
+//!                      registry edit. The data root is deliberately left at
+//!                      `CellCounter/` so no existing DB/image data is stranded.
+//!
+//! On-disk layout:
+//!   - Windows: `%APPDATA%\com.alperengur.cellcounter\{CellCounter,py}\`
+//!   - macOS:   `~/Library/Application Support/com.alperengur.cellcounter/{CellCounter,py}/`
+//!   - Linux:   `~/.local/share/com.alperengur.cellcounter/{CellCounter,py}/`
 //!
 //! (Tests / the importer may pass a plain parent path to [`FileStore::new`], in
-//! which case the root is simply `<that path>/CellCounter/`.)
+//! which case the roots are simply `<that path>/CellCounter/` and `<that path>/py/`.)
 //!
 //! Tree:
-//!   <root>/
-//!     store.sqlite            fresh SQLite DB (NOT the Swift SwiftData store — decision (a))
-//!     Images/<uuid>.<ext>     imported originals
-//!     Thumbnails/<uuid>.jpg   256px JPEG previews
-//!     Models/                 model checkpoints (future train-from-GUI seam)
-//!     Exports/                export artefacts (ROI zips, CSV, PDF)
-//!     python/                 uv project (.venv lives here) + staged sidecar scripts
-//!       .venv/                uv-created virtual environment
+//!   <app-data>/
+//!     CellCounter/              data root
+//!       store.sqlite            fresh SQLite DB (NOT the Swift SwiftData store — decision (a))
+//!       Images/<uuid>.<ext>     imported originals
+//!       Thumbnails/<uuid>.jpg   256px JPEG previews
+//!       Models/                 model checkpoints (future train-from-GUI seam)
+//!       Exports/                export artefacts (ROI zips, CSV, PDF)
+//!     py/                       uv project (.venv lives here) + staged sidecar scripts
+//!       .venv/                  uv-created virtual environment
 //!
 //! NOTE (decision (a)): the cross-platform app lives under its OWN
 //! identifier-namespaced app-data dir (see above), so it does NOT share the
@@ -38,25 +53,36 @@ use tauri::{AppHandle, Manager};
 /// Resolves and owns the app-data directory tree.
 #[derive(Clone, Debug)]
 pub struct FileStore {
+    /// Data root — `<app-data>/CellCounter/` (DB, images, thumbnails, models,
+    /// exports).
     root: PathBuf,
+    /// Python env root — `<app-data>/py/`, a SHORT sibling of `root` holding the
+    /// uv project + `.venv`. Kept separate and short so the venv's deep
+    /// `site-packages` tree stays under Windows' 260-char `MAX_PATH` (module doc).
+    python_root: PathBuf,
 }
 
 impl FileStore {
-    /// Build a [`FileStore`] rooted at `<app_data_dir>/CellCounter` and ensure
-    /// every sub-directory exists. `app_data_dir` is normally
+    /// Build a [`FileStore`] with the data root at `<app_data_parent>/CellCounter`
+    /// and the Python env root at the short sibling `<app_data_parent>/py`, and
+    /// ensure every sub-directory exists. `app_data_parent` is normally
     /// `AppHandle::path().app_data_dir()`; a plain path is accepted so the
     /// importer/tests can construct one without a running Tauri app.
     pub fn new(app_data_parent: impl AsRef<Path>) -> std::io::Result<Self> {
-        let root = app_data_parent.as_ref().join("CellCounter");
-        let store = Self { root };
+        let parent = app_data_parent.as_ref();
+        let store = Self {
+            root: parent.join("CellCounter"),
+            python_root: parent.join("py"),
+        };
         store.ensure_tree()?;
         Ok(store)
     }
 
     /// Convenience constructor from a Tauri [`AppHandle`]. Uses the OS-correct
-    /// app-data dir (already namespaced by the bundle identifier) and appends a
-    /// `CellCounter/` sub-directory, giving the tree documented at the module
-    /// level. This root is distinct from the Swift app's storage location.
+    /// app-data dir (already namespaced by the bundle identifier) and lays down
+    /// the two sibling roots — `CellCounter/` (data) and `py/` (Python env) —
+    /// giving the tree documented at the module level. These roots are distinct
+    /// from the Swift app's storage location.
     pub fn from_app(app: &AppHandle) -> Result<Self, String> {
         let base = app
             .path()
@@ -108,12 +134,14 @@ impl FileStore {
 
     // --- python / uv -------------------------------------------------------
 
-    /// `<root>/python` — the uv project root; staged sidecar scripts + `.venv`.
+    /// `<app-data>/py` — the uv project root; staged sidecar scripts + `.venv`.
+    /// A short sibling of the data root (NOT `<root>/python`) so the venv's deep
+    /// dependency tree stays under Windows' `MAX_PATH` (see module doc).
     pub fn python_dir(&self) -> PathBuf {
-        self.root.join("python")
+        self.python_root.clone()
     }
 
-    /// `<root>/python/.venv` — the uv-managed virtual environment.
+    /// `<app-data>/py/.venv` — the uv-managed virtual environment.
     pub fn venv_dir(&self) -> PathBuf {
         self.python_dir().join(".venv")
     }
