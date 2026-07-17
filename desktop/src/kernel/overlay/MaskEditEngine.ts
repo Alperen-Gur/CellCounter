@@ -41,7 +41,13 @@ export type EditEvent =
   | { kind: "removed"; cells: CellDTO[] } // supports bulk-delete-by-rect
   | { kind: "merged"; removed: CellDTO[]; added: CellDTO }
   | { kind: "split"; removed: CellDTO; added: [CellDTO, CellDTO] }
-  | { kind: "resized"; cell: CellDTO; oldDiameterUm: number };
+  | {
+      kind: "resized";
+      cell: CellDTO;
+      oldDiameterUm: number;
+      oldDiameterPx: number;
+      oldContourPx?: Array<[number, number]>;
+    };
 
 export interface EditContext {
   pxPerUm: number;
@@ -304,7 +310,12 @@ export class MaskEditEngine {
     let merged: CellDTO | undefined;
     const aHasContour = (a.contourPx?.length ?? 0) >= 3;
     const bHasContour = (b.contourPx?.length ?? 0) >= 3;
-    if (aHasContour || bHasContour) {
+    // Only bridge two footprints into one hull when the cells are adjacent: a
+    // hull spanning a wide gap fills it and overstates the merged diameter, so
+    // distant merges fall through to the √-sum circle formula below.
+    const radiiSum = (a.diameterPx + b.diameterPx) / 2;
+    const adjacent = Math.hypot(a.cx - b.cx, a.cy - b.cy) <= radiiSum * 1.5;
+    if ((aHasContour || bHasContour) && adjacent) {
       const hull = convexHull([...footprintPoints(a), ...footprintPoints(b)]);
       if (hull.length >= 3) {
         let minX = hull[0][0];
@@ -407,11 +418,11 @@ export class MaskEditEngine {
 
   /**
    * Resize a cell to a new pixel diameter (min 8px → radius 4, matching the
-   * Swift resize clamp). `newDiameterUm = newDiameterPx / pxPerUm` (px wins).
-   * A traced `contourPx` is scaled about the cell center by the diameter ratio
-   * and its diameter re-derived from the scaled polygon area (2√(area/π)) so
-   * contour and diameter stay consistent; a contour-less cell keeps the plain
-   * circle/box path unchanged.
+   * Swift resize clamp). The drag target sets the reported diameter directly
+   * (`newDiameterUm = newDiameterPx / pxPerUm`); a traced `contourPx` is scaled
+   * about the cell center by the diameter ratio for rendering, so the measured
+   * size never drifts off the handle. A contour-less cell keeps the plain
+   * circle/box path.
    */
   resize(id: string, newDiameterPx: number): EditEvent {
     const i = this._cells.findIndex((c) => c.id === id);
@@ -423,36 +434,26 @@ export class MaskEditEngine {
     const cell = this._cells[i];
     const oldDiameterUm = cell.diameterUm;
     const oldDiameterPx = cell.diameterPx;
+    const oldContourPx = cell.contourPx;
     const clampedPx = Math.max(8, newDiameterPx); // radius >= 4 (Swift `max(4, …)`).
-    if (cell.contourPx && cell.contourPx.length >= 3 && oldDiameterPx > 0) {
+    const newDiameterUm =
+      this.ctx.pxPerUm > 0 ? clampedPx / this.ctx.pxPerUm : cell.diameterUm;
+    if (oldContourPx && oldContourPx.length >= 3 && oldDiameterPx > 0) {
       const scale = clampedPx / oldDiameterPx;
-      const scaled: Array<[number, number]> = cell.contourPx.map(([x, y]) => [
+      const scaled: Array<[number, number]> = oldContourPx.map(([x, y]) => [
         cell.cx + (x - cell.cx) * scale,
         cell.cy + (y - cell.cy) * scale,
       ]);
-      const area = Math.abs(polygonAreaShoelace(scaled));
-      const equivDiameterPx = area > 1 ? 2.0 * Math.sqrt(area / Math.PI) : clampedPx;
-      this._cells[i] = {
-        ...cell,
-        contourPx: scaled,
-        diameterPx: equivDiameterPx,
-        diameterUm:
-          this.ctx.pxPerUm > 0
-            ? equivDiameterPx / this.ctx.pxPerUm
-            : cell.diameterUm,
-      };
+      this._cells[i] = { ...cell, contourPx: scaled, diameterPx: clampedPx, diameterUm: newDiameterUm };
     } else {
-      this._cells[i] = {
-        ...cell,
-        diameterPx: clampedPx,
-        diameterUm:
-          this.ctx.pxPerUm > 0 ? clampedPx / this.ctx.pxPerUm : cell.diameterUm,
-      };
+      this._cells[i] = { ...cell, diameterPx: clampedPx, diameterUm: newDiameterUm };
     }
     const event: EditEvent = {
       kind: "resized",
       cell: { ...this._cells[i] },
       oldDiameterUm,
+      oldDiameterPx,
+      oldContourPx,
     };
     this.commit(event);
     return event;
@@ -546,17 +547,15 @@ export class MaskEditEngine {
         return { kind: "split", removed: event.removed, added: event.added };
       }
       case "resized": {
-        // Undo a resize ⇒ restore the old µm diameter (recompute px).
+        // Undo a resize ⇒ restore the old diameter AND the pre-scale contour,
+        // else the scaled polygon persists alongside the reverted diameter.
         const i = this._cells.findIndex((c) => c.id === event.cell.id);
         if (i >= 0) {
-          const oldPx =
-            this.ctx.pxPerUm > 0
-              ? event.oldDiameterUm * this.ctx.pxPerUm
-              : event.oldDiameterUm;
           this._cells[i] = {
             ...this._cells[i],
+            contourPx: event.oldContourPx,
             diameterUm: event.oldDiameterUm,
-            diameterPx: oldPx,
+            diameterPx: event.oldDiameterPx,
           };
         }
         return event;
