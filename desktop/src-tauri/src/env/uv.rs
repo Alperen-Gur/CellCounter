@@ -2,10 +2,18 @@
 //!
 //! Replaces the Swift `install_python.sh` + `CellposeInstaller` with `uv`. Two
 //! commands, registered in `lib.rs`:
-//!   * `env_install`      — stage sidecar scripts, then `uv sync` the pyproject
-//!                          under `<root>/python`, streaming uv's stdout+stderr
-//!                          as `env://install/log` Tauri events (live tail).
-//!   * `env_availability` — is the venv present + `import cellpose` importable?
+//!   * `env_install`      — stage sidecar scripts, then provision the env for the
+//!                          requested model, streaming uv's stdout+stderr as
+//!                          `env://install/log` Tauri events (live tail). For the
+//!                          cyto3 family this is `uv sync` of the pyproject under
+//!                          `<root>/py`; for Cellpose-SAM (`cpsam`) it is instead
+//!                          an ISOLATED `uv venv` + `uv pip install` into a second
+//!                          `.venv4` (see [`install_cellpose4_env`]) so the base
+//!                          `cellpose>=3,<4` env is never disturbed — mirroring the
+//!                          native app's separate `venv4`.
+//!   * `env_availability` — is the (model-appropriate) venv present + `import
+//!                          cellpose` importable? For `cpsam` the probe additionally
+//!                          asserts cellpose major >= 4 against `.venv4`.
 //!
 //! The uv project lives at `<app-data>/py/` (a copy of `desktop/python/`,
 //! including `pyproject.toml` and the sidecar scripts) — a short sibling of the
@@ -30,18 +38,25 @@ use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::detection::ipc::Availability;
+use crate::detection::sidecar::{is_cellpose_sam, CELLPOSE4_IMPORT_PROBE};
 use crate::paths::FileStore;
 
 /// Tauri event name the install log lines are emitted on.
 pub const INSTALL_LOG_EVENT: &str = "env://install/log";
 
-/// One line of uv output, streamed to the UI as an event payload.
+/// One line of install output, streamed to the UI as an event payload.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallLogLine {
     /// "stdout" | "stderr".
     pub stream: String,
     pub line: String,
+    /// App-facing id of the model whose install produced this line. Serialized
+    /// as `modelId` (via the struct's `rename_all = "camelCase"`) — a FROZEN
+    /// contract the frontend filters on. The one global `env://install/log`
+    /// stream carries every card's lines, so concurrent cyto3 + cpsam installs
+    /// interleave; stamping each line lets each card show only its own.
+    pub model_id: String,
 }
 
 /// Resolve the `uv` executable: an explicit `UV` env var wins (set by CI /
@@ -72,6 +87,25 @@ fn uv_executable() -> String {
 /// one). 3.11 is inside the supported range and has good wheel coverage for the
 /// pinned deps (cellpose 3.x / numpy<2 / CPU torch).
 const PINNED_PYTHON: &str = "3.11";
+
+/// App-facing base (cyto3) model id. Used only as the `modelId` stamp for a
+/// legacy no-arg `env_install()` call (which installs the base env); the frontend
+/// always passes an explicit `modelId`, so this is the backward-compat default.
+const BASE_MODEL_ID: &str = "cp-cyto3";
+
+/// The Cellpose-SAM (`cellpose>=4`) pip package set installed into `.venv4`.
+/// Mirrors the native `CellposeSAMDownloader.install(...)` set EXACTLY:
+/// `cellpose>=4` pulls the SAM architecture, `numpy<2` keeps the stack numpy-1
+/// clean, `scipy` + `scikit-image` cover the QC/segmentation helpers, and
+/// `torch` resolves to the CPU wheel from PyPI's default index (on the Windows +
+/// macOS release targets PyPI serves the CPU torch build, so no special mirror is
+/// needed — see [`install_cellpose4_env`]). `roifile` is NOT listed even though
+/// the ROI-export helper needs it in a cpsam-only install: `cellpose` declares
+/// `roifile` as a direct dependency, so `uv pip install cellpose>=4` pulls it in
+/// transitively. Deliberately built with `uv pip install` (no pyproject / no
+/// lockfile) so it stays fully isolated from the base env's `pyproject.toml` +
+/// `uv.lock`.
+const CP4_PIP_PACKAGES: &[&str] = &["cellpose>=4", "numpy<2", "scipy", "scikit-image", "torch"];
 
 /// Cheap "is the staged copy already current?" check: identical length and
 /// byte-for-byte contents. Reading both files is fine here — the sidecar scripts
@@ -234,14 +268,46 @@ fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String
 // COMMAND: env_install
 // ===========================================================================
 
-/// Stage the python project, then `uv sync` it, streaming output as events.
-/// Resolves to `()` on a clean exit; rejects with the uv exit code + tail on
-/// failure. The UI subscribes to [`INSTALL_LOG_EVENT`] for the live log.
+/// Stage the python project, then provision the env for `model_id`, streaming
+/// output as events. Resolves to `()` on a clean exit; rejects with the failing
+/// uv command's exit code + tail. The UI subscribes to [`INSTALL_LOG_EVENT`] for
+/// the live log.
+///
+/// Routing (frozen contract item 4): when `model_id` resolves to Cellpose-SAM
+/// (`cpsam`) we build the ISOLATED `.venv4` via [`install_cellpose4_env`]; any
+/// other id — including `None` (the backward-compatible no-arg call) — runs the
+/// unchanged base `uv sync` in [`install_base_env`]. The JS side invokes this as
+/// `invoke("env_install", { modelId })`.
 #[tauri::command]
-pub async fn env_install(app: AppHandle) -> Result<(), String> {
+pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(), String> {
     let store = FileStore::from_app(&app)?;
+    // Stage the python project for BOTH paths: the cpsam sidecar
+    // (`cellpose4_detect.py`) is staged here alongside the cyto3 scripts and
+    // still runs out of `<root>/py`, and the base path needs the pyproject +
+    // uv.lock present before `uv sync`.
     stage_python_project(&app, &store)?;
 
+    // The app-facing model id every install-log line is stamped with (FIX 5,
+    // frozen `modelId` contract). A `None` (legacy no-arg) call installs the base
+    // env, so fall back to the base model id — those lines then still route to
+    // the cyto3 card's filtered log.
+    let model_id = model_id.unwrap_or_else(|| BASE_MODEL_ID.to_string());
+
+    if is_cellpose_sam(&model_id) {
+        install_cellpose4_env(&app, &store, &model_id).await
+    } else {
+        install_base_env(&app, &store, &model_id).await
+    }
+}
+
+/// Base (cyto3, `cellpose>=3,<4`) install: `uv sync --frozen` the staged
+/// pyproject under `<root>/py`, creating `.venv`. Unchanged from the original
+/// single-env behaviour; the base `pyproject.toml` / `uv.lock` are authoritative.
+async fn install_base_env(
+    app: &AppHandle,
+    store: &FileStore,
+    model_id: &str,
+) -> Result<(), String> {
     let project_dir = store.python_dir();
     if !project_dir.join("pyproject.toml").exists() {
         return Err(format!(
@@ -288,21 +354,131 @@ pub async fn env_install(app: AppHandle) -> Result<(), String> {
         .kill_on_drop(true);
     crate::proc::hide_console_tokio(&mut cmd);
 
+    run_streamed_command(app, cmd, "uv sync", model_id).await
+}
+
+/// Cellpose-SAM (`cellpose>=4`) install into the ISOLATED `.venv4`. Mirrors the
+/// native `CellposeSAMDownloader`: create a second venv next to `.venv`, then
+/// `uv pip install` the cp4 package set into it — NO lockfile and NO `--frozen`,
+/// so the base env's `pyproject.toml` / `uv.lock` are never touched. A FINAL step
+/// prefetches the ~1.15 GB CPSAM transformer weights (FIX 2): cellpose 4 would
+/// otherwise download them lazily on the first `CellposeModel` construction —
+/// which, in serve mode, happens before the worker's `ready` handshake and would
+/// overrun the host's `READY_TIMEOUT` (and a batch of workers would each
+/// re-download). Fetching them at install time caches them so the first detection
+/// is fast. Every step streams through [`INSTALL_LOG_EVENT`] exactly like the
+/// base sync.
+async fn install_cellpose4_env(
+    app: &AppHandle,
+    store: &FileStore,
+    model_id: &str,
+) -> Result<(), String> {
+    let venv4_dir = store.venv4_dir();
+
+    // Same Windows MAX_PATH preflight as the base path — `.venv4` buries torch
+    // just as deeply as `.venv`, so guard against the 260-char ceiling here too.
+    if let Some(msg) = long_path_warning(&venv4_dir) {
+        return Err(msg);
+    }
+
+    // 1) Create the isolated venv with the pinned interpreter. `uv venv` fetches
+    //    a managed 3.11 when none is on PATH (same as `uv sync --python` above)
+    //    and is idempotent — re-running rebuilds a clean `.venv4`.
+    let mut venv_cmd = Command::new(uv_executable());
+    venv_cmd
+        .arg("venv")
+        .arg(&venv4_dir)
+        .arg("--python")
+        .arg(PINNED_PYTHON)
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut venv_cmd);
+    run_streamed_command(app, venv_cmd, "uv venv", model_id).await?;
+
+    // 2) Install the cp4 package set INTO `.venv4` (targeted via `--python`) from
+    //    PLAIN PyPI — no `--extra-index-url` (FIX 4). Under uv's default index
+    //    strategy an extra PyTorch-mirror index would ALSO serve `numpy` and pull
+    //    it from the mirror instead of PyPI (a reproducibility/trust regression);
+    //    the native `CellposeSAMDownloader` likewise installs with plain pip. On
+    //    the Windows + macOS release targets PyPI's default torch wheel is the CPU
+    //    build, so this still yields CPU torch. No lockfile / no `--frozen` — this
+    //    env is resolved fresh each install.
+    let venv4_python = store.venv4_python();
+    let mut pip_cmd = Command::new(uv_executable());
+    pip_cmd
+        .arg("pip")
+        .arg("install")
+        // Target the just-created venv4 interpreter explicitly.
+        .arg("--python")
+        .arg(&venv4_python)
+        .args(CP4_PIP_PACKAGES)
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut pip_cmd);
+    run_streamed_command(app, pip_cmd, "uv pip install", model_id).await?;
+
+    // 3) Prefetch the ~1.15 GB Cellpose-SAM transformer weights NOW, while the
+    //    install log is live (FIX 2). cellpose 4 lazily downloads them on the
+    //    FIRST `CellposeModel(pretrained_model="cpsam")` construction; in serve
+    //    mode that first construction happens BEFORE the worker prints `ready`, so
+    //    a cold download would overrun the host's `READY_TIMEOUT` — and a batch
+    //    that spawns several workers would have each re-download. Constructing the
+    //    model once here caches the weights (under `~/.cellpose/models`), so every
+    //    later detection finds a warm cache and the constructor is fast. Streamed
+    //    through the SAME mechanism as the uv steps so the multi-hundred-MB
+    //    download shows progress; a non-zero exit FAILS the install with the
+    //    captured tail (a clear install-time error beats a silent first-run stall).
+    let mut prefetch_cmd = Command::new(&venv4_python);
+    prefetch_cmd
+        .arg("-c")
+        .arg("from cellpose import models; models.CellposeModel(gpu=False, pretrained_model='cpsam')")
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut prefetch_cmd);
+    run_streamed_command(app, prefetch_cmd, "cellpose-sam weight prefetch", model_id).await
+}
+
+/// Spawn a fully-configured `Command`, stream its stdout+stderr as
+/// [`INSTALL_LOG_EVENT`] lines (the Models page live tail, each stamped with
+/// `model_id` so concurrent installs stay isolated — FIX 5), and map the exit
+/// status: `Ok(())` on success, else an error carrying the exit code + the stderr
+/// (fallback stdout) tail. `label` names the step in the error (`uv sync` /
+/// `uv venv` / `uv pip install` / `cellpose-sam weight prefetch`) so they all
+/// behave identically — the streamer is intentionally command-agnostic, driving
+/// both the uv steps and the venv4-python weight prefetch.
+async fn run_streamed_command(
+    app: &AppHandle,
+    mut cmd: Command,
+    label: &str,
+    model_id: &str,
+) -> Result<(), String> {
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("failed to spawn uv (is it installed and on PATH?): {e}"))?;
+        .map_err(|e| format!("failed to spawn {label}: {e}"))?;
 
     // Stream stdout + stderr concurrently, line by line.
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    let out_task = spawn_line_pump(app.clone(), stdout, "stdout");
-    let err_task = spawn_line_pump(app.clone(), stderr, "stderr");
+    let out_task = spawn_line_pump(app.clone(), stdout, "stdout", model_id.to_string());
+    let err_task = spawn_line_pump(app.clone(), stderr, "stderr", model_id.to_string());
 
     let status = child
         .wait()
         .await
-        .map_err(|e| format!("uv sync wait failed: {e}"))?;
+        .map_err(|e| format!("{label} wait failed: {e}"))?;
     let out_tail = out_task.await.unwrap_or_default();
     let err_tail = err_task.await.unwrap_or_default();
 
@@ -316,7 +492,7 @@ pub async fn env_install(app: AppHandle) -> Result<(), String> {
         } else {
             out_tail
         };
-        Err(format!("uv sync failed (exit {code}): {}", tail.trim()))
+        Err(format!("{label} failed (exit {code}): {}", tail.trim()))
     }
 }
 
@@ -326,6 +502,7 @@ fn spawn_line_pump<R>(
     app: AppHandle,
     reader: Option<R>,
     stream: &'static str,
+    model_id: String,
 ) -> tokio::task::JoinHandle<String>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -342,7 +519,7 @@ where
                     Ok(_) => {
                         let b = byte[0];
                         if b == b'\n' || b == b'\r' {
-                            emit_line(&app, stream, &buf, &mut tail);
+                            emit_line(&app, stream, &model_id, &buf, &mut tail);
                             buf.clear();
                         } else {
                             buf.push(b);
@@ -352,7 +529,7 @@ where
                 }
             }
             if !buf.is_empty() {
-                emit_line(&app, stream, &buf, &mut tail);
+                emit_line(&app, stream, &model_id, &buf, &mut tail);
             }
         }
         tail.into_iter().collect::<Vec<_>>().join("\n")
@@ -362,6 +539,7 @@ where
 fn emit_line(
     app: &AppHandle,
     stream: &str,
+    model_id: &str,
     raw: &[u8],
     tail: &mut std::collections::VecDeque<String>,
 ) {
@@ -375,6 +553,7 @@ fn emit_line(
         InstallLogLine {
             stream: stream.to_string(),
             line: line.to_string(),
+            model_id: model_id.to_string(),
         },
     );
     tail.push_back(line.to_string());
@@ -387,21 +566,42 @@ fn emit_line(
 // COMMAND: env_availability
 // ===========================================================================
 
-/// Is the Python environment usable? venv present + `import cellpose` works.
-/// Same probe shape as `detection_availability` but exposed under the `env`
-/// command surface for the Models page.
+/// Is the Python environment for `model_id` usable? The model-appropriate venv
+/// is present + `import cellpose` works. Same probe shape as
+/// `detection_availability` but exposed under the `env` command surface for the
+/// Models page. `model_id` follows the frozen contract: `cpsam` probes the
+/// isolated `.venv4` and asserts cellpose major >= 4; any other id — including
+/// `None` (the backward-compatible no-arg call) — probes the base `.venv`. The
+/// JS side invokes this as `invoke("env_availability", { modelId })`.
 #[tauri::command]
-pub async fn env_availability(app: AppHandle) -> Result<Availability, String> {
+pub async fn env_availability(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<Availability, String> {
     let store = FileStore::from_app(&app)?;
-    let python = store.venv_python();
+    let cpsam = is_cellpose_sam(model_id.as_deref().unwrap_or(""));
+
+    // Route to the model-appropriate venv + import probe. cpsam checks `.venv4`
+    // with the version-asserting probe; everything else checks the base `.venv`
+    // with a plain `import cellpose`.
+    let (python, probe) = if cpsam {
+        (store.venv4_python(), CELLPOSE4_IMPORT_PROBE)
+    } else {
+        (store.venv_python(), "import cellpose")
+    };
+
     if !python.exists() {
         return Ok(Availability {
             installed: false,
-            reason: Some("Python environment is not installed.".into()),
+            reason: Some(if cpsam {
+                "Cellpose-SAM environment (venv4) is not installed.".into()
+            } else {
+                "Python environment is not installed.".into()
+            }),
         });
     }
     let mut cmd = Command::new(&python);
-    cmd.args(["-c", "import cellpose"])
+    cmd.args(["-c", probe])
         .current_dir(store.python_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -418,12 +618,14 @@ pub async fn env_availability(app: AppHandle) -> Result<Availability, String> {
         })
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr.lines().last().unwrap_or("").trim();
         Ok(Availability {
             installed: false,
-            reason: Some(format!(
-                "Cellpose is not importable. {}",
-                stderr.lines().last().unwrap_or("").trim()
-            )),
+            reason: Some(if cpsam {
+                format!("Cellpose-SAM (cellpose >= 4) is not importable from venv4. {tail}")
+            } else {
+                format!("Cellpose is not importable. {tail}")
+            }),
         })
     }
 }

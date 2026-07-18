@@ -81,6 +81,7 @@ use crate::paths::FileStore;
 /// processes (mirrors `ChildProcessTracker.ownedScriptBasenames`).
 const OWNED_SCRIPTS: &[&str] = &[
     "cellpose_detect.py",
+    "cellpose4_detect.py",
     "cellpose_train.py",
     "stardist_detect.py",
     "sam_detect.py",
@@ -105,6 +106,16 @@ const POOL_CAP_MAX: usize = 4;
 /// torch import + model build; generous so a slow first import doesn't spuriously
 /// trip the fallback.
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Ready-handshake bound for Cellpose-SAM (`cpsam`) workers specifically. If the
+/// install-time weight prefetch (`env::uv`) was ever skipped or the
+/// `~/.cellpose/models` cache was cleared, cellpose 4 cold-downloads its ~1.15 GB
+/// transformer weights on the worker's FIRST `CellposeModel` construction —
+/// which, in serve mode, happens BEFORE it can print `ready`. [`READY_TIMEOUT`]'s
+/// 120 s can't cover that download, so the SAM family gets a far larger bound.
+/// Belt-and-suspenders with the install-time prefetch: in the common (prefetched)
+/// case the cache is warm and `ready` still arrives quickly.
+const READY_TIMEOUT_SAM: Duration = Duration::from_secs(900);
 
 /// Per-request ceiling on how long we wait for a worker to return the matching
 /// `result`/`error` frame. Guards against a wedged worker holding a request
@@ -188,19 +199,97 @@ struct ActiveRun {
 // Resolve + argv (shared by warm-worker and one-shot paths)
 // ===========================================================================
 
-/// Resolve the venv python + staged `cellpose_detect.py`, or report why the
-/// model isn't runnable. Mirrors `CellposeAvailability.detect()` (simplified:
-/// uv gives us a single `.venv`, no sandbox-bundle staging tiers).
-fn resolve_sidecar(store: &FileStore) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let python = store.venv_python();
-    let script = store.python_script("cellpose_detect.py");
-    if !script.exists() {
-        return Err("sidecar script cellpose_detect.py is not staged".into());
+/// The app-facing model id with the Cellpose `cp-` namespace prefix removed —
+/// the bare model string the Python sidecars expect (`cp-cyto3` → `cyto3`,
+/// `cpsam` → `cpsam`). Mirrors the Swift host's model-id prefix strip.
+pub fn strip_model_prefix(model_id: &str) -> &str {
+    model_id.strip_prefix("cp-").unwrap_or(model_id)
+}
+
+/// Whether an app-facing model id routes to the Cellpose-SAM (`cellpose>=4`)
+/// family — i.e. the isolated `.venv4` + `cellpose4_detect.py` sidecar rather
+/// than the base cyto3 env. The frozen contract fixes the SAM id as bare
+/// `cpsam` (no `cp-` prefix), so the test is on the prefix-stripped slug.
+pub fn is_cellpose_sam(model_id: &str) -> bool {
+    strip_model_prefix(model_id) == "cpsam"
+}
+
+/// Version-aware `import cellpose` probe for the Cellpose-SAM (`cellpose>=4`)
+/// family. Exit 0 iff cellpose imports AND its major version is >= 4 (venv4 got
+/// the cp4 wheel); exit 2 when an OLDER cellpose imports (wrong venv — should
+/// never happen in venv4); exit 1 when the import itself fails. Mirrors
+/// `CellposeSAMDownloader.runPythonImportCheck` in the native app; shared with
+/// `env::uv::env_availability`.
+pub(crate) const CELLPOSE4_IMPORT_PROBE: &str = r#"
+import sys
+try:
+    import cellpose
+    v = getattr(cellpose, "version", None) or ""
+    if not isinstance(v, str):
+        v = str(v)
+    major = int(v.split(".")[0]) if v else 0
+    sys.exit(0 if major >= 4 else 2)
+except Exception:
+    sys.exit(1)
+"#;
+
+/// Resolve the model-appropriate venv python + staged detect script, or report
+/// why the model isn't runnable. Mirrors `CellposeAvailability.detect()` /
+/// `Cellpose4Availability.detect()` (simplified: uv gives us the venv directly,
+/// no sandbox-bundle staging tiers). Cellpose-SAM (`cpsam`) routes to the
+/// isolated `.venv4` + `cellpose4_detect.py`; every other model uses the base
+/// `.venv` + `cellpose_detect.py`.
+fn resolve_sidecar(
+    store: &FileStore,
+    model_id: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    if is_cellpose_sam(model_id) {
+        let python = store.venv4_python();
+        let script = store.python_script("cellpose4_detect.py");
+        if !script.exists() {
+            return Err("sidecar script cellpose4_detect.py is not staged".into());
+        }
+        if !python.exists() {
+            return Err("Cellpose-SAM python venv (venv4) is not installed".into());
+        }
+        Ok((python, script))
+    } else {
+        let python = store.venv_python();
+        let script = store.python_script("cellpose_detect.py");
+        if !script.exists() {
+            return Err("sidecar script cellpose_detect.py is not staged".into());
+        }
+        if !python.exists() {
+            return Err("python venv is not installed".into());
+        }
+        Ok((python, script))
     }
-    if !python.exists() {
-        return Err("python venv is not installed".into());
+}
+
+/// Resolve a venv python for the SHARED helper scripts (`_seg_npy_io.py`,
+/// `_export_imagej_roi.py`) that can run in EITHER environment. Unlike
+/// [`resolve_sidecar`], these helpers don't run a model — they only need a Python
+/// with numpy / cellpose / roifile — so route them to whichever venv EXISTS:
+/// prefer the base `.venv`, else fall back to the cpsam `.venv4` (which is
+/// provisioned with numpy + cellpose, and cellpose pulls roifile transitively,
+/// so both helpers import there too).
+///
+/// Models install per-card now, so "cpsam installed, base `.venv` absent" is a
+/// reachable state; without this fallback ROI export and the `_seg.npy`
+/// round-trip would hard-fail with a misleading "install Cellpose first" error
+/// even though a usable Python is right there in `.venv4`. Returns `None` only
+/// when NEITHER venv exists, so the caller can surface a single "install a model
+/// first" message.
+pub(crate) fn resolve_helper_python(store: &FileStore) -> Option<std::path::PathBuf> {
+    let base = store.venv_python();
+    if base.exists() {
+        return Some(base);
     }
-    Ok((python, script))
+    let venv4 = store.venv4_python();
+    if venv4.exists() {
+        return Some(venv4);
+    }
+    None
 }
 
 /// Build the EXACT one-shot argv from `CellposeDetectionService.swift`.
@@ -215,11 +304,7 @@ fn resolve_sidecar(store: &FileStore) -> Result<(std::path::PathBuf, std::path::
 ///
 /// (`--restore` is cp-cyto3-r only; not in v1, so never emitted.)
 fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -> Vec<String> {
-    let model = p
-        .model_id
-        .strip_prefix("cp-")
-        .unwrap_or(&p.model_id)
-        .to_string();
+    let model = strip_model_prefix(&p.model_id).to_string();
 
     let mut args: Vec<String> = vec![
         script.to_string_lossy().into_owned(),
@@ -271,11 +356,7 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
 /// (image / conf / thresholds / bg-subtract / watershed) are NOT here — they
 /// arrive per-request over stdin.
 fn build_serve_argv(script: &std::path::Path, p: &DetectionParams) -> Vec<String> {
-    let model = p
-        .model_id
-        .strip_prefix("cp-")
-        .unwrap_or(&p.model_id)
-        .to_string();
+    let model = strip_model_prefix(&p.model_id).to_string();
 
     let mut args: Vec<String> = vec![
         script.to_string_lossy().into_owned(),
@@ -340,8 +421,13 @@ fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String 
 /// signature may share a warm worker; a different one spawns its own. Covers
 /// model id, GPU/CPU, and channels (channels change both model.eval and image
 /// loading). Per-image params are deliberately excluded.
+///
+/// The model-id slug keeps the Cellpose-SAM (`cpsam`) family in its own bucket:
+/// its signature (`model=cpsam|…`) never matches a cyto3 signature
+/// (`model=cyto3|…`), so a warm cyto3 worker (base `.venv`) is never reused for
+/// a cpsam request — which must run the `.venv4` + `cellpose4_detect.py` pair.
 fn config_signature(p: &DetectionParams) -> String {
-    let model = p.model_id.strip_prefix("cp-").unwrap_or(&p.model_id);
+    let model = strip_model_prefix(&p.model_id);
     format!(
         "model={model}|gpu={}|channels={},{}",
         p.use_gpu, p.channels[0], p.channels[1]
@@ -398,7 +484,7 @@ pub async fn run_detection(
 ) -> Result<DetectionResultDto, DetectionErrorDto> {
     let store = FileStore::from_app(&app).map_err(|_| DetectionErrorDto::ImageDecodeFailed)?;
 
-    let (python, script) = resolve_sidecar(&store).map_err(|_| {
+    let (python, script) = resolve_sidecar(&store, &params.model_id).map_err(|_| {
         DetectionErrorDto::ModelNotInstalled {
             model_id: params.model_id.clone(),
         }
@@ -898,20 +984,31 @@ async fn spawn_worker(
         });
     }
 
+    // Cellpose-SAM's first `CellposeModel` construction may cold-download
+    // ~1.15 GB of weights when the install-time prefetch was skipped or the
+    // cache evicted, so that family gets a much larger ready bound; every other
+    // model cold-starts on import + model-build only, which 120 s covers.
+    let ready_timeout = if is_cellpose_sam(&params.model_id) {
+        READY_TIMEOUT_SAM
+    } else {
+        READY_TIMEOUT
+    };
+
     // Block on the ready handshake, but also race a cancel: this is the up-to-
-    // READY_TIMEOUT cold-start window (torch import + model build) during which a
-    // user's Cancel would otherwise be dropped. If `cancel_notify` fires (or the
-    // flag is already set), return `Cancelled`; dropping `child` here reaps the
-    // half-started process via `kill_on_drop`. The pump above is already
-    // forwarding any stderr the worker prints during import/model-build.
+    // `ready_timeout` cold-start window (torch import + model build, plus a
+    // possible SAM weight download) during which a user's Cancel would otherwise
+    // be dropped. If `cancel_notify` fires (or the flag is already set), return
+    // `Cancelled`; dropping `child` here reaps the half-started process via
+    // `kill_on_drop`. The pump above is already forwarding any stderr the worker
+    // prints during import/model-build.
     let ready_line = tokio::select! {
         biased;
         _ = cancel_notify.notified() => return Err(SpawnOutcome::Cancelled),
-        res = tokio::time::timeout(READY_TIMEOUT, stdout_lines.next_line()) => match res {
+        res = tokio::time::timeout(ready_timeout, stdout_lines.next_line()) => match res {
             Err(_) => {
                 return Err(SpawnOutcome::Failed(format!(
                     "worker did not emit ready within {:?}",
-                    READY_TIMEOUT
+                    ready_timeout
                 )))
             }
             Ok(Ok(Some(l))) => l,
@@ -1287,20 +1384,39 @@ pub async fn cancel_detection(app: AppHandle, run_id: String) -> Result<(), Stri
 // COMMAND: detection_availability
 // ===========================================================================
 
-/// Is the active model runnable right now? venv present + `import cellpose`
-/// importable. We probe by spawning `python -c "import cellpose"` (fast; the
-/// interpreter is warm after install) so a half-built venv reads as unavailable.
+/// Is `model_id` runnable right now? The model-appropriate venv is present + the
+/// staged detect script exists + `import cellpose` works. We probe by spawning
+/// `python -c "import cellpose"` (fast; the interpreter is warm after install)
+/// so a half-built venv reads as unavailable. Per the frozen contract, `cpsam`
+/// routes to the isolated `.venv4` + `cellpose4_detect.py` and the probe
+/// additionally asserts cellpose major >= 4; every other model uses the base
+/// `.venv` + `cellpose_detect.py`. Invoked from JS as
+/// `invoke("detection_availability", { modelId })`.
 #[tauri::command]
 pub async fn detection_availability(
     app: AppHandle,
     _db: State<'_, Db>,
     model_id: String,
 ) -> Result<Availability, String> {
-    let _ = model_id; // v1: cyto3 only; the venv either has cellpose or not.
     let store = FileStore::from_app(&app)?;
+    let cpsam = is_cellpose_sam(&model_id);
 
-    let python = store.venv_python();
-    let script = store.python_script("cellpose_detect.py");
+    // Route to the model-appropriate venv python, staged detect script, and
+    // import probe (the cpsam probe asserts cellpose >= 4).
+    let (python, script, probe) = if cpsam {
+        (
+            store.venv4_python(),
+            store.python_script("cellpose4_detect.py"),
+            CELLPOSE4_IMPORT_PROBE,
+        )
+    } else {
+        (
+            store.venv_python(),
+            store.python_script("cellpose_detect.py"),
+            "import cellpose",
+        )
+    };
+
     if !script.exists() {
         return Ok(Availability {
             installed: false,
@@ -1310,13 +1426,17 @@ pub async fn detection_availability(
     if !python.exists() {
         return Ok(Availability {
             installed: false,
-            reason: Some("Python environment is not installed.".into()),
+            reason: Some(if cpsam {
+                "Cellpose-SAM environment (venv4) is not installed.".into()
+            } else {
+                "Python environment is not installed.".into()
+            }),
         });
     }
 
     // Probe importability.
     let mut cmd = Command::new(&python);
-    cmd.args(["-c", "import cellpose"])
+    cmd.args(["-c", probe])
         .current_dir(store.python_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1334,12 +1454,14 @@ pub async fn detection_availability(
         })
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let tail = stderr.lines().last().unwrap_or("").trim();
         Ok(Availability {
             installed: false,
-            reason: Some(format!(
-                "Cellpose is not importable from the environment. {}",
-                stderr.lines().last().unwrap_or("").trim()
-            )),
+            reason: Some(if cpsam {
+                format!("Cellpose-SAM (cellpose >= 4) is not importable from venv4. {tail}")
+            } else {
+                format!("Cellpose is not importable from the environment. {tail}")
+            }),
         })
     }
 }

@@ -1,17 +1,20 @@
 /**
  * pages/models/ModelsPage.tsx — the Models tab (feature task `feat-models`).
  *
- * v1 catalog UI (ARCHITECTURE.md §4, `/models`):
- *   • Exactly one model is active in v1 — Cellpose `cyto3`. Every other catalog
- *     entry renders "coming soon" and is non-activatable (boundary: no non-cyto3
- *     runtimes in v1).
- *   • The Install button calls the kernel-env `env_install` command and streams
- *     its `uv sync` progress lines live (via the `env://install/log` event); we
- *     never re-implement the uv bootstrap here.
+ * Catalog UI (ARCHITECTURE.md §4, `/models`):
+ *   • Two catalog entries are runnable — Cellpose `cp-cyto3` and Cellpose-SAM
+ *     `cpsam` — each installed, probed, and activated independently (the Rust
+ *     side keeps them in separate venvs, so installing one never touches the
+ *     other's status). Every other catalog entry renders "coming soon" and is
+ *     non-activatable.
+ *   • The Install button calls the kernel-env `env_install` command (passing
+ *     the card's own `modelId`) and streams its `uv sync` progress lines live
+ *     (via the `env://install/log` event); we never re-implement the uv
+ *     bootstrap here.
  *   • Availability from `env_availability` + the transport's `availability`
- *     (`detection_availability`) gates the Run flow: the card shows Installed /
- *     Not installed and the Activate action is disabled until the model is
- *     runnable.
+ *     (`detection_availability`) — both probed with that card's own `modelId`
+ *     — gates the Run flow: the card shows Installed / Not installed and the
+ *     Activate action is disabled until that model is runnable.
  *   • Activating sets `store.activeModelId` (the FROZEN store slice); we only
  *     consume the setter, never change the slice shape.
  *
@@ -19,8 +22,6 @@
  * through `useModelInstall`, reads/writes the active model via the store, and
  * imports domain vocabulary from kernel-types — nothing else.
  */
-
-import { useMemo } from "react";
 
 import { useAppStore } from "../../kernel/store/store";
 import { Icon, type IconName } from "../../components/Icon";
@@ -32,21 +33,14 @@ export default function ModelsPage() {
   const activeModelId = useAppStore((s) => s.activeModelId);
   const setActiveModelId = useAppStore((s) => s.setActiveModelId);
 
-  // Availability / install lifecycle is driven for the single runnable model.
-  // (In v1 that is always cyto3; the coming-soon cards need no probe.)
-  const runnableModelId = useMemo(
-    () => MODEL_CATALOG.find((m) => m.available)?.id ?? activeModelId,
-    [activeModelId],
-  );
-  const install = useModelInstall(runnableModelId);
-
   return (
     <div className="cc-models">
       <div className="cc-models__intro">
         <h1 className="cc-models__title">Models</h1>
         <p className="cc-models__subtitle">
-          CellCounter v1 ships with Cellpose <strong>cyto3</strong> for general
-          cytoplasm segmentation. Install it once — it runs locally through the
+          CellCounter ships with Cellpose <strong>cyto3</strong> for general
+          cytoplasm segmentation and <strong>Cellpose-SAM</strong> for large or
+          irregular cells. Install a model once — it runs locally through the
           bundled Python sidecar. Additional models are on the way.
         </p>
       </div>
@@ -56,15 +50,18 @@ export default function ModelsPage() {
           <span className="cc-models__section-title">Catalog</span>
         </div>
         <ul className="cc-models__list">
-          {MODEL_CATALOG.map((model) => (
-            <ModelCard
-              key={model.id}
-              model={model}
-              isActive={model.id === activeModelId}
-              install={install}
-              onActivate={() => setActiveModelId(model.id)}
-            />
-          ))}
+          {MODEL_CATALOG.map((model) =>
+            model.available ? (
+              <RunnableModelCard
+                key={model.id}
+                model={model}
+                isActive={model.id === activeModelId}
+                onActivate={() => setActiveModelId(model.id)}
+              />
+            ) : (
+              <ComingSoonCard key={model.id} model={model} />
+            ),
+          )}
         </ul>
       </section>
     </div>
@@ -72,30 +69,36 @@ export default function ModelsPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Model card
+// Runnable model card — installs / probes / activates ITS OWN model id
 // ---------------------------------------------------------------------------
 
-interface ModelCardProps {
+interface RunnableModelCardProps {
   model: ModelCatalogEntry;
   isActive: boolean;
-  install: UseModelInstall;
   onActivate: () => void;
 }
 
-function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
+function RunnableModelCard({
+  model,
+  isActive,
+  onActivate,
+}: RunnableModelCardProps) {
+  // One hook instance per runnable card: cyto3 and cpsam each drive their own
+  // install/availability lifecycle against their own venv (kernel-env routes
+  // `cpsam` to a separate `cellpose>=4` venv), so installing one never
+  // reports on — or blocks — the other.
+  const install = useModelInstall(model.id);
   const { availability, uv, probing, phase, logLines, error } = install;
 
-  const installing = model.available && phase === "installing";
-  const installed = model.available && availability?.installed === true;
+  const installing = phase === "installing";
+  const installed = availability?.installed === true;
   const runnable = installed; // the Run flow gates on this
   // The install IS `uv sync`, so surface a missing uv toolchain on the button
   // itself instead of letting the user click into a raw spawn error.
   const uvMissing = uv != null && !uv.installed;
 
   const cardClass =
-    "cc-model-card" +
-    (isActive ? " cc-model-card--active" : "") +
-    (model.available ? "" : " cc-model-card--soon");
+    "cc-model-card" + (isActive ? " cc-model-card--active" : "");
 
   return (
     <li className={cardClass}>
@@ -111,17 +114,7 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
             Active
           </span>
         )}
-        {model.available ? (
-          <AvailabilityPill
-            probing={probing}
-            installed={installed}
-          />
-        ) : (
-          <span className="cc-pill cc-pill--soon">
-            <Icon name="clock" size={12} />
-            Coming soon
-          </span>
-        )}
+        <AvailabilityPill probing={probing} installed={installed} />
         <span className="cc-model-card__meta">
           {model.backend} · {model.sizeLabel}
         </span>
@@ -130,71 +123,93 @@ function ModelCard({ model, isActive, install, onActivate }: ModelCardProps) {
       <p className="cc-model-card__body">{model.description}</p>
 
       <div className="cc-model-card__actions">
-        {model.available ? (
-          <>
-            <button
-              type="button"
-              className="cc-btn cc-models__btn"
-              onClick={() => void install.install()}
-              disabled={installing || uvMissing}
-              title={
-                uvMissing
-                  ? (uv?.reason ??
-                    "The uv toolchain isn't installed — install uv first.")
-                  : undefined
-              }
-            >
-              <Icon name={installed ? "refresh" : "download"} size={15} />
-              {installing
-                ? "Installing…"
-                : installed
-                  ? "Reinstall"
-                  : "Install"}
-            </button>
-            <button
-              type="button"
-              className="cc-btn cc-btn--primary cc-models__btn"
-              onClick={onActivate}
-              disabled={isActive || !runnable}
-              title={
-                !runnable
-                  ? "Install the model before activating it."
-                  : isActive
-                    ? "This model is already active."
-                    : undefined
-              }
-            >
-              {isActive && <Icon name="check" size={15} />}
-              {isActive ? "Activated" : "Activate"}
-            </button>
-          </>
-        ) : (
-          // Coming-soon models are non-activatable: a single disabled control.
-          <button
-            type="button"
-            className="cc-btn cc-models__btn"
-            disabled
-            title="This model is not available in v1."
-          >
-            Unavailable
-          </button>
-        )}
+        <button
+          type="button"
+          className="cc-btn cc-models__btn"
+          onClick={() => void install.install()}
+          disabled={installing || uvMissing}
+          title={
+            uvMissing
+              ? (uv?.reason ??
+                "The uv toolchain isn't installed — install uv first.")
+              : undefined
+          }
+        >
+          <Icon name={installed ? "refresh" : "download"} size={15} />
+          {installing
+            ? "Installing…"
+            : installed
+              ? "Reinstall"
+              : "Install"}
+        </button>
+        <button
+          type="button"
+          className="cc-btn cc-btn--primary cc-models__btn"
+          onClick={onActivate}
+          disabled={isActive || !runnable}
+          title={
+            !runnable
+              ? "Install the model before activating it."
+              : isActive
+                ? "This model is already active."
+                : undefined
+          }
+        >
+          {isActive && <Icon name="check" size={15} />}
+          {isActive ? "Activated" : "Activate"}
+        </button>
       </div>
 
-      {/* Install status + streamed uv log — only for the runnable model. */}
-      {model.available && (
-        <div className="cc-model-card__status">
-          <InstallStatus
-            installing={installing}
-            phase={phase}
-            error={error}
-            availabilityReason={
-              !installed && !installing ? availability?.reason : undefined
-            }
-            logLines={logLines}
-          />
-        </div>
-      )}
+      <div className="cc-model-card__status">
+        <InstallStatus
+          modelName={model.name}
+          installing={installing}
+          phase={phase}
+          error={error}
+          availabilityReason={
+            !installed && !installing ? availability?.reason : undefined
+          }
+          logLines={logLines}
+        />
+      </div>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Coming-soon card — static, no install/availability probe
+// ---------------------------------------------------------------------------
+
+function ComingSoonCard({ model }: { model: ModelCatalogEntry }) {
+  return (
+    <li className="cc-model-card cc-model-card--soon">
+      <div className="cc-model-card__glyph" aria-hidden="true">
+        <Icon name={model.glyph as IconName} size={22} />
+      </div>
+
+      <div className="cc-model-card__head">
+        <span className="cc-model-card__name">{model.name}</span>
+        <span className="cc-pill cc-pill--soon">
+          <Icon name="clock" size={12} />
+          Coming soon
+        </span>
+        <span className="cc-model-card__meta">
+          {model.backend} · {model.sizeLabel}
+        </span>
+      </div>
+
+      <p className="cc-model-card__body">{model.description}</p>
+
+      <div className="cc-model-card__actions">
+        <button
+          type="button"
+          className="cc-btn cc-models__btn"
+          disabled
+          title="This model is not available yet."
+        >
+          Unavailable
+        </button>
+      </div>
     </li>
   );
 }
@@ -236,6 +251,8 @@ function AvailabilityPill({
 // ---------------------------------------------------------------------------
 
 interface InstallStatusProps {
+  /** Model display name, for the "install complete" message. */
+  modelName: string;
   installing: boolean;
   phase: UseModelInstall["phase"];
   error?: string;
@@ -244,6 +261,7 @@ interface InstallStatusProps {
 }
 
 function InstallStatus({
+  modelName,
   installing,
   phase,
   error,
@@ -270,7 +288,7 @@ function InstallStatus({
       {phase === "done" && !installing && (
         <span className="cc-install-status__reason cc-install-status__reason--ok">
           <Icon name="checkCircle" size={14} />
-          Install complete — cyto3 is ready to run.
+          Install complete — {modelName} is ready to run.
         </span>
       )}
 

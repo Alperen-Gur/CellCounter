@@ -20,6 +20,7 @@ import { useAppStore } from "../../kernel/store/store";
 import { navigate as shellNavigate } from "../../components/useHashRoute";
 import type { RouteId } from "../../components/routes";
 import { Icon } from "../../components/Icon";
+import { modelLabel } from "../models/catalog";
 
 import {
   importAndAnalyze,
@@ -236,7 +237,7 @@ export default function HomePage() {
         <button type="button" className="home-card" onClick={() => shellNavigate("models" as RouteId)}>
           <span className="home-card__icon"><Icon name="models" size={20} /></span>
           <span className="home-card__title">
-            {activeModelId === "cp-cyto3" ? "Cellpose cyto3" : activeModelId}
+            {modelLabel(activeModelId)}
           </span>
           <span className="home-card__sub">Active model</span>
         </button>

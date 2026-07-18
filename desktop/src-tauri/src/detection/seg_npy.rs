@@ -32,25 +32,28 @@ use tokio::process::Command;
 
 use crate::db::models::CellDto;
 use crate::detection::ipc::{DetectionResultDto, SidecarError, SidecarPayload};
+use crate::detection::sidecar::resolve_helper_python;
 use crate::paths::FileStore;
 
 /// The staged Python helper this module drives.
 const HELPER_SCRIPT: &str = "_seg_npy_io.py";
 
 /// Resolve `(venv_python, helper_script)` or a human error explaining why the
-/// round-trip can't run (venv missing / script not staged). Mirrors
-/// `sidecar::resolve_sidecar` but for `_seg_npy_io.py`.
+/// round-trip can't run (venv missing / script not staged). The helper only
+/// needs numpy + cellpose (not a specific model), so it runs in whichever env
+/// EXISTS — base `.venv` preferred, else the cpsam `.venv4` — via
+/// [`resolve_helper_python`]. With per-card installs a cpsam-only install (base
+/// `.venv` absent) must still round-trip `_seg.npy`, so we no longer hardcode
+/// `venv_python()`.
 fn resolve_helper(store: &FileStore) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let python = store.venv_python();
     let script = store.python_script(HELPER_SCRIPT);
     if !script.exists() {
         return Err(format!(
             "seg-npy helper {HELPER_SCRIPT} is not staged in the python dir"
         ));
     }
-    if !python.exists() {
-        return Err("python venv is not installed (install the model first)".into());
-    }
+    let python = resolve_helper_python(store)
+        .ok_or_else(|| "python venv is not installed (install a model first)".to_string())?;
     Ok((python, script))
 }
 

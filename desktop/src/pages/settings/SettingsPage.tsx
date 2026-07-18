@@ -101,9 +101,11 @@ const CHANNEL_OPTIONS: { value: number; label: string }[] = [
   { value: 3, label: "B" },
 ];
 
-// v1 ships cyto3 only; the "default model" select mirrors that (activeModelId).
+// Mirrors the runnable entries in pages/models/catalog.ts (activeModelId) —
+// only installable/activatable models are offered as a default here.
 const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: "cp-cyto3", label: "Cellpose cyto3" },
+  { value: "cpsam", label: "Cellpose-SAM" },
 ];
 
 const PARALLEL_OPTIONS: { value: number; label: string }[] = [
@@ -210,7 +212,7 @@ function GeneralSection() {
 
       <SetRow
         label="Default model"
-        desc="The detector used for new analyses (v1 ships Cellpose cyto3)."
+        desc="The detector used for new analyses. Install it from the Models tab first if it isn't ready yet."
       >
         <Select
           value={activeModelId}
