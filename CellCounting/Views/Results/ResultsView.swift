@@ -1761,32 +1761,58 @@ private struct DistributionPanel: View {
     let cells: [DetectedCell]
     let thresholds: [Double]
 
+    @State private var metric: HistogramMath.Metric = .diameter
+
     // Delegate bucket computation to the shared HistogramMath (defined in CompareView.swift).
-    private var histData: [Int] { HistogramMath.buckets(for: cells) }
-    private var maxH: Int { histData.max() ?? 1 }
+    private var histData: [Int] { HistogramMath.buckets(for: cells, metric: metric) }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let (lo, hi) = metric.range
+        let count = metric.bucketCount
+        let data = histData
+        let maxH = data.max() ?? 1
+        // Size-bin coloring and the µm threshold ticks only apply to the diameter
+        // axis; other metrics render as a flat distribution with no bin ticks.
+        let isDiameter = metric == .diameter
+
+        return VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("DISTRIBUTION")
                     .tracking(0.04 * 13)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Tokens.textSecondary)
                 Spacer()
-                Text("\(Int(HistogramMath.histMin)) – \(Int(HistogramMath.histMax)) µm")
+                Text(metric.rangeLabel)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Tokens.textTertiary)
+                Menu {
+                    ForEach(HistogramMath.Metric.allCases) { m in
+                        Button(m.label) { metric = m }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(metric.label)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(Tokens.textSecondary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
             .padding(.bottom, 4)
 
             HStack(alignment: .bottom, spacing: 2) {
-                ForEach(0..<HistogramMath.bucketCount, id: \.self) { i in
-                    let h = histData[i]
+                ForEach(Array(0..<count), id: \.self) { i in
+                    let h = data[i]
                     let heightFrac = maxH > 0 ? max(CGFloat(h) / CGFloat(maxH), 2 / 80) : 2 / 80
-                    let center = HistogramMath.histMin + (Double(i) + 0.5) * (HistogramMath.histMax - HistogramMath.histMin) / Double(HistogramMath.bucketCount)
-                    let bi = BinMath.binIndex(for: center, thresholds: thresholds)
+                    let center = lo + (Double(i) + 0.5) * (hi - lo) / Double(count)
+                    let fill = isDiameter
+                        ? Tokens.binColor(BinMath.binIndex(for: center, thresholds: thresholds))
+                        : Tokens.binColor(2)
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(Tokens.binColor(bi))
+                        .fill(fill)
                         .frame(maxWidth: .infinity)
                         .frame(height: 80 * heightFrac)
                 }
@@ -1794,21 +1820,23 @@ private struct DistributionPanel: View {
             .frame(height: 80)
             .padding(.top, 8)
 
-            ZStack(alignment: .topLeading) {
-                Color.clear.frame(height: 14)
-                ForEach(Array(thresholds.enumerated()), id: \.offset) { i, t in
-                    let rawPos = (t - HistogramMath.histMin) / (HistogramMath.histMax - HistogramMath.histMin)
-                    let pos = min(0.98, max(0.02, rawPos))
-                    GeometryReader { geo in
-                        Text("\(Int(t))")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Tokens.textTertiary)
-                            .position(x: geo.size.width * pos, y: 7)
+            if isDiameter {
+                ZStack(alignment: .topLeading) {
+                    Color.clear.frame(height: 14)
+                    ForEach(Array(thresholds.enumerated()), id: \.offset) { _, t in
+                        let rawPos = (t - lo) / (hi - lo)
+                        let pos = min(0.98, max(0.02, rawPos))
+                        GeometryReader { geo in
+                            Text("\(Int(t))")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Tokens.textTertiary)
+                                .position(x: geo.size.width * pos, y: 7)
+                        }
                     }
                 }
+                .clipped()
+                .padding(.top, 4)
             }
-            .clipped()
-            .padding(.top, 4)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 18)
@@ -1967,6 +1995,8 @@ private struct MeasurementsPanel: View {
     private var meanPerimeter: Double?   { meanOf(\.perimeterMicrons) }
     private var meanCircularity: Double? { meanOf(\.circularity) }
     private var meanEccentricity: Double? { meanOf(\.eccentricity) }
+    private var meanAspectRatio: Double? { meanOf(\.aspectRatio) }
+    private var meanSolidity: Double?    { meanOf(\.solidity) }
 
     var body: some View {
         // Skip the panel entirely when no cell has measurement data.
@@ -1989,6 +2019,12 @@ private struct MeasurementsPanel: View {
                         }
                         if let v = meanEccentricity {
                             MeasRow(label: "Mean eccentricity", value: String(format: "%.3f", v), unit: "")
+                        }
+                        if let v = meanAspectRatio {
+                            MeasRow(label: "Mean aspect ratio", value: String(format: "%.2f", v), unit: "")
+                        }
+                        if let v = meanSolidity {
+                            MeasRow(label: "Mean solidity", value: String(format: "%.3f", v), unit: "")
                         }
                     }
                 }
