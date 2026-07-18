@@ -4,7 +4,7 @@ CellCounter is a desktop application for counting cells in phase-contrast and fl
 
 The tool was written for one task: counting patient-derived oral keratinocytes and comparing their size distributions across conditions. It is not tied to that cell type. If Cellpose can segment a given cell type, CellCounter can count and measure it.
 
-Status, July 2026. The current download is CellCounter 1.0.3 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild for Windows and Linux (version 0.1.1) compiles in continuous integration but has not been verified at runtime on real data, so it is a preview. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
+Status, July 2026. The current download is CellCounter 1.0.3 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild (Tauri; version 0.1.4) is available as a preview — Windows and macOS installers are on the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases), and it also builds on Linux in continuous integration. The preview installs and runs but has not been verified at runtime on real data. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
 
 _Screenshot: to be added._
 
@@ -65,9 +65,15 @@ xattr -cr /Applications/CellCounter.app
 
 Then open the app normally. This applies to the unsigned macOS builds, including the cross-platform `.dmg`.
 
-### Windows / Linux / Web
+### Windows / macOS / Linux (cross-platform preview)
 
-Not released. The cross-platform version is in development. See [Roadmap](#roadmap).
+A preview of the cross-platform rebuild is on the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases) under the latest `desktop-v*` prerelease:
+
+- **Windows**: `CellCounter_*_x64-setup.exe` (or the `.msi`). Unsigned — SmartScreen may warn; choose More info, then Run anyway.
+- **macOS**: `CellCounter_*_universal.dmg`. Unsigned — right-click, then Open.
+- **Linux**: builds in continuous integration; a packaged installer is not published yet.
+
+It is a preview: it installs and runs but has not been verified at runtime on real data. `uv` is bundled, so no separate install is needed; on first run, open the Models tab and install Cellpose, which downloads the Python environment. A browser (WebGPU) version is planned but not started.
 
 ## Quick start
 

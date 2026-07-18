@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p binaries
-          base=https://github.com/astral-sh/uv/releases/latest/download
+          base=https://github.com/astral-sh/uv/releases/download/0.11.29
           case "${{ matrix.os }}" in
             windows-latest)
               curl -fL -o uv.zip "$base/uv-x86_64-pc-windows-msvc.zip"
