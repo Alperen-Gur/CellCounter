@@ -527,18 +527,90 @@ private struct PooledHistogram: View {
 }
 
 /// Histogram math kept in one place so we (a) share it between panels and (b)
-/// match the buckets in `ResultsView.DistributionPanel`. Don't change without
-/// also updating ResultsView's bucket count / range.
+/// match the buckets in `ResultsView.DistributionPanel`. The `bucketCount`/
+/// `histMin`/`histMax` constants are the Compare view's fixed *diameter* axis —
+/// don't change them without also updating ResultsView's diameter path.
 enum HistogramMath {
     static let bucketCount = 24
     static let histMin: Double = 8
     static let histMax: Double = 60
 
+    /// Diameter buckets — the fixed axis used by the Compare view.
     static func buckets(for cells: [DetectedCell]) -> [Int] {
-        var out = Array(repeating: 0, count: bucketCount)
+        buckets(for: cells, metric: .diameter)
+    }
+
+    /// A per-cell metric the Results distribution panel can histogram.
+    /// `.diameter` reproduces the fixed Compare-view axis exactly.
+    enum Metric: String, CaseIterable, Identifiable {
+        case diameter, circularity, aspectRatio, solidity, area
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .diameter:    return "Diameter"
+            case .circularity: return "Circularity"
+            case .aspectRatio: return "Aspect ratio"
+            case .solidity:    return "Solidity"
+            case .area:        return "Area"
+            }
+        }
+
+        /// Inclusive display range [min, max] the histogram spans.
+        var range: (min: Double, max: Double) {
+            switch self {
+            case .diameter:    return (histMin, histMax)   // 8–60 µm
+            case .circularity: return (0, 1)
+            case .aspectRatio: return (1, 5)
+            case .solidity:    return (0, 1)
+            case .area:        return (0, 3000)            // µm²
+            }
+        }
+
+        var bucketCount: Int {
+            switch self {
+            case .diameter, .area: return HistogramMath.bucketCount   // 24
+            default:               return 20
+            }
+        }
+
+        /// Axis caption shown next to the histogram, e.g. "8 – 60 µm".
+        var rangeLabel: String {
+            switch self {
+            case .diameter:    return "8 – 60 µm"
+            case .circularity: return "0 – 1"
+            case .aspectRatio: return "1 – 5"
+            case .solidity:    return "0 – 1"
+            case .area:        return "0 – 3000 µm²"
+            }
+        }
+
+        /// The metric's value for a cell, or nil when unmeasured (diameter is
+        /// always present; the shape metrics are optional on legacy/mock cells).
+        func value(of c: DetectedCell) -> Double? {
+            switch self {
+            case .diameter:    return c.diameter
+            case .circularity: return c.circularity
+            case .aspectRatio: return c.aspectRatio
+            case .solidity:    return c.solidity
+            case .area:        return c.areaMicrons2
+            }
+        }
+    }
+
+    /// Buckets for an arbitrary metric; cells missing the metric are skipped.
+    /// For `.diameter` this is identical to the legacy diameter-only path.
+    static func buckets(for cells: [DetectedCell], metric: Metric) -> [Int] {
+        let (lo, hi) = metric.range
+        let count = metric.bucketCount
+        let span = hi - lo
+        var out = Array(repeating: 0, count: count)
+        guard span > 0 else { return out }
         for c in cells {
-            let raw = (c.diameter - histMin) / (histMax - histMin) * Double(bucketCount)
-            let i = min(bucketCount - 1, max(0, Int(raw)))
+            guard let v = metric.value(of: c) else { continue }
+            let raw = (v - lo) / span * Double(count)
+            let i = min(count - 1, max(0, Int(raw)))
             out[i] += 1
         }
         return out

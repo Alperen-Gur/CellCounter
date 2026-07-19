@@ -206,8 +206,12 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
   const [loading, setLoading] = useState(false);
 
   // The detector id to stamp on the persisted detection blob. We reuse the one
-  // already on the loaded detection so an edit never rebrands the detector.
-  const detectorIdRef = useRef<string>("cellpose/cp-cyto3");
+  // already on the loaded detection so an edit never rebrands the detector;
+  // for a from-scratch manual session with no prior detection, fall back to
+  // whichever model is currently active rather than hardcoding cyto3.
+  const detectorIdRef = useRef<string>(
+    `cellpose/${useAppStore.getState().activeModelId}`,
+  );
   // Latest imageStats loaded with the detection, so re-saving edits preserves
   // the QC / colony numbers the sidecar produced.
   const imageStatsRef = useRef<Record<string, number> | undefined>(undefined);
@@ -241,7 +245,8 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
         const ctx: EditContext = { pxPerUm, manualMarkerDiameterUm };
         const initialCells = det?.cells ?? [];
         const eng = new MaskEditEngine(initialCells, ctx);
-        detectorIdRef.current = det?.detectorId ?? "cellpose/cp-cyto3";
+        detectorIdRef.current =
+          det?.detectorId ?? `cellpose/${useAppStore.getState().activeModelId}`;
         imageStatsRef.current = det?.imageStats;
         setEngine(eng);
         setDetectionId(det?.id ?? null);

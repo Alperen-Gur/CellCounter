@@ -156,6 +156,28 @@ impl FileStore {
         }
     }
 
+    /// `<app-data>/py/.venv4` — the ISOLATED uv-managed venv for the
+    /// Cellpose-SAM (`cellpose>=4`) family. A SHORT *sibling* of `.venv` (not
+    /// nested under it) so its own deep dependency tree (torch under
+    /// `.venv4\Lib\site-packages\…`) stays under Windows' `MAX_PATH` just like
+    /// the base venv (module doc). Kept separate so the cyto3 (`cellpose>=3,<4`)
+    /// env in `.venv` is never disturbed — mirrors the native app's `venv4/`.
+    pub fn venv4_dir(&self) -> PathBuf {
+        self.python_dir().join(".venv4")
+    }
+
+    /// Path to the venv4 Python interpreter (same layout as [`venv_python`]:
+    /// `Scripts\python.exe` on Windows, `bin/python3` on Unix — `uv venv`
+    /// creates both `python` and `python3`, and the native cp4 availability
+    /// probe prefers `python3`).
+    pub fn venv4_python(&self) -> PathBuf {
+        if cfg!(windows) {
+            self.venv4_dir().join("Scripts").join("python.exe")
+        } else {
+            self.venv4_dir().join("bin").join("python3")
+        }
+    }
+
     /// A staged sidecar script inside the python dir (e.g.
     /// `cellpose_detect.py`, `_export_imagej_roi.py`).
     pub fn python_script(&self, name: &str) -> PathBuf {

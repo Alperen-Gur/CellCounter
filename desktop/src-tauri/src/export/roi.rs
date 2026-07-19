@@ -20,6 +20,7 @@ use tokio::process::Command;
 
 use crate::db::models::CellDto;
 use crate::db::repo::Db;
+use crate::detection::sidecar::resolve_helper_python;
 use crate::export::provenance::resolve_out_path;
 use crate::paths::FileStore;
 
@@ -74,13 +75,16 @@ pub async fn export_imagej_roi(
     let _ = (&db, &image_id);
     let store = FileStore::from_app(&app)?;
 
-    // Resolve the venv python + the staged helper (same path the sidecar uses).
-    let python = store.venv_python();
-    if !python.exists() {
-        return Err(
-            "Python venv is not installed. Install Cellpose first to enable ROI export.".into(),
-        );
-    }
+    // Resolve a helper venv python + the staged helper. This helper doesn't run
+    // a model — it only needs roifile (which cellpose pulls in) — so route it to
+    // whichever env EXISTS: base `.venv` preferred, else the cpsam `.venv4`. With
+    // per-card installs, a cpsam-only install (base `.venv` absent) must still be
+    // able to export ROIs, so we no longer hardcode `venv_python()`.
+    let python = resolve_helper_python(&store).ok_or_else(|| {
+        "No Python environment is installed. Install a model (Cellpose or \
+         Cellpose-SAM) first to enable ROI export."
+            .to_string()
+    })?;
     let script = store.python_script("_export_imagej_roi.py");
     if !script.exists() {
         return Err("ROI export helper (_export_imagej_roi.py) is not staged.".into());

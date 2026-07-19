@@ -42,8 +42,11 @@ import { binColor } from "../../kernel/theme/binColors";
 import {
   histogramBuckets,
   bucketCenterUm,
+  histogramRange,
+  HISTOGRAM_METRICS,
   HIST_MIN,
   HIST_MAX,
+  type HistogramMetric,
 } from "../../kernel/stats/histogram";
 import { IntensityHistogram } from "./IntensityHistogram";
 
@@ -138,7 +141,8 @@ function SizeBinsPanel({ cells, thresholds }: { cells: CellDTO[]; thresholds: nu
 // Expected cell diameter (Swift ExpectedDiameterPanel) — the segmentation size
 // prior, decoupled from the display bins. 0 = Auto (bins-derived, current
 // behavior); a set value forwards the explicit diameter to the sidecar and
-// applies on the next detection / re-run. cyto3-only build: no Cellpose-SAM hint.
+// applies on the next detection / re-run. Applies to any active model,
+// including Cellpose-SAM.
 // ---------------------------------------------------------------------------
 
 function ExpectedDiameterPanel({ thresholds }: { thresholds: number[] }) {
@@ -259,45 +263,82 @@ function fmtDiameter(v: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Distribution histogram (Swift DistributionPanel) — fixed 8–60 µm window.
+// Distribution histogram (Swift DistributionPanel) — fixed 8–60 µm diameter
+// window by default, generalized to any morphology metric via a dropdown
+// (histogram.ts `HistogramMetric`). Size-bin coloring (`binColor`/`binIndex`)
+// only makes sense for diameter — µm thresholds have no meaning against a
+// 0–1 circularity/solidity value — so other metrics render as flat accent
+// bars and drop the threshold tick row.
 // ---------------------------------------------------------------------------
 
 function DistributionPanel({ cells, thresholds }: { cells: CellDTO[]; thresholds: number[] }) {
-  const buckets = histogramBuckets(cells);
+  const [metric, setMetric] = useState<HistogramMetric>("diameter");
+  const isDiameter = metric === "diameter";
+  const buckets = histogramBuckets(cells, metric);
   const maxH = Math.max(1, ...buckets);
+  const range = histogramRange(metric);
+  const rangeLabel = `${range.min.toFixed(range.decimals)} – ${range.max.toFixed(range.decimals)}${
+    range.unit ? ` ${range.unit}` : ""
+  }`;
+
   return (
     <section className="rv-panel">
       <div className="rv-dist__head">
         <span className="rv-dist__title">DISTRIBUTION</span>
-        <span className="rv-dist__range">
-          {HIST_MIN} – {HIST_MAX} µm
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: "8px" }}>
+          <select
+            aria-label="Distribution metric"
+            value={metric}
+            onChange={(e) => setMetric(e.target.value as HistogramMetric)}
+            style={{
+              padding: "3px 6px",
+              border: "1px solid var(--cc-border)",
+              borderRadius: "var(--cc-radius-sm)",
+              background: "var(--cc-bg-elevated)",
+              color: "var(--cc-text)",
+              fontSize: "var(--cc-text-xs)",
+              fontFamily: "inherit",
+              cursor: "pointer",
+            }}
+          >
+            {HISTOGRAM_METRICS.map((m) => (
+              <option key={m} value={m}>
+                {histogramRange(m).label}
+              </option>
+            ))}
+          </select>
+          <span className="rv-dist__range">{rangeLabel}</span>
         </span>
       </div>
       <div className="rv-dist__bars">
         {buckets.map((h, i) => {
           const frac = maxH > 0 ? Math.max(h / maxH, 2 / 80) : 2 / 80;
-          const bi = binIndex(bucketCenterUm(i), thresholds);
+          const color = isDiameter
+            ? binColor(binIndex(bucketCenterUm(i), thresholds))
+            : "var(--cc-accent)";
           return (
             <span
               key={i}
               className="rv-dist__bar"
-              style={{ height: `${80 * frac}px`, background: binColor(bi) }}
+              style={{ height: `${80 * frac}px`, background: color }}
               title={`${buckets[i]} cells`}
             />
           );
         })}
       </div>
-      <div className="rv-dist__axis">
-        {thresholds.map((t, i) => {
-          const raw = (t - HIST_MIN) / (HIST_MAX - HIST_MIN);
-          const pos = Math.min(0.98, Math.max(0.02, raw)) * 100;
-          return (
-            <span key={i} className="rv-dist__tick" style={{ left: `${pos}%` }}>
-              {Math.round(t)}
-            </span>
-          );
-        })}
-      </div>
+      {isDiameter && (
+        <div className="rv-dist__axis">
+          {thresholds.map((t, i) => {
+            const raw = (t - HIST_MIN) / (HIST_MAX - HIST_MIN);
+            const pos = Math.min(0.98, Math.max(0.02, raw)) * 100;
+            return (
+              <span key={i} className="rv-dist__tick" style={{ left: `${pos}%` }}>
+                {Math.round(t)}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -583,8 +624,13 @@ function MeasurementsPanel({ cells }: { cells: CellDTO[] }) {
   const measured = cells.filter((c) => c.areaUm2 !== undefined);
   if (measured.length === 0) return null;
 
+  // Non-null/finite guard: optional per-cell measurements can be absent
+  // (manual markers / legacy detections), and a stray null/NaN must not
+  // silently pull the mean toward 0 — only genuinely-measured cells count.
   const meanOf = (pick: (c: CellDTO) => number | undefined): number | null => {
-    const vals = measured.map(pick).filter((v): v is number => v !== undefined);
+    const vals = measured
+      .map(pick)
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     if (vals.length === 0) return null;
     return vals.reduce((a, b) => a + b, 0) / vals.length;
   };
@@ -592,6 +638,8 @@ function MeasurementsPanel({ cells }: { cells: CellDTO[] }) {
   const perim = meanOf((c) => c.perimeterUm);
   const circ = meanOf((c) => c.circularity);
   const ecc = meanOf((c) => c.eccentricity);
+  const aspect = meanOf((c) => c.aspectRatio);
+  const solidity = meanOf((c) => c.solidity);
 
   return (
     <>
@@ -606,6 +654,12 @@ function MeasurementsPanel({ cells }: { cells: CellDTO[] }) {
             <KeyValueRow label="Mean perimeter" value={perim.toFixed(1)} unit="µm" />
           )}
           {circ !== null && <KeyValueRow label="Mean circularity" value={circ.toFixed(3)} />}
+          {solidity !== null && (
+            <KeyValueRow label="Mean solidity" value={solidity.toFixed(3)} />
+          )}
+          {aspect !== null && (
+            <KeyValueRow label="Mean aspect ratio" value={aspect.toFixed(2)} />
+          )}
           {ecc !== null && <KeyValueRow label="Mean eccentricity" value={ecc.toFixed(3)} />}
         </div>
       </section>

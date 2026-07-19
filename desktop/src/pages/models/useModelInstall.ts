@@ -2,21 +2,30 @@
  * pages/models/useModelInstall.ts — install + availability plumbing for the
  * Models tab. Owned by feature task `feat-models`.
  *
- * Thin React hook over the two kernel surfaces this feature is allowed to use:
+ * Thin React hook over the two kernel surfaces this feature is allowed to use.
+ * Every call is parameterized by `modelId` so each catalog model (`cp-cyto3`,
+ * `cpsam`, …) tracks its own install/availability state — the Rust side routes
+ * `cpsam` to a separate `cellpose>=4` venv, independent of the base venv the
+ * other Cellpose models share:
  *
- *   • kernel-env (Rust `#[command]`s): `env_install` runs `uv sync` and streams
- *     each output line on the `env://install/log` Tauri event; `env_availability`
- *     reports whether the venv + cyto3 are importable. We do NOT re-implement the
- *     uv bootstrap here (that is kernel-env) — we only invoke it and render its
- *     progress.
- *   • kernel-transport (`InferenceTransport.availability`): the runnable check the
- *     Run flow gates on (`detection_availability` under the hood).
+ *   • kernel-env (Rust `#[command]`s): `env_install` takes `{ modelId }` and
+ *     `uv sync`s the venv for that model, streaming each output line on the
+ *     `env://install/log` Tauri event; `env_availability` takes `{ modelId }`
+ *     and reports whether that model's venv + package are importable. We do
+ *     NOT re-implement the uv bootstrap here (that is kernel-env) — we only
+ *     invoke it and render its progress.
+ *   • kernel-transport (`InferenceTransport.availability(modelId)`): the
+ *     runnable check the Run flow gates on (`detection_availability` under the
+ *     hood, also per-model).
  *
  * All Tauri access is dynamically imported and guarded by `isTauri()` (mirrors
  * `components/appInit.ts`) so a plain `vite build` preview or the future browser
  * build never eagerly bundles `@tauri-apps` and never crashes when IPC is
- * absent. The `env://install/log` event name + `{ stream, line }` payload match
- * `INSTALL_LOG_EVENT` / `InstallLogLine` in `src-tauri/src/env/uv.rs`.
+ * absent. The `env://install/log` event name + `{ stream, line, modelId }`
+ * payload match `INSTALL_LOG_EVENT` / `InstallLogLine` in
+ * `src-tauri/src/env/uv.rs`. The event is global (one Tauri event stream for
+ * every card), so the listener below filters on `modelId` to isolate this
+ * hook instance's own install from any other concurrently-installing card.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -34,6 +43,8 @@ const INSTALL_LOG_EVENT = "env://install/log";
 interface InstallLogLine {
   stream: string; // "stdout" | "stderr"
   line: string;
+  /** Which catalog model this line belongs to — used to filter the global event. */
+  modelId: string;
 }
 
 /** Availability result (mirrors Rust `Availability` / transport availability). */
@@ -76,9 +87,10 @@ export interface UseModelInstall {
 const MAX_LOG_LINES = 500;
 
 /**
- * Drives the cyto3 install + availability lifecycle for the Models page.
- * `modelId` is the app-facing id whose runnability the transport is asked about
- * (defaults to the store's active model at the call site).
+ * Drives the install + availability lifecycle for ONE catalog model on the
+ * Models page (`cp-cyto3`, `cpsam`, …). `modelId` is the app-facing id passed
+ * to every kernel-env / transport call this hook makes, so multiple instances
+ * (one per runnable card) track independent state.
  */
 export function useModelInstall(modelId: string): UseModelInstall {
   const [availability, setAvailability] = useState<Availability | null>(null);
@@ -108,10 +120,13 @@ export function useModelInstall(modelId: string): UseModelInstall {
 
   /**
    * Probe availability via BOTH surfaces the spec calls out and merge them:
-   *  - env_availability (venv + `import cellpose`)
+   *  - env_availability(modelId) (that model's venv + package importable)
    *  - transport.availability(modelId) (the Run-flow gate; detection_availability)
-   * The model is considered runnable only when both agree it is installed; the
-   * first failure reason is surfaced.
+   * Both are called with THIS hook instance's `modelId` so e.g. the cpsam card
+   * reflects its own `cellpose>=4` venv, never cyto3's. The model is considered
+   * runnable only when both agree it is installed; the first failure reason is
+   * surfaced. `env_uv_available` stays unparameterized — the `uv` toolchain
+   * itself is one global preflight, not a per-model concept.
    */
   const refresh = useCallback(async () => {
     if (!isTauri()) {
@@ -128,7 +143,7 @@ export function useModelInstall(modelId: string): UseModelInstall {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const [env, uvRes, transport] = await Promise.all([
-        invoke<Availability>("env_availability").catch(
+        invoke<Availability>("env_availability", { modelId }).catch(
           (e): Availability => ({ installed: false, reason: String(e) }),
         ),
         invoke<Availability>("env_uv_available").catch(
@@ -202,12 +217,17 @@ export function useModelInstall(modelId: string): UseModelInstall {
       ]);
 
       // Subscribe to the streamed uv log BEFORE invoking so no early line drops.
+      // The event is global across every install card, so ignore lines that
+      // belong to a different concurrently-installing model.
       unlisten = await listen<InstallLogLine>(INSTALL_LOG_EVENT, (event) => {
+        if (event.payload.modelId !== modelId) return;
         appendLog(event.payload.line);
       });
 
-      // `env_install` takes no args in this build (app handle is injected Rust-side).
-      await invoke<void>("env_install");
+      // `modelId` tells kernel-env which venv to sync: `cpsam` routes to its
+      // own `cellpose>=4` venv, everything else to the shared base venv (the
+      // app handle is injected Rust-side, not passed from here).
+      await invoke<void>("env_install", { modelId });
 
       if (mountedRef.current) setPhase("done");
     } catch (e) {
@@ -222,7 +242,7 @@ export function useModelInstall(modelId: string): UseModelInstall {
       // Re-probe availability regardless of outcome so the UI reflects reality.
       await refresh();
     }
-  }, [appendLog, refresh]);
+  }, [appendLog, modelId, refresh]);
 
   return { availability, uv, probing, phase, logLines, error, install, refresh };
 }

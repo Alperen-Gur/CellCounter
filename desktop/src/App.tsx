@@ -20,21 +20,11 @@ import { KeyboardShortcutsSheet } from "./components/KeyboardShortcutsSheet";
 import { useHashRoute } from "./components/useHashRoute";
 import { initAppData } from "./components/appInit";
 import { OnboardingRoot } from "./pages/onboarding/OnboardingRoot";
+import { modelLabel } from "./pages/models/catalog";
 import { useAppStore } from "./kernel/store/store";
 
 import "./styles/theme.css";
 import "./styles/shell.css";
-
-/** Human-friendly label for a model id shown in the top-bar selector. */
-function modelLabel(id: string): string {
-  const map: Record<string, string> = {
-    "cp-cyto3": "Cellpose cyto3",
-    "cp-cyto2": "Cellpose cyto2",
-    "cp-nuclei": "Cellpose nuclei",
-    cpsam: "Cellpose-SAM",
-  };
-  return map[id] ?? id;
-}
 
 function App() {
   const { route, navigate } = useHashRoute();
