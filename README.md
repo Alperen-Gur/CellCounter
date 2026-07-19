@@ -4,7 +4,7 @@ CellCounter is a desktop application for counting cells in phase-contrast and fl
 
 The tool was written for one task: counting patient-derived oral keratinocytes and comparing their size distributions across conditions. It is not tied to that cell type. If Cellpose can segment a given cell type, CellCounter can count and measure it.
 
-Status, July 2026. The current download is CellCounter 1.0.3 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild (Tauri; version 0.1.4) is available as a preview — Windows and macOS installers are on the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases), and it also builds on Linux in continuous integration. The preview installs and runs but has not been verified at runtime on real data. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
+Status, July 2026. The current download is CellCounter 1.0.3 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild (Tauri; version 0.1.5) is available as a preview — Windows and macOS installers are on the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases), and it also builds on Linux in continuous integration. This preview adds Cellpose-SAM for large or irregular cells and per-cell shape metrics (aspect ratio, solidity). The preview installs and runs but has not been verified at runtime on real data. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
 
 _Screenshot: to be added._
 
