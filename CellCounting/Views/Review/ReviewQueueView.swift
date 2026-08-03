@@ -74,6 +74,30 @@ struct ReviewQueueView: View {
                 cardStack
             }
         }
+        // The key handlers below are attached HERE — to the content — and not
+        // after the `.frame(maxWidth: .infinity, maxHeight: .infinity)` that
+        // follows. `onKeyPress` makes its subject focusable, and SwiftUI sizes
+        // that focusable region to the frame it is applied to. Applied after an
+        // infinite frame it claimed the whole content column; the symptom was
+        // that the left nav bar stopped responding to clicks as soon as the
+        // Review queue opened (the only screen in the app with `onKeyPress`),
+        // leaving the X button as the sole way out. Bounding the region to the
+        // real content keeps the shortcuts working without swallowing clicks
+        // meant for the sidebar.
+        .onKeyPress(.escape) { state.view = .home; return .handled }
+        // Cmd+Z — reverse the last Reject/Keep so a mistaken keystroke isn't
+        // permanent. No-op when there's nothing to undo.
+        .onKeyPress(keys: [.init("z")]) { press in
+            guard press.modifiers.contains(.command), lastAction != nil else { return .ignored }
+            undoLastAction()
+            return .handled
+        }
+        // → Next without action
+        .onKeyPress(.rightArrow) {
+            guard cursor < queue.count else { return .ignored }
+            withAnimation(Tokens.Motion.ease) { cursor += 1; editingDiameter = nil }
+            return .handled
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bg)
         .onAppear { rebuild() }
@@ -96,20 +120,6 @@ struct ReviewQueueView: View {
             // A correction from a different surface invalidates our undo target.
             lastAction = nil
             rebuild(preservingCursor: true)
-        }
-        .onKeyPress(.escape) { state.view = .home; return .handled }
-        // Cmd+Z — reverse the last Reject/Keep so a mistaken keystroke isn't
-        // permanent. No-op when there's nothing to undo.
-        .onKeyPress(keys: [.init("z")]) { press in
-            guard press.modifiers.contains(.command), lastAction != nil else { return .ignored }
-            undoLastAction()
-            return .handled
-        }
-        // → Next without action
-        .onKeyPress(.rightArrow) {
-            guard cursor < queue.count else { return .ignored }
-            withAnimation(Tokens.Motion.ease) { cursor += 1; editingDiameter = nil }
-            return .handled
         }
     }
 
