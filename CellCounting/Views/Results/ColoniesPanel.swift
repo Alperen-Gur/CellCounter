@@ -54,34 +54,41 @@ struct ColoniesPanel: View {
 
         return AnyView(
             VStack(spacing: 0) {
-                SectionHeader(title: "Colonies")
-                VStack(spacing: 4) {
-                    ColonyRow(label: "Confluency",
-                              value: String(format: "%.1f", confluency),
-                              unit: "%")
-                    ColonyRow(label: "Colonies (≥3 cells)",
-                              value: "\(nColonies)",
-                              unit: "")
-                    ColonyRow(label: "Mean colony size",
-                              value: meanColony > 0 ? String(format: "%.1f", meanColony) : "—",
-                              unit: meanColony > 0 ? "cells" : "")
-                    ColonyRow(label: "Largest colony",
-                              value: largest > 0 ? "\(largest)" : "—",
-                              unit: largest > 0 ? "cells" : "")
-                    if largestArea > 0 {
-                        ColonyRow(label: "Largest colony area",
-                                  value: largestArea >= 10_000
-                                    ? String(format: "%.2e", largestArea)
-                                    : String(format: "%.0f", largestArea),
-                                  unit: "µm²")
+                // Own leading divider, drawn inside the `hasColonyData` branch
+                // — same pattern as MeasurementsPanel. Unconditional separators
+                // either side of a self-hiding panel leave two rules flush
+                // together for every user who isn't doing colony work.
+                Divider().overlay(Tokens.divider)
+                VStack(spacing: 0) {
+                    SectionHeader(title: "Colonies")
+                    VStack(spacing: 4) {
+                        ColonyRow(label: "Confluency",
+                                  value: String(format: "%.1f", confluency),
+                                  unit: "%")
+                        ColonyRow(label: "Colonies (≥3 cells)",
+                                  value: "\(nColonies)",
+                                  unit: "")
+                        ColonyRow(label: "Mean colony size",
+                                  value: meanColony > 0 ? String(format: "%.1f", meanColony) : "—",
+                                  unit: meanColony > 0 ? "cells" : "")
+                        ColonyRow(label: "Largest colony",
+                                  value: largest > 0 ? "\(largest)" : "—",
+                                  unit: largest > 0 ? "cells" : "")
+                        if largestArea > 0 {
+                            ColonyRow(label: "Largest colony area",
+                                      value: largestArea >= 10_000
+                                        ? String(format: "%.2e", largestArea)
+                                        : String(format: "%.0f", largestArea),
+                                      unit: "µm²")
+                        }
+                        ColonyRow(label: "Mean nearest-neighbour",
+                                  value: nnDistance > 0 ? String(format: "%.1f", nnDistance) : "—",
+                                  unit: nnDistance > 0 ? "µm" : "")
                     }
-                    ColonyRow(label: "Mean nearest-neighbour",
-                              value: nnDistance > 0 ? String(format: "%.1f", nnDistance) : "—",
-                              unit: nnDistance > 0 ? "µm" : "")
                 }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 18)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 18)
         )
     }
 }

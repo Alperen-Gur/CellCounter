@@ -46,6 +46,40 @@ enum PythonRuntime {
         // Pass-16: Cellpose-SAM (4.x) sidecar — C1 ships this file.
         // Listed here as a best-effort copy; missing-helpers are non-fatal.
         "cellpose4_detect.py",
+        // Omnipose — bacteria / filamentous cells. Runs in its own venv_omni/
+        // (see OmniposeDownloader) but the script itself stages here with all
+        // the others, because every sidecar resolves via `stagedScriptURL`.
+        "omnipose_detect.py",
+        // Classical threshold + watershed. No weights, no install step — this
+        // file plus scikit-image IS the whole detector, so staging it is what
+        // makes the always-available guarantee true.
+        "classical_detect.py",
+        // Bring-your-own models: loads a user-supplied Cellpose checkpoint or
+        // StarDist model directory (see CustomModelDetectionService).
+        "custom_detect.py",
+        // Vendor-format / Z-stack / multi-channel reader. Imported by
+        // `_cellpose_common` and by every assay CLI below, so it has to stage
+        // even though nothing invokes it directly.
+        "_imageio.py",
+        // Intensity assays: % marker-positive, N:C ratio, colocalization,
+        // live/dead, transfection efficiency, cell cycle.
+        "_assays_intensity.py",
+        "intensity_assays.py",
+        // Area assays: confluence, scratch-wound closure, spheroid size.
+        "_assays_area.py",
+        "area_assays_detect.py",
+        // Puncta / foci per cell.
+        "_assays_puncta.py",
+        "puncta_detect.py",
+        // Spatial statistics: nearest-neighbour, density, Clark-Evans index.
+        "_spatial.py",
+        "spatial_stats.py",
+        // Cell tracking / migration over a time series.
+        "_tracking.py",
+        "track_cells.py",
+        // Neurite outgrowth.
+        "_neurite.py",
+        "neurite_outgrowth.py",
     ]
 
     /// Errors that surface to the UI when staging fails. These are deliberately

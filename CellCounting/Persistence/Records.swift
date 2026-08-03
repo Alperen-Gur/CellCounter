@@ -264,6 +264,11 @@ private struct CellPayload: Codable {
     /// JSON efficiency. Optional — payloads written before this change decode
     /// with `contourFlat == nil`, rendering via the existing bbox/circle path.
     let contourFlat: [Double]?
+    /// Per-channel intensities for multi-channel sources. Optional and stored
+    /// as-is (ChannelIntensity is Codable), exactly like the other optional
+    /// per-cell measurements above: rows written before this change decode
+    /// with `channelIntensities == nil` and behave as single-channel.
+    let channelIntensities: [ChannelIntensity]?
     // isMock is intentionally NOT stored here; legacy payloads containing "isMock"
     // are silently ignored by Codable (unknown keys on struct → no-op).
 
@@ -289,6 +294,10 @@ private struct CellPayload: Codable {
         self.likelyDebris = c.likelyDebris
         self.sizeClass = c.sizeClass
         self.isManual = c.isManual
+        // Normalise empty → nil so a multi-channel-less payload never stores an
+        // empty array that would read back as "has channels, but none".
+        self.channelIntensities = (c.channelIntensities?.isEmpty == false)
+            ? c.channelIntensities : nil
         if let contour = c.contourPx, !contour.isEmpty {
             var flat: [Double] = []
             flat.reserveCapacity(contour.count * 2)
@@ -324,7 +333,9 @@ private struct CellPayload: Codable {
                             likelyDebris: likelyDebris ?? false,
                             sizeClass: sizeClass ?? "",
                             isManual: isManual ?? false,
-                            contourPx: contour)
+                            contourPx: contour,
+                            channelIntensities: (channelIntensities?.isEmpty == false)
+                                ? channelIntensities : nil)
     }
 }
 

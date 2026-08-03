@@ -66,9 +66,22 @@ struct CellposeSAMDownloader: ModelDownloader {
 
         try await Self.runPipInstall(
             pythonURL: python,
-            packages: ["cellpose>=4", "numpy<2", "scipy", "scikit-image", "torch"],
+            packages: ["cellpose>=4", "numpy<2", "scipy", "scikit-image",
+                       "tifffile", "torch"],
             progress: progress
         )
+
+        // Optional vendor microscope-format readers for `python/_imageio.py`.
+        // Same list and same best-effort semantics as CellposeDownloader —
+        // failures here must never abort an otherwise-good install.
+        for package in CellposeDownloader.optionalImageReaderPackages {
+            await MainActor.run {
+                progress.append("optional reader: pip install \(package)")
+            }
+            try? await Self.runPipInstall(pythonURL: python,
+                                          packages: [package],
+                                          progress: progress)
+        }
 
         await MainActor.run { progress.stage = .verifying }
         let importable = Self.isCellposeSAMImportable(pythonURL: python, useCache: false)
@@ -304,11 +317,21 @@ extension CellposeSAMDetectionService {
     /// Whether a given app-level model id belongs to the cp4 family.
     /// Currently a single id (`cpsam`); kept as a function for future ids.
     static func isKnownModelId(_ id: String) -> Bool {
-        switch id {
-        case "cpsam":
-            return true
-        default:
-            return false
-        }
+        knownModelIds.contains(id)
     }
+
+    /// Every checkpoint the cellpose 4.x `pretrained_model=` constructor
+    /// accepts, per https://cellpose.readthedocs.io/en/latest/models.html
+    /// (verified against that page). All four share the SAME `venv4/` install
+    /// and differ only in the weights cellpose downloads on first use — so
+    /// adding one costs no new dependency and no licence change.
+    ///
+    /// The id IS the `pretrained_model` string. `cellpose4_detect.py` strips
+    /// any `cp4-`/`cellpose4-` prefix and passes the rest straight through.
+    static let knownModelIds: Set<String> = [
+        "cpsam",        // original CellposeSAM (SAM-ViTL)
+        "cpsam_v2",     // revised CellposeSAM — better on low-contrast regions
+        "cpdino",       // CellposeDINO (DINOv3-ViTL), adjustable tile size
+        "cpdino-vitb",  // CellposeDINO (DINOv3-ViTB), smaller and faster
+    ]
 }

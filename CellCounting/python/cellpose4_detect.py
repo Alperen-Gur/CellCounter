@@ -179,6 +179,9 @@ def main() -> None:
     # QC metrics + shared image_stats dict.
     image_stats: dict = {}
     image_stats.update(cc.compute_qc_metrics(img))
+    # Expose the calibration read from the image file's own metadata
+    # (px/µm). Reported only — --pxPerUm still drives every measurement.
+    image_stats.update(cc.detected_calibration_stats(args))
 
     height_px, width_px = int(img.shape[0]), int(img.shape[1])
     log(f"[cellpose_detect] image is {width_px}x{height_px} (ndim={img.ndim}); "

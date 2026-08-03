@@ -68,7 +68,22 @@ echo "==> upgrading pip"
 pip install --upgrade pip
 
 echo "==> installing cellpose + deps (this can take a few minutes)"
-pip install cellpose numpy pillow scikit-image torch torchvision
+pip install cellpose numpy pillow scikit-image tifffile torch torchvision
+
+# Optional vendor microscope-format readers used by CellCounting/python/_imageio.py
+# (Zeiss .czi, Nikon .nd2, Leica .lif, Olympus .oif/.oib/.oir). All pure-Python
+# BSD-3-Clause; the GPL alternatives (bioformats, bioio-czi, readlif,
+# aicspylibczi, pyometiff, czitools) are deliberately NOT used. Best-effort:
+# several have no release for older Python minors, and _imageio degrades to the
+# PIL path with an "install <pkg> to open <ext>" message when one is absent.
+echo "==> installing optional vendor format readers (best effort)"
+for _cc_pkg in imagecodecs 'czifile>=2019.7.2,<2027' 'nd2>=0.10,<1' 'liffile<2027' 'oiffile<2027' 'oirfile<2027'; do
+    if pip install "${_cc_pkg}"; then
+        echo "    ok:      ${_cc_pkg}"
+    else
+        echo "    skipped: ${_cc_pkg} (unavailable for this Python — optional)"
+    fi
+done
 
 deactivate || true
 

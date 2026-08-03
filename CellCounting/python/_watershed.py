@@ -32,6 +32,53 @@ Edge cases:
 from __future__ import annotations
 
 
+def label_binary(binary, min_distance_px: int = 8):
+    """Label a BINARY mask by distance-transform watershed.
+
+    The standalone-detector entry point (`classical_detect.py`) starts from a
+    threshold, not from a detector's label map, so it has a boolean mask rather
+    than integer labels. Rather than make it fake a label image just to call
+    `split()`, this does the same distance → peaks → watershed work directly.
+
+    `split()` is left untouched: it remains the post-processing path every
+    deep-learning sidecar calls to break apart touching instances.
+
+    Args:
+        binary: 2-D boolean (or truthy numeric) ndarray. True = foreground.
+        min_distance_px: Minimum distance in pixels between watershed seed
+            peaks. Smaller values split more aggressively.
+
+    Returns:
+        A 2-D int ndarray of labels, background 0. Falls back to plain
+        connected-component labelling when the distance transform yields no
+        usable peaks (e.g. a mask of thin filaments).
+    """
+    import numpy as np
+    from scipy import ndimage as ndi
+    from skimage.feature import peak_local_max
+    from skimage.segmentation import watershed
+
+    mask = np.asarray(binary) > 0
+    if not mask.any():
+        return np.zeros(mask.shape, dtype=np.int32)
+
+    distance = ndi.distance_transform_edt(mask)
+    coords = peak_local_max(
+        distance,
+        min_distance=max(1, int(min_distance_px)),
+        labels=mask,
+    )
+    if coords.size == 0:
+        # No separable peaks — every blob is its own object.
+        labels, _ = ndi.label(mask)
+        return labels
+
+    markers_mask = np.zeros(distance.shape, dtype=bool)
+    markers_mask[tuple(coords.T)] = True
+    markers, _ = ndi.label(markers_mask)
+    return watershed(-distance, markers, mask=mask)
+
+
 def split(labels, min_distance_px: int = 8):
     """Split touching blobs via distance-transform watershed.
 

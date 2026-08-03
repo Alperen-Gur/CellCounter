@@ -1057,8 +1057,23 @@ private struct ViewerControlsTopCenter: View {
             }
         }
         .padding(.top, 14)
+        // The three viewer control clusters (Left / TopCenter / Right) are
+        // INDEPENDENT overlays in the same ZStack, each spanning the full
+        // width at its own alignment. Nothing stops them sharing pixels: once
+        // this centre row grew past `viewerWidth - left - right` it drew
+        // straight through the zoom group on the right. Reserving the side
+        // clusters' widths here means the centre row runs out of room (and
+        // scrolls) instead of overlapping them. Keep these in sync if either
+        // side cluster gains controls.
+        .padding(.horizontal, Self.sideClusterInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
+
+    /// Horizontal space to keep clear on BOTH sides for `ViewerControlsLeft`
+    /// (Box/Outline segmented control + overlay toggle) and
+    /// `ViewerControlsRight` (zoom group + full-screen toggle), including
+    /// their 14pt outer padding and a small breathing gap.
+    private static let sideClusterInset: CGFloat = 240
 }
 
 /// Pass-17 (Lane B): small pill next to the EditorModeToolbar showing how
@@ -1164,11 +1179,19 @@ private struct ViewerControlsRight: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Tokens.textSecondary)
 
+                // `minWidth` alone let SwiftUI compress this label when the
+                // control band got tight, which is how it ended up drawn under
+                // its neighbours. `fixedSize` refuses the compression and
+                // `monospacedDigit` keeps the width stable from 40% to 400%
+                // so the buttons either side never shift as the user zooms.
                 Text("\(Int(zoom * 100))%")
                     .font(.system(size: 11.5, design: .monospaced))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
                     .foregroundStyle(Tokens.textSecondary)
                     .padding(.horizontal, 6)
-                    .frame(minWidth: 40)
+                    .frame(minWidth: 44)
 
                 // Pass-15: upper bound raised to 4.0x to match the keyboard
                 // shortcut and pinch-gesture upper bound.
@@ -1241,6 +1264,18 @@ private struct ResultsSidebar: View {
         return state.repos.rois(for: image.id).count
     }
 
+    /// Channel names for the current detection, in source order — the only
+    /// per-image channel metadata that survives the sidecar boundary (via
+    /// `DetectedCell.channelIntensities`, which the Python side emits only for
+    /// genuinely multi-channel sources). Empty for a plain grayscale image.
+    /// Feeds `ChannelStackPanel`; see its mount below.
+    private var channelNames: [String] {
+        let sourceCell = state.currentImage?.detection?.cells
+            .first { $0.channelIntensities?.isEmpty == false }
+        guard let entries = sourceCell?.channelIntensities else { return [] }
+        return entries.sorted { $0.channel < $1.channel }.map(\.displayName)
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -1262,19 +1297,66 @@ private struct ResultsSidebar: View {
                 // decoupling reads as one story: bins reclassify instantly,
                 // expected diameter drives the next segmentation (see panel).
                 ExpectedDiameterPanel(state: state)
+                // Channels & Z — which channel the segmenter runs on and how a
+                // stack is flattened. `ChannelStackSettings` (UserDefaults) is
+                // read by five detection services to build `--z-project` /
+                // `--segment-channel`, but until now NOTHING wrote those keys:
+                // every run went out as `--z-project max --segment-channel 0`
+                // and a 4-channel .czi user had no way to segment on their DAPI
+                // channel. Mounted next to ExpectedDiameterPanel because it is
+                // the same kind of control — it changes what the NEXT detection
+                // does, not how the current one is displayed.
+                //
+                // Gated on a genuinely multi-channel detection so a grayscale
+                // brightfield sidebar is unchanged. `zPlaneCount: 0` means
+                // "unknown" — see ChannelStackPanel.zPlaneCount.
+                if channelNames.count > 1 {
+                    Divider().overlay(Tokens.divider)
+                    ChannelStackPanel(detectedChannelNames: channelNames,
+                                      zPlaneCount: 0)
+                    Text("Applies to the next detection run — press ⌘R to "
+                         + "re-segment this image.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Tokens.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.bottom, 16)
+                }
                 Divider().overlay(Tokens.divider)
                 DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
-                Divider().overlay(Tokens.divider)
+                // Every self-hiding panel from here down draws its OWN leading
+                // divider, inside the branch that decides whether it renders.
+                // An unconditional separator either side of a hiding panel
+                // leaves two rules flush against each other — and with several
+                // hiding at once (a detection returning 0 cells) they stacked
+                // into one thick band.
                 ColoniesPanel(state: state)
                 Divider().overlay(Tokens.divider)
                 ScalePanel(state: state)
                 Divider().overlay(Tokens.divider)
                 ConfidencePanel(state: state)
                 MeasurementsPanel(cells: cells)
-                Divider().overlay(Tokens.divider)
+                // Intensity assays (% marker-positive, transfection, live/dead,
+                // cell cycle, N:C ratio, colocalization). Reads the SAME
+                // confidence/ROI-filtered `cells` as its neighbours so a
+                // filtered-out cell can't inflate a percentage. Hides itself
+                // when the detection carries no per-channel data, so
+                // single-channel brightfield work is unaffected.
+                IntensityAssaysPanel(cells: cells,
+                                     imageStats: state.currentImage?.detection?.imageStats ?? [:])
+                // The five region/assay tools, behind ONE collapsed disclosure.
+                // See AdditionalAssaysSection for why they aren't inline.
+                AdditionalAssaysSection(state: state,
+                                        cells: cells,
+                                        roiCount: roiCount,
+                                        roiSignal: roiSignal)
                 // Pass-17 (Lane B): F1 / precision / recall vs ground truth.
                 // Renders nothing when there are zero annotations, so this
-                // doesn't pollute the sidebar for users who never use it.
+                // doesn't pollute the sidebar for users who never use it — and
+                // for the same reason its separator is drawn INSIDE that
+                // condition, not around the panel (an unconditional one would
+                // sit flush against NotesPanel's).
                 GroundTruthPanel(state: state, detections: cells)
                 // Pass-18 (Lane N): freeform per-image notes — donor / passage /
                 // observations the filename can't carry. Sits between
@@ -1286,6 +1368,11 @@ private struct ResultsSidebar: View {
                 AnalysisPanel(state: state, profileMode: $profileMode)
                 Divider().overlay(Tokens.divider)
                 ResultsExportPanel(state: state, overlayMode: overlayMode)
+                Divider().overlay(Tokens.divider)
+                // GeoJSON — QuPath's preferred annotation format, and the
+                // route into Python/Shapely. Sits beside the existing export
+                // panel (PDF / CSV / ImageJ ROI) as the other half of interop.
+                GeoJSONExportPanel(state: state)
             }
         }
         .background(Tokens.bg)
@@ -1296,6 +1383,92 @@ private struct ResultsSidebar: View {
                 .frame(maxHeight: .infinity)
         }
         .onChange(of: roiCount) { roiSignal &+= 1 }
+    }
+}
+
+// MARK: — Additional assays (collapsed)
+
+/// The five region/assay tools added in the assay wave — Area, Puncta, Spatial
+/// stats, Tracking, Neurite — behind ONE disclosure row, collapsed by default.
+///
+/// WHY. Left inline they roughly doubled the sidebar for an ordinary
+/// single-channel brightfield user, because "has ≥1 cell" is not an
+/// applicability test: `AreaAssaysPanel` had no guard at all, `PunctaPanel` and
+/// `NeuritePanel` hid only on an empty cell list, and `SpatialStatsPanel` only
+/// below two cells — all true for essentially every successful detection.
+/// Nobody's default sidebar should grow a neurite-outgrowth box because their
+/// detector found some cells.
+///
+/// Each panel KEEPS its own internal hide logic, so expanding the group still
+/// shows only what applies (no Tracking for a single-image batch, no Spatial
+/// stats for one cell), and each draws its own leading divider so a hidden one
+/// leaves no orphaned separator behind.
+private struct AdditionalAssaysSection: View {
+    @Bindable var state: AppState
+    /// `ResultsSidebar`'s confidence + ROI-filtered cells, handed down so the
+    /// panels can't re-derive a different set — see `AssayResultKey`.
+    let cells: [DetectedCell]
+    let roiCount: Int
+    /// Bumped on ROI count change; `TrackingPanel` needs it because it derives
+    /// its own per-frame lists through an untracked SwiftData fetch.
+    let roiSignal: Int
+
+    /// Persisted so a user who works with these daily isn't re-collapsing them
+    /// on every launch. Default false — the whole point of this section.
+    @AppStorage("cc-additional-assays-expanded") private var expanded = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider().overlay(Tokens.divider)
+
+            Button {
+                withAnimation(Tokens.Motion.easeFast) { expanded.toggle() }
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Icon(expanded ? "chevron" : "chevronr", size: 11)
+                            .foregroundStyle(Tokens.textTertiary)
+                        Text("Additional assays".uppercased())
+                            .tracking(0.04 * 13)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Tokens.textSecondary)
+                        Spacer()
+                    }
+                    if !expanded {
+                        Text("Confluence & wound closure, puncta, spatial "
+                             + "statistics, tracking, neurite outgrowth.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Tokens.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 18)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+
+            if expanded {
+                // Area/region assays: confluence, scratch-wound closure,
+                // spheroid size. These measure regions rather than cells, so
+                // they take `state` and run their own sidecar over a file the
+                // user picks — hence no cell-based hide condition.
+                AreaAssaysPanel(state: state)
+                // Puncta / foci per cell (γH2AX, FISH spots, stress granules).
+                PunctaPanel(state: state, cells: cells, roiCount: roiCount)
+                // Nearest-neighbour distance, local density, Clark-Evans index.
+                SpatialStatsPanel(state: state, cells: cells, roiCount: roiCount)
+                // Migration over an ordered series; hidden for single-image
+                // batches rather than showing a permanent "needs 2 frames" box.
+                TrackingPanel(state: state, roiSignal: roiSignal)
+                // Neurite outgrowth. Its overlapping-neurite caveat renders
+                // unconditionally above the numbers — that limitation is real
+                // and must not be dismissible.
+                NeuritePanel(state: state, cells: cells, roiCount: roiCount)
+            }
+        }
     }
 }
 

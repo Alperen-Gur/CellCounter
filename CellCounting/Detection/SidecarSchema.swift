@@ -40,6 +40,10 @@ struct SidecarCell: Decodable {
     /// Pass-14: per-cell polygon contour in image-pixel coords, as [[x, y], …].
     /// Optional — legacy sidecars and non-cellpose detectors don't emit it.
     let contour_px: [[Double]]?
+    /// Per-channel intensities, emitted by `measure_cells` only when the source
+    /// has more than one channel. `ChannelIntensity`'s synthesized coding keys
+    /// match these wire names verbatim, so no custom mapping is needed.
+    let channel_intensities: [ChannelIntensity]?
 }
 
 /// Structured error emitted by a sidecar when a known failure occurs
@@ -110,7 +114,8 @@ extension SidecarPayload {
                 likelyDebris: c.likely_debris ?? false,
                 sizeClass: c.size_class ?? "",
                 isManual: c.is_manual ?? false,
-                contourPx: contour
+                contourPx: contour,
+                channelIntensities: c.channel_intensities
             )
         }
         return DetectionResult(cells: cells,

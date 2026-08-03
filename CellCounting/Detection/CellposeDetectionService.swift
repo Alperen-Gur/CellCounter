@@ -63,6 +63,10 @@ struct CellposeDetectionService: DetectionService {
         if !isDefaultChannels {
             args += ["--channels", channelArg]
         }
+        // Z-projection + which channel to segment on. Only the sidecars
+        // built on `_cellpose_common.build_arg_parser` accept these;
+        // StarDist/SAM hand-roll their parsers and would exit 2.
+        args += ChannelStackSettings.sidecarArguments()
         if needsRestore {
             args += ["--restore"]
         }

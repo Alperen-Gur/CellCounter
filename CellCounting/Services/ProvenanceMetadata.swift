@@ -199,7 +199,11 @@ struct ProvenanceMetadata: Codable, Sendable {
             // CPSAM ships a single big checkpoint "cpsam".
             let url = home.appendingPathComponent(".cellpose/models/cpsam")
             return FileManager.default.fileExists(atPath: url.path) ? url : nil
-        case .stardist, .sam, .custom, .all:
+        // Classical has no weights at all (that's the point), and the ensemble
+        // composes other families rather than owning a checkpoint. Omnipose,
+        // StarDist, SAM, and custom models each manage their own checkpoint
+        // paths — wire them up here when provenance needs them.
+        case .stardist, .sam, .omnipose, .classical, .ensemble, .custom, .all:
             return nil
         }
     }
@@ -255,7 +259,22 @@ final class ProvenanceVersionCache: @unchecked Sendable {
             // reads the right value out of the cp4 venv.
             return probePython(interpreter: FileStore.shared.pythonInterpreter4URL,
                                importLine: "import cellpose; print(cellpose.version)")
-        case .stardist, .sam, .custom, .all:
+        case .omnipose:
+            // Omnipose lives in its own venv_omni/ — report the version of the
+            // Cellpose fork it ships, which is what actually did the
+            // segmentation and therefore what provenance should record.
+            guard let interpreter = OmniposeDownloader.interpreter() else { return nil }
+            return probePython(interpreter: interpreter,
+                               importLine: "import omnipose; print(omnipose.__version__)")
+        case .classical:
+            // No model version to report — the pipeline is scikit-image's
+            // threshold + watershed, so that library's version IS the
+            // provenance-relevant number.
+            return probePython(interpreter: FileStore.shared.pythonInterpreterURL,
+                               importLine: "import skimage; print('scikit-image ' + skimage.__version__)")
+        case .stardist, .sam, .ensemble, .custom, .all:
+            // The ensemble has no version of its own; its members each report
+            // theirs through their own family.
             return nil
         }
     }

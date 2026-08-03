@@ -1014,6 +1014,9 @@ private struct ModelsSection: View {
         case .cellpose4: return "cpu"
         case .stardist:  return "star"
         case .sam:       return "flask"
+        case .omnipose:  return "layers"
+        case .classical: return "ruler"
+        case .ensemble:  return "compare"
         case .custom:    return "sparkles"
         case .all:       return "cpu"
         }
@@ -1434,6 +1437,18 @@ private struct AboutSection: View {
         // Post `ccVenv4Changed` so the InstallStateCache picks the change up.
         UserDefaults.standard.removeObject(forKey: "cc-cellpose4-importable")
         NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
+
+        // Same treatment for the two other cached install verdicts, so a wipe
+        // can't leave a row claiming "installed" on a stale probe:
+        //   * Omnipose keeps its own `venv_omni/` (preserved, like the other
+        //     venvs) but its cached import flag is invalidated;
+        //   * the ensemble's cached "both members ready" verdict describes
+        //     state that may no longer hold.
+        // Registered bring-your-own models are deliberately NOT cleared — they
+        // point at the user's own files outside our storage, which a wipe of
+        // *our* data has no business forgetting.
+        UserDefaults.standard.removeObject(forKey: "cc-omnipose-importable")
+        UserDefaults.standard.removeObject(forKey: "cc-ensemble-members-ready")
 
         // Reset in-memory state that points at now-deleted batches/images so
         // the UI doesn't keep stale selections alive.

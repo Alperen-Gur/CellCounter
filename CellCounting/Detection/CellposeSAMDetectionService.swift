@@ -43,13 +43,22 @@ struct CellposeSAMDetectionService: DetectionService {
         var args = [
             scriptURL.path,
             "--image", imageURL.path,
-            "--model", "cpsam",
+            // The catalog id IS the cellpose `pretrained_model` string
+            // (cpsam / cpsam_v2 / cpdino / cpdino-vitb). Hardcoding "cpsam"
+            // here would silently run the original checkpoint no matter which
+            // row the user activated. Prefer the input's id, falling back to
+            // this instance's, and to cpsam only if neither is a cp4 id.
+            "--model", Self.resolvedModelName(input.modelId, fallback: modelId),
             "--pxPerUm", String(input.pxPerUm),
             "--conf", String(input.confidenceThreshold),
         ]
         if !isDefaultChannels {
             args += ["--channels", channelArg]
         }
+        // Z-projection + which channel to segment on. Only the sidecars
+        // built on `_cellpose_common.build_arg_parser` accept these;
+        // StarDist/SAM hand-roll their parsers and would exit 2.
+        args += ChannelStackSettings.sidecarArguments()
         if input.backgroundSubtract {
             args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
@@ -100,4 +109,14 @@ struct CellposeSAMDetectionService: DetectionService {
         return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
     }
 
+    /// Resolve which cellpose 4.x checkpoint to run.
+    ///
+    /// Never returns an id the cp4 family doesn't own — a stray 3.x id would
+    /// otherwise be forwarded to `pretrained_model=` and fail deep inside
+    /// cellpose. `cpsam` is the documented v4 default, so that's the floor.
+    static func resolvedModelName(_ primary: String, fallback: String) -> String {
+        if isKnownModelId(primary) { return primary }
+        if isKnownModelId(fallback) { return fallback }
+        return "cpsam"
+    }
 }

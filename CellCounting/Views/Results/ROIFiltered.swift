@@ -46,3 +46,49 @@ enum ROIFilter {
         }
     }
 }
+
+// MARK: — Assay result staleness
+
+/// Fingerprint of everything an assay result was derived from.
+///
+/// WHY THIS IS NOT JUST AN IMAGE ID. The per-image assay panels (Puncta,
+/// Spatial stats, Neurite) used to tag their result with `ImageRecord.id` and
+/// clear it when that id changed. That correctly clears on paging between
+/// images and NOTHING ELSE — because the id is stable across every other way
+/// the cell set can change underneath a result:
+///
+///   • ⌘R re-detection replaces the `DetectionRecord` on the SAME `ImageRecord`;
+///   • `AppState.removeCells` mutates `detection.cells` in place;
+///   • split / merge do the same;
+///   • dragging the confidence slider changes the effective cutoff;
+///   • drawing or deleting an ROI changes which cells survive filtering.
+///
+/// Every one of those left a panel showing numbers computed against a cell set
+/// that no longer exists, side by side with a `TotalBlock` showing the new
+/// count — e.g. "212 cells · 41% with 5+ foci" next to a total of 148, with the
+/// percentage's denominator silently being the discarded set.
+///
+/// Comparing this whole key instead of the bare id closes that: `cellCount`
+/// moves on any add/remove/split/merge/re-detect, `cutoff` moves the instant
+/// the slider does (even where the count happens not to change), and `roiCount`
+/// moves on ROI add/delete. The panels ALSO clear on `.ccCorrectionsChanged`,
+/// which is posted by exactly the mutation paths above — belt and braces, so a
+/// re-run that coincidentally returns the same number of cells still drops the
+/// stale result.
+struct AssayResultKey: Equatable {
+    let imageId: UUID?
+    let cellCount: Int
+    let cutoff: Double
+    let roiCount: Int
+}
+
+/// Series-level equivalent for `TrackingPanel`, whose input is a whole batch
+/// rather than one image. The batch id alone has the same blind spot as an
+/// image id — re-detecting or editing any frame leaves it untouched — so the
+/// per-frame cell counts ride along, plus each frame's effective cutoff so a
+/// slider drag that doesn't change a count still invalidates.
+struct SeriesResultKey: Equatable {
+    let batchId: UUID?
+    let frameCellCounts: [Int]
+    let frameCutoffs: [Double]
+}
