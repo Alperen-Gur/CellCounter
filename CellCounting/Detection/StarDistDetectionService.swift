@@ -59,11 +59,25 @@ struct StarDistDetectionService: DetectionService {
             "--small-threshold", String(input.smallThreshold),
             "--large-threshold", String(input.largeThreshold),
         ]
-        if !input.useGPU {
-            // Honour the user's "Use GPU" preference. The stardist sidecar
-            // accepts `--no-gpu` to pin TensorFlow to CPU.
-            args += ["--no-gpu"]
-        }
+        // NOTE: deliberately no `--no-gpu` here.
+        //
+        // This used to append `--no-gpu` whenever the user turned "Use GPU"
+        // off, on the assumption (stated in the comment it replaced) that the
+        // stardist sidecar accepted it. It does not: `stardist_detect.py`
+        // hand-rolls its own `parse_args()` rather than using
+        // `_cellpose_common.build_arg_parser`, and that parser defines no
+        // `--no-gpu`. argparse therefore exited with code 2, printed usage to
+        // stderr, and wrote nothing to stdout — so EVERY StarDist run with the
+        // GPU toggle off failed with an unparseable-stdout error, which is a
+        // confusing way to say "unrecognized argument".
+        //
+        // Verified by running the real sidecar:
+        //   stardist_detect.py: error: unrecognized arguments: --no-gpu
+        //
+        // Dropping the flag makes StarDist work in both toggle positions. The
+        // toggle simply has no effect on StarDist yet: TensorFlow picks its own
+        // device, and pinning it to CPU needs a flag on the Python side (which
+        // this lane doesn't own). Better an honest no-op than a hard failure.
 
         let outcome: SidecarOutcome
         do {
@@ -79,7 +93,49 @@ struct StarDistDetectionService: DetectionService {
         // Structured error path: the script reported a known failure on stdout.
         // Structured-error check, payload decode, and per-cell mapping are
         // shared across all detection families via SidecarPayload.decodeResult.
-        return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
+        //
+        // `isolatingJSON` is a StarDist-only guard — see its doc comment.
+        return try SidecarPayload.decodeResult(stdout: Self.isolatingJSON(outcome.stdout),
+                                               exitCode: outcome.exitCode)
+    }
+
+    /// Strip anything the stardist library printed to stdout ahead of our JSON.
+    ///
+    /// Every sidecar keeps stdout clean for the payload and logs to stderr —
+    /// but stardist itself doesn't play along. Verified against the real
+    /// library (0.9.2), stdout on a normal run begins:
+    ///
+    ///     Found model '2D_versatile_fluo' for 'StarDist2D'.
+    ///     Loading network weights from 'weights_best.h5'.
+    ///     {"width": 300, …}
+    ///
+    /// and on a first run it also carries the weights-download progress bar.
+    /// `JSONDecoder` sees a leading `F` and fails, so EVERY StarDist detection
+    /// died with "Unparseable stdout" no matter how well the run went.
+    ///
+    /// The proper fix is for the sidecar to silence the library (that file is
+    /// owned by another lane), so this is the host-side safety net: try the
+    /// bytes as-is first, and only if that fails re-try from each `{` in turn.
+    /// The first offset that decodes is the payload. Confined to StarDist
+    /// rather than pushed into the shared `SidecarPayload.decodeResult`, so no
+    /// other detector's strictness is relaxed.
+    static func isolatingJSON(_ stdout: Data) -> Data {
+        // Fast path: already clean (and the only path once the sidecar is fixed).
+        if (try? JSONSerialization.jsonObject(with: stdout)) != nil { return stdout }
+
+        let open = UInt8(ascii: "{")
+        var index = stdout.startIndex
+        while let next = stdout[index...].firstIndex(of: open) {
+            let candidate = stdout[next...]
+            if (try? JSONSerialization.jsonObject(with: candidate)) != nil {
+                return Data(candidate)
+            }
+            index = stdout.index(after: next)
+            if index >= stdout.endIndex { break }
+        }
+        // Nothing decodable — hand back the original so the error message the
+        // caller builds still shows what the sidecar actually printed.
+        return stdout
     }
 
     // MARK: — Script resolution

@@ -6,6 +6,9 @@ struct ModelsView: View {
     @Bindable var state: AppState
     @State private var searchText: String = ""
     @State private var presentingLineageFor: String? = nil
+    /// Presents `AddCustomModelSheet` — bring-your-own models and the
+    /// ensemble member pair.
+    @State private var showAddModel: Bool = false
     @FocusState private var searchFocused: Bool
     @Environment(AppTheme.self) private var theme
 
@@ -74,7 +77,8 @@ struct ModelsView: View {
                     isRefreshing: state.installStateCache.isRefreshing,
                     onRefresh: {
                         state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)
-                    }
+                    },
+                    onAddModel: { showAddModel = true }
                 )
                 .padding(.bottom, 16)
 
@@ -191,6 +195,15 @@ struct ModelsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .init("cellpose-install-completed"))) { _ in
             state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)
         }
+        .sheet(isPresented: $showAddModel) {
+            AddCustomModelSheet(state: state)
+        }
+        // Registering or removing a bring-your-own model changes the catalog
+        // itself, not just an install state, so re-read `ModelCatalog.all`.
+        .onReceive(NotificationCenter.default.publisher(for: CustomModelStore.changedNotification)) { _ in
+            state.models = ModelCatalog.all
+            state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)
+        }
     }
 }
 
@@ -240,6 +253,7 @@ private struct ModelsHeaderRow: View {
     var searchFocused: FocusState<Bool>.Binding
     let isRefreshing: Bool
     let onRefresh: () -> Void
+    let onAddModel: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
@@ -254,6 +268,15 @@ private struct ModelsHeaderRow: View {
             }
             Spacer()
             HStack(spacing: 8) {
+                Button(action: onAddModel) {
+                    HStack(spacing: 4) {
+                        Icon("plus", size: 12)
+                        Text("Add model…")
+                    }
+                }
+                .appButton(.standard, size: .sm)
+                .help("Use a model you trained yourself, or pair two models for a second opinion.")
+
                 Button(action: onRefresh) {
                     HStack(spacing: 4) {
                         if isRefreshing {
@@ -369,7 +392,13 @@ private struct ModelsSections: View {
     let onActivate: (String) -> Void
     let onDownload: (String) -> Void
 
-    private let familyOrder: [ModelFamily] = [.cellpose, .cellpose4, .stardist, .sam, .custom]
+    // Order the "All" view renders sections in. A family missing from this
+    // list renders NOWHERE in the All view, so every non-`.all` case must
+    // appear here.
+    private let familyOrder: [ModelFamily] = [
+        .cellpose, .cellpose4, .omnipose, .stardist, .sam,
+        .classical, .ensemble, .custom,
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -504,6 +533,12 @@ private struct ModelRow: View {
         case .cellpose4: return "flame"
         case .stardist: return "star"
         case .sam: return "flask"
+        // Omnipose is a Cellpose derivative but a distinct install; the layers
+        // glyph reads as "same idea, different stack".
+        case .omnipose: return "layers"
+        // Classical is deterministic measurement, not inference.
+        case .classical: return "ruler"
+        case .ensemble: return "compare"
         case .custom: return "sparkles"
         case .all: return "cpu"
         }

@@ -43,12 +43,37 @@ final class ChildProcessTracker {
     private var didInstallLifecycle = false
 
     /// Names we know we own. Used by the orphan sweep on launch.
-    /// Add a script name to this list if you spawn a new long-running subprocess.
-    static let ownedScriptBasenames: Set<String> = [
+    ///
+    /// HARD RULE: every `python/*.py` file the app can spawn as a subprocess
+    /// MUST be listed here. A missing entry means a crash mid-run leaves that
+    /// sidecar re-parented to launchd, burning a core forever, and the NEXT
+    /// launch's sweep walks straight past it — the exact failure this file was
+    /// written to prevent. Helper modules that are only ever `import`ed
+    /// (`_cellpose_common.py`, `_imageio.py`, …) are deliberately absent:
+    /// they never become a process of their own.
+    /// `nonisolated` because the only reader is `sweepOrphans()`, which runs
+    /// off the main actor at launch. `Set<String>` is Sendable, so this is safe
+    /// and silences the "main actor-isolated … from a nonisolated context"
+    /// warning that would otherwise become an error under Swift 6.
+    nonisolated static let ownedScriptBasenames: Set<String> = [
+        // Detection families (each is `python <script>` with a real argv[1]).
         "cellpose_detect.py",
+        "cellpose4_detect.py",
         "cellpose_train.py",
         "stardist_detect.py",
         "sam_detect.py",
+        "omnipose_detect.py",
+        "classical_detect.py",
+        "custom_detect.py",
+        // Assay / analysis sidecars (PunctaRunner, SpatialStatsRunner,
+        // TrackingRunner, NeuriteRunner, AreaAssaysRunner, intensity assays).
+        "puncta_detect.py",
+        "spatial_stats.py",
+        "track_cells.py",
+        "neurite_outgrowth.py",
+        "area_assays_detect.py",
+        "intensity_assays.py",
+        // Environment bootstrap.
         "install_python.sh",
     ]
 

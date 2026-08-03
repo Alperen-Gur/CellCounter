@@ -36,7 +36,21 @@ CC_VENV_DEFAULT_NAME="venv"
 CC_FAMILY_LABEL="Cellpose 3.x"
 CC_DETECT_FILENAME="cellpose_detect.py"
 # numpy<2 is required by cellpose 3.x.
-CC_PIP_PACKAGES='cellpose>=3.0,<4 numpy<2 pillow scikit-image torch torchvision'
+# tifffile is required (not optional): it is the OME-TIFF / ImageJ / LSM reader
+# behind _imageio.py, and is pure Python + BSD-3 so it installs everywhere.
+CC_PIP_PACKAGES='cellpose>=3.0,<4 numpy<2 pillow scikit-image tifffile torch torchvision'
+# Optional vendor microscope-format readers used by _imageio.py. All are
+# pure-Python BSD-3-Clause (MIT-compatible). The GPL alternatives — bioformats,
+# bioio-czi, readlif, aicspylibczi, pyometiff, czitools — are deliberately NOT
+# used. Installed best-effort (see _lib_install.sh): a package with no wheel
+# for this Python just stays absent and _imageio falls back to PIL with an
+# actionable "install <pkg> to open <ext>" message.
+#
+# czifile / liffile / oirfile carry upstream "API is not stable" notices, so
+# they are capped below the next calendar-year release train; nd2 and oiffile
+# are range-pinned for the same reason. imagecodecs is only needed for
+# compressed CZI/TIFF payloads and ships as a binary wheel.
+CC_PIP_OPTIONAL_PACKAGES='imagecodecs czifile>=2019.7.2,<2027 nd2>=0.10,<1 liffile<2027 oiffile<2027 oirfile<2027'
 CC_DONE_EXTRA_NOTE="Expect roughly ~2 GB of disk used (torch + cellpose weights cache on first
 run can add more). The CellCounter app picks this up automatically through
 CellposeAvailability.swift — no further configuration needed."

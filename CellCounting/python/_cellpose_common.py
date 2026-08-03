@@ -29,21 +29,34 @@ Public API (callers in cellpose_detect.py / cellpose4_detect.py):
     parse_channels(channels_str: str) -> list[int]
 
     load_image_array(pil_image) -> np.ndarray
-        PIL → numpy, uint8, HxW or HxWx3 depending on mode.
+        PIL → numpy, uint8, HxW or HxWx3 depending on mode. Retained for
+        backward compatibility; new code should go through `_imageio`.
 
-    open_image_for_detection(path: str, channels: list[int]) -> np.ndarray
+    open_image_for_detection(path: str, channels: list[int], args) -> np.ndarray
         Opens file, picks grayscale vs RGB based on channel selection,
         applies _preprocessing.apply with args. Caller passes args separately
         because it owns the argparse.Namespace.
+
+        Since the vendor-format pass this routes through
+        `_imageio.load_planes()`, so Zeiss .czi / Nikon .nd2 / Leica .lif /
+        Olympus .oif|.oib|.oir, Z-stacks and N-channel fluorescence all work
+        here — but the RETURN VALUE is unchanged: a uint8 HxW (grayscale
+        mode) or HxWx3 (cellpose channel mode) array. The full float32
+        (H, W, C) stack is stashed on `args` as `_cc_channel_stack` (names in
+        `_cc_channel_names`, metadata in `_cc_image_meta`) so `measure_cells`
+        can emit per-cell per-channel intensities without any caller change.
 
     compute_qc_metrics(img: np.ndarray) -> dict
         Returns {"focus_score", "illumination_residual"} (or {} on failure).
 
     resolve_device(args, torch_mod) -> (override_device | None, use_gpu_kw: bool)
 
-    measure_cells(masks, img, args, flows=None) -> list[dict]
+    measure_cells(masks, img, args, flows=None, channel_stack=None,
+                  channel_names=None) -> list[dict]
         Runs the full per-cell measurement loop. Returns cell dicts matching
-        the SidecarPayload schema.
+        the SidecarPayload schema. When the source had more than one channel
+        each cell additionally carries a "channel_intensities" list — see the
+        function docstring for the exact JSON.
 
     apply_watershed_if_requested(masks, args) -> masks
     compute_colony_stats(masks, args, height_px, width_px) -> dict
@@ -96,7 +109,9 @@ def build_arg_parser(description: str, default_model: str) -> argparse.ArgumentP
     """
     p = argparse.ArgumentParser(description=description)
     p.add_argument("--image", required=True,
-                   help="Path to input image (jpg/png/tif/bmp).")
+                   help="Path to input image. Common formats (jpg/png/tif/bmp) "
+                        "plus the vendor microscope formats handled by "
+                        "_imageio: .czi, .nd2, .lif, .oif, .oib, .oir.")
     p.add_argument("--model", default=default_model,
                    help="Cellpose model name or path to a checkpoint.")
     p.add_argument("--pxPerUm", type=float, required=True,
@@ -107,6 +122,20 @@ def build_arg_parser(description: str, default_model: str) -> argparse.ArgumentP
     p.add_argument("--channels", default="0,0",
                    help="Two comma-separated ints: cyto channel, nuclei channel. "
                         "0=grayscale/none, 1=red, 2=green, 3=blue. Default 0,0.")
+    p.add_argument("--z-project", dest="z_project", default="max",
+                   choices=["max", "sum", "mean", "none"],
+                   help="How to collapse a Z-stack into one plane. 'none' "
+                        "applies no projection and uses the central Z plane. "
+                        "Default max.")
+    p.add_argument("--segment-channel", dest="segment_channel", type=int,
+                   default=0,
+                   help="Zero-based index of the channel the segmenter runs "
+                        "on for multi-channel images. In grayscale mode "
+                        "(--channels 0,0) that channel IS the input; with a "
+                        "cellpose channel pair it is mapped onto cellpose "
+                        "channel 1 (red) and the rest follow in order. Per-cell "
+                        "intensities are still measured in EVERY channel. "
+                        "Default 0.")
     p.add_argument("--bg-subtract", dest="bg_subtract", action="store_true",
                    help="Apply rolling-ball background subtraction before detection.")
     p.add_argument("--rolling-ball-radius", dest="rolling_ball_radius", type=int,
@@ -165,41 +194,110 @@ def load_image_array(pil_image):
     return np.array(rgb, dtype=np.uint8)
 
 
-def open_image_for_detection(path: str, channels: list[int], args):
-    """Open the image file, pick gray vs RGB based on channels, apply preprocessing.
-
-    Returns the numpy array (uint8). On failure, calls emit_error() and exits.
-    """
-    import numpy as np
-    from PIL import Image
-
-    # These are trusted, user-chosen local microscopy files — a whole-slide or
-    # large-sensor scan legitimately exceeds PIL's default ~178 MP DecompressionBomb
-    # guard. Raise the ceiling to a sane sanity cap (2 GP) so valid large scans open
-    # instead of false-failing, while still rejecting an absurdly large header.
-    Image.MAX_IMAGE_PIXELS = 2_000_000_000
-
-    log(f"[cellpose_detect] loading image: {path}")
-    try:
-        pil = Image.open(path)
-        pil.load()
-    except Image.DecompressionBombError as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] image too large: {exc!r}")
-        emit_error("image-too-large", hint=str(exc), exit_code=3)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] could not open image: {exc!r}")
-        emit_error("image-open-failed", hint=str(exc), exit_code=3)
-
-    is_grayscale_mode = (channels[0] == 0 and channels[1] == 0)
-    if is_grayscale_mode:
-        img = np.array(pil.convert("L"), dtype=np.uint8)
-    else:
-        img = load_image_array(pil)
-
-    # Make sure _preprocessing is importable from this module's directory.
+def _ensure_sidecar_path() -> None:
+    """Make sibling sidecar modules (_imageio, _preprocessing, …) importable."""
     _here = os.path.dirname(os.path.abspath(__file__))
     if _here not in sys.path:
         sys.path.insert(0, _here)
+
+
+def open_image_for_detection(path: str, channels: list[int], args):
+    """Open the image file, pick gray vs RGB based on channels, apply preprocessing.
+
+    Returns the numpy array (uint8) — HxW in grayscale mode, HxWx3 when the
+    caller asked for a cellpose channel pair. That return contract is
+    UNCHANGED; what changed underneath is that loading now goes through
+    `_imageio.load_planes()`, which understands vendor microscope formats,
+    Z-stacks and N-channel fluorescence.
+
+    Side effect (deliberate, so callers need no signature change): the full
+    float32 (H, W, C) stack in RAW source units is attached to ``args`` as
+    ``_cc_channel_stack``, its names as ``_cc_channel_names`` and the loader
+    metadata as ``_cc_image_meta``. ``measure_cells`` picks those up to emit
+    per-cell per-channel intensities.
+
+    On failure, calls emit_error() and exits.
+    """
+    import numpy as np
+
+    _ensure_sidecar_path()
+    import _imageio  # noqa: E402
+
+    z_project = str(getattr(args, "z_project", "max") or "max")
+    log(f"[cellpose_detect] loading image: {path} (z_project={z_project})")
+
+    try:
+        stack, meta = _imageio.load_planes(path, z_project=z_project,
+                                           channel=None)
+    except _imageio.ImageIOError as exc:
+        log(f"[cellpose_detect] could not open image: {exc.message} "
+            f"({exc.hint})")
+        emit_error(exc.code, hint=exc.hint or exc.message, exit_code=3)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log(f"[cellpose_detect] could not open image: {exc!r}")
+        emit_error("image-open-failed", hint=str(exc), exit_code=3)
+        return None
+
+    channel_count = int(stack.shape[2])
+    channel_names = list(meta.get("channel_names") or [])
+    is_rgb = bool(meta.get("is_rgb", False))
+
+    # Stash the full stack for the per-channel measurement pass.
+    setattr(args, "_cc_channel_stack", stack)
+    setattr(args, "_cc_channel_names", channel_names)
+    setattr(args, "_cc_image_meta", meta)
+
+    seg_channel = int(getattr(args, "segment_channel", 0) or 0)
+    is_grayscale_mode = (channels[0] == 0 and channels[1] == 0)
+
+    if is_grayscale_mode:
+        if channel_count == 1:
+            plane = stack[..., 0]
+        elif is_rgb and seg_channel <= 0 and channel_count >= 3:
+            # Preserve the legacy `PIL.Image.convert("L")` result bit-for-bit
+            # for ordinary RGB photographs.
+            plane = _imageio.rgb_luminance(stack)
+        else:
+            idx = max(0, min(channel_count - 1, seg_channel))
+            name = channel_names[idx] if idx < len(channel_names) else f"Ch{idx}"
+            log(f"[cellpose_detect] segmenting on channel {idx} ({name}) "
+                f"of {channel_count}")
+            plane = stack[..., idx]
+        img = _imageio.to_uint8(plane, meta)
+    else:
+        # Cellpose's channels=[cyto, nuclei] index 1=R, 2=G, 3=B into an
+        # HxWx3 array. Map source channel k onto RGB slot k so an ordinary RGB
+        # photo is an identity and a 2-channel fluorescence stack lands as
+        # (ch0 -> "red", ch1 -> "green") — which is what channels=[1,2] means.
+        #
+        # `--segment-channel` used to be honoured ONLY in grayscale mode and
+        # ignored here, so for every caller that sends both flags (all five
+        # services do) the channel picker silently did nothing. It now selects
+        # which source channel lands in RGB slot 0 — i.e. cellpose channel 1,
+        # "red" — with the remaining channels following in their original order.
+        # seg_channel 0 is the identity mapping, so the default path is
+        # bit-for-bit unchanged.
+        height, width = int(stack.shape[0]), int(stack.shape[1])
+        rgb = np.zeros((height, width, 3), dtype=np.float32)
+        take = min(3, channel_count)
+        order = list(range(channel_count))
+        seg_idx = max(0, min(channel_count - 1, seg_channel))
+        if seg_idx != 0:
+            order = [seg_idx] + [c for c in order if c != seg_idx]
+            seg_name = (channel_names[seg_idx] if seg_idx < len(channel_names)
+                        else f"Ch{seg_idx}")
+            log(f"[cellpose_detect] --segment-channel {seg_idx} ({seg_name}) "
+                f"mapped onto cellpose channel 1 (red); channel order is now "
+                f"{order[:take]}")
+        for slot in range(take):
+            rgb[..., slot] = stack[..., order[slot]]
+        if channel_count > 3:
+            log(f"[cellpose_detect] {channel_count} channels present; cellpose "
+                "channel mode uses the first 3 (intensities are still measured "
+                "in all of them)")
+        img = _imageio.to_uint8(rgb, meta)
+
     import _preprocessing  # noqa: E402
     img = _preprocessing.apply(img, args)
     return img
@@ -208,6 +306,52 @@ def open_image_for_detection(path: str, channels: list[int], args):
 # ---------------------------------------------------------------------------
 # QC metrics — focus score (Laplacian variance) + illumination residual.
 # ---------------------------------------------------------------------------
+
+def detected_calibration_stats(args) -> dict:
+    """The µm/pixel calibration READ FROM THE IMAGE, as pixels per micrometre.
+
+    `_imageio` already parses a real physical pixel size out of CZI / ND2 / LIF
+    / OIF / OME-TIFF / ImageJ metadata into ``meta["pixel_size_um"]``, and
+    until now nothing in the app looked at it — researchers kept typing
+    ``--pxPerUm`` by hand while the correct number sat unused in the file.
+
+    This only EXPOSES it; it changes no calibration behaviour. Every
+    measurement still uses the ``--pxPerUm`` the caller passed, so the host can
+    compare the two and offer "use the calibration detected in this file"
+    without anything silently switching underneath a saved result.
+
+    MIND THE RECIPROCAL: ``pixel_size_um`` is µm per pixel, this app's
+    convention is PIXELS per µm, so the reported value is ``1 / pixel_size_um``.
+
+    Returns ``{}`` when the file carried no calibration.
+    """
+    meta = getattr(args, "_cc_image_meta", None) or {}
+    px_um = meta.get("pixel_size_um")
+    try:
+        px_um = float(px_um)
+    except (TypeError, ValueError):
+        return {}
+    if not (px_um > 0) or px_um != px_um or px_um in (float("inf"),):
+        return {}
+    detected = 1.0 / px_um
+    out = {
+        "detected_px_per_um": detected,
+        "detected_pixel_size_um": px_um,
+    }
+    requested = getattr(args, "pxPerUm", None)
+    try:
+        requested = float(requested)
+    except (TypeError, ValueError):
+        requested = None
+    if requested is not None and requested > 0:
+        out["pxPerUm_used"] = requested
+        log(f"[cellpose_detect] calibration in file: {detected:.4f} px/µm "
+            f"({px_um:.6g} µm/px); --pxPerUm in use: {requested:.4f} px/µm")
+    else:
+        log(f"[cellpose_detect] calibration in file: {detected:.4f} px/µm "
+            f"({px_um:.6g} µm/px)")
+    return out
+
 
 def compute_qc_metrics(img) -> dict:
     """Compute focus_score and illumination_residual on the raw image array.
@@ -347,15 +491,41 @@ def compute_colony_stats(masks, args, height_px: int, width_px: int) -> dict:
 # Per-cell measurement loop.
 # ---------------------------------------------------------------------------
 
-def measure_cells(masks, img, args, flows=None) -> list[dict]:
+def measure_cells(masks, img, args, flows=None, channel_stack=None,
+                  channel_names=None) -> list[dict]:
     """Build the list of per-cell dicts matching SidecarPayload's schema.
 
     * masks: HxW int label map (0 = background).
-    * img:   HxW or HxWx3 uint8 array used for intensity measurements.
+    * img:   HxW or HxWx3 uint8 array used for the legacy single-plane
+             intensity measurements (``mean_intensity``/``integrated_density``).
     * args:  argparse.Namespace — must have pxPerUm, small_threshold,
              large_threshold.
     * flows: optional eval flows tuple. flows[2] (when present and
              shape-matched) is read as the cellprob/confidence map.
+    * channel_stack:  optional (H, W, C) float32 array in RAW source units.
+             Defaults to ``args._cc_channel_stack``, which
+             ``open_image_for_detection`` sets for every load.
+    * channel_names:  optional list[str], one per channel. Defaults to
+             ``args._cc_channel_names``; missing entries become "Ch<i>".
+
+    MULTI-CHANNEL CONTRACT — when the stack has C > 1 every cell dict also
+    carries, in exactly this shape:
+
+        "channel_intensities": [
+            {"channel": 0, "name": "DAPI", "mean": 123.4,
+             "integrated": 45678.0, "median": 120.0},
+            {"channel": 1, "name": "GFP", "mean": 55.1,
+             "integrated": 20100.0, "median": 51.0}
+        ]
+
+    one entry per channel, ordered by channel index, measured over the cell's
+    own mask. ``integrated`` is ``mean * area_px``, matching the definition of
+    the existing ``integrated_density`` field. Values are in the source file's
+    RAW units (NOT rescaled to 0–255) so cross-channel and cross-image
+    comparisons stay meaningful.
+
+    The key is OMITTED ENTIRELY when C == 1. The existing single-channel
+    ``mean_intensity`` / ``integrated_density`` fields are unchanged.
     """
     import numpy as np
 
@@ -393,6 +563,45 @@ def measure_cells(masks, img, args, flows=None) -> list[dict]:
         img_gray = img.mean(axis=2).astype(np.float64)
 
     height_px, width_px = int(img.shape[0]), int(img.shape[1])
+
+    # --- Per-channel planes for the "channel_intensities" contract ----------
+    # Only engaged when the source really had >1 channel AND the stack lines up
+    # with the mask grid (a half-resolution retry, a crop, or a caller that
+    # never went through open_image_for_detection all land here as "no stack",
+    # which just means the key is omitted — never a crash).
+    if channel_stack is None:
+        channel_stack = getattr(args, "_cc_channel_stack", None)
+    if channel_names is None:
+        channel_names = getattr(args, "_cc_channel_names", None)
+
+    channel_planes: list = []
+    resolved_names: list[str] = []
+    if channel_stack is not None:
+        try:
+            stack_arr = np.asarray(channel_stack)
+            if (stack_arr.ndim == 3 and stack_arr.shape[2] > 1
+                    and stack_arr.shape[:2] == masks.shape):
+                n_ch = int(stack_arr.shape[2])
+                raw_names = list(channel_names or [])
+                for c in range(n_ch):
+                    name = (str(raw_names[c]).strip()
+                            if c < len(raw_names) and raw_names[c] is not None
+                            else "")
+                    resolved_names.append(name if name else f"Ch{c}")
+                    channel_planes.append(
+                        np.ascontiguousarray(stack_arr[..., c],
+                                             dtype=np.float64))
+                log(f"[cellpose_detect] measuring per-cell intensities in "
+                    f"{n_ch} channels: {resolved_names}")
+            elif stack_arr.ndim == 3 and stack_arr.shape[2] > 1:
+                log("[cellpose_detect] channel stack "
+                    f"{stack_arr.shape[:2]} does not match masks "
+                    f"{masks.shape}; omitting channel_intensities")
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] per-channel setup failed (non-fatal): "
+                f"{exc!r}")
+            channel_planes = []
+            resolved_names = []
 
     if _skimage_ok:
         try:
@@ -535,6 +744,26 @@ def measure_cells(masks, img, args, flows=None) -> list[dict]:
             cell_dict["mean_intensity"] = mean_intensity
         if integrated_density is not None:
             cell_dict["integrated_density"] = integrated_density
+
+        # Per-cell, per-channel intensities. Key omitted entirely when the
+        # source was single-channel (channel_planes stays empty).
+        if channel_planes:
+            try:
+                per_channel: list[dict] = []
+                for c, plane in enumerate(channel_planes):
+                    values = plane[ys, xs]
+                    ch_mean = float(values.mean())
+                    per_channel.append({
+                        "channel": c,
+                        "name": resolved_names[c],
+                        "mean": ch_mean,
+                        "integrated": ch_mean * area_px,
+                        "median": float(np.median(values)),
+                    })
+                cell_dict["channel_intensities"] = per_channel
+            except Exception as exc:  # noqa: BLE001
+                log("[cellpose_detect] channel intensities failed for label "
+                    f"{int(label)} (non-fatal): {exc!r}")
 
         # Per-cell polygon contour for filled overlay rendering.
         # find_contours returns (row, col) pairs at 0.5 iso-level — flip to

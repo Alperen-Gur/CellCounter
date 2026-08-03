@@ -77,9 +77,12 @@ struct CellCountingApp: App {
                 Button("Cancel") {
                     state.showCalibration = false
                     state.showInstallCellpose = false
+                    state.showAnalysisProtocols = false
                 }
                 .keyboardShortcut(".", modifiers: [.command])
             }
+            // Save/apply a named analysis protocol, and export GeoJSON.
+            AnalysisProtocolCommands(state: state)
             CommandGroup(after: .help) {
                 Button("Keyboard Shortcuts") { showShortcuts = true }
                     .keyboardShortcut("/", modifiers: [.command])

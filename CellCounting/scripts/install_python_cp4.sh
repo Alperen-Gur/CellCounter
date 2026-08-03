@@ -39,7 +39,16 @@ CC_DETECT_FILENAME="cellpose4_detect.py"
 # numpy<2 is still required by parts of the cellpose stack.
 # CPSAM weights (~1.15 GB) are NOT downloaded here — they're pulled lazily on
 # first detection run inside cellpose4_detect.py via CellposeModel(...).
-CC_PIP_PACKAGES='cellpose>=4 numpy<2 pillow scikit-image torch torchvision'
+# tifffile is required (not optional): it is the OME-TIFF / ImageJ / LSM reader
+# behind _imageio.py, and is pure Python + BSD-3 so it installs everywhere.
+CC_PIP_PACKAGES='cellpose>=4 numpy<2 pillow scikit-image tifffile torch torchvision'
+# Optional vendor microscope-format readers used by _imageio.py — kept
+# byte-identical to install_python.sh so both venvs open the same file types.
+# All pure-Python BSD-3-Clause; the GPL alternatives (bioformats, bioio-czi,
+# readlif, aicspylibczi, pyometiff, czitools) are deliberately NOT used.
+# czifile / liffile / oirfile have upstream "API is not stable" notices, hence
+# the calendar-year caps. Installed best-effort — see _lib_install.sh.
+CC_PIP_OPTIONAL_PACKAGES='imagecodecs czifile>=2019.7.2,<2027 nd2>=0.10,<1 liffile<2027 oiffile<2027 oirfile<2027'
 CC_DONE_EXTRA_NOTE="Expect roughly ~2 GB of disk used by the venv itself; on the first detection
 run cellpose 4 will additionally fetch ~1.15 GB of CPSAM transformer weights
 into ~/.cellpose/models/. Total disk impact: ~3.5 GB.

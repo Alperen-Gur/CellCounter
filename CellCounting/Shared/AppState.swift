@@ -25,6 +25,15 @@ final class AppState {
     /// model's family.
     var showInstallCellpose4: Bool = false
 
+    /// Presents the analysis-protocol library sheet (save/apply a named,
+    /// versioned snapshot of the current detection + calibration +
+    /// preprocessing settings, so a whole lab can run identical settings or
+    /// cite an exact configuration in a methods section). See
+    /// `Services/AnalysisProtocolStore.swift` (model + persistence +
+    /// `apply`/`makeAnalysisProtocolSnapshot`) and
+    /// `Views/Modals/AnalysisProtocolSheet.swift` (the sheet UI).
+    var showAnalysisProtocols: Bool = false
+
     /// When true, didSet observers skip writing back to UserDefaults. Used by
     /// `refreshFromDefaults()` so observing UserDefaults.didChangeNotification
     /// doesn't ping-pong values back into UserDefaults (and re-trigger ourselves).
@@ -222,6 +231,11 @@ final class AppState {
     private var installCompletedObserver: NSObjectProtocol?
     @ObservationIgnored
     private var detectionStageObserver: NSObjectProtocol?
+    /// Registering or removing a bring-your-own model changes the CATALOG, not
+    /// just an install state — `ModelCatalog.all` reads `CustomModelStore`, so
+    /// `models` has to be re-read. Held for the AppState's lifetime.
+    @ObservationIgnored
+    private var customModelsObserver: NSObjectProtocol?
     /// Pass-16: venv4 (cellpose 4.x) lifecycle observers. Distinct from the
     /// 3.x observers so changes to one venv don't kick the other's UI re-probe.
     @ObservationIgnored
@@ -342,6 +356,18 @@ final class AppState {
         detectorRegistry.register(CellposeSAMDownloader())
         detectorRegistry.register(StarDistDownloader())
         detectorRegistry.register(SAMDownloader())
+        // Omnipose — bacteria / filamentous cells. Installs into its own
+        // `venv_omni/` for the same pin-conflict reason cp4 owns `venv4/`.
+        detectorRegistry.register(OmniposeDownloader())
+        // Classical threshold + watershed. No weights and no install step, so
+        // this is the one family available on any machine where the base
+        // Python environment exists.
+        detectorRegistry.register(ClassicalDownloader())
+        // Bring-your-own models the user registered from the Models tab.
+        detectorRegistry.register(CustomModelDownloader())
+        // "Second opinion" — composes two of the above. Registered last so the
+        // members it resolves are already in the registry.
+        detectorRegistry.register(EnsembleDownloader())
         // Wire the install-state cache so the registry can refresh it on
         // install start/completion. Held weakly on the registry side.
         detectorRegistry.installStateCache = installStateCache
@@ -521,6 +547,22 @@ final class AppState {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.refreshDetector()
+                self.refreshActiveModelInstallState()
+            }
+        }
+
+        // Bring-your-own models live in UserDefaults, not the catalog literal,
+        // so a registration has to re-project `ModelCatalog.all` into `models`
+        // for the new row to appear anywhere in the app.
+        self.customModelsObserver = NotificationCenter.default.addObserver(
+            forName: CustomModelStore.changedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.models = ModelCatalog.all
                 self.refreshDetector()
                 self.refreshActiveModelInstallState()
             }

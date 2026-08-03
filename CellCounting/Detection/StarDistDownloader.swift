@@ -148,15 +148,48 @@ struct StarDistDownloader: ModelDownloader {
 
     // MARK: — Weights directory
 
-    /// `~/.keras/stardist/<model_name>/` — same path StarDist itself uses.
-    /// In a sandbox, the home dir is the container.
+    /// Where StarDist caches a pretrained model's weights.
+    ///
+    /// This used to hardcode `~/.keras/stardist/<name>/`, which is NOT where
+    /// stardist puts them. Verified by running the real prefetch (stardist
+    /// 0.9.2, csbdeep 0.8.2, TensorFlow 2.16.2, Keras 3.10): the weights land in
+    ///
+    ///     ~/.keras/models/StarDist2D/2D_versatile_fluo/
+    ///
+    /// Because `isInstalled` and `probeInstalled` both gate on this directory
+    /// existing, the wrong path meant StarDist reported "not installed" forever
+    /// — even straight after a successful install — so the Models row never
+    /// left "Get" and `AppState.activate` refused it. `uninstall` also deleted
+    /// nothing and `diskUsageBytes` always reported 0.
+    ///
+    /// We now probe the known layouts in order and return the first that
+    /// exists. When none do, we return the canonical (current) location so
+    /// callers still get a sensible path to report — and their own
+    /// `fileExists` check correctly reports "not installed".
     static func weightsDirURL(for modelId: String) -> URL? {
         guard let name = modelMap[modelId] else { return nil }
+        let candidates = weightsDirCandidates(for: name)
+        let fm = FileManager.default
+        for candidate in candidates {
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: candidate.path, isDirectory: &isDir), isDir.boolValue {
+                return candidate
+            }
+        }
+        return candidates.first
+    }
+
+    /// Known StarDist weight-cache layouts, newest first. Keeping the legacy
+    /// path means a user who installed under an older stardist isn't told
+    /// their model vanished.
+    static func weightsDirCandidates(for modelName: String) -> [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home
-            .appendingPathComponent(".keras")
-            .appendingPathComponent("stardist")
-            .appendingPathComponent(name)
+        return [
+            // stardist 0.9.x — routed through keras' get_file cache.
+            home.appendingPathComponent(".keras/models/StarDist2D/\(modelName)"),
+            // Older layout, kept for users who installed before the move.
+            home.appendingPathComponent(".keras/stardist/\(modelName)"),
+        ]
     }
 
     private static func directorySize(at url: URL) -> Int64 {

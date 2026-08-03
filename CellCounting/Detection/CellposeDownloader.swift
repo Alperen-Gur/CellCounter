@@ -17,6 +17,25 @@ struct CellposeDownloader: ModelDownloader {
     /// UserDefaults key used to cache the import probe outcome for the session.
     private static let importableCacheKey = "cc-cellpose-importable"
 
+    /// Optional, pure-Python **BSD-3-Clause** vendor microscope-format readers
+    /// consumed by `python/_imageio.py`. Installed best-effort after the
+    /// required packages; a missing one only costs the ability to open that
+    /// vendor extension, never the install.
+    ///
+    /// `czifile`, `liffile` and `oirfile` document their APIs as unstable, so
+    /// they are capped below the next calendar-year release train.
+    ///
+    /// The GPL readers (bioformats, bioio-czi, readlif, aicspylibczi,
+    /// pyometiff, czitools) are deliberately absent — this app is MIT.
+    static let optionalImageReaderPackages: [String] = [
+        "imagecodecs",
+        "czifile>=2019.7.2,<2027",
+        "nd2>=0.10,<1",
+        "liffile<2027",
+        "oiffile<2027",
+        "oirfile<2027",
+    ]
+
     // MARK: - isInstalled (cheap, main-safe)
 
     /// Never forks a process. Returns the last cached importability answer
@@ -82,9 +101,26 @@ struct CellposeDownloader: ModelDownloader {
         // ship a 4.x-aware version of the script.
         try await Self.runPipInstall(
             pythonURL: python,
-            packages: ["cellpose>=3.0,<4", "numpy<2", "scipy", "scikit-image", "torch"],
+            packages: ["cellpose>=3.0,<4", "numpy<2", "scipy", "scikit-image",
+                       "tifffile", "torch"],
             progress: progress
         )
+
+        // Optional vendor microscope-format readers for `python/_imageio.py`
+        // (Zeiss .czi, Nikon .nd2, Leica .lif, Olympus .oif/.oib/.oir). One
+        // pip call each, failures swallowed: several have no release for older
+        // Python minors, and the sidecar degrades to the PIL path with an
+        // "install <pkg> to open <ext>" message when one is missing — that must
+        // never fail an otherwise-good cellpose install. Kept in sync with
+        // `CC_PIP_OPTIONAL_PACKAGES` in scripts/install_python.sh.
+        for package in Self.optionalImageReaderPackages {
+            await MainActor.run {
+                progress.append("optional reader: pip install \(package)")
+            }
+            try? await Self.runPipInstall(pythonURL: python,
+                                          packages: [package],
+                                          progress: progress)
+        }
 
         // Verify.
         await MainActor.run { progress.stage = .verifying }

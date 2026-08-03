@@ -65,6 +65,13 @@ struct RootView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(50)
             }
+            if state.showAnalysisProtocols {
+                AnalysisProtocolSheet(
+                    state: state,
+                    onClose: { state.showAnalysisProtocols = false })
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .zIndex(52)
+            }
             if state.showOnboarding {
                 OnboardingSheet(onClose: { state.completeOnboarding() })
                     .transition(.opacity)

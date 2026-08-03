@@ -34,6 +34,7 @@ the Swift host (StarDistDetectionService).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import sys
@@ -223,8 +224,16 @@ def main() -> None:
         emit_error("image-normalize-failed", hint=str(exc), exit_code=3)
         return
 
+    # stardist/csbdeep announce themselves with bare `print()` calls straight to
+    # STDOUT — "Found model '2D_versatile_fluo' for 'StarDist2D'.", "Loading
+    # network weights from 'weights_best.h5'.", plus a download progress bar on
+    # a first run — and stdout here belongs to the JSON payload. The Swift host
+    # currently sweeps that up (StarDistDetectionService.isolatingJSON); this is
+    # the sidecar-side fix that comment asks for, so the host's fast path is the
+    # one that runs.
     try:
-        model = StarDist2D.from_pretrained(model_name)
+        with contextlib.redirect_stdout(sys.stderr):
+            model = StarDist2D.from_pretrained(model_name)
     except Exception as exc:  # noqa: BLE001
         log(f"[stardist_detect] model load failed: {exc!r}")
         emit_error("model-load-failed", hint=str(exc), exit_code=4)
@@ -232,11 +241,12 @@ def main() -> None:
 
     log("[stardist_detect] running predict_instances ...")
     try:
-        labels, details = model.predict_instances(
-            img_n,
-            prob_thresh=float(args.prob_thresh),
-            nms_thresh=float(args.nms_thresh),
-        )
+        with contextlib.redirect_stdout(sys.stderr):
+            labels, details = model.predict_instances(
+                img_n,
+                prob_thresh=float(args.prob_thresh),
+                nms_thresh=float(args.nms_thresh),
+            )
     except Exception as exc:  # noqa: BLE001
         log(f"[stardist_detect] predict_instances failed: {exc!r}")
         emit_error("eval-failed", hint=str(exc), exit_code=5)

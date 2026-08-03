@@ -68,7 +68,20 @@ final class DetectorRegistry: ObservableObject {
     /// completion. Weak so the cache's lifecycle isn't tied to the registry's.
     weak var installStateCache: InstallStateCache?
 
-    init() {}
+    /// The live registry, for the one downloader that has to resolve OTHER
+    /// downloaders: `EnsembleDownloader` builds a detector out of two member
+    /// model ids, and `ModelDownloader.detector(for:)` has no registry
+    /// parameter to hand it.
+    ///
+    /// Weak, so the registry's lifetime is still owned entirely by `AppState`,
+    /// and `@MainActor`-isolated like the rest of this type — every reader is
+    /// already on the main actor. Set in `init`, which means the last-created
+    /// registry wins; the app creates exactly one.
+    private(set) static weak var current: DetectorRegistry?
+
+    init() {
+        Self.current = self
+    }
 
     /// Register a family-specific downloader. Called from `AppState.init` after
     /// the M1–M4 agent files declare them.

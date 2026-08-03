@@ -25,9 +25,24 @@ in this repository.
 | scikit-image | BSD-3-Clause |
 | tifffile | BSD-3-Clause |
 | Pillow | HPND / MIT-CMU |
+| imagecodecs | BSD-3-Clause |
+| czifile (Zeiss `.czi`) | BSD-3-Clause |
+| nd2 (Nikon `.nd2`) | BSD-3-Clause |
+| liffile (Leica `.lif`) | BSD-3-Clause |
+| oiffile (Olympus `.oif`/`.oib`) | BSD-3-Clause |
+| oirfile (Olympus `.oir`) | BSD-3-Clause |
 
 All of the above are permissive (BSD / MIT / Apache-2.0) and compatible with
 CellCounter's MIT license.
+
+Vendor microscope formats are read with the pure-Python BSD-3 readers listed
+above rather than Bio-Formats. Bio-Formats is GPL-2.0, and its permissive
+subset does not include any of the vendor readers — every one of them lives in
+its GPL component — so linking it would require relicensing this app. The same
+applies to several packages that appear permissive but depend on GPL readers:
+`bioio-czi` (GPL-3.0), `bioio-lif` (via `readlif`, GPL-3.0), `bioio-bioformats`
+(via `bffile`, GPL-2.0), `aicspylibczi`, `pyometiff` and `czitools`. None of
+those are used here.
 
 ## No AGPL / Ultralytics components
 

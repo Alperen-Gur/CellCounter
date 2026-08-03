@@ -14,6 +14,15 @@
 #     CC_FAMILY_LABEL        e.g. "Cellpose 3.x"  or "Cellpose-SAM (cp4)"
 #     CC_DETECT_FILENAME     e.g. "cellpose_detect.py" or "cellpose4_detect.py"
 #     CC_PIP_PACKAGES        the full `pip install …` argument vector (word-split)
+#     CC_PIP_OPTIONAL_PACKAGES
+#                            (optional) space-separated requirements installed
+#                            BEST-EFFORT, one pip call each, failures ignored.
+#                            Used for the vendor microscope-format readers,
+#                            which are genuinely optional (the sidecar falls
+#                            back to PIL and reports "install czifile to open
+#                            .czi") and several of which have no release for
+#                            older Python minors. A hard failure here must
+#                            never abort an otherwise-good cellpose install.
 #     CC_DONE_EXTRA_NOTE     (optional) trailing free-text after the standard banner
 #     _CC_WRAPPER_DIR        directory of the wrapper script (for dev-mode fallback)
 #
@@ -81,6 +90,23 @@ cc_install_run() {
     echo "==> installing ${CC_FAMILY_LABEL} + deps (this can take a few minutes)"
     # shellcheck disable=SC2086 — CC_PIP_PACKAGES is intentionally word-split
     pip install ${CC_PIP_PACKAGES}
+
+    # Optional vendor microscope-format readers (Zeiss .czi, Nikon .nd2,
+    # Leica .lif, Olympus .oif/.oib/.oir). All pure-Python BSD-3-Clause.
+    # Installed one at a time and never allowed to fail the run: a package with
+    # no wheel for this Python simply stays absent, and _imageio.py degrades to
+    # the PIL path with an actionable "install <pkg> to open <ext>" message.
+    if [ -n "${CC_PIP_OPTIONAL_PACKAGES:-}" ]; then
+        echo "==> installing optional vendor format readers (best effort)"
+        # shellcheck disable=SC2086 — intentionally word-split
+        for _cc_pkg in ${CC_PIP_OPTIONAL_PACKAGES}; do
+            if pip install "${_cc_pkg}"; then
+                echo "    ok:      ${_cc_pkg}"
+            else
+                echo "    skipped: ${_cc_pkg} (unavailable for this Python — optional)"
+            fi
+        done
+    fi
 
     deactivate || true
 
