@@ -126,7 +126,9 @@ struct PunctaResult: Codable, Hashable {
 /// `PunctaPanel`'s splice-instructions comment for the persistence seam).
 struct PunctaParams: Codable, Hashable {
     enum Method: String, Codable, CaseIterable, Identifiable {
-        case log, dog
+        // `dog` first so it reads as the primary choice in the segmented
+        // control (CaseIterable drives the picker order).
+        case dog, log
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -134,9 +136,21 @@ struct PunctaParams: Codable, Hashable {
             case .dog: return "Difference of Gaussian"
             }
         }
+        /// Shown under the picker so the speed/precision trade-off is explicit.
+        var blurb: String {
+            switch self {
+            case .dog: return "Fast — recommended."
+            case .log: return "Slower: convolves the whole image once per scale."
+            }
+        }
     }
 
-    var method: Method = .log
+    // Difference-of-Gaussian by default: it approximates the same Laplacian
+    // response with a pair of blurs per octave instead of a full convolution
+    // per scale, measured ~4x faster at very similar recall. This default is
+    // sent EXPLICITLY to the sidecar, so it — not `_assays_puncta`'s own
+    // default — is what actually decides the cost of a run.
+    var method: Method = .dog
     var minDiameterUm: Double = 0.3
     var maxDiameterUm: Double = 3.0
     /// Applied to the blob detector's normalized-to-[0,1] copy of the channel.

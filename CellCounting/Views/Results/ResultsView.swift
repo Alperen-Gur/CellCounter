@@ -1045,35 +1045,56 @@ private struct ViewerControlsTopCenter: View {
     var detectionsCount: Int = 0
 
     var body: some View {
-        HStack(spacing: 8) {
-            EditorModeToolbar(mode: $editorMode,
-                              manualMarkerDiameter: $manualMarkerDiameter,
-                              onRemoveTapped: onRemoveTapped)
-            ROIModePicker(mode: $roiMode)
-            // Pass-17 (Lane B): live "M of N marked" status when annotating.
-            if editorMode == .annotate {
-                AnnotateStatusPill(annotated: annotationsCount,
-                                   detected: detectionsCount)
+        ViewThatFits(in: .horizontal) {
+            // Preferred: one row, exactly as before.
+            HStack(spacing: 8) {
+                editorToolbar
+                ROIModePicker(mode: $roiMode)
+                annotateStatus
+            }
+            // Fallback: two centred rows. The mode buttons keep their labels
+            // (they're the ones the user reads), and the ROI picker + status
+            // pill drop underneath.
+            VStack(spacing: 6) {
+                editorToolbar
+                HStack(spacing: 8) {
+                    ROIModePicker(mode: $roiMode)
+                    annotateStatus
+                }
             }
         }
         .padding(.top, 14)
         // The three viewer control clusters (Left / TopCenter / Right) are
         // INDEPENDENT overlays in the same ZStack, each spanning the full
-        // width at its own alignment. Nothing stops them sharing pixels: once
-        // this centre row grew past `viewerWidth - left - right` it drew
-        // straight through the zoom group on the right. Reserving the side
-        // clusters' widths here means the centre row runs out of room (and
-        // scrolls) instead of overlapping them. Keep these in sync if either
-        // side cluster gains controls.
-        .padding(.horizontal, Self.sideClusterInset)
+        // width at its own alignment, so nothing stops them sharing pixels
+        // once their combined width exceeds the viewer.
+        //
+        // Reserving the side clusters' widths with horizontal padding was the
+        // obvious fix and the WRONG one: it shrank the space this row is laid
+        // out in, so the labels compressed to single characters ("V", "A",
+        // "D"…) instead of overlapping. Squeezing the row is not better than
+        // overlapping it.
+        //
+        // Instead the row keeps its natural width and `ViewThatFits` drops it
+        // to two centred lines when a single line genuinely doesn't fit, so
+        // the labels stay legible either way.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// Horizontal space to keep clear on BOTH sides for `ViewerControlsLeft`
-    /// (Box/Outline segmented control + overlay toggle) and
-    /// `ViewerControlsRight` (zoom group + full-screen toggle), including
-    /// their 14pt outer padding and a small breathing gap.
-    private static let sideClusterInset: CGFloat = 240
+    private var editorToolbar: some View {
+        EditorModeToolbar(mode: $editorMode,
+                          manualMarkerDiameter: $manualMarkerDiameter,
+                          onRemoveTapped: onRemoveTapped)
+    }
+
+    /// Pass-17 (Lane B): live "M of N marked" status when annotating.
+    @ViewBuilder
+    private var annotateStatus: some View {
+        if editorMode == .annotate {
+            AnnotateStatusPill(annotated: annotationsCount,
+                               detected: detectionsCount)
+        }
+    }
 }
 
 /// Pass-17 (Lane B): small pill next to the EditorModeToolbar showing how
