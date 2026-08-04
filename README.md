@@ -4,7 +4,7 @@ CellCounter is a desktop application for counting cells in phase-contrast and fl
 
 The tool was written for one task: counting patient-derived oral keratinocytes and comparing their size distributions across conditions. It is not tied to that cell type. If Cellpose can segment a given cell type, CellCounter can count and measure it.
 
-Status, July 2026. The current download is CellCounter 1.0.3 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. A cross-platform desktop rebuild (Tauri; version 0.1.5) is available as a preview — Windows and macOS installers are on the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases), and it also builds on Linux in continuous integration. This preview adds Cellpose-SAM for large or irregular cells and per-cell shape metrics (aspect ratio, solidity). The preview installs and runs but has not been verified at runtime on real data. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
+Status, August 2026. The current download is CellCounter 1.0.4 for macOS (requires macOS 15 or later), a native application built as an Apple-silicon and Intel universal binary. 1.0.4 adds Cellpose-SAM, StarDist, Omnipose and a classical threshold detector; reads Zeiss, Nikon, Leica and Olympus files directly; handles Z-stacks and multi-channel images; and adds marker-positive counting, colocalization, confluence, wound-healing, puncta, tracking and other per-cell readouts. A cross-platform desktop rebuild (Tauri; version 0.1.5) is available as a preview — Windows and macOS installers are on the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases), and it also builds on Linux in continuous integration. This preview adds Cellpose-SAM for large or irregular cells and per-cell shape metrics (aspect ratio, solidity). The preview installs and runs but has not been verified at runtime on real data. An in-browser WebGPU version is planned but not started. See [Roadmap](#roadmap).
 
 _Screenshot: to be added._
 
@@ -50,17 +50,19 @@ Privacy
 
 ## Install
 
-### macOS (v1.0.3, current release)
+### macOS (v1.0.4, current release)
 
-1. Download `CellCounter-v1.0.3.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
-2. Unzip it and move CellCounter into the Applications folder.
+1. Download `CellCounter-v1.0.4.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
+2. Unzip it and move `CellCounting.app` into the Applications folder. The
+   application is called CellCounter; the bundle on disk is still named
+   `CellCounting.app`, which is why the Terminal command below uses that name.
 3. The first launch is blocked by Gatekeeper because the app is not notarized. To allow it, open System Settings, Privacy and Security, scroll to the bottom, and click Open Anyway. A full walkthrough is in [docs/INSTALL.md](docs/INSTALL.md).
 4. On first use, click Install Cellpose in the Models tab. The app downloads and sets up its own Python environment. This takes a few minutes and happens once.
 
 If macOS reports the app as "damaged and can't be opened," the app is not damaged. This message is Gatekeeper blocking an unsigned, quarantined download. Move the app to Applications and run the following in Terminal:
 
 ```
-xattr -cr /Applications/CellCounter.app
+xattr -cr /Applications/CellCounting.app
 ```
 
 Then open the app normally. This applies to the unsigned macOS builds, including the cross-platform `.dmg`.

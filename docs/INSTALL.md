@@ -10,8 +10,10 @@ is expected; here's how to get past it.
 
 1. **Download** the latest `CellCounter-<version>.zip` from the
    [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
-2. **Unzip** it (double-click) and drag **CellCounter.app** into **Applications**.
-   If you're replacing an older copy, delete the old one first.
+2. **Unzip** it (double-click) and drag **CellCounting.app** into
+   **Applications**. The application is called CellCounter; the bundle on disk
+   is still named `CellCounting.app`. If you're replacing an older copy, delete
+   the old one first.
 3. **Double-click** CellCounter. macOS will say it "cannot be opened because
    Apple cannot check it for malicious software." Click **Done** (do not move it
    to Trash).
