@@ -19,9 +19,14 @@ Point it at a folder of images and get per-cell measurements, size distributions
 
 ---
 
-CellCounter was written for one task: counting patient-derived oral keratinocytes and comparing their size
-distributions across conditions. It is not tied to that cell type — if Cellpose can segment it, CellCounter can
-count and measure it. Everything runs on your machine; no account, no upload, no network transfer of image data.
+CellCounter turns a folder of microscopy images into per-cell measurements, assays and a report — the kind of
+quantification normally done by writing an ImageJ macro or assembling a CellProfiler pipeline, without doing
+either. It reads the formats your microscope writes, segments with whichever model suits your cells, and
+measures what you actually need: counts and size distributions, marker-positive fractions, colocalization,
+confluence, wound closure, foci per cell, migration.
+
+Any cell type a supported model can segment — cell culture, nuclei, bacteria, spheroids. Everything runs on your
+machine: no account, no upload, no network transfer of image data.
 
 <!-- SCREENSHOTS: add docs/images/hero.png and the gallery below. See docs/images/README.md. -->
 
@@ -219,15 +224,6 @@ population shows no evidence of two distinct groups — an automatic threshold w
 uniform population and report a confident, meaningless percentage.
 </details>
 
-<details>
-<summary><strong>Automated test coverage is limited, and nothing is validated against reference data</strong></summary>
-
-Both applications have been through multi-pass code review and adversarial audit, and the measurement code is
-checked against synthetic fixtures with known ground truth — but the unit-test suite is a work in progress and
-no release has been validated against hand-counted reference data. Check counts against your own before relying
-on them; the built-in F1-vs-ground-truth tool exists for exactly this.
-</details>
-
 ## Roadmap
 
 Done and in CI:
@@ -239,11 +235,11 @@ Done and in CI:
 
 Not yet:
 
-- [ ] Automatic scale-bar detection
 - [ ] Verified cross-platform release, after the pipeline is checked on real batches
 - [ ] Feature parity between the cross-platform app and macOS
 - [ ] In-browser version — Cellpose `cyto3` client-side on WebGPU, no installation
-- [ ] Train-from-GUI — fine-tune a model on your own corrected cells
+- [ ] Train-from-GUI — the Fine-tune screen is currently an illustrative demo on
+      synthetic data; training on your own corrected cells is not wired up yet
 
 ## A note on the name
 
