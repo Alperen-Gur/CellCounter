@@ -49,8 +49,23 @@ struct CellposeSAMDownloader: ModelDownloader {
     func install(modelId: String, progress: ModelInstallProgress) async throws {
         await MainActor.run { progress.stage = .checkingDependencies }
 
-        guard let python = await MainActor.run(body: { () -> URL? in Self.sharedPythonURL() }) else {
-            let msg = "Open Models tab and tap “Install Cellpose-SAM…” first."
+        // venv4 may not exist yet. It used to fail here with "Open Models tab
+        // and tap Install Cellpose-SAM… first", which is circular — the user
+        // reaches this code path BY doing exactly that, from the Models tab.
+        // Every cellpose4-family row (cpsam, cpsam_v2, cpdino…) hit it, so the
+        // whole family was uninstallable on a machine that had never run the
+        // separate install sheet. Bootstrap the venv here instead.
+        var pythonURL = await MainActor.run(body: { () -> URL? in Self.sharedPythonURL() })
+        if pythonURL == nil {
+            await MainActor.run {
+                progress.append("Cellpose-SAM environment not found — creating it…")
+            }
+            try await Self.bootstrapVenv4(progress: progress)
+            pythonURL = await MainActor.run(body: { () -> URL? in Self.sharedPythonURL() })
+        }
+        guard let python = pythonURL else {
+            let msg = "Could not create the Cellpose-SAM Python environment. "
+                    + "See the log above for the installer output."
             await MainActor.run { progress.append(msg) }
             throw CellposeSAMDownloaderError.venvMissing(msg)
         }
@@ -129,6 +144,62 @@ struct CellposeSAMDownloader: ModelDownloader {
     }
 
     // MARK: - Helpers
+
+    /// Create `venv4` by running the bundled `install_python_cp4.sh`, the same
+    /// script and arguments `CellposeSAMInstaller` uses. Kept here so the
+    /// Models-tab install button is self-sufficient and does not depend on the
+    /// user having opened the separate Cellpose-SAM sheet first.
+    private static func bootstrapVenv4(progress: ModelInstallProgress) async throws {
+        let fm = FileManager.default
+        try PythonRuntime.stageScripts()
+
+        let scriptURL = FileStore.shared.pythonInstallCp4ScriptURL
+        guard fm.fileExists(atPath: scriptURL.path) else {
+            throw CellposeSAMDownloaderError.venvMissing(
+                "Cellpose-SAM install script missing after staging: \(scriptURL.path)")
+        }
+        if !fm.isExecutableFile(atPath: scriptURL.path) {
+            try? fm.setAttributes([.posixPermissions: 0o755],
+                                  ofItemAtPath: scriptURL.path)
+        }
+
+        try? fm.createDirectory(at: FileStore.shared.pythonDir,
+                                withIntermediateDirectories: true)
+        // Mark the install incomplete for the duration and drop the cached
+        // import probe, so a crash mid-run is detected as broken rather than
+        // reported as installed. Both keys are distinct from the 3.x ones.
+        try? Data().write(to: FileStore.shared.cellpose4InstallIncompleteSentinel)
+        UserDefaults.standard.set(false, forKey: Cellpose4Availability.importableCacheKey)
+
+        let venvPath = FileStore.shared.pythonVenv4Dir.path
+        let scriptsDir = FileStore.shared.pythonDir.path
+
+        let exitCode: Int32 = try await Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+            proc.arguments = [scriptURL.path, venvPath, scriptsDir]
+            proc.currentDirectoryURL = FileStore.shared.pythonDir
+
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+            try proc.run()
+            ChildProcessTracker.shared.register(proc, kind: .other)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                let tail = text.split(separator: "\n").suffix(40).joined(separator: "\n")
+                await MainActor.run { progress.append(tail) }
+            }
+            return proc.terminationStatus
+        }.value
+
+        guard exitCode == 0 else {
+            throw CellposeSAMDownloaderError.venvMissing(
+                "Cellpose-SAM environment setup failed (exit code \(exitCode)).")
+        }
+        try? fm.removeItem(at: FileStore.shared.cellpose4InstallIncompleteSentinel)
+    }
 
     private static func sharedPythonURL() -> URL? {
         if case let .available(py, _) = Cellpose4Availability.detect() {
