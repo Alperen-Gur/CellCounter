@@ -2,10 +2,8 @@
 
 # CellCounter
 
-**Count and size-classify cells in microscopy images — without a terminal or a Python script.**
-
-A local, no-code desktop application built on [Cellpose](https://github.com/MouseLand/cellpose).
-Point it at a folder of images and get per-cell measurements, size distributions, assays and a report.
+Desktop application for quantifying cells in microscopy images.
+Segmentation, per-cell measurements, assays and export, through a graphical interface.
 
 [![Latest release](https://img.shields.io/github/v/release/Alperen-Gur/CellCounter?label=macOS&color=0a7ea4)](https://github.com/Alperen-Gur/CellCounter/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
@@ -19,27 +17,29 @@ Point it at a folder of images and get per-cell measurements, size distributions
 
 ---
 
-CellCounter turns a folder of microscopy images into per-cell measurements, assays and a report — the kind of
-quantification normally done by writing an ImageJ macro or assembling a CellProfiler pipeline, without doing
-either. It reads the formats your microscope writes, segments with whichever model suits your cells, and
-measures what you actually need: counts and size distributions, marker-positive fractions, colocalization,
-confluence, wound closure, foci per cell, migration.
+CellCounter reads a folder of microscopy images, segments the cells with a choice of models, and reports
+per-cell measurements, size distributions and assay results. It handles the file formats microscopes write,
+Z-stacks and multi-channel images, and covers counts, size classes, marker-positive fractions, colocalization,
+confluence, wound closure, foci per cell and migration.
 
-Any cell type a supported model can segment — cell culture, nuclei, bacteria, spheroids. Everything runs on your
-machine: no account, no upload, no network transfer of image data.
+These analyses are usually done with an ImageJ macro or a CellProfiler pipeline. CellCounter does them through
+a graphical interface instead. It applies to any cell type a supported model can segment.
+
+Processing is local. There is no account, no upload, and no network transfer of image data.
 
 <!-- SCREENSHOTS: add docs/images/hero.png and the gallery below. See docs/images/README.md. -->
 
 ## Why it exists
 
-Cellpose has its own GUI, and this does not replace it. CellCounter covers what the general-purpose tools leave to you:
+Cellpose provides its own graphical interface, and CellCounter does not replace it. It covers requirements the
+general-purpose tools do not provide directly:
 
-|  | |
+| | |
 |---|---|
-| **No environment setup** | The installer builds its own Python environment in the background. No conda, no pip, no PATH. |
-| **Sizes, not just masks** | Cells are binned into micrometre size classes using the pixel size read from image metadata. |
-| **Assays, not just counts** | Marker-positive %, colocalization, confluence, wound closure, foci per cell, and more. |
-| **Local by default** | Nothing leaves the computer. For patient-derived material that is a requirement, not a preference. |
+| **Installation without environment setup** | The installer sets up the Python environment in the background. There is no conda, pip, or PATH configuration. |
+| **Size classes in addition to masks** | Cells are binned into size categories in micrometres, using a pixel size read from the image metadata. |
+| **Assays in addition to counts** | Marker-positive fraction, colocalization, confluence, wound closure, foci per cell, and others. |
+| **Local processing** | Everything runs on the local machine. For images derived from patient material this is a requirement. |
 
 ## What it does
 
