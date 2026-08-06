@@ -801,10 +801,22 @@ private struct ModelRowActionsObserved: View {
 
         case .failed(let msg):
             HStack(spacing: 6) {
-                Text(Self.tail(msg, max: 24))
+                // Show the START of the message, not the end. This used to be
+                // `tail(msg, max: 24)`, which keeps the LAST 24 characters, so
+                // "Open Models tab and tap “Install Cellpose-SAM…” first."
+                // rendered as "…l Cellpose-SAM…” first." — the half saying what
+                // actually went wrong was the half discarded, and a user
+                // reporting the failure had nothing useful to quote. Full text
+                // on hover, and selectable so it can be copied into a bug report.
+                Text(msg)
                     .font(.system(size: 11))
                     .foregroundStyle(Tokens.danger)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 280, alignment: .trailing)
+                    .help(msg)
+                    .textSelection(.enabled)
                 Button("Retry") {
                     state.detectorRegistry.installs[model.id] = nil
                     state.detectorRegistry.install(model.id, models: state.models)
