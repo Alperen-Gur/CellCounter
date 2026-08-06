@@ -785,7 +785,7 @@ final class AppState {
     /// Pass-11: the inner `CellposeAvailability.detect()` call is filesystem-
     /// heavy and (after K2 lands) will subprocess into Python to verify the
     /// venv. Either way it's not something we can run synchronously on the
-    /// main thread at app launch — that's the 10s spinner the user saw.
+    /// main thread at app launch — that's the 10s spinner on first launch.
     ///
     /// Signature stays sync (callers don't care about completion); the body
     /// kicks a detached probe and assigns `self.detector` back on @MainActor

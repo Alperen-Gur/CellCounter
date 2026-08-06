@@ -5,7 +5,7 @@
  * row per (condition × size-bin) with the bin count, its percentage of that
  * condition's pooled cells, the condition total, and the batch count.
  *
- * The column order is the FROZEN contract from tasks.json (`feat-compare.output`):
+ * The column order is a FROZEN contract — downstream scripts parse it:
  *
  *     condition,bin_label,count,percent,total_cells,batches
  *

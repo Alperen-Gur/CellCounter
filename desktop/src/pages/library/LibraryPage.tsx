@@ -7,7 +7,7 @@
  * ⌘A select-all, Return-to-open, Delete-to-remove (with confirm) mirror the
  * Swift `ImagesLibraryView`.
  *
- * Boundaries (docs/tasks.json feat-library-dedup):
+ * Boundaries:
  *   - owns `pages/library/` only; never imports a sibling page.
  *   - routes via the shell's dependency-free `navigate` (store drives Results).
  *   - hashing happens in the Rust importer (kernel-persistence) — this page

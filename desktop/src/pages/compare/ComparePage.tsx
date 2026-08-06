@@ -1,7 +1,7 @@
 /**
  * pages/compare/ComparePage.tsx — the Compare screen (feature `feat-compare`).
  *
- * Objective (docs/tasks.json `feat-compare`): condition chips (select 1–4),
+ * Objective: condition chips (select 1–4),
  * pooled per-condition diameter histograms sharing one Y-axis, a size-class
  * breakdown per condition, and a Mann–Whitney U + effect-size panel shown ONLY
  * when exactly two conditions are selected; plus a comparison CSV export.
@@ -12,7 +12,7 @@
  *   is the frozen kernel `mannWhitneyU`; binning is kernel calibration; the CSV
  *   columns are the frozen `condition,bin_label,count,percent,total_cells,batches`.
  *
- * BOUNDARIES honored (docs/tasks.json):
+ * BOUNDARIES honored:
  *   - Owns only `pages/compare/`. Routes via the shell's `navigate`; never imports
  *     a sibling page's internals. The bin/histogram/color helpers this page needs
  *     from Results are re-declared locally (byte-for-byte, sourced from the same

@@ -618,7 +618,7 @@ Image import is a separate Rust command (needs raw bytes): `import_image(sourceP
 
 ## 4. Page / Route Breakdown
 
-Routes replace the Swift `AppView` enum (`Shared/AppState.swift`). Each page lives in its own `src/pages/<name>/` dir (§2) and is owned by exactly one feature task (§ tasks.json). All pages read/write the store and go through the two ports — none talk to Python or SQLite directly.
+Routes replace the Swift `AppView` enum (`Shared/AppState.swift`). Each page lives in its own `src/pages/<name>/` dir (§2) and is owned by exactly one feature area. All pages read/write the store and go through the two ports — none talk to Python or SQLite directly.
 
 | Route | Screen | What it does | Kernel it uses |
 |---|---|---|---|

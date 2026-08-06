@@ -119,7 +119,7 @@ struct FileStore {
 
     /// Pass-11: one-time auto-wipe of the SwiftData store + image/thumb dirs.
     ///
-    /// The user reported 702 ghost cells in the Review queue from prior runs
+    /// Ghost cells from prior runs could appear in the Review queue
     /// (mock-detector rows) and "recent" rows whose image files no longer exist.
     /// We wipe the on-disk store BEFORE `Repositories()` opens it, so SwiftData
     /// never tries to migrate or read the stale rows under the new schema.

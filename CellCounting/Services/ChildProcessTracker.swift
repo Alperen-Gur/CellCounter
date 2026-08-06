@@ -4,7 +4,7 @@ import AppKit
 /// Pass-13: keep tabs on every Python subprocess CellCounter spawns so they
 /// can't outlive the app.
 ///
-/// Why this exists: the user reported "detection stuck at 0%" while five
+/// Why this exists: detection could appear "stuck at 0%" while five
 /// `cellpose_detect.py` processes from earlier runs were still alive with
 /// PPID=1 (re-parented to launchd after CellCounter died/crashed). They were
 /// saturating the cores so fresh detection couldn't make progress. The Process

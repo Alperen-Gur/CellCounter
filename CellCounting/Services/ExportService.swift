@@ -587,7 +587,7 @@ enum ExportService {
             // whenever one exists — this is exactly what the on-screen overlay
             // (EditableOverlay.CellsCanvas) draws. The exported PNG previously
             // always drew a box ("Vierecke") or ellipse from the diameter, so it
-            // never matched the outlines the user saw and reviewer-drew. Cells
+            // never matched the outlines shown on screen. Cells
             // without a contour (legacy detections, manual markers) keep the
             // diameter-derived bbox/outline fallback.
             if let contour = cell.contourPx, contour.count >= 3 {

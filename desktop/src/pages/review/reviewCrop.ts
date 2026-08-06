@@ -6,8 +6,8 @@
  * plus the `BinMath` label/index helpers from `Domain/SizeBin.swift`.
  *
  * Why the bin math is inlined here rather than imported from
- * `kernel/calibration`: this feature's `uses` set (docs/tasks.json
- * feat-review-queue) is kernel-persistence + kernel-store + kernel-types only —
+ * `kernel/calibration`: this feature depends on kernel-persistence,
+ * kernel-store and kernel-types only —
  * calibration is out of scope. The Review card needs just the bin *label* for a
  * single cell, so we mirror the tiny `binIndex` / `bins(from:)` loop exactly
  * (byte-for-byte identical semantics to `kernel/calibration.binIndex` /

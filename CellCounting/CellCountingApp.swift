@@ -18,8 +18,8 @@ struct CellCountingApp: App {
         // processes that survived a prior CellCounter death (PPID=1) and wire
         // the willTerminate hook so this session's children don't outlive us.
         // Otherwise stale subprocesses pin the CPU and the next detection
-        // looks like it's "stuck at 0%" — that was the actual cause of the
-        // hang the user saw.
+        // looks like it's "stuck at 0%" — that was the actual cause of that
+        // hang.
         ChildProcessTracker.shared.installLifecycle()
 
         // Pass-13: re-stage bundled python sidecar files into the FileStore

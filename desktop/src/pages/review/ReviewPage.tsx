@@ -13,7 +13,7 @@
  * (`store.reviewQueueCount`, from `uncorrectedCellCount(0.65)`) stays in sync —
  * the hook refreshes library stats after every write.
  *
- * Boundaries (docs/tasks.json feat-review-queue):
+ * Boundaries:
  *   - owns `pages/review/` only; never imports a sibling page. Routing uses the
  *     shell's dependency-free `navigate`.
  *   - the 0.65 cutoff is canonical (`REVIEW_QUEUE_CONFIDENCE_CUTOFF`) and

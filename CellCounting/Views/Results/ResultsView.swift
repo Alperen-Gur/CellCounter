@@ -1598,7 +1598,7 @@ private struct SizeBinsPanel: View {
             SectionHeader(title: "Size bins")
                 .padding(.bottom, 0)
 
-            // Reassure the user (per researcher feedback) that editing bins is a
+            // Reassure the user that editing bins is a
             // cheap, reversible reclassification of already-measured cells — not
             // a re-segmentation. It reclassifies instantly and scopes to the batch.
             Text("Reclassifies detected cells instantly — no re-analysis. Applies to the whole batch.")

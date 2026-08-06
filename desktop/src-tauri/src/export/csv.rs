@@ -2,7 +2,7 @@
 //!
 //! Port of the Swift `ExportService` CSV writers. Column orders + number
 //! formats are reproduced EXACTLY from `Services/ExportService.swift` (they are
-//! the frozen output contract in tasks.json → feat-export → output):
+//! the frozen output contract in the feature plan → feat-export → output):
 //!   * `cells.csv`   — per-cell measurements (Results). 23 columns.
 //!   * `summary.csv` — per-image batch summary (Batch). 15 fixed columns +
 //!     one `n_bin*` column per size bin (18 columns total for the default
@@ -142,7 +142,7 @@ pub(crate) fn bin_index(diameter_um: f64, thresholds: &[f64]) -> usize {
 // ===========================================================================
 
 /// Column header for `cells.csv`, EXACTLY as `ExportService.writeCSV` +
-/// tasks.json feat-export → output.
+/// the feature plan feat-export → output.
 const CELLS_HEADER: &[&str] = &[
     "id",
     "cx_px",

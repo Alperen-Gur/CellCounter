@@ -10,7 +10,7 @@
  * `importFlow.ts` and all data reads go through the frozen ports. It routes via
  * the shell's dependency-free `navigate` (never importing a sibling page).
  *
- * Boundaries (docs/tasks.json feat-home-import): owns pages/home/ only; does not
+ * Boundaries: owns pages/home/ only; does not
  * render the Processing screen, the batch table, or export.
  */
 

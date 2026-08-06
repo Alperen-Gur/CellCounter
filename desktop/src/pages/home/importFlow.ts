@@ -24,7 +24,7 @@
  * Coordinate space is irrelevant here — this module never touches geometry; it
  * only shuttles DTOs between the ports.
  *
- * Boundaries (docs/tasks.json feat-home-import):
+ * Boundaries:
  *   - owns pages/home/ only; routes by the store + the shell's `navigate`.
  *   - does NOT render the Processing screen (feat-processing) — it only drives
  *     ProcessingSlice (progress / stageLine / device) that Processing reads.

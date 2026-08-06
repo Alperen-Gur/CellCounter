@@ -14,7 +14,7 @@ import { Icon } from "./Icon";
 interface StubPageProps {
   /** Human-readable screen name, e.g. "Results". */
   name: string;
-  /** The feature task id that owns this page (docs/tasks.json). */
+  /** The feature task id that owns this page. */
   owner: string;
   /** Optional glyph; defaults to a generic marker. */
   glyph?: string;
