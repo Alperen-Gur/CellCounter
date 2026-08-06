@@ -1,7 +1,7 @@
 # Researcher-feedback fixes & v2 polish (native macOS app)
 
 This document records a batch of fixes to the **native macOS (Swift) app**
-(`CellCounting/`) driven by researcher feedback (Jonas' 11-point review) plus a
+(`CellCounting/`) driven by researcher feedback (an 11-point review) plus a
 round of v2 polish. It is written so the **same changes can be re-applied to the
 cross-platform Tauri app (`desktop/`) later** — each item has a "Tauri port"
 note pointing at the equivalent file/seam.

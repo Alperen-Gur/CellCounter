@@ -163,6 +163,19 @@ struct CellposeSAMDownloader: ModelDownloader {
                                   ofItemAtPath: scriptURL.path)
         }
 
+        // Wipe a half-built venv4 before reusing it, same preflight as
+        // CellposeSAMInstaller.start(). A venv4 that exists but has no pip is
+        // the residue of an interrupted run; `python3 -m venv` will happily
+        // reuse the directory and the pip step then fails on every retry.
+        let venv4Dir = FileStore.shared.pythonVenv4Dir
+        let pipURL = venv4Dir.appendingPathComponent("bin/pip")
+        if fm.fileExists(atPath: venv4Dir.path) && !fm.fileExists(atPath: pipURL.path) {
+            await MainActor.run {
+                progress.append("Removing a partially-built environment before retrying…")
+            }
+            try? fm.removeItem(at: venv4Dir)
+        }
+
         try? fm.createDirectory(at: FileStore.shared.pythonDir,
                                 withIntermediateDirectories: true)
         // Mark the install incomplete for the duration and drop the cached
