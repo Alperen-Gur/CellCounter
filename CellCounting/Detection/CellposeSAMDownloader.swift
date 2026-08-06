@@ -198,6 +198,17 @@ struct CellposeSAMDownloader: ModelDownloader {
             throw CellposeSAMDownloaderError.venvMissing(
                 "Cellpose-SAM environment setup failed (exit code \(exitCode)).")
         }
+
+        // Clear BOTH pieces of failure state, in the order CellposeSAMInstaller
+        // uses. Removing only the sentinel is not enough: `detect()` also
+        // returns .venvBroken when the cached probe is literally `false`, and
+        // this function set it to `false` on the way in. Leaving it there meant
+        // the venv was built correctly and then immediately reported broken —
+        // `sharedPythonURL()` returned nil and the caller threw "Could not
+        // create the Cellpose-SAM Python environment" on a successful install.
+        // `removeObject` (not `set(true)`) so the next `detect()` re-probes for
+        // real rather than trusting a value we assumed.
+        UserDefaults.standard.removeObject(forKey: Cellpose4Availability.importableCacheKey)
         try? fm.removeItem(at: FileStore.shared.cellpose4InstallIncompleteSentinel)
     }
 
