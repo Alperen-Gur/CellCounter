@@ -217,6 +217,7 @@ struct EnsembleDetectionService: DetectionService {
                        channels: input.channels,
                        backgroundSubtract: input.backgroundSubtract,
                        rollingBallRadius: input.rollingBallRadius,
+                       preprocessingPreset: input.preprocessingPreset,
                        watershedSplit: input.watershedSplit,
                        watershedMinDistance: input.watershedMinDistance,
                        smallThreshold: input.smallThreshold,

@@ -90,5 +90,7 @@ struct AssayResultKey: Equatable {
 struct SeriesResultKey: Equatable {
     let batchId: UUID?
     let frameCellCounts: [Int]
+    let frameRevisions: [Int]
     let frameCutoffs: [Double]
+    let roiRevision: Int
 }

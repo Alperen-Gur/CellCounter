@@ -78,11 +78,14 @@ enum Tokens {
     static let bin4 = Color(binRamp[3])
     static let bin5 = Color(binRamp[4])
 
-    static let bins: [Color] = binRamp.map { Color($0) }
+    /// Current user palette. Keep this computed: Appearance settings can change
+    /// while the app is running and export paths may execute on a background
+    /// task after the Settings view has closed.
+    static var bins: [Color] { OverlayPalette.load().binHexes.compactMap(Color.init(hex:)) }
 
     /// Returns the Viridis bin color for index `i` (clamped to the ramp).
-    static func binColor(_ i: Int) -> Color {
-        bins[max(0, min(i, bins.count - 1))]
+    static func binColor(_ i: Int, palette: OverlayPalette? = nil) -> Color {
+        (palette ?? OverlayPalette.load()).binColor(i)
     }
 
     // Radii

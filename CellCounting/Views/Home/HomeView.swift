@@ -522,9 +522,9 @@ private struct RecentsSection: View {
     @Environment(AppTheme.self) private var theme
 
     var body: some View {
-        // Derive Recent rows from `state.recentBatchIds` (an @Observable mirror
-        // on AppState) so SwiftUI re-renders when batches are added/deleted.
-        let real: [BatchRecord] = state.recentBatchIds.compactMap { state.repos.batch(id: $0) }
+        // Five denormalized summaries — no N+1 SwiftData fetches and no decoding
+        // every detection blob just to render Home.
+        let real = state.recentBatchSummaries
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("RECENT")
@@ -562,7 +562,7 @@ private struct RecentsSection: View {
                         RecentRow(batch: batch,
                                   isFirst: idx == 0,
                                   isLast: idx == real.count - 1) {
-                            state.openBatch(batch)
+                            state.openBatch(id: batch.id)
                         }
                     }
                 }
@@ -581,7 +581,7 @@ private struct RecentsSection: View {
 }
 
 private struct RecentRow: View {
-    let batch: BatchRecord
+    let batch: BatchSummary
     let isFirst: Bool
     let isLast: Bool
     let action: () -> Void
@@ -591,17 +591,13 @@ private struct RecentRow: View {
     @State private var thumb: NSImage? = nil
     @State private var thumbLoaded: Bool = false
 
-    private var firstImage: ImageRecord? {
-        batch.images.sorted(by: { $0.importedAt < $1.importedAt }).first
-    }
-
     private var thumbSeed: Int {
         abs(batch.id.uuidString.hashValue) % 1000
     }
 
     private var subtitle: String {
-        let n = batch.images.count
-        let cells = batch.totalCells
+        let n = batch.imageCount
+        let cells = batch.cellCount
         let imgWord = n == 1 ? "image" : "images"
         return "\(cells) cells · \(n) \(imgWord)"
     }
@@ -609,7 +605,7 @@ private struct RecentRow: View {
     /// An empty batch (0 images) is a transient artefact — cleanup deletes
     /// these on sight, but in the brief window before that we disable the row
     /// so a tap can't strand the user in ResultsView's empty state.
-    private var isEmpty: Bool { batch.images.isEmpty }
+    private var isEmpty: Bool { batch.imageCount == 0 }
 
     var body: some View {
         Button(action: action) {
@@ -626,11 +622,10 @@ private struct RecentRow: View {
                 .frame(width: 48, height: 48)
                 .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous))
                 .onAppear {
-                    guard !thumbLoaded, let img = firstImage else { return }
+                    guard !thumbLoaded, let url = batch.thumbnailURL else { return }
                     thumbLoaded = true
-                    let url = img.thumbURL
                     Task.detached(priority: .utility) {
-                        let ns = NSImage(contentsOf: url)
+                        let ns = ImageLoader.cachedThumbnail(at: url)
                         await MainActor.run { thumb = ns }
                     }
                 }
@@ -646,7 +641,7 @@ private struct RecentRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(batch.totalCells.formatted())
+                    Text(batch.cellCount.formatted())
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Tokens.textSecondary)
 

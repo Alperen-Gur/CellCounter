@@ -49,18 +49,8 @@ struct RootView: View {
                     // can list user-saved presets and create new ones inline.
                     repos: state.repos,
                     onClose: { state.showCalibration = false },
-                    onSave: { newValue in
-                        state.pxPerUm = newValue
-                        // When calibrating from within an open batch, also update
-                        // the batch's persisted pxPerUm so its stored scale stays
-                        // consistent with what exports and the Review queue read
-                        // (both key off batch.pxPerUm). Without this the global
-                        // and per-batch scales silently diverge, retroactively
-                        // rescaling an already-analyzed batch's measurements.
-                        if let batch = state.currentBatch {
-                            batch.pxPerUm = newValue
-                            try? state.repos.context.save()
-                        }
+                    onSave: { newValue, source in
+                        state.applyCalibration(newValue, source: source)
                     })
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(50)

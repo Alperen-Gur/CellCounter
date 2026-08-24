@@ -73,6 +73,7 @@ struct CellposeDetectionService: DetectionService {
         if input.backgroundSubtract {
             args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
+        args += input.preprocessingArguments
         if input.watershedSplit {
             args += [
                 "--watershed",

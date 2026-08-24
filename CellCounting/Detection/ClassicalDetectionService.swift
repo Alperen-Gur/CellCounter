@@ -91,6 +91,7 @@ struct ClassicalDetectionService: DetectionService {
         if input.backgroundSubtract {
             args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
+        args += input.preprocessingArguments
         // The classical pipeline always watersheds — that IS the detector — so
         // we forward the seed spacing unconditionally. Passing `--watershed`
         // as well is harmless (the sidecar recognises it as already implied)

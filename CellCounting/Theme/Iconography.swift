@@ -47,6 +47,8 @@ enum Icons {
         case "moon":      return "moon"
         case "compare":   return "chart.bar.fill"
         case "refresh":   return "arrow.clockwise"
+        case "scope":     return "scope"
+        case "viewfinder": return "viewfinder"
         default:          return "circle"
         }
     }

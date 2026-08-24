@@ -12,13 +12,13 @@ import ImageIO
 /// All parsers are defensive: malformed XML / missing fields → nil, not a crash.
 enum EXIFCalibration {
 
-    struct Result {
+    struct Result: Sendable, Equatable {
         let pxPerUm: Double
         let source: Source
         let confidence: Confidence
     }
 
-    enum Source: CustomStringConvertible {
+    enum Source: CustomStringConvertible, Sendable, Equatable {
         case omeXML
         case tiffBaseline
         case olympus
@@ -34,9 +34,19 @@ enum EXIFCalibration {
             case .imagej:       return "ImageJ metadata"
             }
         }
+
+        var provenanceKey: String {
+            switch self {
+            case .omeXML: return "exif-omeXML"
+            case .tiffBaseline: return "exif-tiff"
+            case .olympus: return "exif-olympus"
+            case .zeiss: return "exif-zeiss"
+            case .imagej: return "exif-imagej"
+            }
+        }
     }
 
-    enum Confidence {
+    enum Confidence: Sendable, Equatable {
         case high, medium, low
     }
 

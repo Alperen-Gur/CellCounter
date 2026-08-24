@@ -359,6 +359,7 @@ struct PDFReportGenerator {
 
         let visibleCells = cells.filter { $0.confidence >= confidence }
         if !visibleCells.isEmpty {
+            let palette = OverlayPalette.load()
             ctx.saveGState()
             ctx.translateBy(x: 0, y: CGFloat(h))
             ctx.scaleBy(x: 1, y: -1)
@@ -367,7 +368,7 @@ struct PDFReportGenerator {
             ctx.setLineJoin(.round)
             for cell in visibleCells {
                 let idx = BinMath.binIndex(for: cell.diameter, thresholds: thresholds)
-                let color = binCGColor(idx)
+                let color = palette.cgColor(forBin: idx, overlay: true)
                 ctx.setStrokeColor(color)
                 let fill = color.copy(alpha: 0.18) ?? color
                 ctx.setFillColor(fill)
@@ -410,10 +411,7 @@ struct PDFReportGenerator {
     /// the PDF's overlay ellipses, the histogram bars, and the table swatches
     /// all match the on-screen swatches and the PNG export.
     nonisolated private static func binCGColor(_ index: Int) -> CGColor {
-        let ramp = Tokens.binRamp
-        let i = max(0, min(index, ramp.count - 1))
-        let s = ramp[i].srgb
-        return CGColor(red: CGFloat(s.r), green: CGFloat(s.g), blue: CGFloat(s.b), alpha: 1)
+        OverlayPalette.load().cgColor(forBin: index)
     }
 
     /// Compose the three monospaced footer lines from a provenance block.

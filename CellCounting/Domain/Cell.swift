@@ -19,7 +19,7 @@ import CoreGraphics
 /// rescaled to 0–255 — per-channel quantification is meaningless after a
 /// per-image renormalisation. `integrated` is `mean * areaPx`, matching the
 /// definition of `DetectedCell.integratedDensity`.
-struct ChannelIntensity: Codable, Hashable {
+struct ChannelIntensity: Codable, Hashable, Sendable {
     /// Zero-based channel index, matching the order in the source file.
     let channel: Int
     /// Channel label from the vendor metadata ("DAPI", "GFP", "R"…). Falls
@@ -51,7 +51,7 @@ struct ChannelIntensity: Codable, Hashable {
 }
 
 /// A single detected cell in image space.
-struct DetectedCell: Identifiable, Hashable {
+struct DetectedCell: Identifiable, Hashable, Sendable {
     let id: UUID
     /// Center in source-image pixel coordinates.
     var cx: Double
@@ -108,7 +108,7 @@ struct DetectedCell: Identifiable, Hashable {
     /// remain the single-plane values in every case.
     var channelIntensities: [ChannelIntensity]? = nil
 
-    init(id: UUID = UUID(), cx: Double, cy: Double, diameter: Double, diameterPx: Double, confidence: Double = 1,
+    nonisolated init(id: UUID = UUID(), cx: Double, cy: Double, diameter: Double, diameterPx: Double, confidence: Double = 1,
          areaMicrons2: Double? = nil, perimeterMicrons: Double? = nil, circularity: Double? = nil,
          eccentricity: Double? = nil, meanIntensity: Double? = nil, integratedDensity: Double? = nil,
          centroidUmX: Double? = nil, centroidUmY: Double? = nil,

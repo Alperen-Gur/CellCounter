@@ -62,12 +62,15 @@ struct TrackingPanel: View {
 
     @State private var frameIntervalText: String = "10"
     @State private var maxDisplacementUm: Double = 50
+    @State private var preset: TrackingPreset = .standard
+    @State private var correctDrift = true
 
     @State private var isRunning = false
     @State private var result: TrackingPayload? = nil
     /// Fingerprint of the frame set `result` was computed from — see the
     /// header note and `SeriesResultKey`.
     @State private var resultKey: SeriesResultKey? = nil
+    @State private var resultSettingsKey: String? = nil
     @State private var errorMessage: String? = nil
 
     @Environment(AppTheme.self) private var theme
@@ -78,25 +81,12 @@ struct TrackingPanel: View {
     /// sort `AppState.currentImage` applies, so indices line up with the
     /// batch strip.
     private var orderedImages: [ImageRecord] {
-        (state.currentBatch?.images ?? []).sorted { $0.importedAt < $1.importedAt }
-    }
-
-    /// One centroid list per frame, in series order. Each frame is filtered by
-    /// ITS OWN image's effective confidence and ROIs — the same derivation
-    /// `ResultsSidebar.cells` uses for the visible frame. Frames with no
-    /// detections stay in place as empty arrays so the frame INDEX keeps
-    /// mapping to real elapsed time.
-    private var frames: [[DetectedCell]] {
-        _ = roiSignal  // observable dependency for the untracked ROI fetch below
-        return orderedImages.map { image in
-            let cutoff = state.effectiveConfidence(for: image)
-            let confidenceFiltered = (image.detection?.cells ?? []).filter { $0.confidence >= cutoff }
-            return ROIFilter.apply(cells: confidenceFiltered, rois: state.repos.rois(for: image.id))
-        }
+        guard let batch = state.currentBatch else { return [] }
+        return state.orderedImages(in: batch)
     }
 
     private var framesWithDetections: Int {
-        frames.filter { !$0.isEmpty }.count
+        orderedImages.filter { ($0.detection?.summaryCellCount ?? 0) > 0 }.count
     }
 
     private var parsedFrameInterval: Double? {
@@ -111,15 +101,41 @@ struct TrackingPanel: View {
     /// Fingerprint of the frame set as it stands RIGHT NOW.
     private var currentKey: SeriesResultKey {
         SeriesResultKey(batchId: state.currentBatchId,
-                        frameCellCounts: frames.map(\.count),
-                        frameCutoffs: orderedImages.map { state.effectiveConfidence(for: $0) })
+                        frameCellCounts: orderedImages.map { $0.detection?.summaryCellCount ?? 0 },
+                        frameRevisions: orderedImages.map { $0.detection?.cellsRevision ?? 0 },
+                        frameCutoffs: orderedImages.map { state.effectiveConfidence(for: $0) },
+                        roiRevision: roiSignal)
     }
 
     /// Nil unless `result` was computed from exactly the frame set the batch
     /// holds right now — not merely from the same batch.
     private var activeResult: TrackingPayload? {
-        guard let resultKey, resultKey == currentKey else { return nil }
+        guard let resultKey, resultKey == currentKey,
+              resultSettingsKey == currentSettingsKey else { return nil }
         return result
+    }
+
+    private var currentSettingsKey: String {
+        "\(frameIntervalText)|\(maxDisplacementUm)|\(correctDrift)"
+    }
+
+    private enum TrackingPreset: String, CaseIterable, Identifiable {
+        case constrained, standard, motile
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .constrained: return "Slow"
+            case .standard: return "Typical"
+            case .motile: return "Motile"
+            }
+        }
+        var displacement: Double {
+            switch self {
+            case .constrained: return 15
+            case .standard: return 50
+            case .motile: return 150
+            }
+        }
     }
 
     private var sortedTracks: [CellTrack] {
@@ -144,6 +160,7 @@ struct TrackingPanel: View {
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { _ in
             result = nil
             resultKey = nil
+            resultSettingsKey = nil
         }
     }
 
@@ -180,27 +197,56 @@ struct TrackingPanel: View {
         errorMessage = nil
         result = nil
         resultKey = nil
+        resultSettingsKey = nil
         isRunning = true
 
         // Captured BEFORE the run so an edit to any frame that lands while the
         // sidecar is working invalidates the result instead of being stamped
         // onto it.
         let startKey = currentKey
-        let framesSnapshot = frames
+        let imagesSnapshot = orderedImages
         // PIXELS PER MICROMETRE — forwarded to `--px-per-um` verbatim. Never
         // the reciprocal `pixel_size_um`; see TrackingRunner's header note.
-        let pxPerUm = state.pxPerUm
+        let pxPerUm = state.currentBatch?.pxPerUm ?? state.pxPerUm
         let maxDisp = maxDisplacementUm
+        let applyDrift = correctDrift
+        let settingsKey = currentSettingsKey
 
         Task { @MainActor in
             defer { isRunning = false }
             do {
-                let r = try await TrackingRunner.track(frames: framesSnapshot,
+                var framesSnapshot: [[DetectedCell]] = []
+                framesSnapshot.reserveCapacity(imagesSnapshot.count)
+                for (index, image) in imagesSnapshot.enumerated() {
+                    let decoded: [DetectedCell]
+                    if let detection = image.detection {
+                        decoded = await state.loadCells(for: detection)
+                    } else {
+                        decoded = []
+                    }
+                    let cutoff = state.effectiveConfidence(for: image)
+                    let filtered = decoded.filter { $0.confidence >= cutoff }
+                    framesSnapshot.append(
+                        ROIFilter.apply(cells: filtered, rois: state.repos.rois(for: image.id)))
+                    if index % 8 == 7 { await Task.yield() }
+                }
+                let trackingFrames: [[DetectedCell]]
+                if applyDrift {
+                    trackingFrames = await Task.detached(priority: .userInitiated) {
+                        let offsets = SequenceWorkflowService.estimateDrift(frames: framesSnapshot)
+                        return SequenceWorkflowService.driftCorrected(frames: framesSnapshot,
+                                                                      offsets: offsets)
+                    }.value
+                } else {
+                    trackingFrames = framesSnapshot
+                }
+                let r = try await TrackingRunner.track(frames: trackingFrames,
                                                        pxPerUm: pxPerUm,
                                                        frameIntervalMin: interval,
                                                        maxDisplacementUm: maxDisp)
                 result = r
                 resultKey = startKey
+                resultSettingsKey = settingsKey
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -218,6 +264,25 @@ struct TrackingPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             seriesStatusNote
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Movement preset")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Tokens.textTertiary)
+                Picker("Movement preset", selection: $preset) {
+                    ForEach(TrackingPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .onChange(of: preset) { maxDisplacementUm = preset.displacement }
+            }
+
+            Toggle("Correct acquisition drift before linking", isOn: $correctDrift)
+                .font(.system(size: 11.5))
+                .toggleStyle(.switch)
+                .controlSize(.small)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Minutes between frames")

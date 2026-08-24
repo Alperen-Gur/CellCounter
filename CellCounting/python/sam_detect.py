@@ -55,12 +55,22 @@ def parse_args() -> argparse.Namespace:
                    help="Pixels per micrometer.")
     p.add_argument("--conf", type=float, default=0.5,
                    help="Confidence threshold (kept as metadata, host filters).")
-    p.add_argument("--prompts", default="auto",
-                   help="Prompt mode (only 'auto' is supported — instance segmentation).")
+    p.add_argument("--prompts", default="auto", choices=("auto", "interactive"),
+                   help="Automatic instances or one point/box-prompted mask.")
+    p.add_argument("--prompt-point", nargs=2, type=float, metavar=("X", "Y"))
+    p.add_argument("--prompt-box", nargs=4, type=float,
+                   metavar=("X0", "Y0", "X1", "Y1"))
+    p.add_argument("--embedding-cache", default=None,
+                   help="Optional reusable micro_sam image-embedding zarr path.")
     p.add_argument("--bg-subtract", dest="bg_subtract", action="store_true",
                    help="Apply rolling-ball background subtraction before detection.")
     p.add_argument("--rolling-ball-radius", dest="rolling_ball_radius", type=int, default=50,
                    help="Radius for rolling-ball background subtraction (default 50).")
+    p.add_argument("--clahe", action="store_true")
+    p.add_argument("--anisotropic-diffusion", dest="anisotropic_diffusion", action="store_true")
+    p.add_argument("--gpu-preprocess", dest="gpu_preprocess", action="store_true")
+    p.add_argument("--no-gpu", dest="no_gpu", action="store_true",
+                   help="Force the SAM predictor onto CPU.")
     p.add_argument("--watershed", action="store_true",
                    help="Run a distance-transform watershed on the SAM instance label "
                         "map to split touching cells (A3 middle-of-script post-process).")
@@ -138,6 +148,52 @@ def run_automatic_segmentation(image, model_type: str):
 
     # instances is typically a 2-D int label map (numpy array).
     return instances, []
+
+
+def run_prompt_segmentation(image, model_type: str, args):
+    """Return a one-label map from a point and/or box prompt.
+
+    `precompute_image_embeddings(..., save_path=...)` loads a valid existing
+    cache instead of running the image encoder again. Predictor/model loading
+    remains per process, but the dominant per-image embedding work is reused.
+    """
+    import os
+    import numpy as np
+    from micro_sam import util
+
+    model_kwargs = {"model_type": model_type}
+    if getattr(args, "no_gpu", False):
+        model_kwargs["device"] = "cpu"
+    predictor = util.get_sam_model(**model_kwargs)
+
+    save_path = getattr(args, "embedding_cache", None)
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    log(f"[sam_detect] {'loading/reusing' if save_path and os.path.exists(save_path) else 'computing'} "
+        "interactive image embedding")
+    try:
+        embeddings = util.precompute_image_embeddings(
+            predictor, image, save_path=save_path, ndim=2)
+    except TypeError:
+        embeddings = util.precompute_image_embeddings(
+            predictor, image, save_path=save_path)
+    util.set_precomputed(predictor, embeddings)
+
+    kwargs = {"multimask_output": True}
+    if args.prompt_point is not None:
+        kwargs["point_coords"] = np.asarray([args.prompt_point], dtype=np.float32)
+        kwargs["point_labels"] = np.asarray([1], dtype=np.int32)
+    if args.prompt_box is not None:
+        x0, y0, x1, y1 = args.prompt_box
+        kwargs["box"] = np.asarray([min(x0, x1), min(y0, y1),
+                                    max(x0, x1), max(y0, y1)], dtype=np.float32)
+    if "point_coords" not in kwargs and "box" not in kwargs:
+        raise ValueError("interactive prompt mode needs --prompt-point or --prompt-box")
+
+    masks, scores, _ = predictor.predict(**kwargs)
+    best = int(np.argmax(scores))
+    label_map = masks[best].astype(np.int32)
+    return label_map, [float(scores[best])]
 
 
 def main() -> None:
@@ -224,7 +280,10 @@ def main() -> None:
     log(f"[sam_detect] image is {width_px}x{height_px}; model={args.model}; prompts={args.prompts}")
 
     try:
-        label_map, scores = run_automatic_segmentation(img, args.model)
+        if args.prompts == "interactive":
+            label_map, scores = run_prompt_segmentation(img, args.model, args)
+        else:
+            label_map, scores = run_automatic_segmentation(img, args.model)
     except Exception as exc:  # noqa: BLE001
         log(f"[sam_detect] segmentation failed: {exc!r}")
         emit_error("segmentation-failed", hint=str(exc), exit_code=5)
@@ -267,10 +326,12 @@ def main() -> None:
 
     # A1: per-cell measurement helpers.
     try:
-        from skimage.measure import perimeter as sk_perimeter, regionprops
+        from skimage.measure import (perimeter as sk_perimeter, regionprops,
+                                     find_contours as sk_find_contours)
         _skimage_ok = True
     except ImportError:
         _skimage_ok = False
+        sk_find_contours = None
         log("[sam_detect] skimage not available — perimeter/eccentricity will be omitted")
 
     # Grayscale image for intensity measurements (img is already uint8 grayscale from load_image_array).
@@ -410,6 +471,19 @@ def main() -> None:
             cell_dict["mean_intensity"] = mean_intensity
         if integrated_density is not None:
             cell_dict["integrated_density"] = integrated_density
+        if _skimage_ok and sk_find_contours is not None:
+            try:
+                contours = sk_find_contours(mask.astype(np.uint8), 0.5)
+                if contours:
+                    best_contour = max(contours, key=len)
+                    stride = max(1, int(math.ceil(len(best_contour) / 256)))
+                    sampled = best_contour[::stride]
+                    if len(sampled) >= 3:
+                        cell_dict["contour_px"] = [
+                            [float(point[1]), float(point[0])] for point in sampled
+                        ]
+            except Exception:
+                pass
         cells.append(cell_dict)
 
     payload = {"width": width_px, "height": height_px, "cells": cells,

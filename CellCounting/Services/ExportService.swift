@@ -100,8 +100,8 @@ enum ExportService {
         // summary writer resolves each row's own override against this fallback.
         let globalConf = state.confidence
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
-        let pxPerUm = state.pxPerUm
-        let thresholds = state.thresholds
+        let pxPerUm = image.batch?.pxPerUm ?? state.pxPerUm
+        let thresholds = image.batch?.thresholds ?? state.thresholds
         // Pass-18 (Lane R): capture provenance once and thread it through every
         // writer below. `ProvenanceMetadata.capture` is MainActor-bound (reads
         // AppState + BatchRecord), which is fine here — `writeSampleFolder`
@@ -575,9 +575,10 @@ enum ExportService {
         // everything" — used by code paths that haven't been migrated yet.
         let cutoff = confidence
         let drawableCells = cells.filter { $0.confidence >= cutoff }
+        let palette = OverlayPalette.load()
         for cell in drawableCells {
             let idx = BinMath.binIndex(for: cell.diameter, thresholds: thresholds)
-            let color = binCGColor(idx)
+            let color = palette.cgColor(forBin: idx, overlay: true)
             ctx.setStrokeColor(color)
             // Faint fill for readability
             let fill = color.copy(alpha: 0.18) ?? color
@@ -721,26 +722,6 @@ enum ExportService {
     }
 
     // MARK: — Bin colors
-
-    /// Bin CGColors precomputed once from `Tokens.binRamp`. `.srgb` runs
-    /// cos/sin + three pow() per call, and `binCGColor` is invoked once per
-    /// drawn cell on the heaviest export path — caching the (fixed, 5-entry)
-    /// ramp avoids re-running the OKLCH→sRGB conversion thousands of times.
-    nonisolated private static let binCGColors: [CGColor] = Tokens.binRamp.map { color in
-        let s = color.srgb
-        return CGColor(red: CGFloat(s.r),
-                       green: CGFloat(s.g),
-                       blue: CGFloat(s.b),
-                       alpha: 1)
-    }
-
-    /// CGColor for bin `index`, derived from the single `Tokens.binRamp` source
-    /// of truth (OKLCH → sRGB) so exported overlays never drift from the
-    /// on-screen SwiftUI swatches.
-    nonisolated private static func binCGColor(_ index: Int) -> CGColor {
-        let i = max(0, min(index, binCGColors.count - 1))
-        return binCGColors[i]
-    }
 
     // MARK: — Per-image summary CSV (C2 pass-6)
 

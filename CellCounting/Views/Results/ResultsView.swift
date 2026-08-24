@@ -85,7 +85,9 @@ struct ResultsView: View {
                 if !fullScreenEdit {
                     ResultsSidebar(state: state,
                                    overlayMode: overlayMode,
-                                   profileMode: $profileMode)
+                                   profileMode: $profileMode,
+                                   editorMode: $editorMode,
+                                   selectedCellIds: $selectedCellIds)
                         .frame(width: 360)
                 }
             }
@@ -193,13 +195,13 @@ struct ResultsView: View {
             .onKeyPress(.leftArrow) {
                 guard !sortedImages.isEmpty else { return .ignored }
                 let newIdx = max(0, state.currentImageIdx - 1)
-                withAnimation(Tokens.Motion.easeFast) { state.currentImageIdx = newIdx }
+                state.currentImageIdx = newIdx
                 return .handled
             }
             .onKeyPress(.rightArrow) {
                 guard !sortedImages.isEmpty else { return .ignored }
                 let newIdx = min(sortedImages.count - 1, state.currentImageIdx + 1)
-                withAnimation(Tokens.Motion.easeFast) { state.currentImageIdx = newIdx }
+                state.currentImageIdx = newIdx
                 return .handled
             }
             // Esc — exit edit mode, then full-screen.
@@ -245,13 +247,20 @@ struct ResultsView: View {
     }
 
     private var sortedImages: [ImageRecord] {
-        (state.currentBatch?.images ?? []).sorted(by: { $0.importedAt < $1.importedAt })
+        guard let batch = state.currentBatch else { return [] }
+        return state.orderedImages(in: batch)
     }
 
     /// Thresholds to use for display/binning/export — prefer the batch's persisted
     /// thresholds so analyses are reproducible, falling back to the live global setting.
     private var batchThresholds: [Double] {
         state.currentBatch?.thresholds ?? state.thresholds
+    }
+
+    /// Calibration is analysis provenance. Once a batch exists its persisted
+    /// value must win over the mutable default used for future imports.
+    private var batchPxPerUm: Double {
+        state.currentBatch?.pxPerUm ?? state.pxPerUm
     }
 
     private func exportAnnotatedPNG() {
@@ -266,7 +275,7 @@ struct ResultsView: View {
         let imageURL = image.storedURL
         let cells = detection.cells
         let thresholds = batchThresholds
-        let pxPerUm = state.pxPerUm
+        let pxPerUm = batchPxPerUm
         let overlay = overlayMode
         panel.begin { resp in
             guard resp == .OK, let url = panel.url else { return }
@@ -301,7 +310,7 @@ struct ResultsView: View {
         let cells = detection.cells
         let imageFileName = image.fileName
         let thresholds = batchThresholds
-        let pxPerUm = state.pxPerUm
+        let pxPerUm = batchPxPerUm
         let overlay = overlayMode
         pngPanel.begin { resp in
             guard resp == .OK, let pngURL = pngPanel.url else { return }
@@ -359,11 +368,6 @@ struct ResultsView: View {
     fileprivate func deleteSelectedCells() {
         state.removeCells(selectedCellIds)
         selectedCellIds.removeAll()
-        // removeCells mutates detection.cells directly and posts no signal, so
-        // notify observers (incl. RealImageViewer's liveCells mirror) to resync
-        // (finding: overlay-stale-after-nonhandleedit-mutations).
-        NotificationCenter.default.post(name: .ccCorrectionsChanged,
-                                        object: state.currentImage?.id)
     }
 }
 
@@ -512,18 +516,13 @@ private struct ViewerPanel: View {
                         if !selectedCellIds.isEmpty {
                             state.removeCells(selectedCellIds)
                             selectedCellIds.removeAll()
-                            // Notify observers to resync the overlay's liveCells
-                            // mirror (finding: overlay-stale-after-nonhandleedit-
-                            // mutations).
-                            NotificationCenter.default.post(name: .ccCorrectionsChanged,
-                                                            object: state.currentImage?.id)
                             return true
                         }
                         return false
                     },
                     // Pass-17 (Lane B): live "M of N marked" status pill.
                     annotationsCount: annotationCountForCurrentImage,
-                    detectionsCount: state.currentImage?.detection?.cells.count ?? 0
+                    detectionsCount: state.currentImage?.detection?.summaryCellCount ?? 0
                 )
 
                 // Pass-8: when the image is loaded but detection didn't produce a result,
@@ -608,6 +607,12 @@ private struct ViewerPanel: View {
 
 // MARK: — Real-image viewer
 
+private struct DetectionCellsLoadKey: Hashable {
+    let imageId: UUID
+    let detectionId: UUID?
+    let revision: Int
+}
+
 private struct RealImageViewer: View {
     @Bindable var state: AppState
     let image: ImageRecord
@@ -639,6 +644,7 @@ private struct RealImageViewer: View {
     var zoom: Double = 1.0
 
     @State private var liveCells: [DetectedCell] = []
+    @State private var liveCellsRevision: Int = 0
     /// Pass-17 (Lane B): in-memory mirror of the ground-truth annotations on
     /// this image. Synced from `state.repos.annotations(for:)` on appear / image
     /// change. Holding this in @State (instead of querying inside `body`) lets
@@ -651,11 +657,24 @@ private struct RealImageViewer: View {
     @State private var loadedImage: NSImage? = nil
     @State private var loadedImageId: UUID? = nil
     @State private var imageLoadTask: Task<Void, Never>? = nil
+    @State private var promptTask: Task<Void, Never>? = nil
+    @State private var promptBusy = false
+    @State private var promptStatus: String? = nil
 
     /// Thresholds to use for display/binning/export — prefer the batch's
     /// persisted thresholds for reproducibility, fall back to live global.
     private var batchThresholds: [Double] {
         state.currentBatch?.thresholds ?? state.thresholds
+    }
+
+    private var batchPxPerUm: Double {
+        image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
+    }
+
+    private var cellsLoadKey: DetectionCellsLoadKey {
+        DetectionCellsLoadKey(imageId: image.id,
+                              detectionId: image.detection?.id,
+                              revision: image.detection?.cellsRevision ?? 0)
     }
 
     var body: some View {
@@ -730,14 +749,17 @@ private struct RealImageViewer: View {
                                 merged.append(c)       // overlay-added
                             }
                             liveCells = merged
+                            liveCellsRevision &+= 1
                         }
                     )
                     EditableOverlay(
                         cells: visibleBinding,
-                        pxPerUm: state.pxPerUm,
+                        pxPerUm: batchPxPerUm,
                         thresholds: batchThresholds,
                         overlayMode: overlayMode,
                         uncertaintyThreshold: cutoff,
+                        palette: state.overlayPalette,
+                        renderRevision: liveCellsRevision,
                         viewScale: Double(scale),
                         viewOffset: .zero,
                         onEdit: { handleEdit($0) },
@@ -750,8 +772,25 @@ private struct RealImageViewer: View {
                         // below so we own persistence.
                         annotations: annotations,
                         onAddAnnotation: { p in addAnnotation(at: p) },
-                        onRemoveAnnotation: { a in removeAnnotation(a) }
+                        onRemoveAnnotation: { a in removeAnnotation(a) },
+                        onPrompt: { prompt in runPrompt(prompt) }
                     )
+                }
+
+                if promptBusy || promptStatus != nil {
+                    HStack(spacing: 7) {
+                        if promptBusy { AppSpinner() }
+                        Image(systemName: promptBusy ? "wand.and.stars" : "checkmark.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(promptBusy ? "Refining mask…" : (promptStatus ?? ""))
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Capsule().fill(.black.opacity(0.68)))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 12)
+                    .allowsHitTesting(false)
                 }
 
                 // ROI layer — drawn above cells so include/exclude regions are
@@ -783,13 +822,14 @@ private struct RealImageViewer: View {
             .frame(width: drawW, height: drawH)
             .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
 
-            ScaleBar(pxPerUm: state.pxPerUm, fitScale: scale)
+            ScaleBar(pxPerUm: batchPxPerUm, fitScale: scale)
                 .padding(.leading, 16)
                 .padding(.bottom, 14)
         }
         .frame(width: drawW, height: drawH)
-        .onAppear { syncFromDetection(); syncAnnotations(); loadImageAsync() }
-        .onChange(of: image.id) { syncFromDetection(); syncAnnotations(); loadImageAsync() }
+        .onAppear { syncAnnotations(); loadImageAsync() }
+        .onChange(of: image.id) { syncAnnotations(); loadImageAsync() }
+        .task(id: cellsLoadKey) { await syncFromDetection() }
         // The overlay draws from the private `liveCells` mirror, which otherwise
         // only resyncs on image.id change. Three paths mutate `detection.cells`
         // directly on the model while the image stays selected — multi-select
@@ -797,14 +837,13 @@ private struct RealImageViewer: View {
         // the model's cell set changes or a corrections signal fires, else the
         // canvas keeps drawing deleted/old cells
         // (finding: overlay-stale-after-nonhandleedit-mutations).
-        .onChange(of: image.detection?.cells.count) { syncFromDetection() }
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
             // Corrections are posted with object == nil (broadcast) or the
             // affected image id. Resync in both cases; a broadcast may follow a
             // re-run/split that replaced this image's DetectionRecord wholesale
             // (which .onChange on the old relationship's count can miss).
             if note.object == nil || (note.object as? UUID) == image.id {
-                syncFromDetection()
+                Task { await syncFromDetection() }
             }
         }
         // Pass-17 (Lane B): the F1 sidebar panel pings this when an external
@@ -814,11 +853,23 @@ private struct RealImageViewer: View {
                 syncAnnotations()
             }
         }
-        .onDisappear { imageLoadTask?.cancel(); imageLoadTask = nil }
+        .onDisappear {
+            imageLoadTask?.cancel(); imageLoadTask = nil
+            promptTask?.cancel(); promptTask = nil
+        }
     }
 
-    private func syncFromDetection() {
-        liveCells = image.detection?.cells ?? []
+    private func syncFromDetection() async {
+        guard let detection = image.detection else {
+            liveCells = []
+            liveCellsRevision &+= 1
+            return
+        }
+        let detectionId = detection.id
+        let cells = await state.loadCells(for: detection)
+        guard !Task.isCancelled, image.detection?.id == detectionId else { return }
+        liveCells = cells
+        liveCellsRevision &+= 1
     }
 
     /// Pass-17 (Lane B): reload the annotations for the current image from
@@ -858,42 +909,109 @@ private struct RealImageViewer: View {
         loadedImageId = nil
         let url = image.storedURL
         let targetId = image.id
+        var neighborURLs: [URL] = []
+        if let batch = state.currentBatch {
+            let images = state.orderedImages(in: batch)
+            if let index = images.firstIndex(where: { $0.id == targetId }) {
+                if images.indices.contains(index + 1) { neighborURLs.append(images[index + 1].storedURL) }
+                if images.indices.contains(index - 1) { neighborURLs.append(images[index - 1].storedURL) }
+            }
+        }
         imageLoadTask = Task.detached(priority: .userInitiated) {
-            let ns = NSImage(contentsOf: url)
+            let ns = ImageLoader.cachedDisplayImage(at: url)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 // Only commit if the user hasn't moved on to a different image.
                 loadedImage = ns
                 loadedImageId = targetId
             }
+            // Most microscopy review is sequential. Warm only the immediate
+            // neighbors, bounded by ImageLoader's four-image cache, after the
+            // current frame is visible so prefetch never delays first paint.
+            for neighborURL in neighborURLs {
+                guard !Task.isCancelled else { return }
+                _ = ImageLoader.cachedDisplayImage(at: neighborURL)
+            }
         }
     }
 
     private func handleEdit(_ event: EditableOverlay.EditEvent) {
         guard let det = image.detection else { return }
-        // Persist the new cell list to the detection blob.
-        det.cells = liveCells
-        try? state.repos.context.save()
         let isManualMode = (editorMode == .manualCount)
+        let specs: [CorrectionSpec]
         switch event {
         case .removed(let c):
-            state.recordCorrection(kind: "remove", cellId: c.id,
-                                   cx: c.cx, cy: c.cy, diameter: c.diameter)
+            specs = [CorrectionSpec(kind: "remove", cell: c)]
         case .added(let c):
             // Distinguish manual-count placements from add-mode placements for the audit trail.
             let kind = isManualMode ? "manual" : "add"
-            state.recordCorrection(kind: kind, cellId: c.id,
-                                   cx: c.cx, cy: c.cy, diameter: c.diameter)
+            specs = [CorrectionSpec(kind: kind, cell: c)]
         case .merged(let removed, let added):
-            for r in removed {
-                state.recordCorrection(kind: "remove", cellId: r.id,
-                                       cx: r.cx, cy: r.cy, diameter: r.diameter)
-            }
-            state.recordCorrection(kind: "add", cellId: added.id,
-                                   cx: added.cx, cy: added.cy, diameter: added.diameter)
+            specs = removed.map { CorrectionSpec(kind: "remove", cell: $0) }
+                + [CorrectionSpec(kind: "add", cell: added)]
         case .resized(let c, _):
-            state.recordCorrection(kind: "resize", cellId: c.id,
-                                   cx: c.cx, cy: c.cy, diameter: c.diameter)
+            specs = [CorrectionSpec(kind: "resize", cell: c)]
+        }
+        state.scheduleCellEdit(cells: liveCells, corrections: specs,
+                               detection: det, image: image)
+    }
+
+    private func runPrompt(_ prompt: MaskPrompt) {
+        guard !promptBusy, let detection = image.detection else { return }
+        let center = prompt.center
+        let centerX = Double(center.x)
+        let centerY = Double(center.y)
+        let replacing = liveCells.min {
+            hypot($0.cx - centerX, $0.cy - centerY)
+                < hypot($1.cx - centerX, $1.cy - centerY)
+        }.flatMap { candidate in
+            hypot(candidate.cx - centerX, candidate.cy - centerY)
+                <= max(8, candidate.diameterPx * 0.7) ? candidate : nil
+        }
+        let expectedPx = replacing?.diameterPx
+            ?? (state.expectedDiameterUm > 0
+                ? state.expectedDiameterUm * batchPxPerUm
+                : state.manualMarkerDiameter * batchPxPerUm)
+        let url = image.storedURL
+        let imageId = image.id
+        let modelId = image.batch?.modelId ?? state.activeModelId
+        let scale = batchPxPerUm
+        promptBusy = true
+        promptStatus = nil
+        promptTask?.cancel()
+        promptTask = Task { @MainActor in
+            defer { promptBusy = false }
+            do {
+                let result = try await PromptRefinementService.refine(
+                    imageURL: url, imageId: imageId, modelId: modelId,
+                    prompt: prompt, pxPerUm: scale,
+                    expectedDiameterPx: expectedPx,
+                    replacingId: replacing?.id)
+                guard !Task.isCancelled, image.id == imageId,
+                      let currentDetection = image.detection,
+                      currentDetection.id == detection.id else { return }
+                var updated = liveCells
+                let kind: String
+                if let replacing,
+                   let index = updated.firstIndex(where: { $0.id == replacing.id }) {
+                    updated[index] = result.cell
+                    kind = "prompt-refine"
+                } else {
+                    updated.append(result.cell)
+                    kind = "prompt-add"
+                }
+                liveCells = updated
+                liveCellsRevision &+= 1
+                state.scheduleCellEdit(
+                    cells: updated,
+                    corrections: [CorrectionSpec(kind: kind, cell: result.cell)],
+                    detection: currentDetection, image: image)
+                promptStatus = result.backend.rawValue
+            } catch {
+                promptStatus = error.localizedDescription
+            }
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { promptStatus = nil }
         }
     }
 }
@@ -1244,10 +1362,239 @@ private struct ViewerControlsRight: View {
 
 // MARK: — Sidebar
 
+private enum ResultsWorkspace: String, CaseIterable, Identifiable {
+    case overview, segmentation, workflows, quality, measurements, assays, validation, export, all
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .overview: return "Overview"
+        case .segmentation: return "Image & segmentation"
+        case .workflows: return "Smart correction"
+        case .quality: return "Quality insights"
+        case .measurements: return "Measurements"
+        case .assays: return "Assays"
+        case .validation: return "Review & validation"
+        case .export: return "Export & interoperability"
+        case .all: return "All tools"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .overview: return "Counts, bins, distribution, and calibration"
+        case .segmentation: return "Detection controls, channels, ROIs, and overlays"
+        case .workflows: return "Prompts, propagation, curation, drift, and preprocessing"
+        case .quality: return "Cached heuristics, plots, drift, and review ranking"
+        case .measurements: return "Morphology and intensity quantification"
+        case .assays: return "Area, puncta, spatial, tracking, and neurites"
+        case .validation: return "Ground truth, corrections, and retraining"
+        case .export: return "Reports, tables, ImageJ, QuPath, and GeoJSON"
+        case .all: return "Every installed analysis tool"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .overview: return "chart.bar.xaxis"
+        case .segmentation: return "viewfinder"
+        case .workflows: return "wand.and.stars"
+        case .quality: return "chart.xyaxis.line"
+        case .measurements: return "ruler"
+        case .assays: return "flask"
+        case .validation: return "checkmark.seal"
+        case .export: return "square.and.arrow.up"
+        case .all: return "square.grid.2x2"
+        }
+    }
+    var searchTerms: String {
+        let references: String
+        switch self {
+        case .workflows:
+            references = "micro sam sam2long amdtrk drift grid curator mask curator label interpolator manual labels workflow optimizer clahe anisotropic diffusion pyclesperanto annotation project"
+        case .quality:
+            references = "segmentation game labels overlap chunked regionprops plots heuristics nellie"
+        case .assays:
+            references = "motile tracker easytrack tracking organelle mitochondria"
+        default:
+            references = "imagej napari plugin"
+        }
+        return "\(title) \(subtitle) \(references)".lowercased()
+    }
+}
+
+/// Search-first tool chooser. The catalog is intentionally data-driven: adding
+/// future ImageJ/Napari-style functionality means adding one descriptor and
+/// one workspace branch, rather than extending an ever-longer default sidebar.
+private struct ResultsToolSelector: View {
+    @Binding var selection: ResultsWorkspace
+    @State private var showingTools = false
+    @State private var query = ""
+
+    private var filtered: [ResultsWorkspace] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return term.isEmpty ? ResultsWorkspace.allCases
+            : ResultsWorkspace.allCases.filter { $0.searchTerms.contains(term) }
+    }
+
+    var body: some View {
+        Button { showingTools.toggle() } label: {
+            HStack(spacing: 9) {
+                Image(systemName: selection.icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(selection.title)
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Tokens.text)
+                    Text("Choose analysis tools")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Tokens.textTertiary)
+                }
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Tokens.textTertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingTools, arrowEdge: .top) {
+            VStack(spacing: 0) {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(Tokens.textTertiary)
+                    TextField("Find a tool…", text: $query)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5))
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .background(Tokens.bgSunken)
+                .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md))
+                .padding(12)
+
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(filtered) { tool in
+                            Button {
+                                selection = tool
+                                showingTools = false
+                                query = ""
+                            } label: {
+                                HStack(spacing: 11) {
+                                    Image(systemName: tool.icon)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(selection == tool ? Color.accentColor : Tokens.textSecondary)
+                                        .frame(width: 22)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(tool.title)
+                                            .font(.system(size: 12.5, weight: .semibold))
+                                            .foregroundStyle(Tokens.text)
+                                        Text(tool.subtitle)
+                                            .font(.system(size: 10.5))
+                                            .foregroundStyle(Tokens.textTertiary)
+                                            .lineLimit(2)
+                                    }
+                                    Spacer()
+                                    if selection == tool {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(selection == tool ? Color.accentColor.opacity(0.08) : .clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                }
+            }
+            .frame(width: 340, height: 410)
+            .background(Tokens.bg)
+        }
+    }
+}
+
+private struct OverlayAppearancePanel: View {
+    @Bindable var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Overlay appearance")
+
+            Picker("Coloring", selection: Binding(
+                get: { state.overlayPalette.overlayMode },
+                set: { mode in
+                    var palette = state.overlayPalette
+                    palette.overlayMode = mode
+                    state.overlayPalette = palette
+                })) {
+                ForEach(OverlayPalette.OverlayMode.allCases, id: \.self) { mode in
+                    Text(mode == .byBin ? "By bin" : "Single color").tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if state.overlayPalette.overlayMode == .single {
+                HStack {
+                    Text("Mask & outline")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Tokens.textSecondary)
+                    Spacer()
+                    ColorPicker("Overlay color", selection: Binding(
+                        get: { Color(hex: state.overlayPalette.singleOverlayHex) ?? .cyan },
+                        set: { color in
+                            guard let hex = color.hexString else { return }
+                            var palette = state.overlayPalette
+                            palette.singleOverlayHex = hex
+                            state.overlayPalette = palette
+                        }))
+                    .labelsHidden()
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text("Bins")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Tokens.textSecondary)
+                    Spacer()
+                    ForEach(state.overlayPalette.binHexes.indices, id: \.self) { index in
+                        ColorPicker("Bin \(index + 1)", selection: Binding(
+                            get: { state.overlayPalette.binColor(index) },
+                            set: { color in
+                                guard let hex = color.hexString else { return }
+                                var palette = state.overlayPalette
+                                guard palette.binHexes.indices.contains(index) else { return }
+                                palette.binHexes[index] = hex
+                                state.overlayPalette = palette
+                            }))
+                        .labelsHidden()
+                    }
+                }
+            }
+
+            Text("Choose colors that remain visible on grey, bright, or low-contrast microscope images. Exports use the same palette.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Tokens.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+    }
+}
+
 private struct ResultsSidebar: View {
     @Bindable var state: AppState
     let overlayMode: OverlayMode
     @Binding var profileMode: Bool
+    @Binding var editorMode: EditableOverlay.EditorMode
+    @Binding var selectedCellIds: Set<UUID>
 
     /// Bumped on ROI count change to force a re-evaluation of `cells`
     /// (which reads through `state.repos.rois(for:)`).
@@ -1256,6 +1603,16 @@ private struct ResultsSidebar: View {
     /// Pass-14 (F3): one-click "Retrain on this batch & next image" controller.
     /// Held as @StateObject so it survives view rebuilds during the run.
     @StateObject private var retrainController = RetrainAndAdvanceController()
+    @AppStorage("cc-results-workspace-v1") private var workspaceRaw = ResultsWorkspace.overview.rawValue
+    /// Shared decoded snapshot loaded through AppState's bounded cache. This
+    /// prevents each sidebar panel from decoding the same detection JSON while
+    /// SwiftUI evaluates its body.
+    @State private var rawCellsSnapshot: [DetectedCell] = []
+
+    private var workspace: ResultsWorkspace {
+        get { ResultsWorkspace(rawValue: workspaceRaw) ?? .overview }
+        nonmutating set { workspaceRaw = newValue.rawValue }
+    }
 
     /// Pass-12: dropped the fallback-cells alternate path. The parent view
     /// guards against `images.isEmpty` and routes to EmptyBatchState, so the
@@ -1263,7 +1620,14 @@ private struct ResultsSidebar: View {
     /// hasn't run yet, `cells` falls back to empty — the existing
     /// DetectionFailedBanner handles re-running.
     private var rawCells: [DetectedCell] {
-        state.currentImage?.detection?.cells ?? []
+        rawCellsSnapshot
+    }
+
+    private var cellsLoadKey: DetectionCellsLoadKey? {
+        guard let image = state.currentImage else { return nil }
+        return DetectionCellsLoadKey(imageId: image.id,
+                                     detectionId: image.detection?.id,
+                                     revision: image.detection?.cellsRevision ?? 0)
     }
     /// Pass-15: the confidence slider is now a real filter. Cells whose
     /// `confidence` is below the effective cutoff (per-image override beats
@@ -1291,109 +1655,21 @@ private struct ResultsSidebar: View {
     /// genuinely multi-channel sources). Empty for a plain grayscale image.
     /// Feeds `ChannelStackPanel`; see its mount below.
     private var channelNames: [String] {
-        let sourceCell = state.currentImage?.detection?.cells
-            .first { $0.channelIntensities?.isEmpty == false }
+        let sourceCell = rawCellsSnapshot.first { $0.channelIntensities?.isEmpty == false }
         guard let entries = sourceCell?.channelIntensities else { return [] }
         return entries.sorted { $0.channel < $1.channel }.map(\.displayName)
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                TotalBlock(cells: cells)
-                RetrainBanner(state: state, onTrain: { state.view = .fineTune })
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 8)
-                // Pass-14 (F3): one-click retrain + advance — sits directly
-                // below the standard RetrainBanner so the two affordances live
-                // together. Always shown so the user can re-iterate even
-                // without 10+ corrections.
-                RetrainAndAdvanceBanner(state: state, controller: retrainController)
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 8)
-                Divider().overlay(Tokens.divider)
-                SizeBinsPanel(state: state, cells: cells)
-                Divider().overlay(Tokens.divider)
-                // Sits directly under the size bins so the bins→segmentation
-                // decoupling reads as one story: bins reclassify instantly,
-                // expected diameter drives the next segmentation (see panel).
-                ExpectedDiameterPanel(state: state)
-                // Channels & Z — which channel the segmenter runs on and how a
-                // stack is flattened. `ChannelStackSettings` (UserDefaults) is
-                // read by five detection services to build `--z-project` /
-                // `--segment-channel`, but until now NOTHING wrote those keys:
-                // every run went out as `--z-project max --segment-channel 0`
-                // and a 4-channel .czi user had no way to segment on their DAPI
-                // channel. Mounted next to ExpectedDiameterPanel because it is
-                // the same kind of control — it changes what the NEXT detection
-                // does, not how the current one is displayed.
-                //
-                // Gated on a genuinely multi-channel detection so a grayscale
-                // brightfield sidebar is unchanged. `zPlaneCount: 0` means
-                // "unknown" — see ChannelStackPanel.zPlaneCount.
-                if channelNames.count > 1 {
-                    Divider().overlay(Tokens.divider)
-                    ChannelStackPanel(detectedChannelNames: channelNames,
-                                      zPlaneCount: 0)
-                    Text("Applies to the next detection run — press ⌘R to "
-                         + "re-segment this image.")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Tokens.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
-                        .padding(.bottom, 16)
+        VStack(spacing: 0) {
+            ResultsToolSelector(selection: Binding(
+                get: { workspace }, set: { workspace = $0 }))
+            Divider().overlay(Tokens.divider)
+            ScrollView {
+                VStack(spacing: 0) {
+                    TotalBlock(cells: cells)
+                    workspaceContent
                 }
-                Divider().overlay(Tokens.divider)
-                DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
-                // Every self-hiding panel from here down draws its OWN leading
-                // divider, inside the branch that decides whether it renders.
-                // An unconditional separator either side of a hiding panel
-                // leaves two rules flush against each other — and with several
-                // hiding at once (a detection returning 0 cells) they stacked
-                // into one thick band.
-                ColoniesPanel(state: state)
-                Divider().overlay(Tokens.divider)
-                ScalePanel(state: state)
-                Divider().overlay(Tokens.divider)
-                ConfidencePanel(state: state)
-                MeasurementsPanel(cells: cells)
-                // Intensity assays (% marker-positive, transfection, live/dead,
-                // cell cycle, N:C ratio, colocalization). Reads the SAME
-                // confidence/ROI-filtered `cells` as its neighbours so a
-                // filtered-out cell can't inflate a percentage. Hides itself
-                // when the detection carries no per-channel data, so
-                // single-channel brightfield work is unaffected.
-                IntensityAssaysPanel(cells: cells,
-                                     imageStats: state.currentImage?.detection?.imageStats ?? [:])
-                // The five region/assay tools, behind ONE collapsed disclosure.
-                // See AdditionalAssaysSection for why they aren't inline.
-                AdditionalAssaysSection(state: state,
-                                        cells: cells,
-                                        roiCount: roiCount,
-                                        roiSignal: roiSignal)
-                // Pass-17 (Lane B): F1 / precision / recall vs ground truth.
-                // Renders nothing when there are zero annotations, so this
-                // doesn't pollute the sidebar for users who never use it — and
-                // for the same reason its separator is drawn INSIDE that
-                // condition, not around the panel (an unconditional one would
-                // sit flush against NotesPanel's).
-                GroundTruthPanel(state: state, detections: cells)
-                // Pass-18 (Lane N): freeform per-image notes — donor / passage /
-                // observations the filename can't carry. Sits between
-                // GroundTruthPanel and AnalysisPanel so it's adjacent to the
-                // experimenter-facing controls.
-                Divider().overlay(Tokens.divider)
-                NotesPanel(state: state)
-                Divider().overlay(Tokens.divider)
-                AnalysisPanel(state: state, profileMode: $profileMode)
-                Divider().overlay(Tokens.divider)
-                ResultsExportPanel(state: state, overlayMode: overlayMode)
-                Divider().overlay(Tokens.divider)
-                // GeoJSON — QuPath's preferred annotation format, and the
-                // route into Python/Shapely. Sits beside the existing export
-                // panel (PDF / CSV / ImageJ ROI) as the other half of interop.
-                GeoJSONExportPanel(state: state)
             }
         }
         .background(Tokens.bg)
@@ -1404,6 +1680,147 @@ private struct ResultsSidebar: View {
                 .frame(maxHeight: .infinity)
         }
         .onChange(of: roiCount) { roiSignal &+= 1 }
+        .task(id: cellsLoadKey) { await reloadCellsSnapshot() }
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            guard note.object == nil || (note.object as? UUID) == state.currentImage?.id else { return }
+            Task { await reloadCellsSnapshot() }
+        }
+    }
+
+    private func reloadCellsSnapshot() async {
+        guard let image = state.currentImage, let detection = image.detection else {
+            rawCellsSnapshot = []
+            return
+        }
+        let imageId = image.id
+        let detectionId = detection.id
+        let cells = await state.loadCells(for: detection)
+        guard !Task.isCancelled,
+              state.currentImage?.id == imageId,
+              state.currentImage?.detection?.id == detectionId else { return }
+        rawCellsSnapshot = cells
+    }
+
+    @ViewBuilder
+    private var workspaceContent: some View {
+        switch workspace {
+        case .overview:
+            Divider().overlay(Tokens.divider)
+            SizeBinsPanel(state: state, cells: cells)
+            Divider().overlay(Tokens.divider)
+            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
+            ColoniesPanel(state: state)
+            Divider().overlay(Tokens.divider)
+            ScalePanel(state: state)
+            Divider().overlay(Tokens.divider)
+            ConfidencePanel(state: state)
+            Divider().overlay(Tokens.divider)
+            NotesPanel(state: state)
+
+        case .segmentation:
+            RetrainBanner(state: state, onTrain: { state.view = .fineTune })
+                .padding(.horizontal, 18).padding(.bottom, 8)
+            Divider().overlay(Tokens.divider)
+            ExpectedDiameterPanel(state: state)
+            channelControls
+            Divider().overlay(Tokens.divider)
+            OverlayAppearancePanel(state: state)
+            Divider().overlay(Tokens.divider)
+            AnalysisPanel(state: state, profileMode: $profileMode)
+
+        case .workflows:
+            AdvancedWorkflowsPanel(state: state,
+                                   cells: rawCellsSnapshot,
+                                   editorMode: $editorMode,
+                                   selectedCellIds: $selectedCellIds)
+
+        case .quality:
+            QualityInsightsPanel(state: state)
+
+        case .measurements:
+            Divider().overlay(Tokens.divider)
+            MeasurementsPanel(cells: cells)
+            IntensityAssaysPanel(cells: cells,
+                                 imageStats: state.currentImage?.detection?.imageStats ?? [:])
+
+        case .assays:
+            AreaAssaysPanel(state: state)
+            PunctaPanel(state: state, cells: cells, roiCount: roiCount)
+            SpatialStatsPanel(state: state, cells: cells, roiCount: roiCount)
+            TrackingPanel(state: state, roiSignal: roiSignal)
+            NeuritePanel(state: state, cells: cells, roiCount: roiCount)
+
+        case .validation:
+            RetrainBanner(state: state, onTrain: { state.view = .fineTune })
+                .padding(.horizontal, 18).padding(.bottom, 8)
+            RetrainAndAdvanceBanner(state: state, controller: retrainController)
+                .padding(.horizontal, 18).padding(.bottom, 8)
+            GroundTruthPanel(state: state, detections: cells)
+            MaskCuratorPanel(state: state)
+            Divider().overlay(Tokens.divider)
+            ConfidencePanel(state: state)
+
+        case .export:
+            Divider().overlay(Tokens.divider)
+            ResultsExportPanel(state: state, overlayMode: overlayMode)
+            Divider().overlay(Tokens.divider)
+            GeoJSONExportPanel(state: state)
+
+        case .all:
+            RetrainBanner(state: state, onTrain: { state.view = .fineTune })
+                .padding(.horizontal, 18).padding(.bottom, 8)
+            RetrainAndAdvanceBanner(state: state, controller: retrainController)
+                .padding(.horizontal, 18).padding(.bottom, 8)
+            Divider().overlay(Tokens.divider)
+            SizeBinsPanel(state: state, cells: cells)
+            Divider().overlay(Tokens.divider)
+            ExpectedDiameterPanel(state: state)
+            channelControls
+            Divider().overlay(Tokens.divider)
+            OverlayAppearancePanel(state: state)
+            Divider().overlay(Tokens.divider)
+            AdvancedWorkflowsPanel(state: state,
+                                   cells: rawCellsSnapshot,
+                                   editorMode: $editorMode,
+                                   selectedCellIds: $selectedCellIds)
+            Divider().overlay(Tokens.divider)
+            QualityInsightsPanel(state: state)
+            Divider().overlay(Tokens.divider)
+            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
+            ColoniesPanel(state: state)
+            Divider().overlay(Tokens.divider)
+            ScalePanel(state: state)
+            Divider().overlay(Tokens.divider)
+            ConfidencePanel(state: state)
+            MeasurementsPanel(cells: cells)
+            IntensityAssaysPanel(cells: cells,
+                                 imageStats: state.currentImage?.detection?.imageStats ?? [:])
+            AdditionalAssaysSection(state: state, cells: cells,
+                                    roiCount: roiCount, roiSignal: roiSignal)
+            GroundTruthPanel(state: state, detections: cells)
+            Divider().overlay(Tokens.divider)
+            NotesPanel(state: state)
+            Divider().overlay(Tokens.divider)
+            AnalysisPanel(state: state, profileMode: $profileMode)
+            Divider().overlay(Tokens.divider)
+            ResultsExportPanel(state: state, overlayMode: overlayMode)
+            Divider().overlay(Tokens.divider)
+            GeoJSONExportPanel(state: state)
+        }
+    }
+
+    @ViewBuilder
+    private var channelControls: some View {
+        if channelNames.count > 1 {
+            Divider().overlay(Tokens.divider)
+            ChannelStackPanel(detectedChannelNames: channelNames, zPlaneCount: 0)
+            Text("Applies to the next detection run — press ⌘R to re-segment this image.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Tokens.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18).padding(.bottom, 16)
+        }
     }
 }
 
@@ -2057,12 +2474,13 @@ private struct ScalePanel: View {
     }
 
     var body: some View {
+        let pxPerUm = state.currentBatch?.pxPerUm ?? state.pxPerUm
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Scale")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Tokens.textTertiary)
-                Text(String(format: "%.1f px / µm · %@", state.pxPerUm, Self.objectiveLabel(for: state.pxPerUm)))
+                Text(String(format: "%.1f px / µm · %@", pxPerUm, Self.objectiveLabel(for: pxPerUm)))
                     .font(.system(size: 12.5, design: .monospaced))
                     .foregroundStyle(Tokens.text)
             }
@@ -2310,7 +2728,8 @@ private struct BatchStrip: View {
     @Environment(AppTheme.self) private var theme
 
     private var sortedImages: [ImageRecord] {
-        (state.currentBatch?.images ?? []).sorted(by: { $0.importedAt < $1.importedAt })
+        guard let batch = state.currentBatch else { return [] }
+        return state.orderedImages(in: batch)
     }
 
     // The strip only shows real images. ResultsView's empty-batch guard
@@ -2321,17 +2740,16 @@ private struct BatchStrip: View {
             EmptyView()
         } else {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(sortedImages.enumerated()), id: \.element.id) { i, img in
+                LazyHStack(spacing: 8) {
+                    ForEach(sortedImages.indices, id: \.self) { i in
+                        let img = sortedImages[i]
                         BatchThumb(
                             image: img,
                             isActive: i == state.currentImageIdx,
                             accentColor: theme.accentColor
                         )
                         .onTapGesture {
-                            withAnimation(Tokens.Motion.easeFast) {
-                                state.currentImageIdx = i
-                            }
+                            state.currentImageIdx = i
                         }
                     }
                 }
@@ -2358,7 +2776,7 @@ private struct BatchThumb: View {
     @State private var thumb: NSImage? = nil
     @State private var thumbLoaded: Bool = false
 
-    private var count: Int { image.detection?.cells.count ?? 0 }
+    private var count: Int { image.detection?.summaryCellCount ?? 0 }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -2378,7 +2796,7 @@ private struct BatchThumb: View {
                 thumbLoaded = true
                 let url = image.thumbURL
                 Task.detached(priority: .utility) {
-                    let ns = NSImage(contentsOf: url)
+                    let ns = ImageLoader.cachedThumbnail(at: url)
                     await MainActor.run { thumb = ns }
                 }
             }
@@ -2814,16 +3232,15 @@ private struct GroundTruthPanel: View {
             guard resp == .OK, let folder = panel.url else { return }
             let jsonURL = folder.appendingPathComponent("\(base).annotations.json")
             let csvURL  = folder.appendingPathComponent("\(base).annotations.csv")
+            let pxPerUm = img.batch?.pxPerUm ?? state.pxPerUm
             try? ExportService.writeAnnotationsJSON(image: img,
                                                     annotations: anns,
-                                                    pxPerUm: state.pxPerUm,
+                                                    pxPerUm: pxPerUm,
                                                     to: jsonURL)
             try? ExportService.writeAnnotationsCSV(image: img,
                                                    annotations: anns,
-                                                   pxPerUm: state.pxPerUm,
+                                                   pxPerUm: pxPerUm,
                                                    to: csvURL)
         }
     }
 }
-
-

@@ -37,12 +37,15 @@ struct FileStore {
         try? fm.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: modelsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: exportsDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: embeddingsDir, withIntermediateDirectories: true)
     }
 
     var imagesDir: URL  { root.appendingPathComponent("Images", isDirectory: true) }
     var thumbsDir: URL  { root.appendingPathComponent("Thumbnails", isDirectory: true) }
     var modelsDir: URL  { root.appendingPathComponent("Models", isDirectory: true) }
     var exportsDir: URL { root.appendingPathComponent("Exports", isDirectory: true) }
+    /// Reusable prompt-model image embeddings. Safe to delete; regenerated on demand.
+    var embeddingsDir: URL { root.appendingPathComponent("Embeddings", isDirectory: true) }
 
     /// Writeable Python sidecar root.
     ///

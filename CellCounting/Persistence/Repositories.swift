@@ -1,12 +1,48 @@
 import Foundation
 import SwiftData
 
+struct BatchSummary: Identifiable, Equatable {
+    let id: UUID
+    let displayName: String
+    let createdAt: Date
+    let imageCount: Int
+    let cellCount: Int
+    let thumbnailURL: URL?
+}
+
+struct CorrectionSpec: Sendable {
+    let kind: String
+    let cellId: UUID
+    let cx: Double
+    let cy: Double
+    let diameter: Double
+
+    init(kind: String, cell: DetectedCell) {
+        self.init(kind: kind, cellId: cell.id, cx: cell.cx, cy: cell.cy,
+                  diameter: cell.diameter)
+    }
+
+    init(kind: String, cellId: UUID, cx: Double, cy: Double, diameter: Double) {
+        self.kind = kind
+        self.cellId = cellId
+        self.cx = cx
+        self.cy = cy
+        self.diameter = diameter
+    }
+}
+
+struct CellEditCommitResult {
+    let corrections: [CorrectionRecord]
+    /// Negative when pending review rows were triaged, positive on undo.
+    let reviewCountDelta: Int
+}
+
 @MainActor
 final class Repositories {
     let container: ModelContainer
     var context: ModelContext { container.mainContext }
 
-    init() {
+    init(inMemory: Bool = false) {
         let schema = Schema([
             BatchRecord.self,
             ImageRecord.self,
@@ -18,7 +54,20 @@ final class Repositories {
             ROIRecord.self,
             ConditionRecord.self,
             GroundTruthAnnotation.self,
+            ReviewCandidateRecord.self,
+            SegmentationVariantRecord.self,
         ])
+        if inMemory {
+            do {
+                self.container = try ModelContainer(
+                    for: schema,
+                    configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+            } catch {
+                fatalError("CellCounter could not create its in-memory data store: \(error)")
+            }
+            seedDefaultsIfNeeded()
+            return
+        }
         let config = ModelConfiguration("CellCounter",
                                          schema: schema,
                                          url: FileStore.shared.root.appendingPathComponent("store.sqlite"))
@@ -83,6 +132,26 @@ final class Repositories {
         return (try? context.fetch(desc)) ?? []
     }
 
+    func recentBatchSummaries(limit: Int = 5) -> [BatchSummary] {
+        var desc = FetchDescriptor<BatchRecord>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        desc.fetchLimit = max(0, limit)
+        return ((try? context.fetch(desc)) ?? []).map { batch in
+            let first = batch.images.min(by: { $0.importedAt < $1.importedAt })
+            return BatchSummary(
+                id: batch.id,
+                displayName: batch.displayName,
+                createdAt: batch.createdAt,
+                // Legacy -1 summaries deliberately show 0 briefly while the
+                // yielding background index catches up; Home never decodes
+                // hundreds of cell blobs merely to paint Recents.
+                imageCount: max(0, batch.imageCountSummary),
+                cellCount: max(0, batch.cellCountSummary),
+                thumbnailURL: first?.thumbURL
+            )
+        }
+    }
+
     func batch(id: UUID) -> BatchRecord? {
         let desc = FetchDescriptor<BatchRecord>(predicate: #Predicate { $0.id == id })
         return (try? context.fetch(desc).first) ?? nil
@@ -113,6 +182,8 @@ final class Repositories {
             guard !img.fileName.isEmpty else { continue }
             try? FileManager.default.removeItem(at: img.storedURL)
             try? FileManager.default.removeItem(at: img.thumbURL)
+            deleteReviewCandidates(forImageId: img.id)
+            deleteSegmentationVariants(forImageId: img.id)
         }
         context.delete(batch)
         try? context.save()
@@ -190,6 +261,14 @@ final class Repositories {
         guard !image.fileName.isEmpty else { return }
         try? FileManager.default.removeItem(at: image.storedURL)
         try? FileManager.default.removeItem(at: image.thumbURL)
+        let removedCells = image.detection?.summaryCellCount ?? 0
+        deleteReviewCandidates(forImageId: image.id)
+        deleteSegmentationVariants(forImageId: image.id)
+        if let batch = image.batch {
+            if batch.imageCountSummary >= 0 { batch.imageCountSummary = max(0, batch.imageCountSummary - 1) }
+            if batch.cellCountSummary >= 0 { batch.cellCountSummary = max(0, batch.cellCountSummary - removedCells) }
+            batch.contentRevision &+= 1
+        }
         context.delete(image)
         try? context.save()
     }
@@ -197,6 +276,8 @@ final class Repositories {
     func attach(image: ImageRecord, to batch: BatchRecord) {
         image.batch = batch
         batch.images.append(image)
+        if batch.imageCountSummary >= 0 { batch.imageCountSummary += 1 }
+        batch.contentRevision &+= 1
         try? context.save()
     }
 
@@ -206,20 +287,282 @@ final class Repositories {
         // it does not delete the orphan. Explicitly delete the superseded detection
         // so re-runs don't leave stale DetectionRecords in the store (which would
         // inflate uncorrectedCellCount(below:) / the Review badge).
-        if let old = image.detection { context.delete(old) }
+        let previousCount = image.detection?.summaryCellCount ?? 0
+        if let old = image.detection {
+            saveSegmentationVariant(image: image,
+                                    detectorId: old.detectorId,
+                                    label: "Before \(detectorId)",
+                                    cells: old.cells,
+                                    save: false)
+            deleteReviewCandidates(forDetectionId: old.id)
+            context.delete(old)
+        }
         let det = DetectionRecord(detectorId: detectorId, cells: cells,
                                   imageStats: imageStats ?? [:])
         det.image = image
         image.detection = det
         context.insert(det)
+        indexReviewCandidates(cells: cells, detection: det, image: image)
+        if let batch = image.batch {
+            if batch.cellCountSummary >= 0 {
+                batch.cellCountSummary += cells.count - previousCount
+            }
+            batch.contentRevision &+= 1
+        }
         try? context.save()
+    }
+
+    // MARK: — Segmentation variants / mask curation
+
+    func segmentationVariants(for imageId: UUID) -> [SegmentationVariantRecord] {
+        let desc = FetchDescriptor<SegmentationVariantRecord>(
+            predicate: #Predicate { $0.imageId == imageId },
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        return (try? context.fetch(desc)) ?? []
+    }
+
+    @discardableResult
+    func saveSegmentationVariant(image: ImageRecord, detectorId: String,
+                                 label: String, cells: [DetectedCell],
+                                 save: Bool = true) -> SegmentationVariantRecord {
+        let variant = SegmentationVariantRecord(image: image,
+                                                detectorId: detectorId,
+                                                label: label,
+                                                cells: cells)
+        context.insert(variant)
+        if save { try? context.save() }
+        return variant
+    }
+
+    /// Swap a saved alternative into the live detection while preserving the
+    /// current mask as another alternative. This makes comparison reversible.
+    func applySegmentationVariant(_ variant: SegmentationVariantRecord,
+                                  to image: ImageRecord) -> CellEditCommitResult? {
+        guard let detection = image.detection else { return nil }
+        let oldPendingReviewCount = max(0, detection.reviewPendingCount)
+        let currentCells = detection.cells
+        saveSegmentationVariant(image: image,
+                                detectorId: detection.detectorId,
+                                label: "Before applying \(variant.label)",
+                                cells: currentCells,
+                                save: false)
+
+        let oldCount = detection.summaryCellCount
+        let cells = variant.cells
+        detection.applyStorageSnapshot(DetectionRecord.makeStorageSnapshot(cells))
+        detection.detectorId = variant.detectorId
+        detection.ranAt = Date()
+        deleteReviewCandidates(forDetectionId: detection.id)
+        indexReviewCandidates(cells: cells, detection: detection, image: image)
+        if let batch = image.batch {
+            if batch.cellCountSummary >= 0 {
+                batch.cellCountSummary += cells.count - oldCount
+            }
+            batch.contentRevision &+= 1
+        }
+        try? context.save()
+        return CellEditCommitResult(
+            corrections: [],
+            reviewCountDelta: detection.reviewPendingCount - oldPendingReviewCount)
+    }
+
+    func deleteSegmentationVariant(_ variant: SegmentationVariantRecord) {
+        context.delete(variant)
+        try? context.save()
+    }
+
+    private func deleteSegmentationVariants(forImageId imageId: UUID) {
+        let desc = FetchDescriptor<SegmentationVariantRecord>(
+            predicate: #Predicate { $0.imageId == imageId })
+        for variant in (try? context.fetch(desc)) ?? [] { context.delete(variant) }
     }
 
     func recordCorrection(_ correction: CorrectionRecord, on detection: DetectionRecord) {
         correction.detection = detection
-        detection.corrections.append(correction)
         context.insert(correction)
         try? context.save()
+    }
+
+    // MARK: — Review index / scalable summaries
+
+    private func indexReviewCandidates(cells: [DetectedCell],
+                                       detection: DetectionRecord,
+                                       image: ImageRecord) {
+        let corrected = Set(detection.corrections.map(\.cellId))
+        var pending = 0
+        for cell in cells where cell.confidence < 0.65 {
+            let row = ReviewCandidateRecord(cell: cell, detection: detection, image: image)
+            row.triaged = corrected.contains(cell.id)
+            if !row.triaged { pending += 1 }
+            context.insert(row)
+        }
+        detection.reviewPendingCount = pending
+        detection.reviewIndexVersion = 1
+        detection.cellCountSummary = cells.count
+    }
+
+    private func deleteReviewCandidates(forDetectionId detectionId: UUID) {
+        let desc = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { $0.detectionId == detectionId })
+        for row in (try? context.fetch(desc)) ?? [] { context.delete(row) }
+    }
+
+    private func deleteReviewCandidates(forImageId imageId: UUID) {
+        let desc = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { $0.imageId == imageId })
+        for row in (try? context.fetch(desc)) ?? [] { context.delete(row) }
+    }
+
+    private func triageReviewCandidates(detectionId: UUID, cellIds: Set<UUID>) -> Int {
+        guard !cellIds.isEmpty else { return 0 }
+        if cellIds.count == 1, let cellId = cellIds.first {
+            var desc = FetchDescriptor<ReviewCandidateRecord>(
+                predicate: #Predicate {
+                    $0.detectionId == detectionId && $0.cellId == cellId && !$0.triaged
+                })
+            desc.fetchLimit = 1
+            guard let rows = try? context.fetch(desc), let row = rows.first else { return 0 }
+            row.triaged = true
+            return 1
+        }
+        let desc = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { $0.detectionId == detectionId && !$0.triaged })
+        var changed = 0
+        for row in (try? context.fetch(desc)) ?? [] where cellIds.contains(row.cellId) {
+            row.triaged = true
+            changed += 1
+        }
+        return changed
+    }
+
+    func pendingReviewCandidates(limit: Int = 96) -> [ReviewCandidateRecord] {
+        var desc = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { !$0.triaged },
+            sortBy: [SortDescriptor(\.confidence), SortDescriptor(\.createdAt)])
+        desc.fetchLimit = max(1, limit)
+        return (try? context.fetch(desc)) ?? []
+    }
+
+    func pendingReviewCandidateCount() -> Int {
+        let desc = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { !$0.triaged })
+        return (try? context.fetchCount(desc)) ?? 0
+    }
+
+    /// Upgrade legacy rows without monopolizing the main run loop. Each old
+    /// detection is decoded once, then all future Home badges and Review opens
+    /// use queryable integer/index rows. A save/yield every eight images keeps
+    /// launch and navigation responsive even for 700-image stores.
+    func rebuildPerformanceIndexes(onChunk: (() -> Void)? = nil) async {
+        let desc = FetchDescriptor<DetectionRecord>(
+            predicate: #Predicate { $0.reviewIndexVersion < 1 })
+        let detections = (try? context.fetch(desc)) ?? []
+        for (offset, detection) in detections.enumerated() {
+            guard let image = detection.image else {
+                detection.reviewIndexVersion = 1
+                continue
+            }
+            deleteReviewCandidates(forDetectionId: detection.id)
+            let cells = detection.cells
+            indexReviewCandidates(cells: cells, detection: detection, image: image)
+            if offset % 8 == 7 {
+                try? context.save()
+                onChunk?()
+                await Task.yield()
+            }
+        }
+
+        // Batch summaries are rebuilt after detection summaries, so this pass
+        // only adds integers and never re-decodes a cell blob.
+        for (offset, batch) in allBatches().enumerated() {
+            if batch.imageCountSummary < 0 || batch.cellCountSummary < 0 {
+                batch.imageCountSummary = batch.images.count
+                batch.cellCountSummary = batch.images.reduce(0) {
+                    $0 + ($1.detection?.summaryCellCount ?? 0)
+                }
+            }
+            if offset % 32 == 31 { await Task.yield() }
+        }
+        try? context.save()
+        onChunk?()
+    }
+
+    /// Persist one logical overlay operation in a single SwiftData save.
+    /// `storage` may be prepared by `DetectionRecord.makeStorageSnapshot` on a
+    /// detached task, keeping the potentially large JSON encode off the UI
+    /// thread. All correction rows and review-index updates are committed with
+    /// the cell blob so observers never see a half-applied edit.
+    func commitCellEdit(storage: DetectionRecord.CellsStorageSnapshot?,
+                        corrections specs: [CorrectionSpec],
+                        detection: DetectionRecord,
+                        image: ImageRecord) -> CellEditCommitResult {
+        let oldCount = detection.summaryCellCount
+        if let storage {
+            detection.applyStorageSnapshot(storage)
+            if let batch = image.batch {
+                if batch.cellCountSummary >= 0 {
+                    batch.cellCountSummary += storage.count - oldCount
+                }
+                batch.contentRevision &+= 1
+            }
+        }
+
+        var records: [CorrectionRecord] = []
+        records.reserveCapacity(specs.count)
+        for spec in specs {
+            let record = CorrectionRecord(kind: spec.kind, cellId: spec.cellId,
+                                          cx: spec.cx, cy: spec.cy,
+                                          diameter: spec.diameter)
+            record.detection = detection
+            context.insert(record)
+            records.append(record)
+        }
+
+        let ids = Set(specs.map(\.cellId))
+        let triaged = triageReviewCandidates(detectionId: detection.id, cellIds: ids)
+        if detection.reviewPendingCount >= 0 {
+            detection.reviewPendingCount = max(0, detection.reviewPendingCount - triaged)
+        }
+        try? context.save()
+        return CellEditCommitResult(corrections: records, reviewCountDelta: -triaged)
+    }
+
+    func commitCellEdit(cells: [DetectedCell]?,
+                        corrections: [CorrectionSpec],
+                        detection: DetectionRecord,
+                        image: ImageRecord) -> CellEditCommitResult {
+        let storage = cells.map(DetectionRecord.makeStorageSnapshot)
+        return commitCellEdit(storage: storage, corrections: corrections,
+                              detection: detection, image: image)
+    }
+
+    /// Reverse a Review action without creating a second audit row.
+    @discardableResult
+    func undoReviewCorrection(_ correction: CorrectionRecord,
+                              candidate: ReviewCandidateRecord,
+                              restoredCells: [DetectedCell]?,
+                              detection: DetectionRecord,
+                              image: ImageRecord) -> Int {
+        let oldCount = detection.summaryCellCount
+        if let restoredCells {
+            let storage = DetectionRecord.makeStorageSnapshot(restoredCells)
+            detection.applyStorageSnapshot(storage)
+            if let batch = image.batch {
+                if batch.cellCountSummary >= 0 {
+                    batch.cellCountSummary += storage.count - oldCount
+                }
+                batch.contentRevision &+= 1
+            }
+        }
+        context.delete(correction)
+        var delta = 0
+        if candidate.triaged {
+            candidate.triaged = false
+            delta = 1
+            if detection.reviewPendingCount >= 0 { detection.reviewPendingCount += 1 }
+        }
+        try? context.save()
+        return delta
     }
 
     // MARK: — Presets
@@ -412,16 +755,16 @@ final class Repositories {
     /// change it in both places — see the matching note atop
     /// `ReviewQueueView.rebuild()`.
     func uncorrectedCellCount(below confidence: Double) -> Int {
-        var count = 0
-        for batch in allBatches() {
-            for image in batch.images {
-                guard let detection = image.detection else { continue }
-                let correctedIds = Set(detection.corrections.map { $0.cellId })
-                count += detection.cells.filter {
-                    $0.confidence < confidence && !correctedIds.contains($0.id)
-                }.count
-            }
+        // The canonical queue cutoff is 0.65. Keep the legacy signature for
+        // callers, but never fall back to a whole-library JSON scan.
+        if abs(confidence - 0.65) < 0.000_001 {
+            return pendingReviewCandidateCount()
         }
-        return count
+        // Non-canonical cutoffs are not currently used by the UI; querying the
+        // normalized rows still scales with candidate rows rather than every
+        // cell/contour in every detection.
+        let desc = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { !$0.triaged })
+        return ((try? context.fetch(desc)) ?? []).lazy.filter { $0.confidence < confidence }.count
     }
 }

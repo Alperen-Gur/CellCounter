@@ -106,11 +106,22 @@ including which channel to segment on.
 ### Correction, comparison, export
 
 - **Manual correction** — add, delete, merge, split, resize, or trace a cell by hand. Corrections persist and the exported count is the corrected count.
+- **Prompt-guided correction** — refine a mask with a point or box prompt. Compatible `micro_sam` installations reuse per-image embeddings; a native local fallback remains available.
+- **Sequence correction** — propagate selected masks, interpolate labels between frames, and compensate acquisition drift before tracking.
+- **Fast curation** — review uncertain detections as cards or a tiled grid, compare reversible mask variants, and rank fields by heuristic error risk.
+- **Quality insights** — cached confidence/diameter plots, drift trends, detector agreement, and preprocessing recommendations are recomputed only when a batch changes.
 - **Compare** two conditions with a Mann-Whitney U test and effect size — read the [limitations](#statistical-notes-and-limitations) first.
 - **Score against ground truth** — F1, precision, recall vs. your own hand counts.
 - **Export** — PDF report, annotated images, per-cell CSV, per-image summary CSV with one column per size bin, ImageJ ROI sets, and GeoJSON (QuPath).
 - **Analysis protocols** — save model, diameter, bins and calibration to a file so a whole lab runs identical settings.
 - **Duplicate detection** (SHA-256) so the same field is never counted twice.
+
+### Large batches
+
+The native macOS app keeps navigation and review work incremental: Home uses denormalized summaries,
+the image strip is lazy, decoded masks and image previews are bounded in memory, Review fetches small pages,
+and manual edits serialize their mask payload off the UI thread. Opening a 600–700 image library therefore
+does not decode every mask or load every full-resolution image up front.
 
 ## Install
 

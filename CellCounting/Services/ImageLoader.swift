@@ -19,6 +19,7 @@ struct ImportResult {
     let fileHash: String
     /// Reserved for Lane C (EXIF px/µm extraction). Always nil until Lane C lands.
     let exifPxPerUm: Double?
+    let exifSource: String?
 }
 
 enum ImageLoadError: LocalizedError {
@@ -38,6 +39,26 @@ enum ImageLoadError: LocalizedError {
 enum ImageLoader {
     /// Accepted extensions, lowercased.
     static let supported: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "bmp"]
+
+    /// Shared bounded caches. Per-view `@State` still owns presentation, while
+    /// these caches eliminate repeat disk decode when the user steps backward,
+    /// reopens Home, or reviews several cells from the same source image.
+    private final class MemoryCaches: @unchecked Sendable {
+        let thumbnails = NSCache<NSURL, NSImage>()
+        let reviewPreviews = NSCache<NSURL, NSImage>()
+        let displayImages = NSCache<NSURL, NSImage>()
+
+        init() {
+            thumbnails.countLimit = 384
+            thumbnails.totalCostLimit = 80 * 1024 * 1024
+            reviewPreviews.countLimit = 24
+            reviewPreviews.totalCostLimit = 220 * 1024 * 1024
+            displayImages.countLimit = 4
+            displayImages.totalCostLimit = 600 * 1024 * 1024
+        }
+    }
+
+    private static let memory = MemoryCaches()
 
     static func load(_ url: URL) throws -> LoadedImage {
         let ext = url.pathExtension.lowercased()
@@ -91,24 +112,29 @@ enum ImageLoader {
         // but the source URL is available here).
         let exifResult = EXIFCalibration.detectPxPerUm(at: url)
         let exifPxPerUm: Double?
+        let exifSource: String?
         if let r = exifResult {
             switch r.confidence {
             case .high, .medium:
                 exifPxPerUm = r.pxPerUm
+                exifSource = r.source.provenanceKey
                 NSLog("[EXIFCalibration] %@ → %.4f px/µm (source: %@, confidence: %@)",
                       url.lastPathComponent, r.pxPerUm, r.source.description,
                       r.confidence == .high ? "high" : "medium")
             case .low:
                 exifPxPerUm = nil
+                exifSource = nil
                 NSLog("[EXIFCalibration] %@ → %.4f px/µm (source: %@) — LOW confidence, ignoring",
                       url.lastPathComponent, r.pxPerUm, r.source.description)
             }
         } else {
             exifPxPerUm = nil
+            exifSource = nil
             NSLog("[EXIFCalibration] %@ — no calibration metadata found", url.lastPathComponent)
         }
 
-        return ImportResult(record: record, image: loaded, fileHash: fileHash ?? "", exifPxPerUm: exifPxPerUm)
+        return ImportResult(record: record, image: loaded, fileHash: fileHash ?? "",
+                            exifPxPerUm: exifPxPerUm, exifSource: exifSource)
     }
 
     /// Computes SHA-256 of the file at `url` and returns the hex-encoded digest.
@@ -143,6 +169,63 @@ enum ImageLoader {
 
     /// Lightweight: just open the thumbnail JPEG for grid views.
     static func loadThumb(_ record: ImageRecord) -> NSImage? {
-        NSImage(contentsOf: record.thumbURL)
+        cachedThumbnail(at: record.thumbURL)
+    }
+
+    nonisolated static func cachedThumbnail(at url: URL) -> NSImage? {
+        let key = url as NSURL
+        if let cached = memory.thumbnails.object(forKey: key) { return cached }
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        let cost = max(1, Int(image.size.width * image.size.height * 4))
+        memory.thumbnails.setObject(image, forKey: key, cost: cost)
+        return image
+    }
+
+    /// Full-resolution viewer image, bounded to the current image plus a few
+    /// neighbors. ImageIO decoding happens on the caller's background task.
+    nonisolated static func cachedDisplayImage(at url: URL) -> NSImage? {
+        let key = url as NSURL
+        if let cached = memory.displayImages.object(forKey: key) { return cached }
+        guard let loaded = try? load(url) else { return nil }
+        let image = NSImage(cgImage: loaded.cgImage,
+                            size: NSSize(width: loaded.widthPx, height: loaded.heightPx))
+        memory.displayImages.setObject(image, forKey: key,
+                                       cost: loaded.widthPx * loaded.heightPx * 4)
+        return image
+    }
+
+    /// Downsampled whole-image preview for Review cards. The existing card
+    /// applies source-coordinate crop transforms, so a resizable preview stays
+    /// geometrically exact while using a fraction of the memory of a 20–80 MP
+    /// microscope frame.
+    nonisolated static func cachedReviewPreview(at url: URL,
+                                                maxPixelSize: Int = 1800) -> NSImage? {
+        let key = url as NSURL
+        if let cached = memory.reviewPreviews.object(forKey: key) { return cached }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else {
+            return nil
+        }
+        let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        memory.reviewPreviews.setObject(image, forKey: key, cost: cg.width * cg.height * 4)
+        return image
+    }
+
+    nonisolated static func pixelSize(at url: URL) -> CGSize? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let width = props[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = props[kCGImagePropertyPixelHeight] as? NSNumber else { return nil }
+        return CGSize(width: width.doubleValue, height: height.doubleValue)
     }
 }

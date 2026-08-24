@@ -1,5 +1,24 @@
 import Foundation
 
+enum PreprocessingPreset: String, Codable, CaseIterable, Sendable {
+    case none
+    case clahe
+    case anisotropicDiffusion
+    case claheAndDiffusion
+
+    var label: String {
+        switch self {
+        case .none: return "None"
+        case .clahe: return "CLAHE"
+        case .anisotropicDiffusion: return "Anisotropic diffusion"
+        case .claheAndDiffusion: return "CLAHE + diffusion"
+        }
+    }
+
+    var usesCLAHE: Bool { self == .clahe || self == .claheAndDiffusion }
+    var usesDiffusion: Bool { self == .anisotropicDiffusion || self == .claheAndDiffusion }
+}
+
 struct DetectionInput {
     let imageURL: URL?
     let modelId: String
@@ -11,6 +30,9 @@ struct DetectionInput {
     let backgroundSubtract: Bool
     /// Rolling-ball radius in pixels for background subtraction.
     let rollingBallRadius: Int
+    /// Optional local-contrast / edge-preserving preprocessing. The original
+    /// microscope image remains untouched.
+    let preprocessingPreset: PreprocessingPreset
     /// When true, ask the sidecar to run a distance-transform watershed on
     /// the produced mask to split touching cells into separate detections.
     let watershedSplit: Bool
@@ -33,6 +55,7 @@ struct DetectionInput {
          channels: [Int] = [0, 0],
          backgroundSubtract: Bool = false,
          rollingBallRadius: Int = 50,
+         preprocessingPreset: PreprocessingPreset = .none,
          watershedSplit: Bool = false,
          watershedMinDistance: Int = 8,
          smallThreshold: Double = 20,
@@ -45,11 +68,22 @@ struct DetectionInput {
         self.channels = channels
         self.backgroundSubtract = backgroundSubtract
         self.rollingBallRadius = rollingBallRadius
+        self.preprocessingPreset = preprocessingPreset
         self.watershedSplit = watershedSplit
         self.watershedMinDistance = watershedMinDistance
         self.smallThreshold = smallThreshold
         self.largeThreshold = largeThreshold
         self.useGPU = useGPU
+    }
+}
+
+extension DetectionInput {
+    var preprocessingArguments: [String] {
+        var args: [String] = []
+        if preprocessingPreset.usesCLAHE { args.append("--clahe") }
+        if preprocessingPreset.usesDiffusion { args.append("--anisotropic-diffusion") }
+        if useGPU && preprocessingPreset.usesDiffusion { args.append("--gpu-preprocess") }
+        return args
     }
 }
 

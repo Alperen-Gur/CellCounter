@@ -85,7 +85,7 @@ private struct SettingsBody: View {
             Group {
                 switch section {
                 case .general:     GeneralSection(state: state)
-                case .appearance:  AppearanceSection()
+                case .appearance:  AppearanceSection(state: state)
                 case .bins:        BinsSection(state: state)
                 case .conditions:  ConditionsSection(state: state)
                 case .calibration: CalibrationSection(state: state)
@@ -280,6 +280,7 @@ private struct GeneralSection: View {
 // MARK: - Appearance
 
 private struct AppearanceSection: View {
+    @Bindable var state: AppState
     @Environment(AppTheme.self) private var theme
 
     private let accentChoices = AccentChoice.all
@@ -307,7 +308,79 @@ private struct AppearanceSection: View {
                     }
                 }
             }
+
+            Text("CELL OVERLAYS")
+                .tracking(0.04 * 13)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Tokens.textSecondary)
+                .padding(.top, 28)
+                .padding(.bottom, 4)
+
+            SetRow(label: "Overlay coloring",
+                   desc: "Use size-bin colors, or one color chosen for contrast") {
+                Menu {
+                    ForEach(OverlayPalette.OverlayMode.allCases, id: \.self) { mode in
+                        Button(mode.label) {
+                            var palette = state.overlayPalette
+                            palette.overlayMode = mode
+                            state.overlayPalette = palette
+                        }
+                    }
+                } label: {
+                    SelectPill(label: state.overlayPalette.overlayMode.label)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+
+            if state.overlayPalette.overlayMode == .single {
+                SetRow(label: "Overlay color",
+                       desc: "Applied to masks and outlines on the image") {
+                    ColorPicker("Overlay color", selection: singleOverlayColor)
+                        .labelsHidden()
+                }
+            }
+
+            SetRow(label: "Size-bin colors",
+                   desc: "Used by charts, bin swatches, and color-by-bin overlays") {
+                HStack(spacing: 9) {
+                    ForEach(state.overlayPalette.binHexes.indices, id: \.self) { index in
+                        ColorPicker("Bin \(index + 1)", selection: binColor(index))
+                            .labelsHidden()
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Reset overlay colors") { state.overlayPalette = .default }
+                    .appButton(.ghost, size: .sm)
+            }
+            .padding(.top, 10)
         }
+    }
+
+    private func binColor(_ index: Int) -> Binding<Color> {
+        Binding(
+            get: { state.overlayPalette.binColor(index) },
+            set: { color in
+                guard let hex = color.hexString else { return }
+                var palette = state.overlayPalette
+                guard palette.binHexes.indices.contains(index) else { return }
+                palette.binHexes[index] = hex
+                state.overlayPalette = palette
+            })
+    }
+
+    private var singleOverlayColor: Binding<Color> {
+        Binding(
+            get: { Color(hex: state.overlayPalette.singleOverlayHex) ?? .cyan },
+            set: { color in
+                guard let hex = color.hexString else { return }
+                var palette = state.overlayPalette
+                palette.singleOverlayHex = hex
+                state.overlayPalette = palette
+            })
     }
 }
 

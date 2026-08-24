@@ -141,6 +141,12 @@ def build_arg_parser(description: str, default_model: str) -> argparse.ArgumentP
     p.add_argument("--rolling-ball-radius", dest="rolling_ball_radius", type=int,
                    default=50,
                    help="Radius for rolling-ball background subtraction (default 50).")
+    p.add_argument("--clahe", action="store_true",
+                   help="Apply contrast-limited adaptive histogram equalization before detection.")
+    p.add_argument("--anisotropic-diffusion", dest="anisotropic_diffusion", action="store_true",
+                   help="Apply edge-preserving Perona-Malik diffusion before detection.")
+    p.add_argument("--gpu-preprocess", dest="gpu_preprocess", action="store_true",
+                   help="Use a compatible array GPU for diffusion when available; otherwise CPU.")
     p.add_argument("--watershed", action="store_true",
                    help="Run distance-transform watershed to split touching cells.")
     p.add_argument("--watershed-min-distance", dest="watershed_min_distance",

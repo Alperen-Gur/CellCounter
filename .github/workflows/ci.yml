@@ -101,7 +101,7 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo check --locked
 
-  # Native macOS (Swift) app — the shipping 1.0.2 binary. Compiles the Xcode
+  # Native macOS (Swift) app. Compiles the Xcode
   # project with signing disabled (no developer team in CI).
   swift-build:
     name: swift-build (macos)

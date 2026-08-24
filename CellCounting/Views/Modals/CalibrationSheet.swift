@@ -5,7 +5,7 @@ import SwiftUI
 struct CalibrationSheet: View {
     let current: Double
     let onClose: () -> Void
-    let onSave: (Double) -> Void
+    let onSave: (Double, String) -> Void
     /// Bug #11: optional URL of the currently-open image for "Draw on scale bar" tab.
     var imageURL: URL? = nil
     /// Optional repository handle so the "Use preset" tab can show user
@@ -14,7 +14,7 @@ struct CalibrationSheet: View {
     /// Nil-safe: when not passed, the tab degrades to built-ins only.
     var repos: Repositories? = nil
 
-    enum CalibTab { case direct, drawline, preset }
+    enum CalibTab { case metadata, direct, drawline, preset }
 
     @State private var tab: CalibTab
     @State private var val: Double
@@ -24,6 +24,8 @@ struct CalibrationSheet: View {
     @State private var refUm: Double = 100
     @State private var selectedPreset: String = "Olympus IX73 — 20×"
     @State private var appeared = false
+    @State private var metadataResult: EXIFCalibration.Result? = nil
+    @State private var metadataCheckComplete = false
 
     @Environment(AppTheme.self) private var theme
 
@@ -31,7 +33,7 @@ struct CalibrationSheet: View {
          imageURL: URL? = nil,
          repos: Repositories? = nil,
          onClose: @escaping () -> Void,
-         onSave: @escaping (Double) -> Void) {
+         onSave: @escaping (Double, String) -> Void) {
         self.current = current
         self.imageURL = imageURL
         self.repos = repos
@@ -67,6 +69,11 @@ struct CalibrationSheet: View {
 
                 Group {
                     switch tab {
+                    case .metadata:
+                        CalibMetadataTab(result: metadataResult,
+                                         checkComplete: metadataCheckComplete)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 22)
                     case .direct:
                         CalibDirectTab(val: $val)
                             .padding(.horizontal, 24)
@@ -91,6 +98,7 @@ struct CalibrationSheet: View {
                 CalibFooter(
                     saveDisabled: {
                         switch tab {
+                        case .metadata: return metadataResult == nil
                         case .direct: return val <= 0
                         case .drawline: return derivedVal <= 0
                         case .preset: return false
@@ -100,13 +108,14 @@ struct CalibrationSheet: View {
                 ) {
                     let saveVal: Double
                     switch tab {
+                    case .metadata: saveVal = metadataResult?.pxPerUm ?? 0
                     case .direct: saveVal = val
                     case .drawline: saveVal = derivedVal
                     case .preset: saveVal = CalibrationPreset.builtIn.first(where: { $0.name == selectedPreset })?.pxPerUm ?? val
                     }
                     // B4-4: guard against zero/negative pxPerUm to prevent divide-by-zero downstream
                     guard saveVal > 0 else { return }
-                    onSave(saveVal)
+                    onSave(saveVal, provenanceSource)
                     onClose()
                 }
             }
@@ -120,12 +129,14 @@ struct CalibrationSheet: View {
         }
         .onAppear {
             withAnimation(Tokens.Motion.easeSlow) { appeared = true }
+            detectMetadata()
         }
         .keyboardShortcut(.cancelAction)
         // Enter — save when valid
         .onKeyPress(.return) {
             let saveDisabled: Bool
             switch tab {
+            case .metadata:  saveDisabled = metadataResult == nil
             case .direct:    saveDisabled = val <= 0
             case .drawline:  saveDisabled = derivedVal <= 0
             case .preset:    saveDisabled = false
@@ -133,23 +144,52 @@ struct CalibrationSheet: View {
             guard !saveDisabled else { return .ignored }
             let saveVal: Double
             switch tab {
+            case .metadata: saveVal = metadataResult?.pxPerUm ?? 0
             case .direct:   saveVal = val
             case .drawline: saveVal = derivedVal
             case .preset:   saveVal = CalibrationPreset.builtIn.first(where: { $0.name == selectedPreset })?.pxPerUm ?? val
             }
             guard saveVal > 0 else { return .ignored }
-            onSave(saveVal)
+            onSave(saveVal, provenanceSource)
             onClose()
             return .handled
         }
         .onChange(of: tab) { _, newTab in
             if newTab == .drawline { val = derivedVal }
+            if newTab == .metadata, let metadataResult { val = metadataResult.pxPerUm }
         }
         .onChange(of: lineLength) { _, _ in
             if tab == .drawline { val = derivedVal }
         }
         .onChange(of: refUm) { _, _ in
             if tab == .drawline { val = derivedVal }
+        }
+    }
+
+    private var provenanceSource: String {
+        switch tab {
+        case .metadata: return metadataResult?.source.provenanceKey ?? "metadata"
+        case .direct: return "manual-entry"
+        case .drawline: return "scale-bar"
+        case .preset: return "preset-\(selectedPreset)"
+        }
+    }
+
+    private func detectMetadata() {
+        guard let imageURL else {
+            metadataCheckComplete = true
+            return
+        }
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                EXIFCalibration.detectPxPerUm(at: imageURL)
+            }.value
+            metadataResult = result
+            metadataCheckComplete = true
+            if let result {
+                val = result.pxPerUm
+                tab = .metadata
+            }
         }
     }
 }
@@ -188,9 +228,10 @@ private struct CalibTabBar: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            CalibTabItem(label: "Enter scale", active: tab == .direct) { tab = .direct }
-            CalibTabItem(label: "Draw on scale bar", active: tab == .drawline) { tab = .drawline }
-            CalibTabItem(label: "Use preset", active: tab == .preset) { tab = .preset }
+            CalibTabItem(label: "Metadata", active: tab == .metadata) { tab = .metadata }
+            CalibTabItem(label: "Pixel size", active: tab == .direct) { tab = .direct }
+            CalibTabItem(label: "Scale bar", active: tab == .drawline) { tab = .drawline }
+            CalibTabItem(label: "Preset", active: tab == .preset) { tab = .preset }
         }
         .padding(4)
         .background(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous).fill(Tokens.bgSunken))
@@ -221,21 +262,128 @@ private struct CalibTabItem: View {
     }
 }
 
-private struct CalibDirectTab: View {
-    @Binding var val: Double
+private struct CalibMetadataTab: View {
+    let result: EXIFCalibration.Result?
+    let checkComplete: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CalibInputBox(value: $val, unit: "px / µm")
-            Text("For our 20× objective on the IX73, this is typically ")
-                .font(.system(size: 12))
+        VStack(alignment: .leading, spacing: 12) {
+            if let result {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(Tokens.success)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Physical pixel size found")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(Tokens.text)
+                        Text("Read from \(result.source.description) · \(confidenceLabel(result.confidence)) confidence")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Tokens.textTertiary)
+                    }
+                }
+                HStack(spacing: 10) {
+                    CalibrationValueCard(value: String(format: "%.5g", 1 / result.pxPerUm), unit: "µm / pixel")
+                    Image(systemName: "arrow.left.arrow.right")
+                        .foregroundStyle(Tokens.textTertiary)
+                    CalibrationValueCard(value: String(format: "%.5g", result.pxPerUm), unit: "px / µm")
+                }
+                Text("No manual conversion is needed. Saving applies this exact scale to the open batch and records its source in exports.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !checkComplete {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading microscope metadata…")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Tokens.textSecondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 110)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(Tokens.textTertiary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No physical scale in this file")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(Tokens.text)
+                        Text("Use Pixel size if the acquisition software reports µm/pixel, or Scale bar to measure a burnt-in reference precisely.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Tokens.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+            }
+        }
+    }
+
+    private func confidenceLabel(_ confidence: EXIFCalibration.Confidence) -> String {
+        switch confidence {
+        case .high: return "high"
+        case .medium: return "medium"
+        case .low: return "low"
+        }
+    }
+}
+
+private struct CalibrationValueCard: View {
+    let value: String
+    let unit: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value)
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Tokens.text)
+            Text(unit)
+                .font(.system(size: 10.5))
                 .foregroundStyle(Tokens.textTertiary)
-            + Text("5.2")
-                .font(.system(size: 12, design: .monospaced))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: Tokens.Radius.md).fill(Tokens.bgSunken))
+    }
+}
+
+private struct CalibDirectTab: View {
+    @Binding var val: Double
+    @State private var unit: Unit = .micronsPerPixel
+
+    private enum Unit: String, CaseIterable {
+        case micronsPerPixel, pixelsPerMicron
+        var label: String { self == .micronsPerPixel ? "µm / pixel" : "px / µm" }
+    }
+
+    private var displayedValue: Binding<Double> {
+        Binding(
+            get: {
+                guard val > 0 else { return 0 }
+                return unit == .micronsPerPixel ? 1 / val : val
+            },
+            set: { entered in
+                guard entered > 0 else { val = 0; return }
+                val = unit == .micronsPerPixel ? 1 / entered : entered
+            })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Unit", selection: $unit) {
+                ForEach(Unit.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            CalibInputBox(value: displayedValue, unit: unit.label)
+            if val > 0 {
+                Text(String(format: "Converted automatically: %.5g px / µm · %.5g µm / pixel", val, 1 / val))
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Tokens.textSecondary)
+            }
+            Text("Acquisition software usually reports physical pixel size in µm/pixel. Enter that number directly—CellCounter handles the reciprocal conversion.")
+                .font(.system(size: 11.5))
                 .foregroundStyle(Tokens.textTertiary)
-            + Text(". Check your microscope's manual or run the slide ruler calibration once.")
-                .font(.system(size: 12))
-                .foregroundStyle(Tokens.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -275,6 +423,8 @@ private struct CalibDrawlineTab: View {
     @State private var lineStart: CGPoint? = nil
     @State private var lineEnd: CGPoint? = nil
     @State private var isDragging: Bool = false
+    @State private var loadedImage: NSImage? = nil
+    @State private var sourcePixelSize: CGSize = .zero
     /// Constrain the drawn line to the horizontal axis. Scale bars are always
     /// horizontal, so this removes the length over-estimate you get from a
     /// slightly-tilted drag — a genuine accuracy win. Default on.
@@ -357,6 +507,7 @@ private struct CalibDrawlineTab: View {
                 Spacer(minLength: 0)
             }
         }
+        .task(id: imageURL) { await loadPreview() }
     }
 
     /// Apply the horizontal-snap constraint to a drag end point.
@@ -368,13 +519,13 @@ private struct CalibDrawlineTab: View {
 
     @ViewBuilder
     private var previewArea: some View {
-        if let url = imageURL, let nsImage = NSImage(contentsOf: url) {
+        if imageURL != nil, let nsImage = loadedImage {
             // Real image: show it aspect-fitted and let the user drag a line on it
             GeometryReader { geo in
                 ZStack {
                     Image(nsImage: nsImage)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .aspectRatio(sourcePixelSize, contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     // Instruction label when no line drawn yet
@@ -421,7 +572,7 @@ private struct CalibDrawlineTab: View {
                             lineStart = s
                             lineEnd = e
                             isDragging = true
-                            updateLineLengthFromPoints(s, e, in: geo.size, nsImage: nsImage)
+                            updateLineLengthFromPoints(s, e, in: geo.size)
                         }
                         .onEnded { v in
                             let s = v.startLocation
@@ -429,7 +580,7 @@ private struct CalibDrawlineTab: View {
                             lineStart = s
                             lineEnd = e
                             isDragging = false
-                            updateLineLengthFromPoints(s, e, in: geo.size, nsImage: nsImage)
+                            updateLineLengthFromPoints(s, e, in: geo.size)
                         }
                 )
                 .cursor(.crosshair)
@@ -450,15 +601,17 @@ private struct CalibDrawlineTab: View {
                             .background(Color.black.opacity(0.55).clipShape(RoundedRectangle(cornerRadius: 6)))
                             .padding(.bottom, 10)
                     }
+                } else {
+                    ProgressView().controlSize(.small)
                 }
             }
         }
     }
 
     /// Convert view-space points to image-pixel distances and update lineLength.
-    private func updateLineLengthFromPoints(_ a: CGPoint, _ b: CGPoint, in viewSize: CGSize, nsImage: NSImage) {
+    private func updateLineLengthFromPoints(_ a: CGPoint, _ b: CGPoint, in viewSize: CGSize) {
         guard viewSize.width > 0, viewSize.height > 0 else { return }
-        let imgSize = nsImage.size
+        let imgSize = sourcePixelSize
         guard imgSize.width > 0, imgSize.height > 0 else { return }
 
         // Aspect-fit scale: same logic SwiftUI uses for .aspectRatio(contentMode: .fit)
@@ -475,6 +628,21 @@ private struct CalibDrawlineTab: View {
         if pixelDist > 1 {
             lineLength = pixelDist
         }
+    }
+
+    private func loadPreview() async {
+        guard let imageURL else {
+            loadedImage = nil
+            sourcePixelSize = .zero
+            return
+        }
+        let result = await Task.detached(priority: .utility) {
+            (ImageLoader.cachedReviewPreview(at: imageURL, maxPixelSize: 1800),
+             ImageLoader.pixelSize(at: imageURL))
+        }.value
+        guard !Task.isCancelled else { return }
+        loadedImage = result.0
+        sourcePixelSize = result.1 ?? result.0?.size ?? .zero
     }
 }
 

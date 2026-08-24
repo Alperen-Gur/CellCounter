@@ -10,6 +10,11 @@ struct EditableOverlay: View {
     var thresholds: [Double]
     var overlayMode: OverlayMode
     var uncertaintyThreshold: Double
+    var palette: OverlayPalette = .default
+    /// Cheap invalidation token supplied by the owner when cell geometry
+    /// changes. Selection-only updates keep this stable, allowing the heavy
+    /// Canvas layer to skip an O(cells × contour-points) equality comparison.
+    var renderRevision: Int? = nil
     /// Source-pixel -> view-point scale factor. View frame should be
     /// (sourceWidth * viewScale) by (sourceHeight * viewScale).
     var viewScale: Double = 1.0
@@ -38,11 +43,16 @@ struct EditableOverlay: View {
     /// Called when the user clicks an existing annotation in `.annotate` mode
     /// (toggle-to-delete behavior).
     var onRemoveAnnotation: ((GroundTruthAnnotation) -> Void)? = nil
+    /// Point/box prompt forwarded to the Results viewer. The asynchronous
+    /// prompt model/fallback lives outside this purely interactive canvas.
+    var onPrompt: ((MaskPrompt) -> Void)? = nil
 
     // `trace` (Fix #1): a first-class, visible outline-drawing mode. Left-drag
     // traces a freeform polygon that becomes a real contour cell — the same
     // capability that used to be hidden behind an undiscoverable right-click.
-    enum EditorMode: String, Hashable, CaseIterable { case view, add, remove, merge, manualCount, annotate, trace }
+    enum EditorMode: String, Hashable, CaseIterable {
+        case view, promptPoint, promptBox, add, remove, merge, manualCount, annotate, trace
+    }
 
     enum EditEvent {
         case removed(DetectedCell)
@@ -140,6 +150,8 @@ struct EditableOverlay: View {
         .onKeyPress(.init("g")) { setMode(.annotate); return .handled }
         // Fix #1: "t" for the trace / outline-drawing mode.
         .onKeyPress(.init("t")) { setMode(.trace); return .handled }
+        .onKeyPress(.init("p")) { setMode(.promptPoint); return .handled }
+        .onKeyPress(.init("b")) { setMode(.promptBox); return .handled }
         // Bug #6 / Pass-15 (A2): Delete / Backspace — remove selection (multi or single)
         .onKeyPress(.delete) {
             guard interactive else { return .ignored }
@@ -181,7 +193,8 @@ struct EditableOverlay: View {
             // Pass-17 (Lane B): annotate mode also wants a crosshair cursor —
             // it's the same "you are about to place a point" affordance.
             // Fix #1: trace mode wants it too — the crosshair signals "draw here".
-            if inside && (mode == .manualCount || mode == .annotate || mode == .trace) {
+            if inside && (mode == .manualCount || mode == .annotate || mode == .trace
+                          || mode == .promptPoint || mode == .promptBox) {
                 NSCursor.crosshair.push()
             } else {
                 NSCursor.pop()
@@ -189,7 +202,8 @@ struct EditableOverlay: View {
         }
         .onChange(of: mode) { _, newMode in
             // If mode changes while hovering, update cursor immediately.
-            if newMode != .manualCount && newMode != .annotate && newMode != .trace {
+            if newMode != .manualCount && newMode != .annotate && newMode != .trace
+                && newMode != .promptPoint && newMode != .promptBox {
                 NSCursor.pop()
             }
         }
@@ -208,9 +222,11 @@ struct EditableOverlay: View {
     /// when its actual drawing inputs change (cells edited, zoom, re-bin).
     private var cellsLayer: some View {
         CellsCanvas(cells: cells,
+                    renderRevision: renderRevision,
                     thresholds: thresholds,
                     overlayMode: overlayMode,
                     uncertaintyThreshold: uncertaintyThreshold,
+                    palette: palette,
                     viewScale: viewScale,
                     viewOffset: viewOffset)
             .equatable()
@@ -502,10 +518,11 @@ struct EditableOverlay: View {
             return
         }
 
-        // Only initiate "new box" drag when in add mode AND drag exceeds tap threshold.
+        // Add and prompt-box share the same dashed rectangle gesture; their
+        // completion paths differ below.
         guard dist > 4 else { return }
         if dragSession == nil {
-            if mode == .add {
+            if mode == .add || mode == .promptBox {
                 if hitTest(at: viewToSource(start)) == nil {
                     dragSession = DragSession(
                         start: viewToSource(start),
@@ -578,6 +595,12 @@ struct EditableOverlay: View {
             handleClick(at: viewToSource(end))
             return
         }
+        if mode == .promptBox, let s = dragSession, case .newBox = s.kind {
+            let endPoint = viewToSource(end)
+            onPrompt?(.box(x0: s.start.x, y0: s.start.y,
+                           x1: endPoint.x, y1: endPoint.y))
+            return
+        }
         // Drag finished — finalize newBox if any.
         if let s = dragSession, case .newBox = s.kind {
             finalizeNewBox(from: s.start, to: viewToSource(end))
@@ -608,6 +631,11 @@ struct EditableOverlay: View {
             let mods = NSApp.currentEvent?.modifierFlags ?? []
             handleViewClick(hit: hit, modifiers: mods)
             mergeFirstId = nil
+        case .promptPoint:
+            onPrompt?(.point(x: p.x, y: p.y))
+        case .promptBox:
+            // A click is still useful: treat it as a positive point prompt.
+            onPrompt?(.point(x: p.x, y: p.y))
         case .add:
             if let h = hit {
                 selectedCellId = h.id
@@ -1316,9 +1344,11 @@ private extension EditableOverlay.DragSession.Corner {
 /// full-canvas redraws" win: previously every click re-rendered all contours.
 private struct CellsCanvas: View, Equatable {
     let cells: [DetectedCell]
+    let renderRevision: Int?
     let thresholds: [Double]
     let overlayMode: OverlayMode
     let uncertaintyThreshold: Double
+    let palette: OverlayPalette
     let viewScale: Double
     let viewOffset: CGPoint
 
@@ -1355,7 +1385,7 @@ private struct CellsCanvas: View, Equatable {
                 } else {
                     // Standard ML-detected cell rendering
                     let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
-                    let col = Tokens.binColor(idx)
+                    let col = palette.overlayColor(forBin: idx)
                     let isUncertain = c.confidence < uncertaintyThreshold
 
                     if let contour = c.contourPx, contour.count >= 3 {
@@ -1398,12 +1428,17 @@ private struct CellsCanvas: View, Equatable {
     // can short-circuit repaints. `OverlayMode` compares with `==` exactly as the
     // rest of the codebase already relies on.
     static func == (l: CellsCanvas, r: CellsCanvas) -> Bool {
-        l.viewScale == r.viewScale
-            && l.viewOffset == r.viewOffset
-            && l.overlayMode == r.overlayMode
-            && l.uncertaintyThreshold == r.uncertaintyThreshold
-            && l.thresholds == r.thresholds
-            && l.cells == r.cells
+        guard l.viewScale == r.viewScale,
+              l.viewOffset == r.viewOffset,
+              l.overlayMode == r.overlayMode,
+              l.uncertaintyThreshold == r.uncertaintyThreshold,
+              l.palette == r.palette,
+              l.thresholds == r.thresholds,
+              l.renderRevision == r.renderRevision else { return false }
+        // Owners that supply a revision promise to bump it for geometry
+        // changes, giving Results an O(1) comparison. Other callers (notably
+        // Fine Tune) retain value-based correctness through the fallback.
+        return l.renderRevision != nil || l.cells == r.cells
     }
 }
 
@@ -1506,6 +1541,8 @@ struct EditorModeToolbar: View {
     var body: some View {
         HStack(spacing: 2) {
             modeButton(.view, icon: "eye", label: "View")
+            modeButton(.promptPoint, icon: "scope", label: "Prompt")
+            modeButton(.promptBox, icon: "viewfinder", label: "Box")
             modeButton(.add, icon: "plus", label: "Add")
             // Fix #1: promote freeform outline-drawing to a first-class, visible
             // mode. A raw SF Symbol (contains a ".") signals "draw an outline";
@@ -1572,6 +1609,16 @@ struct EditorModeToolbar: View {
                     .frame(height: 16)
                     .padding(.horizontal, 2)
                 Text("Drag to trace an outline")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Tokens.textSecondary)
+                    .fixedSize()
+                    .padding(.horizontal, 6)
+            }
+            if mode == .promptPoint || mode == .promptBox {
+                Divider().frame(height: 16).padding(.horizontal, 2)
+                Text(mode == .promptPoint
+                     ? "Click inside an object · P"
+                     : "Drag a box around an object · B")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Tokens.textSecondary)
                     .fixedSize()

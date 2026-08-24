@@ -8,6 +8,21 @@ enum AppView: String, Hashable, CaseIterable {
     case home, processing, results, batch, models, fineTune, settings, queue, reviewQueue, compare, imagesLibrary
 }
 
+@MainActor
+private struct PendingCellEdit {
+    let detection: DetectionRecord
+    let image: ImageRecord
+    var cells: [DetectedCell]
+    var corrections: [CorrectionSpec]
+    var revision: Int
+}
+
+@MainActor
+private struct DecodedCellsCacheEntry {
+    let revision: Int
+    let cells: [DetectedCell]
+}
+
 @Observable
 @MainActor
 final class AppState {
@@ -119,6 +134,14 @@ final class AppState {
             UserDefaults.standard.set(rollingBallRadius, forKey: "cc-rolling-ball")
         }
     }
+    /// Optional ImageJ-inspired preprocessing for the next detection run.
+    var preprocessingPreset: PreprocessingPreset {
+        didSet {
+            guard !suppressDefaultsWriteback else { return }
+            UserDefaults.standard.set(preprocessingPreset.rawValue,
+                                      forKey: "cc-preprocessing-preset-v1")
+        }
+    }
     /// A3: When true, the next detection pass runs a distance-transform watershed
     /// to split touching cells. Persisted under `cc-watershed`. Default false.
     var watershedSplit: Bool {
@@ -156,6 +179,15 @@ final class AppState {
         didSet {
             guard !suppressDefaultsWriteback else { return }
             UserDefaults.standard.set(maxParallel, forKey: "cc-max-parallel")
+        }
+    }
+
+    /// Size-bin swatches and overlay rendering colors. Persisted as one Codable
+    /// value so future plugin overlays can reuse the same appearance contract.
+    var overlayPalette: OverlayPalette {
+        didSet {
+            guard !suppressDefaultsWriteback else { return }
+            overlayPalette.save()
         }
     }
 
@@ -201,7 +233,7 @@ final class AppState {
     // notifications. Views should read these, never call repos directly in `body`.
     private(set) var libraryImageCount: Int = 0
     private(set) var libraryBatchCount: Int = 0
-    private(set) var recentBatchIds: [UUID] = []
+    private(set) var recentBatchSummaries: [BatchSummary] = []
     private(set) var reviewQueueCount: Int = 0
 
     /// Confidence cutoff used for the Review queue badge count. Kept here so the
@@ -213,7 +245,7 @@ final class AppState {
     func refreshLibraryStats() {
         libraryImageCount = repos.totalImageCount()
         libraryBatchCount = repos.totalBatchCount()
-        recentBatchIds = repos.allBatches().map(\.id)
+        recentBatchSummaries = repos.recentBatchSummaries(limit: 5)
         reviewQueueCount = repos.uncorrectedCellCount(below: Self.reviewQueueConfidenceCutoff)
     }
 
@@ -329,11 +361,28 @@ final class AppState {
     // Working batch — what Results / Processing is currently looking at.
     var currentBatchId: UUID? {
         didSet {
+            currentBatchCache = nil
+            currentBatchCacheId = nil
+            orderedImagesCache = nil
             UserDefaults.standard.set(currentBatchId?.uuidString, forKey: "cc-current-batch")
         }
     }
     /// Index into the current batch's images that Results is showing.
     var currentImageIdx: Int = 0
+
+    /// SwiftUI asks for `currentBatch`/`currentImage` many times per render.
+    /// Avoid a SwiftData fetch and 700-element sort at every call while still
+    /// invalidating when imports/deletes change the relationship count.
+    @ObservationIgnored private var currentBatchCacheId: UUID?
+    @ObservationIgnored private var currentBatchCache: BatchRecord?
+    @ObservationIgnored private var orderedImagesCache: (batchId: UUID, count: Int, images: [ImageRecord])?
+    /// Small shared LRU for decoded detection payloads. The viewer, sidebar,
+    /// and Review card previously decoded the same JSON independently.
+    @ObservationIgnored private var decodedCellsCache: [UUID: DecodedCellsCacheEntry] = [:]
+    @ObservationIgnored private var decodedCellsOrder: [UUID] = []
+    @ObservationIgnored private var decodedCellsTasks: [UUID: (revision: Int, task: Task<[DetectedCell], Never>)] = [:]
+    @ObservationIgnored private var pendingCellEdits: [UUID: PendingCellEdit] = [:]
+    @ObservationIgnored private var pendingCellEditTasks: [UUID: Task<Void, Never>] = [:]
 
     var activeModelName: String {
         models.first(where: { $0.id == activeModelId })?.name ?? "Cellpose cyto3"
@@ -405,6 +454,9 @@ final class AppState {
         self.backgroundSubtract = UserDefaults.standard.bool(forKey: "cc-bg-subtract")
         let storedRadius = UserDefaults.standard.integer(forKey: "cc-rolling-ball")
         self.rollingBallRadius = storedRadius > 0 ? storedRadius : 50
+        self.preprocessingPreset = PreprocessingPreset(
+            rawValue: UserDefaults.standard.string(forKey: "cc-preprocessing-preset-v1") ?? "")
+            ?? .none
         self.watershedSplit = UserDefaults.standard.bool(forKey: "cc-watershed")
         let storedWatershedDist = UserDefaults.standard.integer(forKey: "cc-watershed-min-distance-um")
         self.watershedMinDistanceUm = storedWatershedDist > 0 ? storedWatershedDist : 8
@@ -429,6 +481,7 @@ final class AppState {
         // have a workstation that benefits.
         let storedParallel = UserDefaults.standard.integer(forKey: "cc-max-parallel")
         self.maxParallel = storedParallel > 0 ? storedParallel : 1
+        self.overlayPalette = OverlayPalette.load()
 
         if let raw = UserDefaults.standard.string(forKey: "cc-model-filter"),
            let f = ModelFamily(rawValue: raw) {
@@ -486,8 +539,18 @@ final class AppState {
             forName: .ccCorrectionsChanged,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refreshLibraryStats() }
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let delta = note.userInfo?["reviewDelta"] as? Int {
+                    self.reviewQueueCount = max(0, self.reviewQueueCount + delta)
+                } else {
+                    self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
+                }
+                // Cell edits can change the denormalized total in a recent row;
+                // this is five lightweight batch reads, not a library scan.
+                self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
+            }
         }
         self.libraryChangedObserver = NotificationCenter.default.addObserver(
             forName: .ccLibraryChanged,
@@ -495,6 +558,18 @@ final class AppState {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshLibraryStats() }
+        }
+
+        // Upgrade pre-index rows in yielding chunks. App launch and Home render
+        // stay immediate; the Review badge fills in as legacy detections are
+        // normalized once, then remains O(1)/fetchCount on future launches.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.repos.rebuildPerformanceIndexes { [weak self] in
+                guard let self else { return }
+                self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
+                self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
+            }
         }
 
         // Pass-12 K1: keep `activeModelInstallState` (and `detector`) coherent
@@ -680,6 +755,9 @@ final class AppState {
         if storedRadius > 0 && storedRadius != rollingBallRadius {
             rollingBallRadius = storedRadius
         }
+        let preprocessing = PreprocessingPreset(
+            rawValue: ud.string(forKey: "cc-preprocessing-preset-v1") ?? "") ?? .none
+        if preprocessing != preprocessingPreset { preprocessingPreset = preprocessing }
         let ws = ud.bool(forKey: "cc-watershed")
         if ws != watershedSplit { watershedSplit = ws }
         let storedWatershedDist = ud.integer(forKey: "cc-watershed-min-distance-um")
@@ -696,14 +774,84 @@ final class AppState {
         }
         let mp = ud.integer(forKey: "cc-max-parallel")
         if mp > 0 && mp != maxParallel { maxParallel = mp }
+        let storedPalette = OverlayPalette.load(defaults: ud)
+        if storedPalette != overlayPalette { overlayPalette = storedPalette }
     }
 
     // MARK: — Convenience
 
     var currentBatch: BatchRecord? {
         guard let id = currentBatchId else { return nil }
-        return repos.batch(id: id)
+        if currentBatchCacheId == id, let currentBatchCache { return currentBatchCache }
+        let fetched = repos.batch(id: id)
+        currentBatchCacheId = id
+        currentBatchCache = fetched
+        return fetched
     }
+
+    func orderedImages(in batch: BatchRecord) -> [ImageRecord] {
+        let count = batch.images.count
+        if let cached = orderedImagesCache,
+           cached.batchId == batch.id,
+           cached.count == count {
+            return cached.images
+        }
+        let ordered = batch.images.sorted(by: { $0.importedAt < $1.importedAt })
+        orderedImagesCache = (batch.id, count, ordered)
+        return ordered
+    }
+
+    /// Returns an already-decoded cell snapshot without touching the JSON
+    /// payload. Useful on interaction paths that must remain synchronous.
+    func cachedCells(for detection: DetectionRecord) -> [DetectedCell]? {
+        guard let entry = decodedCellsCache[detection.id],
+              entry.revision == detection.cellsRevision else { return nil }
+        touchDecodedCellsCache(detection.id)
+        return entry.cells
+    }
+
+    /// Decode a detection once off the MainActor and share the result between
+    /// every Results/Review consumer. Concurrent requests coalesce onto the
+    /// same task, and stale results are discarded if an edit lands meanwhile.
+    func loadCells(for detection: DetectionRecord) async -> [DetectedCell] {
+        if let cached = cachedCells(for: detection) { return cached }
+
+        let id = detection.id
+        let revision = detection.cellsRevision
+        if let inFlight = decodedCellsTasks[id], inFlight.revision == revision {
+            return await inFlight.task.value
+        }
+
+        decodedCellsTasks[id]?.task.cancel()
+        let data = detection.cellsData
+        let task: Task<[DetectedCell], Never> = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return [DetectedCell]() }
+            return DetectionRecord.decodeCellsData(data)
+        }
+        decodedCellsTasks[id] = (revision, task)
+        let cells = await task.value
+
+        if decodedCellsTasks[id]?.revision == revision {
+            decodedCellsTasks[id] = nil
+        }
+        if Task.isCancelled { return cells }
+        guard detection.cellsRevision == revision else {
+            return await loadCells(for: detection)
+        }
+        decodedCellsCache[id] = DecodedCellsCacheEntry(revision: revision, cells: cells)
+        touchDecodedCellsCache(id)
+        while decodedCellsOrder.count > 6 {
+            let evicted = decodedCellsOrder.removeFirst()
+            decodedCellsCache[evicted] = nil
+        }
+        return cells
+    }
+
+    private func touchDecodedCellsCache(_ id: UUID) {
+        decodedCellsOrder.removeAll(where: { $0 == id })
+        decodedCellsOrder.append(id)
+    }
+
     var currentImage: ImageRecord? {
         guard let batch = currentBatch else { return nil }
         // Pass-14: removed the per-batch `_sortedImageCache` that was here.
@@ -719,7 +867,7 @@ final class AppState {
         // SwiftData fetches scale linearly with image count; sorting a few
         // dozen records on each access is sub-millisecond and orders of
         // magnitude cheaper than a stale-cache bug like the one above.
-        let images = batch.images.sorted(by: { $0.importedAt < $1.importedAt })
+        let images = orderedImages(in: batch)
         guard images.indices.contains(currentImageIdx) else { return nil }
         return images[currentImageIdx]
     }
@@ -1050,6 +1198,7 @@ final class AppState {
                                        pxPerUm: pxPerUm,
                                        thresholds: thresholds,
                                        condition: condition)
+        libraryBatchCount += 1
         currentBatchId = batch.id
         currentImageIdx = 0
         processingProgress = 0
@@ -1079,6 +1228,7 @@ final class AppState {
             let channelsSnap = self.channels.asArray
             let bgSnap = self.backgroundSubtract
             let rollSnap = self.rollingBallRadius
+            let preprocessingSnap = self.preprocessingPreset
             let wsSnap = self.watershedSplit
             let wsdSnap = self.watershedMinDistanceUm
             let modelIdSnap = self.activeModelId
@@ -1089,8 +1239,9 @@ final class AppState {
             // Pass-17 Lane C: collect EXIF px/µm from each import result so we
             // can auto-apply a batch-level calibration when all images agree.
             var collectedExifPxPerUm: [Double] = []
+            var collectedExifSources: [String] = []
 
-            await withTaskGroup(of: (URL, Swift.Result<DetectionResult, Error>?, ImageRecord?, Double?, Error?).self) { group in
+            await withTaskGroup(of: (URL, Swift.Result<DetectionResult, Error>?, ImageRecord?, Double?, String?, Error?).self) { group in
                 var iterator = urls.makeIterator()
                 var inFlight = 0
 
@@ -1107,6 +1258,7 @@ final class AppState {
                                                        channels: channelsSnap,
                                                        backgroundSubtract: bgSnap,
                                                        rollingBallRadius: rollSnap,
+                                                       preprocessingPreset: preprocessingSnap,
                                                        watershedSplit: wsSnap,
                                                        watershedMinDistance: wsdSnap,
                                                        smallThreshold: smallT,
@@ -1114,12 +1266,12 @@ final class AppState {
                                                        useGPU: useGPUSnap)
                             do {
                                 let r = try await svcRef.detect(input)
-                                return (url, .success(r), imported.record, imported.exifPxPerUm, nil)
+                                return (url, .success(r), imported.record, imported.exifPxPerUm, imported.exifSource, nil)
                             } catch {
-                                return (url, .failure(error), imported.record, imported.exifPxPerUm, nil)
+                                return (url, .failure(error), imported.record, imported.exifPxPerUm, imported.exifSource, nil)
                             }
                         } catch {
-                            return (url, nil, nil, nil, error)
+                            return (url, nil, nil, nil, nil, error)
                         }
                     }
                 }
@@ -1132,7 +1284,7 @@ final class AppState {
 
                 while let result = await group.next() {
                     inFlight -= 1
-                    let (url, detResult, importedRecord, exifPx, importError) = result
+                    let (url, detResult, importedRecord, exifPx, exifSource, importError) = result
                     if let importError {
                         lastError = importError.localizedDescription
                         NSLog("CellCounter import failed for %@: %@",
@@ -1142,6 +1294,7 @@ final class AppState {
                         anyImported = true
                         // Accumulate EXIF px/µm values.
                         if let px = exifPx { collectedExifPxPerUm.append(px) }
+                        if let exifSource { collectedExifSources.append(exifSource) }
                         switch detResult {
                         case .success(let r):
                             self.repos.saveDetection(r.cells,
@@ -1163,10 +1316,10 @@ final class AppState {
                         case .none:
                             break
                         }
-                        // Pass-11: refresh @Observable library stats so the
-                        // Sidebar counts, Home Recents, and Review badge update
-                        // live as each image finishes importing/detecting.
-                        self.refreshLibraryStats()
+                        // Update scalar progress counters without re-fetching
+                        // Home summaries on every one of a 700-image import.
+                        self.libraryImageCount += 1
+                        self.reviewQueueCount += imported.detection?.reviewPendingCount ?? 0
                     }
                     finished += 1
                     self.processingProgress = Double(finished) / Double(urls.count)
@@ -1191,9 +1344,41 @@ final class AppState {
                 if allSame {
                     let exifPx = collectedExifPxPerUm[0]
                     let diffFraction = abs(exifPx - pxPerUmSnap) / max(pxPerUmSnap, 0.001)
+                    batch.pxPerUm = exifPx
+                    batch.pxPerUmSource = Set(collectedExifSources).count == 1
+                        ? collectedExifSources.first : "metadata-mixed"
+
+                    // Detection ran with the batch snapshot known before file
+                    // metadata was inspected. Re-derive physical measurements
+                    // from pixel-space values once, so applying metadata never
+                    // leaves the scale bar and cell diameters disagreeing.
+                    let linearRatio = pxPerUmSnap / exifPx
+                    for (offset, image) in self.orderedImages(in: batch).enumerated() {
+                        guard let detection = image.detection else { continue }
+                        var calibrated = detection.cells
+                        for index in calibrated.indices {
+                            calibrated[index].diameter = calibrated[index].diameterPx / exifPx
+                            calibrated[index].centroidUmX = calibrated[index].cx / exifPx
+                            calibrated[index].centroidUmY = calibrated[index].cy / exifPx
+                            if let area = calibrated[index].areaMicrons2 {
+                                calibrated[index].areaMicrons2 = area * linearRatio * linearRatio
+                            }
+                            if let perimeter = calibrated[index].perimeterMicrons {
+                                calibrated[index].perimeterMicrons = perimeter * linearRatio
+                            }
+                        }
+                        let storage = await Task.detached(priority: .utility) {
+                            DetectionRecord.makeStorageSnapshot(calibrated)
+                        }.value
+                        detection.applyStorageSnapshot(storage)
+                        if offset % 8 == 7 {
+                            try? self.repos.context.save()
+                            await Task.yield()
+                        }
+                    }
+                    try? self.repos.context.save()
+
                     if diffFraction > 0.05 {
-                        // Apply to THIS batch only — global state.pxPerUm is untouched.
-                        batch.pxPerUm = exifPx
                         NSLog("[EXIFCalibration] Applied %.4f px/µm to batch (was %.4f, diff %.1f%%)",
                               exifPx, pxPerUmSnap, diffFraction * 100)
 
@@ -1218,6 +1403,7 @@ final class AppState {
                 self.lastDetectionError = lastError
                 self.showDetectionError = true
             }
+            self.refreshLibraryStats()
             if anyImported {
                 self.processingDone()
             } else {
@@ -1276,11 +1462,12 @@ final class AppState {
         let largeT = rerunThresholds.last ?? 30
         let input = DetectionInput(imageURL: image.storedURL,
                                     modelId: activeModelId,
-                                    pxPerUm: pxPerUm,
+                                    pxPerUm: image.batch?.pxPerUm ?? pxPerUm,
                                     confidenceThreshold: confidence,
                                     channels: channels.asArray,
                                     backgroundSubtract: backgroundSubtract,
                                     rollingBallRadius: rollingBallRadius,
+                                    preprocessingPreset: preprocessingPreset,
                                     watershedSplit: watershedSplit,
                                     watershedMinDistance: watershedMinDistanceUm,
                                     smallThreshold: smallT,
@@ -1329,15 +1516,81 @@ final class AppState {
         view = .results
     }
 
+    func openBatch(id: UUID) {
+        guard repos.batch(id: id) != nil else { return }
+        currentBatchId = id
+        currentImageIdx = 0
+        view = .results
+    }
+
     // MARK: — Corrections
 
     /// Convenience to record a correction against the current image's detection.
     func recordCorrection(kind: String, cellId: UUID, cx: Double, cy: Double, diameter: Double) {
-        guard let det = currentImage?.detection else { return }
-        repos.recordCorrection(
-            CorrectionRecord(kind: kind, cellId: cellId, cx: cx, cy: cy, diameter: diameter),
-            on: det)
-        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+        guard let image = currentImage, let det = image.detection else { return }
+        let result = repos.commitCellEdit(
+            cells: nil,
+            corrections: [CorrectionSpec(kind: kind, cellId: cellId, cx: cx,
+                                         cy: cy, diameter: diameter)],
+            detection: det,
+            image: image)
+        postCorrectionsChanged(imageId: image.id, reviewDelta: result.reviewCountDelta)
+    }
+
+    /// Coalesce rapid overlay events, serialize the large JSON blob off-main,
+    /// then commit the newest cell snapshot and every audit row together.
+    /// This is the critical manual-edit fast path: pointer feedback is purely
+    /// in-memory and no full detection encode/save/global recount runs inside
+    /// the click or drag handler.
+    func scheduleCellEdit(cells: [DetectedCell],
+                          corrections: [CorrectionSpec],
+                          detection: DetectionRecord,
+                          image: ImageRecord) {
+        let id = detection.id
+        let nextRevision = (pendingCellEdits[id]?.revision ?? 0) &+ 1
+        if var pending = pendingCellEdits[id] {
+            pending.cells = cells
+            pending.corrections.append(contentsOf: corrections)
+            pending.revision = nextRevision
+            pendingCellEdits[id] = pending
+        } else {
+            pendingCellEdits[id] = PendingCellEdit(
+                detection: detection, image: image, cells: cells,
+                corrections: corrections, revision: nextRevision)
+        }
+
+        pendingCellEditTasks[id]?.cancel()
+        pendingCellEditTasks[id] = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(20)) }
+            catch { return }
+            guard let self, let pending = self.pendingCellEdits[id],
+                  pending.revision == nextRevision else { return }
+
+            let snapshotCells = pending.cells
+            let storage = await Task.detached(priority: .userInitiated) {
+                DetectionRecord.makeStorageSnapshot(snapshotCells)
+            }.value
+            guard !Task.isCancelled,
+                  let latest = self.pendingCellEdits[id],
+                  latest.revision == nextRevision else { return }
+
+            let result = self.repos.commitCellEdit(
+                storage: storage,
+                corrections: latest.corrections,
+                detection: latest.detection,
+                image: latest.image)
+            self.pendingCellEdits[id] = nil
+            self.pendingCellEditTasks[id] = nil
+            self.postCorrectionsChanged(imageId: latest.image.id,
+                                        reviewDelta: result.reviewCountDelta)
+        }
+    }
+
+    private func postCorrectionsChanged(imageId: UUID?, reviewDelta: Int) {
+        NotificationCenter.default.post(
+            name: .ccCorrectionsChanged,
+            object: imageId,
+            userInfo: ["reviewDelta": reviewDelta])
     }
 
     /// Delete every cell in `ids` from the current image's detection, persist,
@@ -1347,15 +1600,244 @@ final class AppState {
     /// Empty selection (or an empty intersection) is a no-op.
     func removeCells(_ ids: Set<UUID>) {
         guard !ids.isEmpty,
-              let detection = currentImage?.detection else { return }
-        let victims = detection.cells.filter { ids.contains($0.id) }
+              let image = currentImage,
+              let detection = image.detection else { return }
+        var cells = detection.cells
+        let victims = cells.filter { ids.contains($0.id) }
         guard !victims.isEmpty else { return }
-        detection.cells.removeAll { ids.contains($0.id) }
-        try? repos.context.save()
-        for c in victims {
-            recordCorrection(kind: "remove", cellId: c.id,
-                             cx: c.cx, cy: c.cy, diameter: c.diameter)
+        cells.removeAll { ids.contains($0.id) }
+        scheduleCellEdit(cells: cells,
+                         corrections: victims.map { CorrectionSpec(kind: "remove", cell: $0) },
+                         detection: detection,
+                         image: image)
+    }
+
+    /// Merge a multi-selection into one contour/circle without forcing the
+    /// user through pairwise Merge clicks. The convex hull is used when any
+    /// selected mask has contour geometry; otherwise an equivalent enclosing
+    /// circle is produced.
+    func mergeSelectedCells(_ ids: Set<UUID>) {
+        guard ids.count >= 2,
+              let image = currentImage,
+              let detection = image.detection else { return }
+        var cells = detection.cells
+        let selected = cells.filter { ids.contains($0.id) }
+        guard selected.count >= 2 else { return }
+        let points = selected.flatMap { cell -> [CGPoint] in
+            if let contour = cell.contourPx, contour.count >= 3 { return contour }
+            let radius = CGFloat(cell.diameterPx / 2)
+            return (0..<24).map { index in
+                let angle = Double(index) / 24 * .pi * 2
+                return CGPoint(x: cell.cx + Double(radius) * cos(angle),
+                               y: cell.cy + Double(radius) * sin(angle))
+            }
         }
+        let hull = Self.convexHull(points)
+        let areaPx = abs(Self.polygonArea(hull))
+        let cx = selected.reduce(0) { $0 + $1.cx } / Double(selected.count)
+        let cy = selected.reduce(0) { $0 + $1.cy } / Double(selected.count)
+        let diameterPx = areaPx > 0 ? 2 * sqrt(areaPx / .pi)
+            : selected.map(\.diameterPx).max() ?? 1
+        let px = image.batch?.pxPerUm ?? pxPerUm
+        let merged = DetectedCell(cx: cx, cy: cy,
+                                  diameter: diameterPx / max(px, 0.000_001),
+                                  diameterPx: diameterPx, confidence: 1,
+                                  areaMicrons2: areaPx / pow(max(px, 0.000_001), 2),
+                                  centroidUmX: cx / max(px, 0.000_001),
+                                  centroidUmY: cy / max(px, 0.000_001),
+                                  contourPx: hull.count >= 3 ? hull : nil)
+        cells.removeAll { ids.contains($0.id) }
+        cells.append(merged)
+        var specs = selected.map { CorrectionSpec(kind: "merge-remove", cell: $0) }
+        specs.append(CorrectionSpec(kind: "merge-add", cell: merged))
+        scheduleCellEdit(cells: cells, corrections: specs,
+                         detection: detection, image: image)
+    }
+
+    /// Propagate the selected current-frame masks through the remaining
+    /// ordered sequence, compensating for robustly estimated acquisition
+    /// drift and skipping any destination that already contains a nearby mask.
+    func propagateSelectedCells(_ ids: Set<UUID>, useDrift: Bool) async -> String {
+        guard !ids.isEmpty, let batch = currentBatch,
+              let sourceImage = currentImage,
+              let sourceDetection = sourceImage.detection else {
+            return "Select one or more masks first."
+        }
+        let images = orderedImages(in: batch)
+        guard let sourceFrame = images.firstIndex(where: { $0.id == sourceImage.id }),
+              sourceFrame + 1 < images.count else {
+            return "Open a frame that has later frames in this batch."
+        }
+        let sourceCells = sourceDetection.cells.filter { ids.contains($0.id) }
+        guard !sourceCells.isEmpty else { return "The selected masks are no longer available." }
+
+        var frames: [[DetectedCell]] = []
+        for (index, image) in images.enumerated() {
+            frames.append(image.detection?.cells ?? [])
+            if index % 8 == 7 { await Task.yield() }
+        }
+        let offsets = useDrift
+            ? await Task.detached(priority: .userInitiated) {
+                SequenceWorkflowService.estimateDrift(frames: frames)
+            }.value
+            : frames.indices.map { .init(frame: $0, dxPx: 0, dyPx: 0, matchedObjects: 0) }
+        let targetFrames = Array((sourceFrame + 1)..<images.count)
+        let propagation = await Task.detached(priority: .userInitiated) {
+            SequenceWorkflowService.propagate(sourceCells: sourceCells,
+                                               sourceFrame: sourceFrame,
+                                               frames: frames,
+                                               offsets: offsets,
+                                               targetFrames: targetFrames)
+        }.value
+
+        var added = 0
+        var reviewDelta = 0
+        for frame in targetFrames {
+            guard let additions = propagation.cellsByFrame[frame],
+                  let detection = images[frame].detection else { continue }
+            let image = images[frame]
+            let px = image.batch?.pxPerUm ?? pxPerUm
+            let calibrated = additions.filter {
+                $0.cx >= 0 && $0.cy >= 0
+                    && $0.cx < Double(image.widthPx) && $0.cy < Double(image.heightPx)
+            }.map { cell -> DetectedCell in
+                var cell = cell
+                cell.centroidUmX = cell.cx / max(px, 0.000_001)
+                cell.centroidUmY = cell.cy / max(px, 0.000_001)
+                return cell
+            }
+            guard !calibrated.isEmpty else { continue }
+            let result = repos.commitCellEdit(
+                cells: detection.cells + calibrated,
+                corrections: calibrated.map { CorrectionSpec(kind: "propagate", cell: $0) },
+                detection: detection, image: image)
+            reviewDelta += result.reviewCountDelta
+            added += calibrated.count
+            await Task.yield()
+        }
+        if added > 0 { postCorrectionsChanged(imageId: nil, reviewDelta: reviewDelta) }
+        return added == 0
+            ? "No masks added; nearby labels already cover the predicted positions."
+            : "Propagated \(added) mask\(added == 1 ? "" : "s") across \(targetFrames.count) frame\(targetFrames.count == 1 ? "" : "s")."
+    }
+
+    /// Interpolate one selected anchor to the nearest matching mask in the
+    /// final frame and fill only missing intermediate labels.
+    func interpolateSelectedCellToLast(_ ids: Set<UUID>) async -> String {
+        guard ids.count == 1, let selectedId = ids.first,
+              let batch = currentBatch, let sourceImage = currentImage,
+              let source = sourceImage.detection?.cells.first(where: { $0.id == selectedId }) else {
+            return "Select exactly one anchor mask."
+        }
+        let images = orderedImages(in: batch)
+        guard let start = images.firstIndex(where: { $0.id == sourceImage.id }),
+              start + 1 < images.count,
+              let endDetection = images.last?.detection else {
+            return "This needs a later detected frame in the same batch."
+        }
+        let end = endDetection.cells.min {
+            hypot($0.cx - source.cx, $0.cy - source.cy)
+                < hypot($1.cx - source.cx, $1.cy - source.cy)
+        }
+        guard let end, hypot(end.cx - source.cx, end.cy - source.cy) <= max(200, source.diameterPx * 5) else {
+            return "No plausible matching anchor was found in the final frame."
+        }
+        let generated = await Task.detached(priority: .userInitiated) {
+            SequenceWorkflowService.interpolate(start: source, startFrame: start,
+                                                end: end, endFrame: images.count - 1)
+        }.value
+        var added = 0
+        for frame in generated.keys.sorted() {
+            guard let candidate = generated[frame], let detection = images[frame].detection else { continue }
+            let conflict = detection.cells.contains {
+                hypot($0.cx - candidate.cx, $0.cy - candidate.cy)
+                    <= max(4, min($0.diameterPx, candidate.diameterPx) * 0.45)
+            }
+            guard !conflict else { continue }
+            let result = repos.commitCellEdit(
+                cells: detection.cells + [candidate],
+                corrections: [CorrectionSpec(kind: "interpolate", cell: candidate)],
+                detection: detection, image: images[frame])
+            _ = result
+            added += 1
+            await Task.yield()
+        }
+        if added > 0 { postCorrectionsChanged(imageId: nil, reviewDelta: 0) }
+        return added == 0
+            ? "Every intermediate frame already has a nearby label."
+            : "Interpolated \(added) missing label\(added == 1 ? "" : "s")."
+    }
+
+    /// Returns a persisted batch snapshot immediately when valid; otherwise
+    /// materializes SwiftData in yielding chunks and computes plots off-main.
+    func batchInsights(force: Bool = false) async -> BatchInsightsSnapshot? {
+        guard let batch = currentBatch else { return nil }
+        if !force, batch.insightsRevision == batch.contentRevision,
+           let data = batch.insightsData,
+           let cached = try? JSONDecoder().decode(BatchInsightsSnapshot.self, from: data) {
+            return cached
+        }
+
+        let images = orderedImages(in: batch)
+        var materialized: [BatchInsightsInput.ImageInput] = []
+        materialized.reserveCapacity(images.count)
+        for (index, image) in images.enumerated() {
+            materialized.append(.init(id: image.id, fileName: image.fileName,
+                                      cells: image.detection?.cells ?? [],
+                                      imageStats: image.detection?.imageStats ?? [:]))
+            if index % 6 == 5 { await Task.yield() }
+        }
+        let revision = batch.contentRevision
+        let input = BatchInsightsInput(revision: revision, images: materialized)
+        let snapshot = await Task.detached(priority: .utility) {
+            BatchInsightsService.compute(input)
+        }.value
+        guard batch.contentRevision == revision else { return snapshot }
+        batch.insightsData = try? JSONEncoder().encode(snapshot)
+        batch.insightsRevision = revision
+        try? repos.context.save()
+        return snapshot
+    }
+
+    func openImage(id: UUID) {
+        guard let batch = currentBatch,
+              let index = orderedImages(in: batch).firstIndex(where: { $0.id == id }) else { return }
+        currentImageIdx = index
+        view = .results
+    }
+
+    private static func polygonArea(_ points: [CGPoint]) -> Double {
+        guard points.count >= 3 else { return 0 }
+        var sum = 0.0
+        for index in points.indices {
+            let next = points[(index + 1) % points.count]
+            sum += Double(points[index].x * next.y - next.x * points[index].y)
+        }
+        return sum / 2
+    }
+
+    private static func convexHull(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= 3 else { return points }
+        let sorted = points.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
+        func cross(_ o: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        }
+        var lower: [CGPoint] = []
+        for point in sorted {
+            while lower.count >= 2 && cross(lower[lower.count - 2], lower.last!, point) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(point)
+        }
+        var upper: [CGPoint] = []
+        for point in sorted.reversed() {
+            while upper.count >= 2 && cross(upper[upper.count - 2], upper.last!, point) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(point)
+        }
+        lower.removeLast(); upper.removeLast()
+        return lower + upper
     }
 
     private static func shortDate() -> String {
@@ -1376,5 +1858,53 @@ final class AppState {
             return "\(match.1) objective"
         }
         return "custom scale"
+    }
+
+    /// Apply a physical scale and recompute existing µm measurements from
+    /// their pixel-space source values. This runs in yielding chunks so fixing
+    /// calibration on a 700-image batch doesn't freeze the app.
+    func applyCalibration(_ newPxPerUm: Double, source: String) {
+        guard newPxPerUm > 0 else { return }
+        pxPerUm = newPxPerUm
+        guard let batch = currentBatch else { return }
+        let oldPxPerUm = max(batch.pxPerUm, 0.000_001)
+        batch.pxPerUm = newPxPerUm
+        batch.pxPerUmSource = source
+        batch.contentRevision &+= 1
+        let images = orderedImages(in: batch)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let linearRatio = oldPxPerUm / newPxPerUm
+            for (offset, image) in images.enumerated() {
+                guard let detection = image.detection else { continue }
+                var recalibrated = detection.cells
+                for index in recalibrated.indices {
+                    recalibrated[index].diameter = recalibrated[index].diameterPx / newPxPerUm
+                    recalibrated[index].centroidUmX = recalibrated[index].cx / newPxPerUm
+                    recalibrated[index].centroidUmY = recalibrated[index].cy / newPxPerUm
+                    if let area = recalibrated[index].areaMicrons2 {
+                        recalibrated[index].areaMicrons2 = area * linearRatio * linearRatio
+                    }
+                    if let perimeter = recalibrated[index].perimeterMicrons {
+                        recalibrated[index].perimeterMicrons = perimeter * linearRatio
+                    }
+                }
+                let storage = await Task.detached(priority: .utility) {
+                    DetectionRecord.makeStorageSnapshot(recalibrated)
+                }.value
+                detection.applyStorageSnapshot(storage)
+                if offset % 8 == 7 {
+                    try? self.repos.context.save()
+                    await Task.yield()
+                }
+            }
+            try? self.repos.context.save()
+            NotificationCenter.default.post(name: .ccCorrectionsChanged,
+                                            object: self.currentImage?.id,
+                                            userInfo: ["reviewDelta": 0])
+            let note = String(format: "Calibration applied: %.5g px/µm (%@).", newPxPerUm, source)
+            self.lastCalibrationNote = note
+        }
     }
 }

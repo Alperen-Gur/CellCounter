@@ -72,7 +72,7 @@ struct SplitTouchingButton: View {
 
     private func runSplit() {
         guard !isRunning, let image = state.currentImage else { return }
-        let priorCount = image.detection?.cells.count ?? 0
+        let priorCount = image.detection?.summaryCellCount ?? 0
         isRunning = true
         confirmation = nil
         confirmationTask?.cancel()
@@ -87,11 +87,12 @@ struct SplitTouchingButton: View {
                 let input = DetectionInput(
                     imageURL: image.storedURL,
                     modelId: state.activeModelId,
-                    pxPerUm: state.pxPerUm,
+                    pxPerUm: image.batch?.pxPerUm ?? state.pxPerUm,
                     confidenceThreshold: state.confidence,
                     channels: state.channels.asArray,
                     backgroundSubtract: state.backgroundSubtract,
                     rollingBallRadius: state.rollingBallRadius,
+                    preprocessingPreset: state.preprocessingPreset,
                     watershedSplit: true,
                     watershedMinDistance: 8
                 )

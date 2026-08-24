@@ -81,6 +81,9 @@ def parse_args() -> argparse.Namespace:
                    help="Apply rolling-ball background subtraction before detection.")
     p.add_argument("--rolling-ball-radius", dest="rolling_ball_radius", type=int, default=50,
                    help="Radius for rolling-ball background subtraction (default 50).")
+    p.add_argument("--clahe", action="store_true")
+    p.add_argument("--anisotropic-diffusion", dest="anisotropic_diffusion", action="store_true")
+    p.add_argument("--gpu-preprocess", dest="gpu_preprocess", action="store_true")
     p.add_argument("--watershed", action="store_true",
                    help="Run a distance-transform watershed on the StarDist label "
                         "map to split touching cells (A3 middle-of-script post-process).")

@@ -22,6 +22,19 @@ final class BatchRecord {
     /// "preset-<name>", "manual", "default". Optional with a default so
     /// existing SwiftData rows decode unchanged (auto-migration friendly).
     var pxPerUmSource: String? = nil
+    /// Denormalized summaries used by Home/Batch rows. Reading `totalCells`
+    /// used to decode every image's JSON detection blob during each SwiftUI
+    /// render, which made a 700-image library noticeably stall the Home view.
+    /// Existing rows start at -1 and are backfilled incrementally.
+    var imageCountSummary: Int = -1
+    var cellCountSummary: Int = -1
+    /// Monotonic invalidation token for cached batch analytics. Detection,
+    /// mask-edit, and calibration commits increment it; opening Results does
+    /// not recompute expensive plots unless this value changed.
+    var contentRevision: Int = 0
+    /// Persisted heuristic/plot snapshot. Optional for migration safety.
+    var insightsData: Data? = nil
+    var insightsRevision: Int = -1
     @Relationship(deleteRule: .cascade, inverse: \ImageRecord.batch)
     var images: [ImageRecord] = []
 
@@ -36,6 +49,9 @@ final class BatchRecord {
         self.pxPerUm = pxPerUm
         self.thresholdsData = (try? JSONEncoder().encode(thresholds)) ?? Data()
         self.condition = condition
+        self.imageCountSummary = 0
+        self.cellCountSummary = 0
+        self.contentRevision = 0
     }
 
     var thresholds: [Double] {
@@ -43,7 +59,12 @@ final class BatchRecord {
         set { thresholdsData = (try? JSONEncoder().encode(newValue)) ?? Data() }
     }
 
-    var totalCells: Int { images.reduce(0) { $0 + ($1.detection?.cells.count ?? 0) } }
+    var totalCells: Int {
+        if cellCountSummary >= 0 { return cellCountSummary }
+        return images.reduce(0) { $0 + ($1.detection?.summaryCellCount ?? 0) }
+    }
+
+    var imageCount: Int { imageCountSummary >= 0 ? imageCountSummary : images.count }
 }
 
 @Model
@@ -111,6 +132,16 @@ final class DetectionRecord {
     /// badge can run a SwiftData predicate instead of decoding every row's JSON.
     /// Defaults to 1.0 for empty detections (i.e. "no uncertain cells").
     var minConfidence: Double
+    /// Cheap summaries/index migration marker. Existing rows receive the
+    /// declaration defaults and are indexed in small, yielding chunks after
+    /// launch; new detections are indexed at save time.
+    var cellCountSummary: Int = -1
+    /// Monotonic token for the encoded cell payload. Views and AppState use it
+    /// to share a decoded cell snapshot without comparing or decoding the full
+    /// JSON blob during every render.
+    var cellsRevision: Int = 0
+    var reviewPendingCount: Int = -1
+    var reviewIndexVersion: Int = 0
     /// Per-image statistics as a JSON blob (C2/C3 pass-6).
     /// Keys: "focus_score" (Double, 0–1), "illumination_residual" (Double, ≥ 0),
     /// plus any C2 colony keys. Nil for legacy detections.
@@ -126,6 +157,10 @@ final class DetectionRecord {
         let payload = cells.map(CellPayload.init)
         self.cellsData = (try? JSONEncoder().encode(payload)) ?? Data()
         self.minConfidence = cells.map { $0.confidence }.min() ?? 1.0
+        self.cellCountSummary = cells.count
+        self.cellsRevision = 0
+        self.reviewPendingCount = cells.filter { $0.confidence < 0.65 }.count
+        self.reviewIndexVersion = 0
         self.imageStatsData = imageStats.isEmpty ? nil : (try? JSONEncoder().encode(imageStats))
     }
 
@@ -146,7 +181,123 @@ final class DetectionRecord {
             let payload = newValue.map(CellPayload.init)
             cellsData = (try? JSONEncoder().encode(payload)) ?? Data()
             minConfidence = newValue.map { $0.confidence }.min() ?? 1.0
+            cellCountSummary = newValue.count
+            cellsRevision &+= 1
         }
+    }
+
+    var summaryCellCount: Int {
+        cellCountSummary >= 0 ? cellCountSummary : cells.count
+    }
+
+    struct CellsStorageSnapshot: Sendable {
+        let data: Data
+        let minimumConfidence: Double
+        let count: Int
+    }
+
+    /// Encode the large cell array away from the MainActor. Manual edits only
+    /// mutate the small in-memory overlay immediately; JSON serialization no
+    /// longer blocks pointer interaction or image navigation.
+    nonisolated static func makeStorageSnapshot(_ cells: [DetectedCell]) -> CellsStorageSnapshot {
+        let payload = cells.map(CellPayload.init)
+        return CellsStorageSnapshot(
+            data: (try? JSONEncoder().encode(payload)) ?? Data(),
+            minimumConfidence: cells.map(\.confidence).min() ?? 1.0,
+            count: cells.count
+        )
+    }
+
+    nonisolated static func decodeCellsData(_ data: Data) -> [DetectedCell] {
+        ((try? JSONDecoder().decode([CellPayload].self, from: data)) ?? [])
+            .map(\.cell)
+    }
+
+    func applyStorageSnapshot(_ snapshot: CellsStorageSnapshot) {
+        cellsData = snapshot.data
+        minConfidence = snapshot.minimumConfidence
+        cellCountSummary = snapshot.count
+        cellsRevision &+= 1
+    }
+}
+
+/// A saved alternative segmentation for Mask Curator-style comparison.
+///
+/// Re-running a detector no longer destroys the previous mask. Variants are
+/// compact JSON snapshots and are materialized only when the user opens the
+/// curator or chooses one, so large libraries pay no render-time cost.
+@Model
+final class SegmentationVariantRecord {
+    @Attribute(.unique) var id: UUID
+    var imageId: UUID
+    var detectorId: String
+    var label: String
+    var createdAt: Date
+    var cellsData: Data
+    var cellCount: Int
+    var meanConfidence: Double
+    var image: ImageRecord?
+
+    init(image: ImageRecord, detectorId: String, label: String,
+         cells: [DetectedCell]) {
+        self.id = UUID()
+        self.imageId = image.id
+        self.detectorId = detectorId
+        self.label = label
+        self.createdAt = Date()
+        let snapshot = DetectionRecord.makeStorageSnapshot(cells)
+        self.cellsData = snapshot.data
+        self.cellCount = snapshot.count
+        self.meanConfidence = cells.isEmpty
+            ? 0
+            : cells.reduce(0) { $0 + $1.confidence } / Double(cells.count)
+        self.image = image
+    }
+
+    var cells: [DetectedCell] { DetectionRecord.decodeCellsData(cellsData) }
+}
+
+/// Normalized, queryable row for one low-confidence cell.
+///
+/// Detections keep their complete cells as a compact JSON blob for fast image
+/// loading. The Review screen previously had to decode every blob in the
+/// library before it could show its first card. These lightweight rows make
+/// badge counts a `fetchCount` and let the queue fetch one small page at a time.
+@Model
+final class ReviewCandidateRecord {
+    @Attribute(.unique) var id: UUID
+    var cellId: UUID
+    var detectionId: UUID
+    var imageId: UUID
+    var confidence: Double
+    var cx: Double
+    var cy: Double
+    var diameter: Double
+    var diameterPx: Double
+    var triaged: Bool
+    var createdAt: Date
+    var detection: DetectionRecord?
+    var image: ImageRecord?
+
+    init(cell: DetectedCell, detection: DetectionRecord, image: ImageRecord) {
+        self.id = UUID()
+        self.cellId = cell.id
+        self.detectionId = detection.id
+        self.imageId = image.id
+        self.confidence = cell.confidence
+        self.cx = cell.cx
+        self.cy = cell.cy
+        self.diameter = cell.diameter
+        self.diameterPx = cell.diameterPx
+        self.triaged = false
+        self.createdAt = detection.ranAt
+        self.detection = detection
+        self.image = image
+    }
+
+    var fallbackCell: DetectedCell {
+        DetectedCell(id: cellId, cx: cx, cy: cy, diameter: diameter,
+                     diameterPx: diameterPx, confidence: confidence)
     }
 }
 
@@ -236,7 +387,7 @@ final class ModelVersionRecord {
 }
 
 /// JSON payload for a DetectedCell — keeps storage simple.
-private struct CellPayload: Codable {
+private struct CellPayload: Codable, Sendable {
     let id: UUID
     let cx: Double
     let cy: Double
@@ -272,7 +423,7 @@ private struct CellPayload: Codable {
     // isMock is intentionally NOT stored here; legacy payloads containing "isMock"
     // are silently ignored by Codable (unknown keys on struct → no-op).
 
-    init(_ c: DetectedCell) {
+    nonisolated init(_ c: DetectedCell) {
         self.id = c.id
         self.cx = c.cx
         self.cy = c.cy
@@ -311,7 +462,7 @@ private struct CellPayload: Codable {
         }
     }
 
-    var cell: DetectedCell {
+    nonisolated var cell: DetectedCell {
         var contour: [CGPoint]? = nil
         if let flat = contourFlat, flat.count >= 4, flat.count % 2 == 0 {
             var pts: [CGPoint] = []
