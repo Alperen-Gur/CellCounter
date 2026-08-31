@@ -26,7 +26,7 @@ function validateBundle(config, packageJson, packageLock, cargoToml, cargoLock) 
   check(packageLock.version === RELEASE_VERSION, "npm lock version is not 1.0.8");
   check(packageLock.packages?.[""]?.version === RELEASE_VERSION, "npm root lock version is not 1.0.8");
   check(new RegExp(`^version = "${RELEASE_VERSION.replaceAll(".", "\\.")}"$`, "m").test(cargoToml), "Cargo version is not 1.0.8");
-  check(new RegExp(`name = "desktop"\\nversion = "${RELEASE_VERSION.replaceAll(".", "\\.")}"`).test(cargoLock), "Cargo lock root version is not 1.0.8");
+  check(new RegExp(`name = "desktop"\\r?\\nversion = "${RELEASE_VERSION.replaceAll(".", "\\.")}"`).test(cargoLock), "Cargo lock root version is not 1.0.8");
 
   const targets = config.bundle?.targets;
   check(Array.isArray(targets), "bundle targets must be an explicit array");
@@ -91,6 +91,13 @@ try {
   const negative = structuredClone(config);
   negative.bundle.targets = ["msi"];
   assert(validateBundle(negative, packageJson, packageLock, cargoToml, cargoLock).length > 0, "target negative control did not fail");
+
+  const crlfCargoLock = cargoLock.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
+  assertEqual(
+    validateBundle(config, packageJson, packageLock, cargoToml, crlfCargoLock).length,
+    0,
+    "Windows CRLF Cargo lock validation failed",
+  );
 
   console.log("Windows bundle configuration verification passed");
 } catch (error) {
