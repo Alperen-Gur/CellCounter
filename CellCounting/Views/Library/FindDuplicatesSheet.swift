@@ -136,7 +136,7 @@ struct FindDuplicatesSheet: View {
         let resp = alert.runModal()
         guard resp == .alertFirstButtonReturn else { return }
 
-        for img in toDelete { state.repos.deleteImage(img) }
+        state.repos.deleteImages(toDelete)
         NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
         reload()
     }
@@ -160,7 +160,7 @@ struct FindDuplicatesSheet: View {
         let resp = alert.runModal()
         guard resp == .alertFirstButtonReturn else { return }
 
-        for img in toDelete { state.repos.deleteImage(img) }
+        state.repos.deleteImages(toDelete)
         NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
         reload()
     }
@@ -208,7 +208,7 @@ private struct DuplicateGroupRow: View {
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(Tokens.textTertiary)
                         if let det = img.detection {
-                            Text("\(det.cells.count) cells")
+                            Text("\(det.summaryCellCount) cells")
                                 .font(.system(size: 10))
                                 .foregroundStyle(Tokens.textTertiary)
                         }
@@ -268,7 +268,7 @@ private struct DuplicateGroupRow: View {
         Task.detached(priority: .utility) {
             var loaded: [UUID: NSImage] = [:]
             for (id, url) in pairs {
-                if let img = NSImage(contentsOf: url) { loaded[id] = img }
+                if let img = ImageLoader.cachedThumbnail(at: url) { loaded[id] = img }
             }
             await MainActor.run { thumbs = loaded }
         }

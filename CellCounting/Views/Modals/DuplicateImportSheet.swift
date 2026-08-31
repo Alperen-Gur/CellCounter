@@ -208,7 +208,7 @@ private struct DuplicateRow: View {
     }
 
     private var batchName: String { existing.batch?.displayName ?? "unknown batch" }
-    private var cellCount: Int { existing.detection?.cells.count ?? 0 }
+    private var cellCount: Int { existing.detection?.summaryCellCount ?? 0 }
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -273,7 +273,7 @@ private struct DuplicateRow: View {
     private func loadThumb() {
         let url = existing.thumbURL
         Task.detached(priority: .utility) {
-            let img = NSImage(contentsOf: url)
+            let img = ImageLoader.cachedThumbnail(at: url)
             await MainActor.run { thumb = img }
         }
     }
@@ -306,4 +306,3 @@ private struct DecisionButton: View {
         .buttonStyle(.plain)
     }
 }
-

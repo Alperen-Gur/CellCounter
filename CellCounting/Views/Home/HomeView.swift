@@ -203,7 +203,7 @@ private struct DropZone: View {
                          allowFolders: false,
                          allowMultiple: true) { urls in
             Task { @MainActor in
-                beginImport(urls: expand(urls: urls))
+                await expandAndBeginImport(urls)
             }
         }
     }
@@ -213,7 +213,7 @@ private struct DropZone: View {
                          allowFolders: true,
                          allowMultiple: false) { urls in
             Task { @MainActor in
-                beginImport(urls: expand(urls: urls))
+                await expandAndBeginImport(urls)
             }
         }
     }
@@ -235,15 +235,24 @@ private struct DropZone: View {
         }
 
         group.notify(queue: .main) {
-            let expanded = expand(urls: collected)
             Task { @MainActor in
-                beginImport(urls: expanded)
+                await expandAndBeginImport(collected)
             }
         }
     }
 
+    private func expandAndBeginImport(_ urls: [URL]) async {
+        let supported = ImageLoader.supported
+        let expanded = await Task.detached(priority: .userInitiated) {
+            Self.expand(urls: urls, supported: supported)
+        }.value
+        guard !Task.isCancelled else { return }
+        beginImport(urls: expanded)
+    }
+
     /// Recursively walks folders, filters by supported extensions.
-    private func expand(urls: [URL]) -> [URL] {
+    nonisolated private static func expand(urls: [URL],
+                                           supported: Set<String>) -> [URL] {
         var out: [URL] = []
         let fm = FileManager.default
         for url in urls {
@@ -254,13 +263,13 @@ private struct DropZone: View {
                 if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: keys,
                                                   options: [.skipsHiddenFiles]) {
                     for case let child as URL in enumerator {
-                        if ImageLoader.supported.contains(child.pathExtension.lowercased()) {
+                        if supported.contains(child.pathExtension.lowercased()) {
                             out.append(child)
                         }
                     }
                 }
             } else {
-                if ImageLoader.supported.contains(url.pathExtension.lowercased()) {
+                if supported.contains(url.pathExtension.lowercased()) {
                     out.append(url)
                 }
             }
@@ -894,7 +903,7 @@ struct ProcessingView: View {
             return
         }
         let img = await Task.detached(priority: .utility) {
-            NSImage(contentsOf: url)
+            ImageLoader.cachedThumbnail(at: url)
         }.value
         thumb = img
     }

@@ -61,6 +61,9 @@ enum PythonRuntime {
         // `_cellpose_common` and by every assay CLI below, so it has to stage
         // even though nothing invokes it directly.
         "_imageio.py",
+        // Bridges vendor containers into a lossless PNG that ImageIO/AppKit
+        // can display while detection continues to use the untouched source.
+        "image_prepare.py",
         // Intensity assays: % marker-positive, N:C ratio, colocalization,
         // live/dead, transfection efficiency, cell cycle.
         "_assays_intensity.py",
@@ -81,6 +84,34 @@ enum PythonRuntime {
         "_neurite.py",
         "neurite_outgrowth.py",
     ]
+
+    /// Installed interpreters worth trying for vendor-container preparation.
+    /// Prefer the active detector's environment because its optional readers
+    /// were installed alongside that model, then fall back across the other
+    /// known environments. The helper retries candidates because an optional
+    /// reader can be unavailable for one Python minor but present in another.
+    static func vendorReaderInterpreters(preferredFamily: ModelFamily?) -> [URL] {
+        let base = FileStore.shared.pythonInterpreterURL
+        let cp4 = FileStore.shared.pythonInterpreter4URL
+        let omni = OmniposeDownloader.interpreter()
+
+        var candidates: [URL] = []
+        switch preferredFamily {
+        case .cellpose4:
+            candidates = [cp4, base]
+        case .omnipose:
+            candidates = omni.map { [$0, base, cp4] } ?? [base, cp4]
+        default:
+            candidates = [base, cp4]
+            if let omni { candidates.append(omni) }
+        }
+
+        var seen = Set<String>()
+        return candidates.filter { url in
+            guard FileManager.default.isExecutableFile(atPath: url.path) else { return false }
+            return seen.insert(url.standardizedFileURL.path).inserted
+        }
+    }
 
     /// Errors that surface to the UI when staging fails. These are deliberately
     /// human-readable; CellposeInstaller forwards them verbatim.

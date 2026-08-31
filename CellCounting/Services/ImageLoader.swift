@@ -11,13 +11,13 @@ struct LoadedImage {
     let heightPx: Int
 }
 
-/// Pass-17: result of importFile — carries the new ImageRecord, decoded image,
-/// SHA-256 hash (hex), and an optional EXIF px/µm value for Lane C to fill in.
+/// Result of an import — carries the new ImageRecord, decoded display image,
+/// SHA-256 hash, and an optional metadata-derived px/µm calibration.
 struct ImportResult {
     let record: ImageRecord
     let image: LoadedImage
     let fileHash: String
-    /// Reserved for Lane C (EXIF px/µm extraction). Always nil until Lane C lands.
+    /// Physical calibration detected from EXIF, OME, TIFF, or vendor metadata.
     let exifPxPerUm: Double?
     let exifSource: String?
 }
@@ -26,19 +26,31 @@ enum ImageLoadError: LocalizedError {
     case unsupportedFormat(String)
     case decodeFailed
     case ioError(Error)
+    case vendorReaderUnavailable(String)
+    case vendorPreparationFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedFormat(let ext): return "Unsupported image format “.\(ext)”. CellCounter accepts JPEG, PNG, and TIFF."
+        case .unsupportedFormat(let ext): return "Unsupported image format “.\(ext)”."
         case .decodeFailed:               return "Couldn't decode the image."
         case .ioError(let e):             return "File read error: \(e.localizedDescription)"
+        case .vendorReaderUnavailable(let ext):
+            return "No installed Python image reader can open .\(ext). Reinstall the active model to add vendor-format readers."
+        case .vendorPreparationFailed(let message):
+            return "Couldn't prepare the microscope image for display: \(message)"
         }
     }
 }
 
 enum ImageLoader {
-    /// Accepted extensions, lowercased.
-    static let supported: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "bmp"]
+    /// ImageIO-readable formats and vendor containers handled by `_imageio.py`.
+    static let nativeSupported: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "bmp"]
+    static let vendorSupported: Set<String> = ["nd2", "czi", "lif", "oif", "oib", "oir"]
+    static let supported = nativeSupported.union(vendorSupported)
+
+    static func isVendorExtension(_ raw: String) -> Bool {
+        vendorSupported.contains(raw.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")))
+    }
 
     /// Shared bounded caches. Per-view `@State` still owns presentation, while
     /// these caches eliminate repeat disk decode when the user steps backward,
@@ -61,13 +73,26 @@ enum ImageLoader {
     private static let memory = MemoryCaches()
 
     static func load(_ url: URL) throws -> LoadedImage {
-        let ext = url.pathExtension.lowercased()
-        guard supported.contains(ext) else { throw ImageLoadError.unsupportedFormat(ext) }
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { throw ImageLoadError.decodeFailed }
+        let resolvedURL = displayDecodableURL(for: url)
+        let ext = resolvedURL.pathExtension.lowercased()
+        guard nativeSupported.contains(ext) else { throw ImageLoadError.unsupportedFormat(ext) }
+        guard let src = CGImageSourceCreateWithURL(resolvedURL as CFURL, nil) else { throw ImageLoadError.decodeFailed }
         guard let cg = CGImageSourceCreateImageAtIndex(src, 0, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             throw ImageLoadError.decodeFailed
         }
         return LoadedImage(cgImage: cg, widthPx: cg.width, heightPx: cg.height)
+    }
+
+    /// Redirect a stored vendor container to the display PNG generated at
+    /// import. A source outside CellCounter's store has no UUID basename and
+    /// therefore remains unchanged (and produces a clear unsupported error).
+    static func displayDecodableURL(for url: URL) -> URL {
+        guard isVendorExtension(url.pathExtension),
+              let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else {
+            return url
+        }
+        let display = FileStore.shared.displayImageURL(for: id)
+        return FileManager.default.fileExists(atPath: display.path) ? display : url
     }
 
     /// Imports a user-dropped file: copies into FileStore.imagesDir, decodes, computes SHA-256,
@@ -137,6 +162,96 @@ enum ImageLoader {
                             exifPxPerUm: exifPxPerUm, exifSource: exifSource)
     }
 
+    private struct VendorPreparationPayload: Decodable {
+        let width: Int
+        let height: Int
+        let pixel_size_um: Double?
+        let source_format: String
+    }
+
+    /// Import a vendor microscope container through `_imageio.py`. The raw
+    /// file stays in `Images/` for detection and intensity measurements; a
+    /// lossless projected PNG in `DisplayImages/` feeds AppKit and exports.
+    nonisolated static func importVendorFile(
+        _ url: URL,
+        precomputedHash: String? = nil,
+        interpreters: [URL],
+        zProjection: String
+    ) async throws -> ImportResult {
+        let ext = url.pathExtension.lowercased()
+        guard isVendorExtension(ext) else { throw ImageLoadError.unsupportedFormat(ext) }
+        guard !interpreters.isEmpty else { throw ImageLoadError.vendorReaderUnavailable(ext) }
+        guard let scriptURL = PythonRuntime.stagedScriptURL(named: "image_prepare.py")
+                ?? PythonRuntime.bundledPythonURL(named: "image_prepare.py") else {
+            throw ImageLoadError.vendorPreparationFailed("image_prepare.py is missing from the app bundle")
+        }
+
+        let id = UUID()
+        let fileName = url.lastPathComponent
+        let rawDest = FileStore.shared.imageURL(for: id, extension: ext)
+        let displayDest = FileStore.shared.displayImageURL(for: id)
+        let thumbDest = FileStore.shared.thumbURL(for: id)
+        let fileHash = precomputedHash ?? sha256Hex(of: url)
+
+        do {
+            try FileManager.default.copyItem(at: url, to: rawDest)
+        } catch {
+            throw ImageLoadError.ioError(error)
+        }
+
+        var failures: [String] = []
+        var payload: VendorPreparationPayload?
+        for pythonURL in interpreters {
+            try? FileManager.default.removeItem(at: displayDest)
+            try? FileManager.default.removeItem(at: thumbDest)
+            do {
+                let outcome = try await SidecarProcessRunner.run(
+                    pythonURL: pythonURL,
+                    args: [
+                        scriptURL.path,
+                        "--image", rawDest.path,
+                        "--display-output", displayDest.path,
+                        "--thumbnail-output", thumbDest.path,
+                        "--z-project", zProjection,
+                    ])
+                try outcome.throwIfFailed()
+                payload = try JSONDecoder().decode(VendorPreparationPayload.self,
+                                                   from: outcome.stdout)
+                break
+            } catch {
+                failures.append("\(pythonURL.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        guard let payload else {
+            try? FileManager.default.removeItem(at: rawDest)
+            try? FileManager.default.removeItem(at: displayDest)
+            try? FileManager.default.removeItem(at: thumbDest)
+            throw ImageLoadError.vendorPreparationFailed(
+                failures.isEmpty ? "no reader succeeded" : failures.joined(separator: " | "))
+        }
+
+        do {
+            let loaded = try load(displayDest)
+            let record = ImageRecord(id: id, fileName: fileName,
+                                     originalPath: url.path,
+                                     widthPx: payload.width,
+                                     heightPx: payload.height)
+            record.fileHash = fileHash
+            let pxPerUm = payload.pixel_size_um.flatMap { $0 > 0 ? 1.0 / $0 : nil }
+            let source = pxPerUm == nil ? nil : "metadata-\(payload.source_format)"
+            return ImportResult(record: record, image: loaded,
+                                fileHash: fileHash ?? "",
+                                exifPxPerUm: pxPerUm,
+                                exifSource: source)
+        } catch {
+            try? FileManager.default.removeItem(at: rawDest)
+            try? FileManager.default.removeItem(at: displayDest)
+            try? FileManager.default.removeItem(at: thumbDest)
+            throw error
+        }
+    }
+
     /// Computes SHA-256 of the file at `url` and returns the hex-encoded digest.
     /// Returns nil only if the file cannot be read.
     /// `nonisolated` so callers inside `Task.detached` don't get main-actor warnings.
@@ -164,7 +279,7 @@ enum ImageLoader {
     }
 
     static func loadStored(_ record: ImageRecord) -> LoadedImage? {
-        try? load(record.storedURL)
+        try? load(record.displayURL)
     }
 
     /// Lightweight: just open the thumbnail JPEG for grid views.
@@ -202,7 +317,8 @@ enum ImageLoader {
                                                 maxPixelSize: Int = 1800) -> NSImage? {
         let key = url as NSURL
         if let cached = memory.reviewPreviews.object(forKey: key) { return cached }
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [
+        let resolvedURL = displayDecodableURL(for: url)
+        guard let src = CGImageSourceCreateWithURL(resolvedURL as CFURL, [
             kCGImageSourceShouldCache: false,
         ] as CFDictionary) else { return nil }
         let options: [CFString: Any] = [
@@ -220,7 +336,8 @@ enum ImageLoader {
     }
 
     nonisolated static func pixelSize(at url: URL) -> CGSize? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [
+        let resolvedURL = displayDecodableURL(for: url)
+        guard let src = CGImageSourceCreateWithURL(resolvedURL as CFURL, [
             kCGImageSourceShouldCache: false,
         ] as CFDictionary),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],

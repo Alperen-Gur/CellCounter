@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -10,6 +11,7 @@ enum ExportError: LocalizedError {
     case writeFailed(Error)
     case pythonUnavailable
     case roiExportFailed(String)
+    case noAnalyzedImages
 
     var errorDescription: String? {
         switch self {
@@ -20,11 +22,80 @@ enum ExportError: LocalizedError {
             return "Python venv is not installed. Install Cellpose first to enable ROI export."
         case .roiExportFailed(let msg):
             return "ImageJ ROI export failed: \(msg)"
+        case .noAnalyzedImages:
+            return "This batch has no analyzed images to export."
         }
     }
 }
 
 enum ExportService {
+
+    struct BatchAnnotatedImageInput: Sendable {
+        let fileName: String
+        let imageURL: URL
+        let cells: [DetectedCell]
+        let confidence: Double
+    }
+
+    struct BatchAnnotatedFolderResult: Sendable {
+        let folder: URL
+        let written: [String]
+        let errors: [(filename: String, message: String)]
+    }
+
+    /// Write every analyzed image in a batch as an annotated PNG inside one
+    /// folder whose name matches the batch title shown in the UI.
+    nonisolated static func writeBatchAnnotatedPNGs(
+        batchName: String,
+        images: [BatchAnnotatedImageInput],
+        thresholds: [Double],
+        pxPerUm: Double,
+        overlayMode: OverlayMode,
+        parentDirectory: URL
+    ) throws -> BatchAnnotatedFolderResult {
+        guard !images.isEmpty else { throw ExportError.noAnalyzedImages }
+        let folder = parentDirectory.appendingPathComponent(
+            sanitizeFilename(batchName), isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: folder, withIntermediateDirectories: true)
+        } catch {
+            throw ExportError.writeFailed(error)
+        }
+
+        var usedNames = Set<String>()
+        var written: [String] = []
+        var errors: [(String, String)] = []
+
+        for image in images {
+            let rawBase = (image.fileName as NSString).deletingPathExtension
+            let base = sanitizeFilename(rawBase)
+            var candidate = "\(base)-annotated.png"
+            var suffix = 2
+            while usedNames.contains(candidate.lowercased()) {
+                candidate = "\(base)-annotated_\(suffix).png"
+                suffix += 1
+            }
+            usedNames.insert(candidate.lowercased())
+            let destination = folder.appendingPathComponent(candidate)
+            do {
+                try compositeAnnotatedPNG(
+                    imageURL: image.imageURL,
+                    cells: image.cells,
+                    thresholds: thresholds,
+                    pxPerUm: pxPerUm,
+                    overlayMode: overlayMode,
+                    confidence: image.confidence,
+                    to: destination)
+                written.append(candidate)
+            } catch {
+                errors.append((candidate, error.localizedDescription))
+            }
+        }
+
+        return BatchAnnotatedFolderResult(
+            folder: folder, written: written, errors: errors)
+    }
 
     // MARK: — One-click sample folder (Pass-17)
 
@@ -40,7 +111,7 @@ enum ExportService {
 
     /// Sanitize a filename component so it survives `cmd-O` / Finder display.
     /// Strips characters that don't round-trip on macOS / Linux / Windows.
-    static func sanitizeFilename(_ name: String) -> String {
+    nonisolated static func sanitizeFilename(_ name: String) -> String {
         let bad = CharacterSet(charactersIn: "/\\:*?\"<>|\u{0}\n\r\t")
         let parts = name.components(separatedBy: bad)
         var cleaned = parts.joined(separator: "_")
@@ -126,7 +197,7 @@ enum ExportService {
         // heavy PNG compositing + CSV building + ROI subprocess below can run
         // off the MainActor (via Task.detached) without touching the model
         // graph. This keeps the whole window responsive during a sample export.
-        let srcImageURL = image.storedURL
+        let srcImageURL = image.displayURL
         let imageFileName = image.fileName
         let imageWidthPx = image.widthPx
         let imageHeightPx = image.heightPx
@@ -519,7 +590,7 @@ enum ExportService {
         // the caller's actor, then hand off to the `nonisolated` compositor.
         // Callers that want to keep the MainActor free run the compositor inside
         // a `Task.detached` with these same value-type snapshots.
-        try compositeAnnotatedPNG(imageURL: image.storedURL,
+        try compositeAnnotatedPNG(imageURL: image.displayURL,
                                   cells: detection.cells,
                                   thresholds: thresholds,
                                   pxPerUm: pxPerUm,
@@ -556,8 +627,8 @@ enum ExportService {
             throw ExportError.encodeFailed
         }
 
-        // Draw bitmap (CG origin is bottom-left; image draws right-side-up here since
-        // we composite in image-space; we'll flip when drawing scale bar text via NSGraphicsContext.)
+        // Draw the source bitmap in the Core Graphics context's native y-up
+        // coordinate space; the CoreText scale label below uses that same space.
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
 
         // Detected cells use image-space coordinates with origin at top-left.
@@ -650,23 +721,49 @@ enum ExportService {
 
     // MARK: — Scale bar
 
+    struct ScaleBarGeometry: Sendable, Equatable {
+        let barLengthPx: CGFloat
+        let barHeight: CGFloat
+        let padding: CGFloat
+        let fontSize: CGFloat
+        let label: String
+    }
+
+    nonisolated static func scaleBarGeometry(imageWidth w: Int,
+                                             imageHeight h: Int,
+                                             pxPerUm: Double) -> ScaleBarGeometry {
+        ScaleBarGeometry(
+            barLengthPx: max(20.0, 100.0 * pxPerUm),
+            barHeight: max(3, CGFloat(min(w, h)) * 0.006),
+            padding: max(12, CGFloat(min(w, h)) * 0.018),
+            fontSize: max(11, CGFloat(min(w, h)) * 0.022),
+            label: "100 µm")
+    }
+
     nonisolated private static func drawScaleBar(into ctx: CGContext,
                                      imageWidth w: Int,
                                      imageHeight h: Int,
                                      pxPerUm: Double) {
-        let barLengthPx = max(20.0, 100.0 * pxPerUm)
-        let barHeight: CGFloat = max(3, CGFloat(min(w, h)) * 0.006)
-        let padding: CGFloat = max(12, CGFloat(min(w, h)) * 0.018)
-        let fontSize: CGFloat = max(11, CGFloat(min(w, h)) * 0.022)
-
-        let label = "100 µm"
+        let geometry = scaleBarGeometry(imageWidth: w, imageHeight: h,
+                                        pxPerUm: pxPerUm)
+        let barLengthPx = geometry.barLengthPx
+        let barHeight = geometry.barHeight
+        let padding = geometry.padding
+        let fontSize = geometry.fontSize
 
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
             .foregroundColor: NSColor.white
         ]
-        let attrText = NSAttributedString(string: label, attributes: attrs)
-        let textSize = attrText.size()
+        let attrText = NSAttributedString(string: geometry.label, attributes: attrs)
+        let line = CTLineCreateWithAttributedString(attrText)
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let textWidth = CGFloat(CTLineGetTypographicBounds(
+            line, &ascent, &descent, &leading))
+        let textSize = CGSize(width: ceil(textWidth),
+                              height: ceil(ascent + descent + leading))
 
         let capsuleHPad: CGFloat = max(8, fontSize * 0.6)
         let capsuleVPad: CGFloat = max(6, fontSize * 0.4)
@@ -707,17 +804,15 @@ enum ExportService {
         ctx.fill(CGRect(x: barX, y: barY, width: CGFloat(barLengthPx), height: barHeight))
         ctx.restoreGState()
 
-        // Text — render with NSAttributedString via NSGraphicsContext.
-        // flipped: true matches AppKit's top-left origin so the text is right-side up in the PNG.
-        // (B4-1 fix: was flipped: false which caused upside-down text in exported images)
+        // CoreText draws directly in this context's native y-up coordinate
+        // system. Avoiding an NSGraphicsContext `flipped` bridge removes the
+        // vertical mirroring that appeared in downloaded annotated images.
         ctx.saveGState()
         let textX = capsuleRect.midX - textSize.width / 2
-        let textY = capsuleRect.minY + capsuleVPad
-        let ns = NSGraphicsContext(cgContext: ctx, flipped: true)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = ns
-        attrText.draw(at: CGPoint(x: textX, y: textY))
-        NSGraphicsContext.restoreGraphicsState()
+        let baselineY = capsuleRect.minY + capsuleVPad + descent
+        ctx.textMatrix = .identity
+        ctx.textPosition = CGPoint(x: textX, y: baselineY)
+        CTLineDraw(line, ctx)
         ctx.restoreGState()
     }
 

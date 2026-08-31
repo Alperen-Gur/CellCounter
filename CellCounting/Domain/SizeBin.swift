@@ -26,7 +26,7 @@ enum BinMath {
         return out
     }
 
-    static func binIndex(for diameter: Double, thresholds: [Double]) -> Int {
+    nonisolated static func binIndex(for diameter: Double, thresholds: [Double]) -> Int {
         let thresholds = thresholds.sorted()
         for (i, t) in thresholds.enumerated() {
             if diameter < t { return i }

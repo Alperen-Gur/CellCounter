@@ -41,16 +41,22 @@ struct RootView: View {
             .tint(theme.accentColor)
 
             if state.showCalibration {
+                let updatesOpenBatch = state.currentBatch != nil
+                    && (state.view == .results || state.view == .batch)
                 CalibrationSheet(
-                    current: state.pxPerUm,
+                    current: updatesOpenBatch
+                        ? (state.currentBatch?.pxPerUm ?? state.pxPerUm)
+                        : state.pxPerUm,
                     // Bug #11: pass current image URL so "Draw on scale bar" tab can show the real image
-                    imageURL: state.currentImage?.storedURL,
+                    imageURL: updatesOpenBatch ? state.currentImage?.storedURL : nil,
+                    appliesToOpenBatch: updatesOpenBatch,
                     // Pass-13: hand the repo through so the "Use preset" tab
                     // can list user-saved presets and create new ones inline.
                     repos: state.repos,
                     onClose: { state.showCalibration = false },
                     onSave: { newValue, source in
-                        state.applyCalibration(newValue, source: source)
+                        state.applyCalibration(newValue, source: source,
+                                               updateCurrentBatch: updatesOpenBatch)
                     })
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(50)

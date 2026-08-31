@@ -146,8 +146,8 @@ func presentGeoJSONExport(state: AppState, onResult: @escaping (Result<URL, Erro
         let widthPx = image.widthPx
         let heightPx = image.heightPx
         let fileName = image.fileName
-        let thresholds = state.thresholds
-        let pxPerUm = state.pxPerUm
+        let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
+        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
 
         Task { @MainActor in
             do {

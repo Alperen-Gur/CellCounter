@@ -344,8 +344,8 @@ struct ResultsExportPanel: View {
             try withCustomFolderAccess {
                 try ExportService.writePerImageSummaryCSV(
                     batch: batch,
-                    thresholds: state.thresholds,
-                    pxPerUm: state.pxPerUm,
+                    thresholds: batch.thresholds,
+                    pxPerUm: batch.pxPerUm,
                     confidence: conf,
                     separator: csvSeparator.isEmpty ? "," : csvSeparator,
                     to: url
@@ -369,8 +369,8 @@ struct ResultsExportPanel: View {
         let widthPx = image.widthPx
         let heightPx = image.heightPx
         let fileName = image.fileName
-        let thresholds = state.thresholds
-        let pxPerUm = state.pxPerUm
+        let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
+        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
         let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
         Task { @MainActor in
             defer { SecurityBookmarks.stop(scoped) }
@@ -402,8 +402,8 @@ struct ResultsExportPanel: View {
         // Snapshot on main, build + write the CSV off-main.
         let cells = detection.cells
         let fileName = image.fileName
-        let thresholds = state.thresholds
-        let pxPerUm = state.pxPerUm
+        let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
+        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
         let sep = csvSeparator.isEmpty ? "," : csvSeparator
         let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
         Task { @MainActor in
@@ -435,10 +435,10 @@ struct ResultsExportPanel: View {
         let conf = state.effectiveConfidence(for: image)
         // Snapshot on main, composite the full-res PNG off-main so the window
         // doesn't freeze while a large TIFF is decoded + drawn.
-        let imageURL = image.storedURL
+        let imageURL = image.displayURL
         let cells = detection.cells
-        let thresholds = state.thresholds
-        let pxPerUm = state.pxPerUm
+        let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
+        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
         let overlay = overlayMode
         let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
         Task { @MainActor in

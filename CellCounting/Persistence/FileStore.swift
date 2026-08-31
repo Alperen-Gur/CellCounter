@@ -34,6 +34,7 @@ struct FileStore {
 
         try? fm.createDirectory(at: root, withIntermediateDirectories: true)
         try? fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: displayImagesDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: modelsDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: exportsDir, withIntermediateDirectories: true)
@@ -41,6 +42,9 @@ struct FileStore {
     }
 
     var imagesDir: URL  { root.appendingPathComponent("Images", isDirectory: true) }
+    /// Lossless, flattened PNGs for vendor containers that AppKit cannot read.
+    /// The untouched source remains in `imagesDir` for detection/quantification.
+    var displayImagesDir: URL { root.appendingPathComponent("DisplayImages", isDirectory: true) }
     var thumbsDir: URL  { root.appendingPathComponent("Thumbnails", isDirectory: true) }
     var modelsDir: URL  { root.appendingPathComponent("Models", isDirectory: true) }
     var exportsDir: URL { root.appendingPathComponent("Exports", isDirectory: true) }
@@ -120,6 +124,10 @@ struct FileStore {
         thumbsDir.appendingPathComponent("\(imageId.uuidString).jpg")
     }
 
+    func displayImageURL(for imageId: UUID) -> URL {
+        displayImagesDir.appendingPathComponent("\(imageId.uuidString).png")
+    }
+
     /// Pass-11: one-time auto-wipe of the SwiftData store + image/thumb dirs.
     ///
     /// Ghost cells from prior runs could appear in the Review queue
@@ -146,12 +154,14 @@ struct FileStore {
             try? fm.removeItem(at: url)
         }
 
-        // 2/3) Nuke images + thumbnails (recursive).
+        // 2/3) Nuke images + native display derivatives + thumbnails (recursive).
         try? fm.removeItem(at: store.imagesDir)
+        try? fm.removeItem(at: store.displayImagesDir)
         try? fm.removeItem(at: store.thumbsDir)
 
         // 6) Recreate empty dirs so downstream code doesn't trip on missing paths.
         try? fm.createDirectory(at: store.imagesDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: store.displayImagesDir, withIntermediateDirectories: true)
         try? fm.createDirectory(at: store.thumbsDir, withIntermediateDirectories: true)
 
         // 5) Set the flag so we never run again.

@@ -8,6 +8,9 @@ struct CalibrationSheet: View {
     let onSave: (Double, String) -> Void
     /// Bug #11: optional URL of the currently-open image for "Draw on scale bar" tab.
     var imageURL: URL? = nil
+    /// False on Home: saving changes only the default for future imports.
+    /// True from Results/Batch: saving intentionally recalibrates that batch.
+    var appliesToOpenBatch: Bool = false
     /// Optional repository handle so the "Use preset" tab can show user
     /// presets alongside built-ins and the inline "New preset…" can persist
     /// a new `CalibrationPresetRecord` without a round-trip through Settings.
@@ -31,11 +34,13 @@ struct CalibrationSheet: View {
 
     init(current: Double,
          imageURL: URL? = nil,
+         appliesToOpenBatch: Bool = false,
          repos: Repositories? = nil,
          onClose: @escaping () -> Void,
          onSave: @escaping (Double, String) -> Void) {
         self.current = current
         self.imageURL = imageURL
+        self.appliesToOpenBatch = appliesToOpenBatch
         self.repos = repos
         self.onClose = onClose
         self.onSave = onSave
@@ -57,7 +62,9 @@ struct CalibrationSheet: View {
                 .onTapGesture { onClose() }
 
             VStack(spacing: 0) {
-                CalibHeader(theme: theme, onClose: onClose)
+                CalibHeader(theme: theme,
+                            appliesToOpenBatch: appliesToOpenBatch,
+                            onClose: onClose)
                     .padding(.horizontal, 24)
                     .padding(.top, 20)
                     .padding(.bottom, 0)
@@ -196,6 +203,7 @@ struct CalibrationSheet: View {
 
 private struct CalibHeader: View {
     let theme: AppTheme
+    let appliesToOpenBatch: Bool
     let onClose: () -> Void
 
     var body: some View {
@@ -205,7 +213,9 @@ private struct CalibHeader: View {
                     .font(.system(size: 18, weight: .bold))
                     .tracking(-0.01 * 18)
                     .foregroundStyle(Tokens.text)
-                Text("Tells CellCounter how many pixels make a micrometer. Without this, sizes are wrong.")
+                Text(appliesToOpenBatch
+                     ? "Recalibrates the open batch and its saved measurements."
+                     : "Sets the default scale for future imports; analyzed batches stay unchanged.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Tokens.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -288,7 +298,7 @@ private struct CalibMetadataTab: View {
                         .foregroundStyle(Tokens.textTertiary)
                     CalibrationValueCard(value: String(format: "%.5g", result.pxPerUm), unit: "px / µm")
                 }
-                Text("No manual conversion is needed. Saving applies this exact scale to the open batch and records its source in exports.")
+                Text("No manual conversion is needed. Saving applies this exact scale and records its source in exports.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Tokens.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)

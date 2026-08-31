@@ -8,6 +8,7 @@ struct ImagesLibraryView: View {
     @Bindable var state: AppState
 
     @State private var images: [ImageRecord] = []
+    @State private var imageNames: [UUID: String] = [:]
     @State private var selectedIDs: Set<UUID> = []
     @State private var multiSelectMode = false
     @State private var showFindDuplicates = false
@@ -76,12 +77,11 @@ struct ImagesLibraryView: View {
                     }
 
                     ScrollView {
-                        let nameMap = disambiguatedNames()
                         LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(images, id: \.id) { image in
                                 ImageThumbCell(
                                     image: image,
-                                    displayName: nameMap[image.id] ?? image.fileName,
+                                    displayName: imageNames[image.id] ?? image.fileName,
                                     state: state,
                                     isSelected: selectedIDs.contains(image.id),
                                     multiSelectMode: multiSelectMode,
@@ -150,8 +150,10 @@ struct ImagesLibraryView: View {
         // indexing scheme (Shared/AppState.swift), so that sort must NOT be
         // changed independently or tapping a thumbnail would open the wrong
         // image in Results.
-        images = state.repos.allImages()
+        let loaded = state.repos.allImages()
             .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+        images = loaded
+        imageNames = disambiguatedNames(for: loaded)
     }
 
     /// Pass-17: back-fill hashes for any un-hashed images, then present FindDuplicatesSheet.
@@ -197,7 +199,7 @@ struct ImagesLibraryView: View {
 
     /// Returns disambiguated display names for images that share the same fileName.
     /// Duplicates get _2, _3, … appended so the grid label is always unique.
-    private func disambiguatedNames() -> [UUID: String] {
+    private func disambiguatedNames(for images: [ImageRecord]) -> [UUID: String] {
         var counts: [String: Int] = [:]
         var seen: [String: Int] = [:]
         for img in images { counts[img.fileName, default: 0] += 1 }
@@ -267,9 +269,7 @@ struct ImagesLibraryView: View {
         alert.buttons.first?.hasDestructiveAction = true
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            for image in toDelete {
-                state.repos.deleteImage(image)
-            }
+            state.repos.deleteImages(toDelete)
             NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
             selectedIDs = []
             reload()
@@ -296,14 +296,16 @@ private struct ImageThumbCell: View {
     @Environment(AppTheme.self) private var theme
 
     private var cellCount: Int {
-        image.detection?.cells.count ?? 0
+        image.detection?.summaryCellCount ?? 0
     }
 
-    private var distNorm: [Double]? {
-        guard let det = image.detection else { return nil }
-        let cells = det.cells
+    @State private var distNorm: [Double]? = nil
+
+    nonisolated private static func distribution(cellsData: Data?,
+                                                 thresholds: [Double]) -> [Double]? {
+        guard let cellsData else { return nil }
+        let cells = DetectionRecord.decodeCellsData(cellsData)
         guard !cells.isEmpty else { return nil }
-        let thresholds = image.batch?.thresholds ?? state.thresholds
         var bins = Array(repeating: 0.0, count: max(thresholds.count + 1, 5))
         for c in cells {
             let idx = min(BinMath.binIndex(for: c.diameter, thresholds: thresholds), bins.count - 1)
@@ -439,7 +441,7 @@ private struct ImageThumbCell: View {
         .animation(Tokens.Motion.easeFast, value: hovered)
         .animation(Tokens.Motion.easeFast, value: isSelected)
         .onHover { hovered = $0 }
-        .onAppear { loadThumb() }
+        .task(id: image.id) { await loadContent() }
     }
 
     /// Pass-18 (Lane N): trim notes to ~80 chars for the hover tooltip on the
@@ -452,15 +454,22 @@ private struct ImageThumbCell: View {
         return trimmed[..<idx] + "…"
     }
 
-    private func loadThumb() {
+    private func loadContent() async {
         // Pass-11 K6: capture the URL on the MainActor before hopping off —
         // touching `image.thumbURL` inside the detached Task would read a
         // SwiftData @Model property off-main, which is undefined behaviour
         // (and may crash under aggressive isolation checking).
         let url = image.thumbURL
-        Task.detached(priority: .utility) {
-            let img = NSImage(contentsOf: url)
-            await MainActor.run { thumb = img }
-        }
+        let cellsData = image.detection?.cellsData
+        let thresholds = image.batch?.thresholds ?? state.thresholds
+        let loaded = await Task.detached(priority: .utility) {
+            let img = ImageLoader.cachedThumbnail(at: url)
+            let distribution = Self.distribution(cellsData: cellsData,
+                                                 thresholds: thresholds)
+            return (img, distribution)
+        }.value
+        guard !Task.isCancelled else { return }
+        thumb = loaded.0
+        distNorm = loaded.1
     }
 }

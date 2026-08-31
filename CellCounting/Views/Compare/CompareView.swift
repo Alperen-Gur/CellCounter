@@ -15,6 +15,7 @@ struct CompareView: View {
     /// Names of conditions currently included in the comparison.
     @State private var selected: Set<String> = []
     @State private var exportError: String? = nil
+    @State private var analysisRevision = 0
 
     private let maxSelected = 4
     private let minSelected = 1
@@ -52,7 +53,8 @@ struct CompareView: View {
                 PseudoreplicationCaveat()
                     .padding(.horizontal, 24).padding(.top, 14)
 
-                PanelsScroll(state: state, conditions: activeConditions)
+                PanelsScroll(state: state, conditions: activeConditions,
+                             analysisRevision: analysisRevision)
 
                 // Mann–Whitney U panel only makes sense for pairwise comparison.
                 // Show it when exactly two conditions are selected; otherwise
@@ -62,7 +64,8 @@ struct CompareView: View {
                 // section vanish with zero explanation, which reads as
                 // "broken" rather than "not applicable").
                 if activeConditions.count == 2 {
-                    MannWhitneyPanel(state: state, conditions: activeConditions)
+                    MannWhitneyPanel(state: state, conditions: activeConditions,
+                                     analysisRevision: analysisRevision)
                         .padding(.horizontal, 24)
                         .padding(.bottom, 18)
                 } else {
@@ -82,6 +85,10 @@ struct CompareView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Tokens.bg)
         .onAppear { refresh() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: Notification.Name("ccCorrectionsChanged"))) { _ in
+                analysisRevision &+= 1
+            }
         // ⌘E — Export comparison CSV
         .overlay(
             Button("") {
@@ -107,29 +114,19 @@ struct CompareView: View {
         // with `try?` and reported neither outcome, so a failed comparison
         // export looked successful.
         let thresholds = state.thresholds
-        let bins = BinMath.bins(from: thresholds)
-        var lines = [["condition", "bin_label", "count", "percent", "total_cells", "batches"].joined(separator: ",")]
-        for cond in conditions {
-            let batches = state.repos.batches(matching: cond.name)
-            var cells: [DetectedCell] = []
-            for b in batches {
-                for img in b.images {
-                    let cutoff = state.effectiveConfidence(for: img)
-                    cells.append(contentsOf: (img.detection?.cells ?? []).filter { $0.confidence >= cutoff })
-                }
+        let labels = BinMath.bins(from: thresholds).map(\.label)
+        let inputs = comparisonInputs(state: state, conditions: conditions)
+        Task { @MainActor in
+            do {
+                let outputs = await ComparisonAnalysisCache.shared.outputs(
+                    for: inputs, thresholds: thresholds)
+                try await Task.detached(priority: .userInitiated) {
+                    try writeComparisonCSV(outputs: outputs, binLabels: labels, to: url)
+                }.value
+                exportError = nil
+            } catch {
+                exportError = "Export failed: \(error.localizedDescription)"
             }
-            let total = cells.count
-            for (i, bin) in bins.enumerated() {
-                let c = cells.filter { BinMath.binIndex(for: $0.diameter, thresholds: thresholds) == i }.count
-                let pct = total > 0 ? Double(c) / Double(total) * 100 : 0
-                lines.append([cond.name, bin.label, "\(c)", String(format: "%.3f", pct), "\(total)", "\(batches.count)"].joined(separator: ","))
-            }
-        }
-        do {
-            try (lines.joined(separator: "\n") + "\n").data(using: .utf8)?.write(to: url, options: .atomic)
-            exportError = nil
-        } catch {
-            exportError = "Export failed: \(error.localizedDescription)"
         }
     }
 
@@ -271,14 +268,171 @@ private struct PooledCondition: Identifiable {
     let buckets: [Int]          // histogram buckets (HistogramMath.bucketCount)
 }
 
+private struct ComparisonDetectionInput: Sendable {
+    let id: UUID
+    let revision: Int
+    let cellsData: Data
+    let confidence: Double
+}
+
+private struct ComparisonConditionInput: Sendable {
+    let name: String
+    let batchCount: Int
+    let detections: [ComparisonDetectionInput]
+}
+
+private struct ComparisonConditionOutput: Sendable {
+    let name: String
+    let batchCount: Int
+    let diameters: [Double]
+    let mean: Double
+    let sigma: Double
+    let binCounts: [Int]
+    let buckets: [Int]
+}
+
+/// Copy only compact Data/scalar values while on the MainActor. Large JSON
+/// decoding and statistical scans then run on a worker, so selecting a Compare
+/// chip never freezes the window for a large library.
+private func comparisonInputs(state: AppState,
+                              conditions: [ConditionRecord]) -> [ComparisonConditionInput] {
+    conditions.map { condition in
+        let batches = state.repos.batches(matching: condition.name)
+        let detections = batches.flatMap(\.images).compactMap { image -> ComparisonDetectionInput? in
+            guard let detection = image.detection else { return nil }
+            return .init(id: detection.id, revision: detection.cellsRevision,
+                         cellsData: detection.cellsData,
+                         confidence: state.effectiveConfidence(for: image))
+        }
+        return .init(name: condition.name, batchCount: batches.count,
+                     detections: detections)
+    }
+}
+
+nonisolated private func comparisonAnalysisKey(
+    _ inputs: [ComparisonConditionInput], thresholds: [Double]
+) -> Int {
+    var hasher = Hasher()
+    hasher.combine(thresholds)
+    for input in inputs {
+        hasher.combine(input.name)
+        hasher.combine(input.batchCount)
+        for detection in input.detections {
+            hasher.combine(detection.id)
+            hasher.combine(detection.revision)
+            hasher.combine(detection.confidence)
+        }
+    }
+    return hasher.finalize()
+}
+
+/// The chart, pairwise test, and CSV export often request the same pooled
+/// analysis at once. Coalesce those requests so each cell payload is decoded
+/// and scanned only once per data revision.
+private actor ComparisonAnalysisCache {
+    static let shared = ComparisonAnalysisCache()
+
+    private var cached: (key: Int, outputs: [ComparisonConditionOutput])?
+    private var running: (key: Int, task: Task<[ComparisonConditionOutput], Never>)?
+
+    func outputs(for inputs: [ComparisonConditionInput],
+                 thresholds: [Double]) async -> [ComparisonConditionOutput] {
+        let key = comparisonAnalysisKey(inputs, thresholds: thresholds)
+        if let cached, cached.key == key { return cached.outputs }
+        if let running, running.key == key { return await running.task.value }
+
+        let task = Task.detached(priority: .userInitiated) {
+            computeComparisonOutputs(inputs, thresholds: thresholds)
+        }
+        running = (key, task)
+        let outputs = await task.value
+        if running?.key == key {
+            cached = (key, outputs)
+            running = nil
+        }
+        return outputs
+    }
+}
+
+nonisolated private func computeComparisonOutputs(
+    _ inputs: [ComparisonConditionInput], thresholds: [Double]
+) -> [ComparisonConditionOutput] {
+    let sortedThresholds = thresholds.sorted()
+    return inputs.map { input in
+        var diameters: [Double] = []
+        for detection in input.detections {
+            let cells = DetectionRecord.decodeCellsData(detection.cellsData)
+            diameters.reserveCapacity(diameters.count + cells.count)
+            for cell in cells where cell.confidence >= detection.confidence {
+                diameters.append(cell.diameter)
+            }
+        }
+
+        let n = diameters.count
+        let mean = n == 0 ? 0 : diameters.reduce(0, +) / Double(n)
+        let sigma = n == 0 ? 0 : sqrt(diameters.reduce(0) {
+            $0 + ($1 - mean) * ($1 - mean)
+        } / Double(n))
+        var binCounts = Array(repeating: 0, count: sortedThresholds.count + 1)
+        var buckets = Array(repeating: 0, count: 24)
+        for diameter in diameters {
+            let bin = sortedThresholds.firstIndex(where: { diameter < $0 })
+                ?? sortedThresholds.count
+            binCounts[bin] += 1
+            let raw = (diameter - 8) / (60 - 8) * 24
+            buckets[min(23, max(0, Int(raw)))] += 1
+        }
+        return .init(name: input.name, batchCount: input.batchCount,
+                     diameters: diameters, mean: mean, sigma: sigma,
+                     binCounts: binCounts, buckets: buckets)
+    }
+}
+
+nonisolated private func writeComparisonCSV(
+    outputs: [ComparisonConditionOutput],
+    binLabels: [String],
+    to url: URL
+) throws {
+    func escape(_ value: String) -> String {
+        guard value.contains(",") || value.contains("\"") || value.contains("\n") else {
+            return value
+        }
+        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
+    var lines = ["condition,bin_label,count,percent,total_cells,batches"]
+    for output in outputs {
+        let total = output.diameters.count
+        for index in binLabels.indices {
+            let count = output.binCounts.indices.contains(index)
+                ? output.binCounts[index] : 0
+            let percent = total > 0 ? Double(count) / Double(total) * 100 : 0
+            lines.append([
+                escape(output.name), escape(binLabels[index]), String(count),
+                String(format: "%.3f", percent), String(total),
+                String(output.batchCount),
+            ].joined(separator: ","))
+        }
+    }
+    try (lines.joined(separator: "\n") + "\n").data(using: .utf8)?.write(
+        to: url, options: .atomic)
+}
+
 private struct PanelsScroll: View {
     @Bindable var state: AppState
     let conditions: [ConditionRecord]
+    let analysisRevision: Int
 
     /// Materialized once per (conditions × thresholds) change instead of on
-    /// every SwiftUI body pass. Recomputed via `.onAppear` / `.onChange`.
+    /// every SwiftUI body pass. Recomputed by a cancellable keyed task.
     @State private var pooled: [PooledCondition] = []
     @State private var sharedYMax: Int = 1
+
+    private var recomputeKey: String {
+        let names = conditions.map(\.name).joined(separator: "\u{0}")
+        let thresholds = state.thresholds.map { String($0) }.joined(separator: ",")
+        return "\(names)|\(thresholds)|\(state.confidence)|\(analysisRevision)"
+    }
 
     var body: some View {
         ScrollView {
@@ -290,67 +444,30 @@ private struct PanelsScroll: View {
             }
             .padding(.horizontal, 24).padding(.vertical, 18)
         }
-        .onAppear { recompute() }
-        // Recompute only when the set of conditions or the size thresholds
-        // change — not on every hover / selection-independent invalidation.
-        .onChange(of: conditions.map(\.name)) { _, _ in recompute() }
-        .onChange(of: state.thresholds) { _, _ in recompute() }
-        .onChange(of: state.confidence) { _, _ in recompute() }
+        .task(id: recomputeKey) { await recompute() }
     }
 
     /// Single-pass materialization: one SwiftData fetch + one cell scan per
     /// condition, computing pooled stats, per-bin counts, and histogram buckets
     /// together, plus the shared Y-axis max.
-    private func recompute() {
+    private func recompute() async {
         let thresholds = state.thresholds
         let bins = BinMath.bins(from: thresholds)
-        var result: [PooledCondition] = []
-        var yMax = 1
-        for cond in conditions {
-            let batches = state.repos.batches(matching: cond.name)
-            var diameters: [Double] = []
-            for b in batches {
-                for img in b.images {
-                    if let cells = img.detection?.cells {
-                        // Same per-image confidence cutoff every other stat uses
-                        // (finding: compare-ignores-confidence-cutoff).
-                        let cutoff = state.effectiveConfidence(for: img)
-                        diameters.reserveCapacity(diameters.count + cells.count)
-                        for c in cells where c.confidence >= cutoff { diameters.append(c.diameter) }
-                    }
-                }
-            }
-            let n = diameters.count
-            // Mean / σ.
-            var mean = 0.0
-            var sigma = 0.0
-            if n > 0 {
-                let dn = Double(n)
-                mean = diameters.reduce(0, +) / dn
-                let variance = diameters.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / dn
-                sigma = sqrt(variance)
-            }
-            // Per-bin counts + histogram buckets in the same pass.
-            var binCounts = Array(repeating: 0, count: bins.count)
-            var buckets = Array(repeating: 0, count: HistogramMath.bucketCount)
-            for d in diameters {
-                let bi = BinMath.binIndex(for: d, thresholds: thresholds)
-                if bi >= 0 && bi < binCounts.count { binCounts[bi] += 1 }
-                let raw = (d - HistogramMath.histMin) / (HistogramMath.histMax - HistogramMath.histMin) * Double(HistogramMath.bucketCount)
-                let hi = min(HistogramMath.bucketCount - 1, max(0, Int(raw)))
-                buckets[hi] += 1
-            }
-            yMax = max(yMax, buckets.max() ?? 1)
-            result.append(PooledCondition(id: cond.name,
-                                          condition: cond,
-                                          batchCount: batches.count,
-                                          cellCount: n,
-                                          mean: mean,
-                                          sigma: sigma,
-                                          bins: bins,
-                                          binCounts: binCounts,
-                                          buckets: buckets))
+        let inputs = comparisonInputs(state: state, conditions: conditions)
+        let outputs = await ComparisonAnalysisCache.shared.outputs(
+            for: inputs, thresholds: thresholds)
+        guard !Task.isCancelled else { return }
+        let byName = Dictionary(uniqueKeysWithValues: outputs.map { ($0.name, $0) })
+        let result: [PooledCondition] = conditions.compactMap { condition in
+            guard let output = byName[condition.name] else { return nil }
+            return PooledCondition(id: condition.name, condition: condition,
+                                   batchCount: output.batchCount,
+                                   cellCount: output.diameters.count,
+                                   mean: output.mean, sigma: output.sigma,
+                                   bins: bins, binCounts: output.binCounts,
+                                   buckets: output.buckets)
         }
+        let yMax = result.lazy.compactMap { $0.buckets.max() }.max() ?? 1
         pooled = result
         sharedYMax = yMax
     }
@@ -766,54 +883,21 @@ private struct BottomBar: View {
         panel.nameFieldStringValue = "compare-conditions-\(timestamp()).csv"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        do {
-            try writeCSV(to: url)
-            exportError = nil
-        } catch {
-            exportError = "Export failed: \(error.localizedDescription)"
-        }
-    }
-
-    private func writeCSV(to url: URL) throws {
         let thresholds = state.thresholds
-        let bins = BinMath.bins(from: thresholds)
-        var lines: [String] = []
-        lines.append(["condition", "bin_label", "count", "percent", "total_cells", "batches"].joined(separator: ","))
-
-        for cond in conditions {
-            let batches = state.repos.batches(matching: cond.name)
-            var cells: [DetectedCell] = []
-            for b in batches {
-                for img in b.images {
-                    let cutoff = state.effectiveConfidence(for: img)
-                    cells.append(contentsOf: (img.detection?.cells ?? []).filter { $0.confidence >= cutoff })
-                }
-            }
-            let total = cells.count
-            for (i, bin) in bins.enumerated() {
-                let c = cells.filter { BinMath.binIndex(for: $0.diameter, thresholds: thresholds) == i }.count
-                let pct = total > 0 ? Double(c) / Double(total) * 100 : 0
-                let row: [String] = [
-                    csvEscape(cond.name),
-                    csvEscape(bin.label),
-                    "\(c)",
-                    String(format: "%.3f", pct),
-                    "\(total)",
-                    "\(batches.count)"
-                ]
-                lines.append(row.joined(separator: ","))
+        let labels = BinMath.bins(from: thresholds).map(\.label)
+        let inputs = comparisonInputs(state: state, conditions: conditions)
+        Task { @MainActor in
+            do {
+                let outputs = await ComparisonAnalysisCache.shared.outputs(
+                    for: inputs, thresholds: thresholds)
+                try await Task.detached(priority: .userInitiated) {
+                    try writeComparisonCSV(outputs: outputs, binLabels: labels, to: url)
+                }.value
+                exportError = nil
+            } catch {
+                exportError = "Export failed: \(error.localizedDescription)"
             }
         }
-
-        let body = lines.joined(separator: "\n") + "\n"
-        try body.data(using: .utf8)?.write(to: url, options: .atomic)
-    }
-
-    private func csvEscape(_ s: String) -> String {
-        if s.contains(",") || s.contains("\"") || s.contains("\n") {
-            return "\"\(s.replacingOccurrences(of: "\"", with: "\"\""))\""
-        }
-        return s
     }
 
     private func timestamp() -> String {
@@ -902,6 +986,7 @@ private struct NotPairwiseHint: View {
 private struct MannWhitneyPanel: View {
     @Bindable var state: AppState
     let conditions: [ConditionRecord]
+    let analysisRevision: Int
 
     private struct Pooled {
         let condition: ConditionRecord
@@ -916,25 +1001,26 @@ private struct MannWhitneyPanel: View {
     @State private var groups: [Pooled] = []
     @State private var result: MannWhitneyResult? = nil
 
+    private var recomputeKey: String {
+        let names = conditions.map(\.name).joined(separator: "\u{0}")
+        let thresholds = state.thresholds.map { String($0) }.joined(separator: ",")
+        return "\(names)|\(thresholds)|\(state.confidence)|\(analysisRevision)"
+    }
+
     /// Single-pass materialization: one SwiftData fetch + one cell scan per
     /// condition, applying the SAME per-image confidence cutoff every other stat
     /// in the app uses (finding: compare-ignores-confidence-cutoff), then runs
     /// the Mann–Whitney test on the pooled diameters.
-    private func recompute() {
-        var gs: [Pooled] = []
-        for cond in conditions {
-            let batches = state.repos.batches(matching: cond.name)
-            var ds: [Double] = []
-            for b in batches {
-                for img in b.images {
-                    if let cells = img.detection?.cells {
-                        let cutoff = state.effectiveConfidence(for: img)
-                        ds.reserveCapacity(ds.count + cells.count)
-                        for c in cells where c.confidence >= cutoff { ds.append(c.diameter) }
-                    }
-                }
-            }
-            gs.append(Pooled(condition: cond, diameters: ds))
+    private func recompute() async {
+        let thresholds = state.thresholds
+        let inputs = comparisonInputs(state: state, conditions: conditions)
+        let outputs = await ComparisonAnalysisCache.shared.outputs(
+            for: inputs, thresholds: thresholds)
+        guard !Task.isCancelled else { return }
+        let byName = Dictionary(uniqueKeysWithValues: outputs.map { ($0.name, $0.diameters) })
+        let gs = conditions.compactMap { condition -> Pooled? in
+            guard let diameters = byName[condition.name] else { return nil }
+            return Pooled(condition: condition, diameters: diameters)
         }
         groups = gs
         if gs.count == 2, gs[0].diameters.count >= 3, gs[1].diameters.count >= 3 {
@@ -984,12 +1070,7 @@ private struct MannWhitneyPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous)
                 .strokeBorder(Tokens.border, lineWidth: 0.5))
-        .onAppear { recompute() }
-        // Recompute only when the compared conditions, size thresholds, or the
-        // confidence cutoff change — not on every hover / unrelated invalidation.
-        .onChange(of: conditions.map(\.name)) { _, _ in recompute() }
-        .onChange(of: state.thresholds) { _, _ in recompute() }
-        .onChange(of: state.confidence) { _, _ in recompute() }
+        .task(id: recomputeKey) { await recompute() }
     }
 
     private struct StatsBody: View {

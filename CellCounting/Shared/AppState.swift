@@ -838,6 +838,7 @@ final class AppState {
         guard detection.cellsRevision == revision else {
             return await loadCells(for: detection)
         }
+        detection.cacheDecodedCells(cells, revision: revision)
         decodedCellsCache[id] = DecodedCellsCacheEntry(revision: revision, cells: cells)
         touchDecodedCellsCache(id)
         while decodedCellsOrder.count > 6 {
@@ -1146,11 +1147,18 @@ final class AppState {
                 supported.map { url in (url, ImageLoader.sha256Hex(of: url)) }
             }.value
 
-            // Back on main: check each hash against the store.
+            // Back on main: one library fetch + O(1) lookups. The previous
+            // per-file `imageRecord(matchingHash:)` path issued N SwiftData
+            // queries before a large import even reached the processing UI.
+            let existingByIdentity = Dictionary(
+                reposRef.allImages().compactMap { image -> (String, ImageRecord)? in
+                    guard let hash = image.fileHash, !hash.isEmpty else { return nil }
+                    return (image.fileName + "\u{0}" + hash, image)
+                },
+                uniquingKeysWith: { first, _ in first })
             let dupes: [DuplicateCandidate] = hashPairs.compactMap { (url, hash) in
                 guard let hash, !hash.isEmpty else { return nil }
-                guard let existing = reposRef.imageRecord(matchingHash: hash,
-                                                           fileName: url.lastPathComponent) else {
+                guard let existing = existingByIdentity[url.lastPathComponent + "\u{0}" + hash] else {
                     return nil
                 }
                 return DuplicateCandidate(url: url, hash: hash, existingRecord: existing)
@@ -1235,6 +1243,18 @@ final class AppState {
             let useGPUSnap = self.useGPU
             let svcRef = svc
             let knownHashesSnap = knownHashes
+            let activeFamilySnap = self.models.first(where: { $0.id == modelIdSnap })?.family
+            let vendorInterpretersSnap = PythonRuntime.vendorReaderInterpreters(
+                preferredFamily: activeFamilySnap)
+            let zProjectionSnap = ChannelStackSettings.zProjection.rawValue
+
+            // Cellpose-family and classical sidecars load the untouched vendor
+            // source through `_imageio`, preserving all raw channels for
+            // quantification. PIL-only or separately provisioned detectors use
+            // the prepared lossless PNG so vendor imports remain model-agnostic.
+            let detectorReadsVendorSourceDirectly = activeFamilySnap == .cellpose
+                || activeFamilySnap == .cellpose4
+                || activeFamilySnap == .classical
 
             // Pass-17 Lane C: collect EXIF px/µm from each import result so we
             // can auto-apply a batch-level calibration when all images agree.
@@ -1248,10 +1268,24 @@ final class AppState {
                 func dispatch(url: URL) {
                     group.addTask {
                         do {
-                            let imported = try await Task.detached(priority: .utility) {
-                                try ImageLoader.importFile(url, precomputedHash: knownHashesSnap[url])
-                            }.value
-                            let input = DetectionInput(imageURL: imported.record.storedURL,
+                            let imported: ImportResult
+                            if ImageLoader.isVendorExtension(url.pathExtension) {
+                                imported = try await ImageLoader.importVendorFile(
+                                    url,
+                                    precomputedHash: knownHashesSnap[url],
+                                    interpreters: vendorInterpretersSnap,
+                                    zProjection: zProjectionSnap)
+                            } else {
+                                imported = try await Task.detached(priority: .utility) {
+                                    try ImageLoader.importFile(
+                                        url, precomputedHash: knownHashesSnap[url])
+                                }.value
+                            }
+                            let detectionURL = ImageLoader.isVendorExtension(url.pathExtension)
+                                && !detectorReadsVendorSourceDirectly
+                                ? imported.record.displayURL
+                                : imported.record.storedURL
+                            let input = DetectionInput(imageURL: detectionURL,
                                                        modelId: modelIdSnap,
                                                        pxPerUm: pxPerUmSnap,
                                                        confidenceThreshold: confSnap,
@@ -1290,7 +1324,7 @@ final class AppState {
                         NSLog("CellCounter import failed for %@: %@",
                               url.lastPathComponent, importError.localizedDescription)
                     } else if let imported = importedRecord {
-                        self.repos.attach(image: imported, to: batch)
+                        self.repos.attach(image: imported, to: batch, save: false)
                         anyImported = true
                         // Accumulate EXIF px/µm values.
                         if let px = exifPx { collectedExifPxPerUm.append(px) }
@@ -1300,7 +1334,8 @@ final class AppState {
                             self.repos.saveDetection(r.cells,
                                                      detectorId: "\(type(of: svcRef))/\(modelIdSnap)",
                                                      for: imported,
-                                                     imageStats: r.imageStats)
+                                                     imageStats: r.imageStats,
+                                                     save: false)
                         case .failure(let err):
                             // Pass-13: don't surface user-initiated cancels as
                             // failures. They produce exit code 15/9 which
@@ -1323,6 +1358,14 @@ final class AppState {
                     }
                     finished += 1
                     self.processingProgress = Double(finished) / Double(urls.count)
+                    // One transaction per small completed chunk instead of
+                    // attach + detection each committing independently. Large
+                    // imports drop from ~2N SQLite commits to ceil(N/8), while
+                    // yielding keeps progress and cancellation responsive.
+                    if finished.isMultiple(of: 8) {
+                        try? self.repos.context.save()
+                        await Task.yield()
+                    }
 
                     if let next = iterator.next() {
                         dispatch(url: next)
@@ -1330,6 +1373,7 @@ final class AppState {
                     }
                 }
             }
+            try? self.repos.context.save()
 
             // Pass-17 Lane C: apply EXIF-derived calibration to this batch if:
             //  • EVERY imported image reported EXIF calibration (no un-calibrated
@@ -1778,17 +1822,14 @@ final class AppState {
             return cached
         }
 
-        let images = orderedImages(in: batch)
-        var materialized: [BatchInsightsInput.ImageInput] = []
-        materialized.reserveCapacity(images.count)
-        for (index, image) in images.enumerated() {
-            materialized.append(.init(id: image.id, fileName: image.fileName,
-                                      cells: image.detection?.cells ?? [],
-                                      imageStats: image.detection?.imageStats ?? [:]))
-            if index % 6 == 5 { await Task.yield() }
-        }
         let revision = batch.contentRevision
-        let input = BatchInsightsInput(revision: revision, images: materialized)
+        let input = BatchInsightsEncodedInput(
+            revision: revision,
+            images: orderedImages(in: batch).map { image in
+                .init(id: image.id, fileName: image.fileName,
+                      cellsData: image.detection?.cellsData,
+                      imageStatsData: image.detection?.imageStatsData)
+            })
         let snapshot = await Task.detached(priority: .utility) {
             BatchInsightsService.compute(input)
         }.value
@@ -1863,10 +1904,15 @@ final class AppState {
     /// Apply a physical scale and recompute existing µm measurements from
     /// their pixel-space source values. This runs in yielding chunks so fixing
     /// calibration on a 700-image batch doesn't freeze the app.
-    func applyCalibration(_ newPxPerUm: Double, source: String) {
+    func applyCalibration(_ newPxPerUm: Double,
+                          source: String,
+                          updateCurrentBatch: Bool = true) {
         guard newPxPerUm > 0 else { return }
         pxPerUm = newPxPerUm
-        guard let batch = currentBatch else { return }
+        // Home owns the default for FUTURE imports. Reaching an old batch via
+        // `currentBatchId` must not make a Home calibration silently rewrite
+        // that analyzed batch's measurements or scale bar.
+        guard updateCurrentBatch, let batch = currentBatch else { return }
         let oldPxPerUm = max(batch.pxPerUm, 0.000_001)
         batch.pxPerUm = newPxPerUm
         batch.pxPerUmSource = source

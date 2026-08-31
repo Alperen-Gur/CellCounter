@@ -69,7 +69,7 @@ struct PDFReportGenerator {
     static func makeInputs(image: ImageRecord, state: AppState) -> Inputs {
         let snapshot = ReportSnapshot.make(image: image, state: state)
         return Inputs(snapshot: snapshot,
-                      storedURL: image.storedURL,
+                      storedURL: image.displayURL,
                       cells: image.detection?.cells ?? [],
                       thresholds: snapshot.thresholds,
                       pxPerUm: snapshot.pxPerUm,

@@ -118,6 +118,14 @@ final class ImageRecord {
         let ext = raw.isEmpty ? "tif" : raw.lowercased()
         return FileStore.shared.imageURL(for: id, extension: ext)
     }
+    /// ImageIO/AppKit-readable bitmap used by viewers and annotated exports.
+    /// Native formats point at the source itself; vendor containers point at
+    /// the lossless projected PNG created during import.
+    var displayURL: URL {
+        ImageLoader.isVendorExtension((fileName as NSString).pathExtension)
+            ? FileStore.shared.displayImageURL(for: id)
+            : storedURL
+    }
     var thumbURL: URL { FileStore.shared.thumbURL(for: id) }
 }
 
@@ -142,6 +150,12 @@ final class DetectionRecord {
     var cellsRevision: Int = 0
     var reviewPendingCount: Int = -1
     var reviewIndexVersion: Int = 0
+    /// Process-local decoded snapshot. SwiftData persists the compact JSON,
+    /// while every consumer in the current process shares this copy until
+    /// `cellsRevision` changes. This turns repeated sidebar/export/stat reads
+    /// from O(payload bytes) JSON work into O(1) copy-on-write array access.
+    @Transient private var decodedCellsCache: [DetectedCell]? = nil
+    @Transient private var decodedCellsCacheRevision: Int = -1
     /// Per-image statistics as a JSON blob (C2/C3 pass-6).
     /// Keys: "focus_score" (Double, 0–1), "illumination_residual" (Double, ≥ 0),
     /// plus any C2 colony keys. Nil for legacy detections.
@@ -162,6 +176,8 @@ final class DetectionRecord {
         self.reviewPendingCount = cells.filter { $0.confidence < 0.65 }.count
         self.reviewIndexVersion = 0
         self.imageStatsData = imageStats.isEmpty ? nil : (try? JSONEncoder().encode(imageStats))
+        self.decodedCellsCache = cells
+        self.decodedCellsCacheRevision = 0
     }
 
     /// Decoded view of `imageStatsData`. Returns an empty dict when the blob is
@@ -174,8 +190,14 @@ final class DetectionRecord {
 
     var cells: [DetectedCell] {
         get {
-            ((try? JSONDecoder().decode([CellPayload].self, from: cellsData)) ?? [])
-                .map { $0.cell }
+            if decodedCellsCacheRevision == cellsRevision,
+               let decodedCellsCache {
+                return decodedCellsCache
+            }
+            let decoded = Self.decodeCellsData(cellsData)
+            decodedCellsCache = decoded
+            decodedCellsCacheRevision = cellsRevision
+            return decoded
         }
         set {
             let payload = newValue.map(CellPayload.init)
@@ -183,6 +205,8 @@ final class DetectionRecord {
             minConfidence = newValue.map { $0.confidence }.min() ?? 1.0
             cellCountSummary = newValue.count
             cellsRevision &+= 1
+            decodedCellsCache = newValue
+            decodedCellsCacheRevision = cellsRevision
         }
     }
 
@@ -213,11 +237,22 @@ final class DetectionRecord {
             .map(\.cell)
     }
 
+    /// Share an off-main decode with direct model consumers when it still
+    /// represents the current payload. This avoids a second JSON decode after
+    /// Results has already populated AppState's bounded cache.
+    func cacheDecodedCells(_ cells: [DetectedCell], revision: Int) {
+        guard revision == cellsRevision else { return }
+        decodedCellsCache = cells
+        decodedCellsCacheRevision = revision
+    }
+
     func applyStorageSnapshot(_ snapshot: CellsStorageSnapshot) {
         cellsData = snapshot.data
         minConfidence = snapshot.minimumConfidence
         cellCountSummary = snapshot.count
         cellsRevision &+= 1
+        decodedCellsCache = nil
+        decodedCellsCacheRevision = -1
     }
 }
 

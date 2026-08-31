@@ -15,11 +15,15 @@ extension Notification.Name {
 /// the same coordinate system that detections use (`DetectedCell.cx,cy` and
 /// `diameterPx`), so no scaling is needed.
 ///
-/// Concurrency: callers run this on @MainActor for N < 5000 cells. For our
-/// typical microscope image (≤ ~1000 cells) the greedy O(N·M) match is fast
-/// enough to be invisible inside SwiftUI's body. Document the limit at the
-/// call site if cell counts grow.
+/// Candidate discovery uses a uniform spatial index. The final global greedy
+/// ordering is unchanged, but sparse microscope fields avoid the previous
+/// O(annotations × detections) scan and its oversized candidate allocation.
 enum AnnotationMatcher {
+
+    private struct GridKey: Hashable {
+        let x: Int
+        let y: Int
+    }
 
     /// One annotation ↔ detection pair, with the distance that linked them.
     struct Pair {
@@ -67,15 +71,13 @@ enum AnnotationMatcher {
     /// Greedy nearest-neighbour matcher.
     ///
     /// Algorithm:
-    /// 1. Compute every (annotation, detection) candidate pair whose Euclidean
+    /// 1. Spatially query every (annotation, detection) candidate pair whose
     ///    distance ≤ `matchRadiusFactor * detection.diameterPx`.
     /// 2. Sort by distance ascending.
     /// 3. Walk in order, claiming each annotation + detection at most once.
     ///
-    /// For the cell counts we care about (≤ ~1000) this is O(N·M log(N·M))
-    /// and runs in well under a millisecond on the main actor. If we ever
-    /// exceed ~5000 cells per image, swap in a spatial index before the
-    /// `MainActor` assumption breaks.
+    /// Candidate lookup is near O(N + M) for ordinary sparse fields; only
+    /// genuinely dense/overlapping masks produce a large candidate set.
     static func evaluate(annotations: [GroundTruthAnnotation],
                          detections: [DetectedCell],
                          matchRadiusFactor: Double = 1.0) -> Score {
@@ -96,26 +98,70 @@ enum AnnotationMatcher {
         struct Candidate {
             let annIdx: Int
             let detIdx: Int
-            let distance: Double
+            let distanceSquared: Double
+        }
+
+        let positiveRadii = detections.map {
+            matchRadiusFactor * max($0.diameterPx, 1)
+        }.filter { $0 > 0 && $0.isFinite }
+        let averageRadius = positiveRadii.isEmpty
+            ? 16
+            : positiveRadii.reduce(0, +) / Double(positiveRadii.count)
+        let cellSize = max(8, min(256, averageRadius))
+
+        func key(x: Double, y: Double) -> GridKey {
+            GridKey(x: Int(floor(x / cellSize)),
+                    y: Int(floor(y / cellSize)))
+        }
+
+        var annotationGrid: [GridKey: [Int]] = [:]
+        annotationGrid.reserveCapacity(annotations.count)
+        for (index, annotation) in annotations.enumerated() {
+            annotationGrid[key(x: annotation.cx, y: annotation.cy), default: []]
+                .append(index)
         }
 
         var candidates: [Candidate] = []
-        candidates.reserveCapacity(annotations.count * detections.count / 4)
-        for (ai, a) in annotations.enumerated() {
-            for (di, d) in detections.enumerated() {
+        candidates.reserveCapacity(min(65_536, annotations.count * 4))
+        for (di, d) in detections.enumerated() {
+            let radius = matchRadiusFactor * max(d.diameterPx, 1)
+            guard radius >= 0, radius.isFinite else { continue }
+            let minX = Int(floor((d.cx - radius) / cellSize))
+            let maxX = Int(floor((d.cx + radius) / cellSize))
+            let minY = Int(floor((d.cy - radius) / cellSize))
+            let maxY = Int(floor((d.cy + radius) / cellSize))
+            let bucketCount = (maxX - minX + 1) * (maxY - minY + 1)
+            let annotationIndices: AnySequence<Int>
+            if bucketCount >= annotations.count {
+                annotationIndices = AnySequence(annotations.indices)
+            } else {
+                annotationIndices = AnySequence(
+                    (minY...maxY).lazy.flatMap { gy in
+                        (minX...maxX).lazy.flatMap { gx in
+                            annotationGrid[GridKey(x: gx, y: gy)] ?? []
+                        }
+                    })
+            }
+            let radiusSquared = radius * radius
+            for ai in annotationIndices {
+                let a = annotations[ai]
                 let dx = a.cx - d.cx
                 let dy = a.cy - d.cy
-                let dist = (dx * dx + dy * dy).squareRoot()
-                // Match window: scale by EACH detection's own diameter so a
-                // big cell forgives a slightly-off click and a tiny cell
-                // doesn't grab a nearby unrelated annotation.
-                let radius = matchRadiusFactor * max(d.diameterPx, 1)
-                if dist <= radius {
-                    candidates.append(Candidate(annIdx: ai, detIdx: di, distance: dist))
+                let distanceSquared = dx * dx + dy * dy
+                if distanceSquared <= radiusSquared {
+                    candidates.append(Candidate(
+                        annIdx: ai, detIdx: di,
+                        distanceSquared: distanceSquared))
                 }
             }
         }
-        candidates.sort { $0.distance < $1.distance }
+        candidates.sort {
+            if $0.distanceSquared != $1.distanceSquared {
+                return $0.distanceSquared < $1.distanceSquared
+            }
+            if $0.annIdx != $1.annIdx { return $0.annIdx < $1.annIdx }
+            return $0.detIdx < $1.detIdx
+        }
 
         var claimedAnns = Set<Int>()
         var claimedDets = Set<Int>()
@@ -128,7 +174,7 @@ enum AnnotationMatcher {
             claimedDets.insert(c.detIdx)
             pairs.append(Pair(annotation: annotations[c.annIdx],
                               detection: detections[c.detIdx],
-                              distancePx: c.distance))
+                              distancePx: c.distanceSquared.squareRoot()))
         }
 
         let unmatchedAnns = annotations.enumerated()

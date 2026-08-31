@@ -272,7 +272,7 @@ struct ResultsView: View {
         // panel's completion closure fires, so the heavy compositing can run off
         // the MainActor without touching the model graph.
         let conf = state.effectiveConfidence(for: image)
-        let imageURL = image.storedURL
+        let imageURL = image.displayURL
         let cells = detection.cells
         let thresholds = batchThresholds
         let pxPerUm = batchPxPerUm
@@ -306,7 +306,7 @@ struct ResultsView: View {
         // file writes run off the MainActor.
         let conf = state.effectiveConfidence(for: image)
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
-        let imageURL = image.storedURL
+        let imageURL = image.displayURL
         let cells = detection.cells
         let imageFileName = image.fileName
         let thresholds = batchThresholds

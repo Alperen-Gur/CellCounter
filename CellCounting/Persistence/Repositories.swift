@@ -181,6 +181,9 @@ final class Repositories {
             // B1-3: guard against empty fileName to avoid removing wrong/root URLs
             guard !img.fileName.isEmpty else { continue }
             try? FileManager.default.removeItem(at: img.storedURL)
+            if img.displayURL != img.storedURL {
+                try? FileManager.default.removeItem(at: img.displayURL)
+            }
             try? FileManager.default.removeItem(at: img.thumbURL)
             deleteReviewCandidates(forImageId: img.id)
             deleteSegmentationVariants(forImageId: img.id)
@@ -256,33 +259,51 @@ final class Repositories {
         try? context.save()
     }
 
-    /// Removes the image file + thumbnail from disk, then deletes the SwiftData record.
+    /// Deletes one image without making the caller wait for filesystem cleanup.
     func deleteImage(_ image: ImageRecord) {
-        guard !image.fileName.isEmpty else { return }
-        try? FileManager.default.removeItem(at: image.storedURL)
-        try? FileManager.default.removeItem(at: image.thumbURL)
-        let removedCells = image.detection?.summaryCellCount ?? 0
-        deleteReviewCandidates(forImageId: image.id)
-        deleteSegmentationVariants(forImageId: image.id)
-        if let batch = image.batch {
-            if batch.imageCountSummary >= 0 { batch.imageCountSummary = max(0, batch.imageCountSummary - 1) }
-            if batch.cellCountSummary >= 0 { batch.cellCountSummary = max(0, batch.cellCountSummary - removedCells) }
-            batch.contentRevision &+= 1
-        }
-        context.delete(image)
-        try? context.save()
+        deleteImages([image])
     }
 
-    func attach(image: ImageRecord, to batch: BatchRecord) {
+    /// Removes a selection in one database transaction. Potentially large
+    /// source files are unlinked on a utility worker after their URLs have
+    /// been snapshotted, keeping bulk Library deletion responsive.
+    func deleteImages(_ images: [ImageRecord]) {
+        var fileURLs = Set<URL>()
+        for image in images where !image.fileName.isEmpty {
+            fileURLs.insert(image.storedURL)
+            fileURLs.insert(image.displayURL)
+            fileURLs.insert(image.thumbURL)
+            let removedCells = image.detection?.summaryCellCount ?? 0
+            deleteReviewCandidates(forImageId: image.id)
+            deleteSegmentationVariants(forImageId: image.id)
+            if let batch = image.batch {
+                if batch.imageCountSummary >= 0 {
+                    batch.imageCountSummary = max(0, batch.imageCountSummary - 1)
+                }
+                if batch.cellCountSummary >= 0 {
+                    batch.cellCountSummary = max(0, batch.cellCountSummary - removedCells)
+                }
+                batch.contentRevision &+= 1
+            }
+            context.delete(image)
+        }
+        try? context.save()
+        Task.detached(priority: .utility) {
+            for url in fileURLs { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    func attach(image: ImageRecord, to batch: BatchRecord, save: Bool = true) {
         image.batch = batch
         batch.images.append(image)
         if batch.imageCountSummary >= 0 { batch.imageCountSummary += 1 }
         batch.contentRevision &+= 1
-        try? context.save()
+        if save { try? context.save() }
     }
 
     func saveDetection(_ cells: [DetectedCell], detectorId: String, for image: ImageRecord,
-                       imageStats: [String: Double]? = nil) {
+                       imageStats: [String: Double]? = nil,
+                       save: Bool = true) {
         // Reassigning the to-one relationship only nulls the old record's inverse;
         // it does not delete the orphan. Explicitly delete the superseded detection
         // so re-runs don't leave stale DetectionRecords in the store (which would
@@ -309,7 +330,7 @@ final class Repositories {
             }
             batch.contentRevision &+= 1
         }
-        try? context.save()
+        if save { try? context.save() }
     }
 
     // MARK: — Segmentation variants / mask curation

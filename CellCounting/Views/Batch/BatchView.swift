@@ -5,7 +5,7 @@ import SwiftData
 
 // MARK: — Row model (built from real `ImageRecord`s)
 
-private struct BatchMockRow {
+private struct BatchMockRow: Sendable {
     let name: String
     let status: BatchRowStatus
     let count: Int?
@@ -24,19 +24,30 @@ private struct BatchMockRow {
     let fileSizeBytes: Int64?
 }
 
-private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [BatchMockRow] {
-    batch.images
-        // Researcher feedback #5: rows previously followed import order,
-        // which is effectively random for a folder drop (filesystem
-        // enumeration order, not alphabetical) and made clicking through a
-        // batch disorienting. `localizedStandardCompare` is the same
-        // natural/alphanumeric comparator Finder uses, so "img2" sorts
-        // before "img10" instead of after it.
-        .sorted(by: { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending })
+private struct BatchRowInput: Sendable {
+    let name: String
+    let cellsData: Data?
+    let storedURL: URL
+    let thumbURL: URL
+    let widthPx: Int
+    let heightPx: Int
+    let imageId: UUID
+}
+
+private struct BatchExportImageSnapshot: Sendable {
+    let fileName: String
+    let imageURL: URL
+    let cellsData: Data
+    let confidence: Double
+}
+
+nonisolated private func buildRealRows(inputs: [BatchRowInput],
+                                       thresholds: [Double]) -> [BatchMockRow] {
+    inputs
         .enumerated()
-        .map { i, img in
-            let cells = img.detection?.cells ?? []
-            let done = img.detection != nil
+        .map { i, input in
+            let cells = input.cellsData.map(DetectionRecord.decodeCellsData) ?? []
+            let done = input.cellsData != nil
             let count = done ? cells.count : nil
             let meanDiam: Double? = {
                 guard done, !cells.isEmpty else { return nil }
@@ -56,20 +67,20 @@ private func buildRealRows(for batch: BatchRecord, thresholds: [Double]) -> [Bat
                 let m = bins.max() ?? 1
                 return bins.map { m > 0 ? $0 / m * 100 : 0 }
             }
-            let fileSizeBytes: Int64? = (try? img.storedURL.resourceValues(forKeys: [.fileSizeKey]))
+            let fileSizeBytes: Int64? = (try? input.storedURL.resourceValues(forKeys: [.fileSizeKey]))
                 .flatMap { $0.fileSize }
                 .map(Int64.init)
-            return BatchMockRow(name: img.fileName,
+            return BatchMockRow(name: input.name,
                                 status: done ? .done : .queued,
                                 count: count,
                                 meanDiameter: meanDiam,
                                 distNorm: distNorm,
                                 distCounts: distCounts,
                                 seed: i * 7 + 3,
-                                imageId: img.id,
-                                thumbURL: img.thumbURL,
-                                widthPx: img.widthPx,
-                                heightPx: img.heightPx,
+                                imageId: input.imageId,
+                                thumbURL: input.thumbURL,
+                                widthPx: input.widthPx,
+                                heightPx: input.heightPx,
                                 fileSizeBytes: fileSizeBytes)
         }
 }
@@ -104,6 +115,66 @@ private func shortBatchDate(_ date: Date) -> String {
     return f.string(from: date)
 }
 
+/// Snapshot a batch and export its analyzed images without touching SwiftData
+/// from the background compositor. The picker selects only the parent; the
+/// writer creates a child folder named exactly like the visible batch title.
+@MainActor
+private func beginAnnotatedBatchExport(
+    batch: BatchRecord,
+    state: AppState,
+    completion: @escaping (Result<ExportService.BatchAnnotatedFolderResult, Error>) -> Void
+) {
+    let batchName = batchFolderLabel(for: batch) ?? batch.displayName
+    let thresholds = batch.thresholds
+    let pxPerUm = batch.pxPerUm
+    let snapshots = state.orderedImages(in: batch).compactMap { image -> BatchExportImageSnapshot? in
+        guard let detection = image.detection else { return nil }
+        return .init(
+            fileName: image.fileName,
+            imageURL: image.displayURL,
+            cellsData: detection.cellsData,
+            confidence: state.effectiveConfidence(for: image))
+    }
+    guard !snapshots.isEmpty else {
+        completion(.failure(ExportError.noAnalyzedImages))
+        return
+    }
+
+    let panel = NSOpenPanel()
+    panel.title = "Choose where to export \(batchName)"
+    panel.prompt = "Export"
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = true
+    panel.begin { response in
+        guard response == .OK, let parent = panel.url else { return }
+        Task { @MainActor in
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    let inputs = snapshots.map { snapshot in
+                        ExportService.BatchAnnotatedImageInput(
+                            fileName: snapshot.fileName,
+                            imageURL: snapshot.imageURL,
+                            cells: DetectionRecord.decodeCellsData(snapshot.cellsData),
+                            confidence: snapshot.confidence)
+                    }
+                    return try ExportService.writeBatchAnnotatedPNGs(
+                        batchName: batchName,
+                        images: inputs,
+                        thresholds: thresholds,
+                        pxPerUm: pxPerUm,
+                        overlayMode: .outline,
+                        parentDirectory: parent)
+                }.value
+                completion(.success(result))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+}
+
 // MARK: — Main view
 
 struct BatchView: View {
@@ -128,9 +199,29 @@ struct BatchView: View {
     /// the always-visible `BatchListSidebar` so every batch is one click away.
     @State private var allBatches: [BatchRecord] = []
 
-    private func recomputeRows() {
+    private func recomputeRows() async {
         guard let batch = state.currentBatch else { rows = []; return }
-        rows = buildRealRows(for: batch, thresholds: batch.thresholds)
+        let batchId = batch.id
+        let thresholds = batch.thresholds
+        // Natural/Finder ordering is cheap and must touch SwiftData on the
+        // MainActor. Everything expensive—JSON decode, stats, binning and
+        // filesystem metadata—runs on the cancellable worker below.
+        let inputs = batch.images
+            .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+            .map { image in
+                BatchRowInput(name: image.fileName,
+                              cellsData: image.detection?.cellsData,
+                              storedURL: image.storedURL,
+                              thumbURL: image.thumbURL,
+                              widthPx: image.widthPx,
+                              heightPx: image.heightPx,
+                              imageId: image.id)
+            }
+        let built = await Task.detached(priority: .userInitiated) {
+            buildRealRows(inputs: inputs, thresholds: thresholds)
+        }.value
+        guard !Task.isCancelled, state.currentBatchId == batchId else { return }
+        rows = built
     }
 
     private func reloadBatches() {
@@ -282,18 +373,17 @@ struct BatchView: View {
         // newly created/deleted batches until the user navigated away and back.
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
             refreshKey &+= 1
-            recomputeRows()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccLibraryChanged"))) { _ in
             refreshKey &+= 1
-            recomputeRows()
             reloadBatches()
         }
         .onAppear {
-            recomputeRows()
             reloadBatches()
         }
-        .onChange(of: state.currentBatchId) { _, _ in recomputeRows() }
+        .task(id: "\(state.currentBatchId?.uuidString ?? "none"):\(refreshKey)") {
+            await recomputeRows()
+        }
     }
 
     /// Keyboard shortcut wrappers — delegate to HeaderRow logic via AppState
@@ -316,25 +406,21 @@ struct BatchView: View {
         }
     }
 
-    @AppStorage("cc-export-csv-sep") private var csvSep: String = ","
-
     private func exportBatchShortcut() {
         guard let batch = state.currentBatch else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(batch.displayName)_summary.csv"
-        if let utype = UTType(filenameExtension: "csv") { panel.allowedContentTypes = [utype] }
-        panel.begin { resp in
-            guard resp == .OK, let url = panel.url else { return }
-            do {
-                try ExportService.writePerImageSummaryCSV(
-                    batch: batch,
-                    thresholds: batch.thresholds,
-                    pxPerUm: state.pxPerUm,
-                    separator: csvSep.isEmpty ? "," : csvSep,
-                    to: url
-                )
-                state.flashExport("Saved \(url.lastPathComponent)", isError: false)
-            } catch {
+        beginAnnotatedBatchExport(batch: batch, state: state) { result in
+            switch result {
+            case .success(let output):
+                if let first = output.errors.first {
+                    state.flashExport(
+                        "Saved \(output.written.count) PNGs; \(output.errors.count) failed (\(first.filename): \(first.message))",
+                        isError: true)
+                } else {
+                    state.flashExport(
+                        "Saved \(output.written.count) PNGs in \(output.folder.lastPathComponent)",
+                        isError: false)
+                }
+            case .failure(let error):
                 state.flashExport("Export failed: \(error.localizedDescription)", isError: true)
             }
         }
@@ -451,8 +537,6 @@ private struct HeaderRow: View {
     let totalImages: Int
     @Environment(AppTheme.self) private var theme
 
-    @AppStorage("cc-export-csv-sep") private var csvSeparator: String = ","
-
     @State private var exportFlash: String? = nil
     @State private var exportErrorFlash: String? = nil
     @State private var clearWorkItem: DispatchWorkItem? = nil
@@ -547,31 +631,19 @@ private struct HeaderRow: View {
 
     private func exportBatch() {
         guard let batch = state.currentBatch else { return }
-        let baseName = sanitize(batch.displayName)
-        let defaultName = "\(baseName)_summary.csv"
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = defaultName
-        if let utype = UTType(filenameExtension: "csv") { panel.allowedContentTypes = [utype] }
-        panel.begin { resp in
-            guard resp == .OK, let url = panel.url else { return }
-            do {
-                try ExportService.writePerImageSummaryCSV(
-                    batch: batch,
-                    thresholds: batch.thresholds,
-                    pxPerUm: state.pxPerUm,
-                    separator: csvSeparator.isEmpty ? "," : csvSeparator,
-                    to: url
-                )
-                flashSaved(url.path)
-            } catch {
+        beginAnnotatedBatchExport(batch: batch, state: state) { result in
+            switch result {
+            case .success(let output):
+                if let first = output.errors.first {
+                    flashError(
+                        "Saved \(output.written.count) PNGs; \(output.errors.count) failed (\(first.filename): \(first.message))")
+                } else {
+                    flashSaved(output.folder.path)
+                }
+            case .failure(let error):
                 flashError(error.localizedDescription)
             }
         }
-    }
-
-    private func sanitize(_ name: String) -> String {
-        let bad = CharacterSet(charactersIn: "/\\:*?\"<>|")
-        return name.components(separatedBy: bad).joined(separator: "_")
     }
 
     private func flashSaved(_ path: String) {
@@ -1121,7 +1193,7 @@ private struct TableRow: View {
         // matches the RecentRow/ImageThumbCell thumbnail-loading pattern.
         let url = row.thumbURL
         Task.detached(priority: .utility) {
-            let img = NSImage(contentsOf: url)
+            let img = ImageLoader.cachedThumbnail(at: url)
             await MainActor.run { thumb = img }
         }
     }

@@ -138,7 +138,7 @@ struct StepDataset: View {
         for b in batches {
             for img in b.images {
                 urls.append(img.storedURL)
-                if let det = img.detection, !det.cells.isEmpty { labeled += 1 }
+                if let det = img.detection, det.summaryCellCount > 0 { labeled += 1 }
             }
         }
         datasetURLs = urls

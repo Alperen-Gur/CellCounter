@@ -75,12 +75,41 @@ enum SequenceWorkflowService {
             let targetOffset = offsets.indices.contains(frameIndex) ? offsets[frameIndex] : nil
             let dx = (targetOffset?.dxPx ?? 0) - (sourceOffset?.dxPx ?? 0)
             let dy = (targetOffset?.dyPx ?? 0) - (sourceOffset?.dyPx ?? 0)
+            let existingCells = frames[frameIndex]
+            let averageDiameter = sourceCells.isEmpty ? 16
+                : sourceCells.reduce(0) { $0 + max($1.diameterPx, 1) }
+                    / Double(sourceCells.count)
+            let cellSize = max(4, min(128, averageDiameter * 0.45))
+            var existingGrid: [UInt64: [Int]] = [:]
+            existingGrid.reserveCapacity(existingCells.count)
+            for (index, cell) in existingCells.enumerated() {
+                let gx = Int(floor(cell.cx / cellSize))
+                let gy = Int(floor(cell.cy / cellSize))
+                existingGrid[gridKey(gx, gy), default: []].append(index)
+            }
             var additions: [DetectedCell] = []
             for source in sourceCells {
                 let candidate = translated(source, dx: dx, dy: dy, preserveId: false)
-                let conflicts = frames[frameIndex].contains { existing in
-                    let gate = max(4, min(existing.diameterPx, candidate.diameterPx) * 0.45)
-                    return hypot(existing.cx - candidate.cx, existing.cy - candidate.cy) <= gate
+                let maxGate = max(4, candidate.diameterPx * 0.45)
+                let minX = Int(floor((candidate.cx - maxGate) / cellSize))
+                let maxX = Int(floor((candidate.cx + maxGate) / cellSize))
+                let minY = Int(floor((candidate.cy - maxGate) / cellSize))
+                let maxY = Int(floor((candidate.cy + maxGate) / cellSize))
+                var conflicts = false
+                for gy in minY...maxY where !conflicts {
+                    for gx in minX...maxX where !conflicts {
+                        for index in existingGrid[gridKey(gx, gy)] ?? [] {
+                            let existing = existingCells[index]
+                            let gate = max(4, min(existing.diameterPx,
+                                                  candidate.diameterPx) * 0.45)
+                            let deltaX = existing.cx - candidate.cx
+                            let deltaY = existing.cy - candidate.cy
+                            if deltaX * deltaX + deltaY * deltaY <= gate * gate {
+                                conflicts = true
+                                break
+                            }
+                        }
+                    }
                 }
                 if conflicts { skipped += 1 } else { additions.append(candidate) }
             }
@@ -131,26 +160,85 @@ enum SequenceWorkflowService {
     private nonisolated static func mutualNearestMatches(
         from a: [DetectedCell], to b: [DetectedCell], maxDistance: Double
     ) -> [(DetectedCell, DetectedCell)] {
-        guard !a.isEmpty, !b.isEmpty else { return [] }
-        let nearestB: [Int?] = a.map { source in
-            b.indices.min { lhs, rhs in
-                hypot(source.cx - b[lhs].cx, source.cy - b[lhs].cy)
-                    < hypot(source.cx - b[rhs].cx, source.cy - b[rhs].cy)
+        guard !a.isEmpty, !b.isEmpty,
+              maxDistance >= 0, maxDistance.isFinite else { return [] }
+        // A small bucket keeps dense microscopy fields from scanning hundreds
+        // of points per query. The nearest-neighbour search expands rings and
+        // stops as soon as geometry proves no unvisited bucket can beat the
+        // current result, so it remains exact rather than approximate.
+        let cellSize = max(8, min(64, maxDistance / 4))
+
+        func makeGrid(_ cells: [DetectedCell]) -> [UInt64: [Int]] {
+            var grid: [UInt64: [Int]] = [:]
+            grid.reserveCapacity(cells.count)
+            for (index, cell) in cells.enumerated() {
+                let key = gridKey(Int(floor(cell.cx / cellSize)),
+                                  Int(floor(cell.cy / cellSize)))
+                grid[key, default: []].append(index)
             }
+            return grid
         }
-        let nearestA: [Int?] = b.map { target in
-            a.indices.min { lhs, rhs in
-                hypot(target.cx - a[lhs].cx, target.cy - a[lhs].cy)
-                    < hypot(target.cx - a[rhs].cx, target.cy - a[rhs].cy)
+
+        func nearest(to source: DetectedCell,
+                     in targets: [DetectedCell],
+                     grid: [UInt64: [Int]]) -> Int? {
+            let gx = Int(floor(source.cx / cellSize))
+            let gy = Int(floor(source.cy / cellSize))
+            let limitSquared = maxDistance * maxDistance
+            var bestIndex: Int?
+            var bestDistance = limitSquared
+            let maxRing = max(0, Int(ceil(maxDistance / cellSize)))
+            for ring in 0...maxRing {
+                for y in (gy - ring)...(gy + ring) {
+                    for x in (gx - ring)...(gx + ring) {
+                        if ring > 0,
+                           x != gx - ring, x != gx + ring,
+                           y != gy - ring, y != gy + ring { continue }
+                    for index in grid[gridKey(x, y)] ?? [] {
+                        let dx = source.cx - targets[index].cx
+                        let dy = source.cy - targets[index].cy
+                        let distance = dx * dx + dy * dy
+                        if distance < bestDistance
+                            || (distance == bestDistance && index < (bestIndex ?? .max)) {
+                            bestDistance = distance
+                            bestIndex = index
+                        }
+                    }
+                }
+                }
+
+                let left = Double(gx - ring) * cellSize
+                let right = Double(gx + ring + 1) * cellSize
+                let bottom = Double(gy - ring) * cellSize
+                let top = Double(gy + ring + 1) * cellSize
+                let distanceToUnvisited = min(
+                    source.cx - left, right - source.cx,
+                    source.cy - bottom, top - source.cy)
+                if let bestIndex,
+                   bestDistance < distanceToUnvisited * distanceToUnvisited {
+                    return bestIndex
+                }
+                if distanceToUnvisited >= maxDistance { break }
             }
+            return bestIndex
         }
+
+        let gridA = makeGrid(a)
+        let gridB = makeGrid(b)
+        let nearestB = a.map { nearest(to: $0, in: b, grid: gridB) }
+        let nearestA = b.map { nearest(to: $0, in: a, grid: gridA) }
         var matches: [(DetectedCell, DetectedCell)] = []
+        matches.reserveCapacity(min(a.count, b.count))
         for i in a.indices {
             guard let j = nearestB[i], nearestA[j] == i else { continue }
-            guard hypot(a[i].cx - b[j].cx, a[i].cy - b[j].cy) <= maxDistance else { continue }
             matches.append((a[i], b[j]))
         }
         return matches
+    }
+
+    private nonisolated static func gridKey(_ x: Int, _ y: Int) -> UInt64 {
+        (UInt64(UInt32(truncatingIfNeeded: x)) << 32)
+            | UInt64(UInt32(truncatingIfNeeded: y))
     }
 
     private nonisolated static func translated(_ cell: DetectedCell, dx: Double, dy: Double,

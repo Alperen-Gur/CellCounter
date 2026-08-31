@@ -38,9 +38,37 @@ struct BatchInsightsInput: Sendable {
     let images: [ImageInput]
 }
 
+/// Compact SwiftData snapshot copied on the MainActor. JSON decoding and all
+/// analytics happen together on the detached worker, so opening Batch Insights
+/// never spends one main-thread decode per image before background work starts.
+struct BatchInsightsEncodedInput: Sendable {
+    struct ImageInput: Sendable {
+        let id: UUID
+        let fileName: String
+        let cellsData: Data?
+        let imageStatsData: Data?
+    }
+
+    let revision: Int
+    let images: [ImageInput]
+}
+
 enum BatchInsightsService {
     nonisolated static let confidenceBucketCount = 10
     nonisolated static let diameterBucketCount = 20
+
+    nonisolated static func compute(_ encoded: BatchInsightsEncodedInput) -> BatchInsightsSnapshot {
+        let images = encoded.images.map { image in
+            BatchInsightsInput.ImageInput(
+                id: image.id,
+                fileName: image.fileName,
+                cells: image.cellsData.map(DetectionRecord.decodeCellsData) ?? [],
+                imageStats: image.imageStatsData.flatMap {
+                    try? JSONDecoder().decode([String: Double].self, from: $0)
+                } ?? [:])
+        }
+        return compute(BatchInsightsInput(revision: encoded.revision, images: images))
+    }
 
     nonisolated static func compute(_ input: BatchInsightsInput) -> BatchInsightsSnapshot {
         let allCells = input.images.flatMap(\.cells)
@@ -72,9 +100,17 @@ enum BatchInsightsService {
 
         let risks = input.images.map { image -> BatchInsightsSnapshot.RiskImage in
             let n = max(1, image.cells.count)
-            let lowConfidence = Double(image.cells.filter { $0.confidence < 0.65 }.count) / Double(n)
-            let edge = Double(image.cells.filter(\.edgeTouching).count) / Double(n)
-            let suspicious = Double(image.cells.filter { $0.likelyClump || $0.likelyDebris }.count) / Double(n)
+            var lowConfidenceCount = 0
+            var edgeCount = 0
+            var suspiciousCount = 0
+            for cell in image.cells {
+                if cell.confidence < 0.65 { lowConfidenceCount += 1 }
+                if cell.edgeTouching { edgeCount += 1 }
+                if cell.likelyClump || cell.likelyDebris { suspiciousCount += 1 }
+            }
+            let lowConfidence = Double(lowConfidenceCount) / Double(n)
+            let edge = Double(edgeCount) / Double(n)
+            let suspicious = Double(suspiciousCount) / Double(n)
             let focus = image.imageStats["focus_score"] ?? 1
             let illumination = image.imageStats["illumination_residual"] ?? 0
             let countZ = countSD > 0 ? abs(Double(image.cells.count) - countMean) / countSD : 0
@@ -101,6 +137,7 @@ enum BatchInsightsService {
         let agreement = Int(input.images.reduce(0) { $0 + ($1.imageStats["ensemble_agreement"] ?? 0) })
         let disagreement = Int(input.images.reduce(0) { $0 + ($1.imageStats["ensemble_disagreement"] ?? 0) })
         let recommendations = makeRecommendations(images: input.images, risks: risks,
+                                                  drift: drift,
                                                   agreement: agreement,
                                                   disagreement: disagreement)
 
@@ -122,6 +159,7 @@ enum BatchInsightsService {
     private nonisolated static func makeRecommendations(
         images: [BatchInsightsInput.ImageInput],
         risks: [BatchInsightsSnapshot.RiskImage],
+        drift: [SequenceWorkflowService.DriftOffset],
         agreement: Int,
         disagreement: Int
     ) -> [String] {
@@ -140,8 +178,7 @@ enum BatchInsightsService {
         if risks.first?.score ?? 0 > 45 {
             output.append("Start with the ranked high-risk fields below instead of reviewing images in import order.")
         }
-        let driftMax = SequenceWorkflowService.estimateDrift(frames: images.map(\.cells))
-            .map { $0.magnitudePx }.max() ?? 0
+        let driftMax = drift.map(\.magnitudePx).max() ?? 0
         if driftMax > 8 {
             output.append("Enable drift correction for tracking and mask propagation.")
         }
