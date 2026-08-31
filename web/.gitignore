@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+*.local
+
+# Model weights are release artifacts, never source files.
+public/models/**/*.onnx
+public/models/**/*.ort
+public/models/**/*.bin
+
+# Microscopy inputs and generated exports stay outside source control.
+fixtures/private/
+exports/
