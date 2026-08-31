@@ -47,10 +47,12 @@ export function Toggle({
   on,
   onChange,
   label,
+  disabled = false,
 }: {
   on: boolean;
   onChange(v: boolean): void;
   label?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -58,6 +60,7 @@ export function Toggle({
       role="switch"
       aria-checked={on}
       aria-label={label}
+      disabled={disabled}
       className={"cc-set__toggle" + (on ? " cc-set__toggle--on" : "")}
       onClick={() => onChange(!on)}
     >

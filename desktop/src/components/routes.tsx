@@ -27,7 +27,6 @@ export type RouteId =
   | "onboarding"
   | "settings"
   | "finetune"
-  | "trash"
   | "support";
 
 export interface RouteDef {
@@ -48,7 +47,8 @@ const LibraryPage = lazy(() => import("../pages/library/LibraryPage"));
 const ReviewPage = lazy(() => import("../pages/review/ReviewPage"));
 const OnboardingPage = lazy(() => import("../pages/onboarding/OnboardingPage"));
 const SettingsPage = lazy(() => import("../pages/settings/SettingsPage"));
-const ComingSoon = lazy(() => import("../pages/system/ComingSoon"));
+const SupportPage = lazy(() => import("../pages/system/SupportPage"));
+const FineTunePage = lazy(() => import("../pages/finetune/FineTunePage"));
 
 export const ROUTES: RouteDef[] = [
   { id: "home", path: "/", label: "Home", icon: "home", component: HomePage },
@@ -57,9 +57,8 @@ export const ROUTES: RouteDef[] = [
   { id: "batch", path: "/batch", label: "Batches", icon: "batches", component: BatchPage },
   { id: "compare", path: "/compare", label: "Compare", icon: "compare", component: ComparePage },
   { id: "models", path: "/models", label: "Models", icon: "models", component: ModelsPage },
-  { id: "finetune", path: "/finetune", label: "Fine-tune", icon: "finetune", component: ComingSoon },
-  { id: "trash", path: "/trash", label: "Recently deleted", icon: "trash", component: ComingSoon },
-  { id: "support", path: "/support", label: "Support", icon: "support", component: ComingSoon },
+  { id: "finetune", path: "/finetune", label: "Fine-tune", icon: "finetune", component: FineTunePage },
+  { id: "support", path: "/support", label: "Support", icon: "support", component: SupportPage },
   { id: "settings", path: "/settings", label: "Settings", icon: "settings", component: SettingsPage },
   // Reachable but not rail items:
   { id: "processing", path: "/processing", label: "Processing", icon: "queue", component: ProcessingPage },
@@ -76,7 +75,7 @@ export interface NavSection {
 export const NAV_SECTIONS: NavSection[] = [
   { title: "", routeIds: ["home", "review"] },
   { title: "Library", routeIds: ["library", "batch", "compare"] },
-  { title: "System", routeIds: ["models", "finetune", "trash"] },
+  { title: "System", routeIds: ["models", "finetune"] },
 ];
 
 /** Bottom-pinned rail items. */

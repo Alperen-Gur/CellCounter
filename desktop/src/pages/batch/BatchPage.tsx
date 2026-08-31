@@ -158,11 +158,11 @@ export default function BatchPage() {
             className="cc-btn cc-batch__export-btn"
             onClick={openExport}
             disabled={!canExport}
-            title="Export per-image summary CSV (⌘E)"
+            title="Export per-image summary CSV (Ctrl+E)"
           >
             <Icon name="download" size={16} />
             Export summary CSV
-            <span className="cc-batch__kbd">⌘E</span>
+            <span className="cc-batch__kbd">Ctrl+E</span>
           </button>
         </div>
       </header>

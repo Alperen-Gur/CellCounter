@@ -57,18 +57,20 @@ import {
 } from "./controls";
 import { binColor } from "../../kernel/theme/binColors";
 import { Icon, type IconName } from "../../components/Icon";
+import { AnalysisProtocolsSection } from "./AnalysisProtocolsSection";
 import "./settings.css";
 
 // ---------------------------------------------------------------------------
 // Section registry
 // ---------------------------------------------------------------------------
 
-type SectionId = "general" | "bins" | "calibration" | "data";
+type SectionId = "general" | "bins" | "calibration" | "protocols" | "data";
 
 const SECTIONS: { id: SectionId; label: string; icon: IconName }[] = [
   { id: "general", label: "General", icon: "settings" },
   { id: "bins", label: "Default bins", icon: "histogram" },
   { id: "calibration", label: "Calibration presets", icon: "calibrate" },
+  { id: "protocols", label: "Analysis protocols", icon: "sliders" },
   { id: "data", label: "Data & reset", icon: "trash" },
 ];
 
@@ -89,7 +91,7 @@ const PARAM_DEFAULTS = {
   rollingBallRadius: 50,
   watershedSplit: false,
   watershedMinDistanceUm: 8,
-  useGpu: true,
+  useGpu: false,
   maxParallel: 1,
 } as const;
 
@@ -104,8 +106,9 @@ const CHANNEL_OPTIONS: { value: number; label: string }[] = [
 // Mirrors the runnable entries in pages/models/catalog.ts (activeModelId) —
 // only installable/activatable models are offered as a default here.
 const MODEL_OPTIONS: { value: string; label: string }[] = [
+  { value: "cpsam_v2", label: "Cellpose-SAM v2" },
   { value: "cp-cyto3", label: "Cellpose cyto3" },
-  { value: "cpsam", label: "Cellpose-SAM" },
+  { value: "sd-fluo", label: "StarDist fluorescence" },
 ];
 
 const PARALLEL_OPTIONS: { value: number; label: string }[] = [
@@ -148,6 +151,7 @@ export default function SettingsPage() {
         {section === "general" && <GeneralSection />}
         {section === "bins" && <BinsSection />}
         {section === "calibration" && <CalibrationSection />}
+        {section === "protocols" && <AnalysisProtocolsSection />}
         {section === "data" && <DataSection />}
       </div>
     </div>
@@ -185,7 +189,6 @@ function GeneralSection() {
   const watershedSplit = useAppStore((st) => st.watershedSplit);
   const watershedMinDistanceUm = useAppStore((st) => st.watershedMinDistanceUm);
   const manualMarkerDiameterUm = useAppStore((st) => st.manualMarkerDiameterUm);
-  const useGpu = useAppStore((st) => st.useGpu);
 
   const setActiveModelId = useAppStore((st) => st.setActiveModelId);
   const setMaxParallel = useAppStore((st) => st.setMaxParallel);
@@ -348,10 +351,10 @@ function GeneralSection() {
       </SetRow>
 
       <SetRow
-        label="Use GPU when available"
-        desc="Off forces CPU torch (passes --no-gpu to the sidecar). v1 ships CPU torch."
+        label="GPU acceleration"
+        desc="Unavailable in Windows v1.0.8. The three validated runtimes are CPU-only, so detection always uses the honest CPU path."
       >
-        <Toggle on={useGpu} onChange={setUseGpu} label="Use GPU" />
+        <Toggle on={false} onChange={setUseGpu} label="GPU unavailable in Windows v1.0.8" disabled />
       </SetRow>
     </section>
   );
@@ -754,7 +757,7 @@ function DataSection() {
             <span className="cc-set__row-label">Reset all settings</span>
             <span className="cc-set__row-desc">
               Restores every analysis parameter (thresholds 20/30, px/µm 2.6,
-              confidence 0.50, GPU on, …) to its default. Your images,
+              confidence 0.50, CPU inference, …) to its default. Your images,
               detections, batches, and saved presets are not affected.
             </span>
           </div>

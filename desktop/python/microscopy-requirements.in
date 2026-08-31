@@ -1,0 +1,10 @@
+numpy>=2,<3
+pillow
+tifffile
+czifile
+nd2
+liffile
+oiffile
+oirfile
+openslide-python
+openslide-bin; sys_platform == 'win32'

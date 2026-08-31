@@ -606,6 +606,39 @@
 
 /* ---- danger zone ---- */
 
+/* ---- analysis protocols ---- */
+
+.cc-set__protocol-form,
+.cc-set__protocol-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--cc-space-3);
+  padding: var(--cc-space-4);
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-bg-elevated);
+}
+
+.cc-set__protocol-field {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--cc-text-secondary);
+  font-size: var(--cc-text-sm);
+}
+
+.cc-set__protocol-notes {
+  min-height: 82px;
+  resize: vertical;
+  padding-block: 8px;
+}
+
+.cc-set__protocol-preview .cc-set__list-actions {
+  align-self: flex-end;
+}
+
 .cc-set__danger-card {
   border: 1px solid color-mix(in srgb, var(--cc-danger) 30%, var(--cc-border));
   border-radius: var(--cc-radius-lg);

@@ -91,6 +91,11 @@ pub struct ImageDto {
     pub notes: Option<String>,
     /// Resolved by backend (`Images/<id>.<ext>`).
     pub stored_path: String,
+    /// Original multi-channel/vendor container copied into app storage. When
+    /// present, detection and quantitative assays use this instead of the
+    /// display projection in `stored_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis_path: Option<String>,
     /// `Thumbnails/<id>.jpg`.
     pub thumb_path: String,
     /// Denormalised cell count for this image's detection (0 if none). Read from
@@ -114,6 +119,17 @@ pub struct DetectionDto {
     pub cells: Vec<CellDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_stats: Option<std::collections::BTreeMap<String, f64>>,
+}
+
+/// Compact detection data for thumbnail/library surfaces. This deliberately
+/// omits cells and contours: callers that only render a count + five-bin spark
+/// bar must never pay to transfer the full detection blob over IPC.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionSummaryDto {
+    pub image_id: String,
+    pub cell_count: i64,
+    pub size_bins: Vec<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,10 +250,24 @@ pub struct CorrectionInput {
 #[serde(rename_all = "camelCase")]
 pub struct CalibrationDto {
     pub px_per_um: f64,
-    /// omeXML | tiffBaseline | olympus | zeiss | imagej | preset | manual | default
+    /// omeXML | tiffBaseline | olympus | zeiss | nikon | leica | imagej |
+    /// preset | manual | default
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelVersionDto {
+    pub id: String,
+    pub model_id: String,
+    pub version: i64,
+    pub created_at: String,
+    pub trained_on_images: i64,
+    pub trained_on_corrections: i64,
+    pub checkpoint_path: String,
+    pub metrics: std::collections::BTreeMap<String, f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +325,15 @@ struct CellPayload {
     /// Flattened contour `[x0, y0, x1, y1, …]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     contour_flat: Option<Vec<f64>>,
+}
+
+/// Minimal projection used by summary queries. Serde skips every unknown field
+/// (including `contourFlat`) while scanning the JSON, so no contour vectors are
+/// materialized merely to obtain cell diameters.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CellDiameterPayload {
+    diameter: f64,
 }
 
 impl From<&CellDto> for CellPayload {
@@ -424,6 +463,26 @@ pub fn cells_from_json(json: &str) -> Vec<CellDto> {
                 }
                 Err(_) => Vec::new(),
             }
+        }
+    }
+}
+
+/// Decode only the persisted µm diameters. The normal path never allocates any
+/// contour arrays. On a partially-corrupt blob, salvage valid elements without
+/// making summary reads fail the whole Library view.
+pub fn cell_diameters_from_json(json: &str) -> Vec<f64> {
+    match serde_json::from_str::<Vec<CellDiameterPayload>>(json) {
+        Ok(payload) => payload.into_iter().map(|cell| cell.diameter).collect(),
+        Err(error) => {
+            eprintln!(
+                "[models] diameter-only cells_json decode failed ({error}); attempting salvage"
+            );
+            serde_json::from_str::<Vec<serde_json::Value>>(json)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| serde_json::from_value::<CellDiameterPayload>(value).ok())
+                .map(|cell| cell.diameter)
+                .collect()
         }
     }
 }

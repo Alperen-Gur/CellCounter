@@ -25,6 +25,8 @@ import type {
   CalibrationPresetDTO,
   BinPresetDTO,
   ImportResult,
+  CorrectionInputDTO,
+  DetectionSummaryDTO,
 } from "./PersistencePort";
 import type {
   BatchDTO,
@@ -77,6 +79,10 @@ export class TauriSqlitePort implements PersistencePort {
     return invoke<ImageDTO[]>("all_images");
   }
 
+  imagesForBatch(batchId: string): Promise<ImageDTO[]> {
+    return invoke<ImageDTO[]>("images_for_batch", { batchId });
+  }
+
   imageMatchingHash(
     hash: string,
     fileName: string,
@@ -124,9 +130,35 @@ export class TauriSqlitePort implements PersistencePort {
     return invoke<DetectionDTO[]>("get_detections", { imageIds });
   }
 
+  commitCellEdit(
+    imageId: string,
+    detectorId: string,
+    cells: CellDTO[],
+    imageStats: Record<string, number> | undefined,
+    corrections: CorrectionInputDTO[],
+  ): Promise<string> {
+    return invoke<string>("commit_cell_edit", {
+      imageId,
+      detectorId,
+      cells,
+      imageStats: imageStats ?? null,
+      corrections,
+    });
+  }
+
+  detectionSummaries(
+    imageIds: string[],
+    thresholds: number[],
+  ): Promise<DetectionSummaryDTO[]> {
+    return invoke<DetectionSummaryDTO[]>("detection_summaries", {
+      imageIds,
+      thresholds,
+    });
+  }
+
   recordCorrection(
     detectionId: string,
-    c: { kind: string; cellId: string; cx: number; cy: number; diameter: number },
+    c: CorrectionInputDTO,
   ): Promise<void> {
     // Rust: `record_correction(detection_id, c: CorrectionInput)`.
     return invoke<void>("record_correction", { detectionId, c });

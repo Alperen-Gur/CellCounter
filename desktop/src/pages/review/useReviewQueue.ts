@@ -22,14 +22,13 @@
  * the badge.
  *
  * What each action writes (mirrors `EditableOverlay → handleEdit`):
- *   - reject → `recordCorrection(kind:"remove")` AND removes the cell from
- *     `detection.cells` (re-saved via `saveDetection`, an upsert). The cell
- *     stops counting toward Totals/bins everywhere downstream.
+ *   - reject → atomically records `kind:"remove"` AND removes the cell from
+ *     `detection.cells`. The cell stops counting toward Totals/bins everywhere
+ *     downstream.
  *   - keep   → `recordCorrection(kind:"accept")` only (audit trail; the cell
  *     stays in `detection.cells`, unchanged).
- *   - editDiameter → `recordCorrection(kind:"resize")` AND updates the cell's
- *     `diameterUm` + `diameterPx` in `detection.cells` (re-saved), so it re-bins
- *     immediately.
+ *   - editDiameter → atomically records `kind:"resize"` AND updates the cell's
+ *     `diameterUm` + `diameterPx` in `detection.cells`, so it re-bins immediately.
  *   - skip → advances the cursor with no write; the cell reappears next time.
  *
  * Feature-owned by feat-review-queue. Uses ONLY kernel-persistence
@@ -270,21 +269,25 @@ export function useReviewQueue(): ReviewQueue {
 
       const port = getPort();
       try {
-        await port.recordCorrection(item.detection.id, {
+        const correction = {
           kind,
           cellId: item.cell.id,
           cx: item.cell.cx,
           cy: item.cell.cy,
           diameter,
-        });
-        // reject / resize also mutate the persisted cell list (upsert).
+        };
+        // Reject/resize mutate the mask and audit log as one transaction. Keep
+        // is audit-only, so it retains the lightweight correction command.
         if (nextCells) {
-          await port.saveDetection(
+          await port.commitCellEdit(
             item.detection.imageId,
             item.detection.detectorId,
             nextCells,
             item.detection.imageStats,
+            [correction],
           );
+        } else {
+          await port.recordCorrection(item.detection.id, correction);
         }
       } catch (err) {
         // Surface the failure and stop: do NOT mark triaged, do NOT advance, so

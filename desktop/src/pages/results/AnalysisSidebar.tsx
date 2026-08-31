@@ -19,7 +19,7 @@
  * Feature-owned by feat-results-viewer.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   BatchDTO,
@@ -36,6 +36,7 @@ import {
   objectiveLabel,
 } from "../../kernel/calibration/calibration";
 import { evaluateF1, mean, stdDev } from "../../kernel/stats/stats";
+import { spatialSummary } from "../../kernel/stats/spatial";
 import { Icon } from "../../components/Icon";
 
 import { binColor } from "../../kernel/theme/binColors";
@@ -49,6 +50,8 @@ import {
   type HistogramMetric,
 } from "../../kernel/stats/histogram";
 import { IntensityHistogram } from "./IntensityHistogram";
+import { AdvancedAssaysPanel } from "./AdvancedAssaysPanel";
+import { LineProfilePanel } from "./LineProfilePanel";
 
 // ---------------------------------------------------------------------------
 // small building blocks
@@ -72,6 +75,41 @@ function KeyValueRow({ label, value, unit }: { label: string; value: string; uni
         {unit ? <span className="rv-kv__unit">{unit}</span> : null}
       </span>
     </div>
+  );
+}
+
+function SpatialStatsPanel({
+  cells,
+  pxPerUm,
+  widthPx,
+  heightPx,
+}: {
+  cells: CellDTO[];
+  pxPerUm: number;
+  widthPx: number;
+  heightPx: number;
+}) {
+  const summary = useMemo(
+    () => spatialSummary(cells, pxPerUm, widthPx, heightPx),
+    [cells, pxPerUm, widthPx, heightPx],
+  );
+  if (!summary) return null;
+  const label = summary.classification[0].toUpperCase() + summary.classification.slice(1);
+  return (
+    <>
+      <div className="rv-divider" />
+      <section className="rv-panel" aria-label="Spatial statistics">
+        <SectionHeader title="Spatial statistics" trailing={label} />
+        <KeyValueRow label="Clark–Evans R" value={summary.clarkEvansR.toFixed(2)} />
+        <KeyValueRow label="Mean nearest neighbor" value={summary.meanNndUm.toFixed(1)} unit="µm" />
+        <KeyValueRow label="Median nearest neighbor" value={summary.medianNndUm.toFixed(1)} unit="µm" />
+        <KeyValueRow
+          label={`Neighbors within ${summary.densityRadiusUm.toFixed(0)} µm`}
+          value={summary.meanLocalDensity.toFixed(1)}
+          unit="mean"
+        />
+      </section>
+    </>
   );
 }
 
@@ -946,6 +984,7 @@ export interface AnalysisSidebarProps {
 
 export function AnalysisSidebar(props: AnalysisSidebarProps) {
   const {
+    batch,
     image,
     imageSrc,
     cells,
@@ -996,6 +1035,27 @@ export function AnalysisSidebar(props: AnalysisSidebarProps) {
         <>
           <ColoniesPanel stats={imageStats} />
           <div className="rv-divider" />
+        </>
+      )}
+      {image && (
+        <SpatialStatsPanel
+          cells={cells}
+          pxPerUm={pxPerUm}
+          widthPx={image.widthPx}
+          heightPx={image.heightPx}
+        />
+      )}
+      {image && (
+        <>
+          <div className="rv-divider" />
+          <LineProfilePanel image={image} imageSrc={imageSrc} pxPerUm={batch?.pxPerUm ?? pxPerUm} />
+          <div className="rv-divider" />
+          <AdvancedAssaysPanel
+            batch={batch}
+            image={image}
+            cells={cells}
+            pxPerUm={batch?.pxPerUm ?? pxPerUm}
+          />
         </>
       )}
       <ScalePanel pxPerUm={pxPerUm} />

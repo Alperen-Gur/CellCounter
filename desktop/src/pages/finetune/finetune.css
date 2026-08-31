@@ -1,0 +1,34 @@
+.ft-page { max-width: 1040px; margin: 0 auto; padding: 30px 34px 60px; color: var(--cc-text); }
+.ft-header, .ft-lineage__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.ft-header { margin-bottom: 22px; }
+.ft-header h1, .ft-lineage h2 { margin: 0; font-size: 25px; letter-spacing: -.03em; }
+.ft-header p, .ft-lineage p, .ft-card p { margin: 5px 0 0; color: var(--cc-text-secondary); font-size: 13px; line-height: 1.55; }
+.ft-local { display: inline-flex; align-items: center; gap: 6px; color: var(--cc-success); background: color-mix(in srgb, var(--cc-success) 10%, transparent); border-radius: 999px; padding: 7px 11px; font-size: 12px; font-weight: 650; }
+.ft-card { display: grid; grid-template-columns: 30px 1fr; gap: 14px; padding: 19px; margin-bottom: 12px; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-lg); background: var(--cc-bg-elevated); box-shadow: var(--cc-shadow-1); }
+.ft-card__number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--cc-accent); color: white; font-weight: 700; font-size: 12px; }
+.ft-card h2 { margin: 3px 0 0; font-size: 16px; }
+.ft-picker { display: flex; align-items: center; gap: 12px; margin-top: 14px; min-width: 0; }
+.ft-picker button, .ft-actions button, .ft-lineage button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--cc-border-strong); border-radius: var(--cc-radius-md); background: var(--cc-bg); color: var(--cc-text); padding: 8px 12px; font-weight: 620; cursor: pointer; }
+.ft-picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cc-text-tertiary); font: 12px var(--cc-font-mono); }
+.ft-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-top: 15px; }
+.ft-grid label { display: grid; gap: 6px; color: var(--cc-text-secondary); font-size: 12px; }
+.ft-grid input, .ft-grid select { min-width: 0; border: 1px solid var(--cc-border-strong); border-radius: var(--cc-radius-sm); background: var(--cc-bg); color: var(--cc-text); padding: 8px; }
+.ft-checks { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; font-size: 12px; color: var(--cc-text-secondary); }
+.ft-checks label { display: inline-flex; align-items: center; gap: 7px; }
+.ft-actions { display: flex; gap: 9px; margin-top: 15px; }
+.ft-actions .ft-primary { background: var(--cc-accent); border-color: var(--cc-accent); color: white; }
+.ft-actions .ft-danger { color: var(--cc-danger); }
+.ft-picker button:disabled, .ft-actions button:disabled, .ft-lineage button:disabled { opacity: .5; cursor: default; }
+.ft-log { max-height: 190px; overflow: auto; margin: 14px 0 0; padding: 12px; border-radius: var(--cc-radius-md); background: var(--cc-bg-sunken); color: var(--cc-text-secondary); font-size: 11px; white-space: pre-wrap; }
+.ft-error, .ft-success { margin-top: 12px; padding: 10px 12px; border-radius: var(--cc-radius-md); font-size: 12px; }
+.ft-error { color: var(--cc-danger); background: color-mix(in srgb, var(--cc-danger) 9%, transparent); }
+.ft-success { color: var(--cc-success); background: color-mix(in srgb, var(--cc-success) 9%, transparent); }
+.ft-lineage { margin-top: 24px; }
+.ft-lineage__head > span { color: var(--cc-text-tertiary); font-size: 12px; }
+.ft-lineage ul { list-style: none; margin: 12px 0 0; padding: 0; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-lg); overflow: hidden; }
+.ft-lineage li { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 16px; background: var(--cc-bg-elevated); border-bottom: 1px solid var(--cc-border); }
+.ft-lineage li:last-child { border-bottom: 0; }
+.ft-lineage li > div { display: grid; gap: 3px; }
+.ft-lineage li span, .ft-empty { color: var(--cc-text-tertiary); font-size: 12px; }
+.ft-empty { margin-top: 12px; padding: 22px; text-align: center; border: 1px dashed var(--cc-border-strong); border-radius: var(--cc-radius-lg); }
+@media (max-width: 800px) { .ft-grid { grid-template-columns: repeat(2, 1fr); } .ft-page { padding-inline: 20px; } }

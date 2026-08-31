@@ -38,10 +38,11 @@ export default function ModelsPage() {
       <div className="cc-models__intro">
         <h1 className="cc-models__title">Models</h1>
         <p className="cc-models__subtitle">
-          CellCounter ships with Cellpose <strong>cyto3</strong> for general
-          cytoplasm segmentation and <strong>Cellpose-SAM</strong> for large or
-          irregular cells. Install a model once — it runs locally through the
-          bundled Python sidecar. Additional models are on the way.
+          Three carefully selected detectors cover the initial Windows release:
+          <strong> Cellpose-SAM v2</strong> for difficult fields,
+          <strong> cyto3</strong> for fast general segmentation, and
+          <strong> StarDist fluorescence</strong> for nuclei. Install once; all
+          inference stays on this computer.
         </p>
       </div>
 

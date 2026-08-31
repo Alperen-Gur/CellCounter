@@ -185,11 +185,11 @@ export default function ComparePage() {
             className="cc-btn cc-btn--primary cc-compare__export-btn"
             onClick={() => void doExport()}
             disabled={!canExport || status.kind === "saving"}
-            title="Export comparison CSV (⌘E)"
+            title="Export comparison CSV (Ctrl+E)"
           >
             <Icon name="download" size={16} />
             Export comparison CSV
-            <span className="cc-compare__kbd">⌘E</span>
+            <span className="cc-compare__kbd">Ctrl+E</span>
           </button>
         </div>
       </div>

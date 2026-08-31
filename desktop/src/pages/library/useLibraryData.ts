@@ -9,8 +9,8 @@
  *     feat-library-dedup boundary, hashing lives in the Rust importer
  *     (kernel-persistence) — we NEVER re-hash here, only surface the groups.
  *   - a per-image cell count (from the denormalized `image.cellCount`) + a 5-bin
- *     size mini-distribution derived from each image's persisted detection,
- *     bulk-loaded in one round-trip via `getDetections` (no per-image N+1).
+ *     size mini-distribution returned by the compact `detectionSummaries` query;
+ *     full cells/contours never cross IPC for thumbnail rendering.
  *   - `disambiguatedNames` — images that share an original filename get
  *     `_2`, `_3`, … appended so every grid label is unique (Swift
  *     `disambiguatedNames()`).
@@ -61,24 +61,6 @@ export interface LibraryData {
   loading: boolean;
   /** Re-read images + duplicate groups + per-image detection summaries. */
   reload: () => Promise<void>;
-}
-
-/**
- * Bin index for a diameter given the batch/global thresholds, clamped to the
- * mini-distribution's 5 buckets. Identical semantics to the kernel's `binIndex`
- * (first `i` with `d < thresholds[i]`, else `thresholds.length`) — inlined here
- * because kernel-calibration is out of this task's `uses`, and this is exactly
- * the local 5-bin loop the Swift `ImageThumbCell` renders.
- */
-function miniBinIndex(diameterUm: number, thresholds: number[]): number {
-  let idx = thresholds.length;
-  for (let i = 0; i < thresholds.length; i++) {
-    if (diameterUm < thresholds[i]) {
-      idx = i;
-      break;
-    }
-  }
-  return Math.min(idx, MINI_DIST_BINS - 1);
 }
 
 /** Build the disambiguated display-name map (Swift `disambiguatedNames`). */
@@ -142,40 +124,35 @@ export function useLibraryData(): LibraryData {
       setImages(all);
       setDuplicateGroups(groups);
 
-      // Per-image detection summary (count + mini-distribution). The cell COUNT
-      // comes from the denormalized `image.cellCount` (no per-image read); the
-      // mini-distribution needs per-cell diameters, so we bulk-load detections
-      // for images that have any cells in ONE round-trip (get_detections),
-      // instead of an N+1 getDetection per image.
+      // Per-image detection summary (count + mini-distribution). Rust decodes a
+      // diameter-only JSON projection and returns five integers per image; it
+      // never materializes or transfers contours for this view.
       const stats = new Map<string, ImageStats>();
-      const withCells = all.filter((img) => img.cellCount > 0);
-      const detections = await port
-        .getDetections(withCells.map((img) => img.id))
+      const summaries = await port
+        .detectionSummaries(all.map((img) => img.id), globalThresholds)
         .catch(() => []);
       if (req !== reqRef.current) return;
-      const detByImage = new Map(detections.map((d) => [d.imageId, d]));
+      const summaryByImage = new Map(summaries.map((summary) => [summary.imageId, summary]));
 
       for (const img of all) {
-        const det = detByImage.get(img.id) ?? null;
-        if (!det || det.cells.length === 0) {
+        const summary = summaryByImage.get(img.id) ?? null;
+        if (!summary || summary.cellCount === 0) {
           stats.set(img.id, {
-            // A positive cellCount with no returned detection still means a
-            // detection exists; only 0 means "none ran".
             cellCount: img.cellCount,
-            hasDetection: img.cellCount > 0 || det !== null,
+            // Keep the denormalized image count as a resilient fallback if a
+            // summary row was skipped because its JSON is corrupt/unreadable.
+            hasDetection: summary !== null || img.cellCount > 0,
             distNorm: null,
           });
           continue;
         }
-        const bins = new Array<number>(MINI_DIST_BINS).fill(0);
-        for (const c of det.cells) {
-          bins[miniBinIndex(c.diameterUm, globalThresholds)] += 1;
-        }
+        const bins = summary.sizeBins.slice(0, MINI_DIST_BINS);
+        while (bins.length < MINI_DIST_BINS) bins.push(0);
         const max = Math.max(...bins);
         const distNorm =
           max > 0 ? bins.map((v) => v / max) : bins.map(() => 0);
         stats.set(img.id, {
-          cellCount: det.cells.length,
+          cellCount: summary.cellCount,
           hasDetection: true,
           distNorm,
         });

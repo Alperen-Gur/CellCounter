@@ -159,6 +159,9 @@ impl SidecarPayload {
 pub struct DetectionParams {
     /// v1: always "cp-cyto3". The `cp-` prefix is stripped for `--model`.
     pub model_id: String,
+    /// Backend-resolved, app-confined checkpoint for a derived cp-cyto3 version.
+    #[serde(default)]
+    pub checkpoint_path: Option<String>,
     pub px_per_um: f64,
     pub confidence_threshold: f64,
     /// [cyto, nuclei]; 0=gray,1=r,2=g,3=b. Default [0,0] ⇒ `--channels` omitted.

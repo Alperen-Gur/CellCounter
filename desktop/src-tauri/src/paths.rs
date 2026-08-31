@@ -96,6 +96,8 @@ impl FileStore {
         for dir in [
             self.root.clone(),
             self.images_dir(),
+            self.analysis_dir(),
+            self.originals_dir(),
             self.thumbs_dir(),
             self.models_dir(),
             self.exports_dir(),
@@ -124,6 +126,12 @@ impl FileStore {
     }
     pub fn thumbs_dir(&self) -> PathBuf {
         self.root.join("Thumbnails")
+    }
+    pub fn analysis_dir(&self) -> PathBuf {
+        self.root.join("Analysis")
+    }
+    pub fn originals_dir(&self) -> PathBuf {
+        self.root.join("Originals")
     }
     pub fn models_dir(&self) -> PathBuf {
         self.root.join("Models")
@@ -178,6 +186,47 @@ impl FileStore {
         }
     }
 
+    /// `<app-data>/py/.venvsd` — isolated StarDist/TensorFlow environment.
+    /// Keeping TensorFlow out of the Cellpose 3 and 4 environments avoids
+    /// dependency resolution changing either detector underneath the user.
+    pub fn venv_stardist_dir(&self) -> PathBuf {
+        self.python_dir().join(".venvsd")
+    }
+
+    /// Python executable for the isolated StarDist environment.
+    pub fn venv_stardist_python(&self) -> PathBuf {
+        if cfg!(windows) {
+            self.venv_stardist_dir().join("Scripts").join("python.exe")
+        } else {
+            self.venv_stardist_dir().join("bin").join("python")
+        }
+    }
+
+    /// Isolated NumPy-2 microscopy reader environment. Keeping proprietary
+    /// readers here prevents their dependency bounds from mutating any model
+    /// runtime (notably current `oirfile`, which requires NumPy 2).
+    pub fn venv_io_dir(&self) -> PathBuf {
+        self.python_dir().join(".venvio")
+    }
+
+    pub fn venv_io_python(&self) -> PathBuf {
+        if cfg!(windows) {
+            self.venv_io_dir().join("Scripts").join("python.exe")
+        } else {
+            self.venv_io_dir().join("bin").join("python")
+        }
+    }
+
+    /// Exact cache directory created by `StarDist2D.from_pretrained` with the
+    /// app-scoped `KERAS_HOME` used by install and inference.
+    pub fn stardist_weights_dir(&self) -> PathBuf {
+        self.models_dir()
+            .join("keras")
+            .join("models")
+            .join("StarDist2D")
+            .join("2D_versatile_fluo")
+    }
+
     /// A staged sidecar script inside the python dir (e.g.
     /// `cellpose_detect.py`, `_export_imagej_roi.py`).
     pub fn python_script(&self, name: &str) -> PathBuf {
@@ -194,8 +243,72 @@ impl FileStore {
         self.images_dir().join(format!("{id}.{ext}"))
     }
 
+    /// Lossless app-owned copy of a proprietary/multi-channel source.
+    pub fn original_path(&self, id: &str, ext: &str) -> PathBuf {
+        let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+        self.originals_dir().join(format!("{id}.{ext}"))
+    }
+
+    /// Lossless normalized multi-channel TIFF consumed by all model/assay
+    /// environments after a proprietary source has been decoded once.
+    pub fn analysis_path(&self, id: &str) -> PathBuf {
+        self.analysis_dir().join(format!("{id}.tiff"))
+    }
+
     /// `Thumbnails/<uuid>.jpg`.
     pub fn thumb_path(&self, id: &str) -> PathBuf {
         self.thumbs_dir().join(format!("{id}.jpg"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_environments_are_isolated_and_paths_are_platform_native() {
+        let parent = std::env::temp_dir().join(format!(
+            "cellcounter-path-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = FileStore::new(&parent).expect("create test store");
+        assert_eq!(store.venv_dir(), parent.join("py").join(".venv"));
+        assert_eq!(store.venv4_dir(), parent.join("py").join(".venv4"));
+        assert_eq!(
+            store.venv_stardist_dir(),
+            parent.join("py").join(".venvsd")
+        );
+        assert_ne!(store.venv_python(), store.venv4_python());
+        assert_ne!(store.venv_python(), store.venv_stardist_python());
+        assert_ne!(store.venv_python(), store.venv_io_python());
+        assert_eq!(
+            store.stardist_weights_dir(),
+            parent
+                .join("CellCounter")
+                .join("Models")
+                .join("keras")
+                .join("models")
+                .join("StarDist2D")
+                .join("2D_versatile_fluo")
+        );
+        assert!(store.images_dir().is_dir());
+        assert!(store.analysis_dir().is_dir());
+        assert!(store.originals_dir().is_dir());
+        assert!(store.thumbs_dir().is_dir());
+        std::fs::remove_dir_all(&parent).expect("remove test store");
+    }
+
+    #[test]
+    fn image_path_normalizes_extension_without_touching_filename() {
+        let parent = std::env::temp_dir().join(format!(
+            "cellcounter-path-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = FileStore::new(&parent).expect("create test store");
+        assert_eq!(
+            store.image_path("stable-id", ".TIFF"),
+            parent.join("CellCounter").join("Images").join("stable-id.tiff")
+        );
+        std::fs::remove_dir_all(&parent).expect("remove test store");
     }
 }

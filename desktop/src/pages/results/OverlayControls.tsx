@@ -109,7 +109,7 @@ export function OverlayControls({ onFit }: OverlayControlsProps) {
         <button
           type="button"
           className="rv-ctl-btn rv-ctl-btn--icon"
-          title="Zoom out (⌘−)"
+          title="Zoom out (Ctrl+-)"
           aria-label="Zoom out"
           onClick={() => setZoom(clampZoom(zoom - 0.15))}
         >
@@ -119,13 +119,13 @@ export function OverlayControls({ onFit }: OverlayControlsProps) {
         <button
           type="button"
           className="rv-ctl-btn rv-ctl-btn--icon"
-          title="Zoom in (⌘+)"
+          title="Zoom in (Ctrl++)"
           aria-label="Zoom in"
           onClick={() => setZoom(clampZoom(zoom + 0.15))}
         >
           <Icon name="zoomIn" size={16} />
         </button>
-        <button type="button" className="rv-ctl-btn" title="Fit to view (⌘0)" onClick={onFit}>
+        <button type="button" className="rv-ctl-btn" title="Fit to view (Ctrl+0)" onClick={onFit}>
           Fit
         </button>
       </div>

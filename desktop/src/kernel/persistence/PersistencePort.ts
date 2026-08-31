@@ -73,6 +73,22 @@ export interface BinPresetDTO {
   thresholds: number[];
 }
 
+/** Compact Library payload: no cells or contours cross the IPC boundary. */
+export interface DetectionSummaryDTO {
+  imageId: string;
+  cellCount: number;
+  /** Five absolute size-bin counts using the thresholds supplied by the caller. */
+  sizeBins: number[];
+}
+
+export interface CorrectionInputDTO {
+  kind: string;
+  cellId: string;
+  cx: number;
+  cy: number;
+  diameter: number;
+}
+
 /**
  * Result of the separate `import_image` command (needs raw bytes, so it lives
  * outside `PersistencePort` proper — see §3.8). `calibration` is `null` when no
@@ -104,6 +120,8 @@ export interface PersistencePort {
 
   // images
   allImages(): Promise<ImageDTO[]>;
+  /** Images belonging to one batch, in the batch's declared image order. */
+  imagesForBatch(batchId: string): Promise<ImageDTO[]>;
   imageMatchingHash(
     hash: string,
     fileName: string,
@@ -128,9 +146,26 @@ export interface PersistencePort {
    * callers index the result by `DetectionDTO.imageId`.
    */
   getDetections(imageIds: string[]): Promise<DetectionDTO[]>;
+  /**
+   * Persist one logical edit as one ordered/atomic unit: the final detection is
+   * written once and every correction row commits in the same transaction.
+   * Returns only the detection id, avoiding a redundant full-mask response.
+   */
+  commitCellEdit(
+    imageId: string,
+    detectorId: string,
+    cells: CellDTO[],
+    imageStats: Record<string, number> | undefined,
+    corrections: CorrectionInputDTO[],
+  ): Promise<string>;
+  /** Compact summaries for Library thumbnails; never returns contours. */
+  detectionSummaries(
+    imageIds: string[],
+    thresholds: number[],
+  ): Promise<DetectionSummaryDTO[]>;
   recordCorrection(
     detectionId: string,
-    c: { kind: string; cellId: string; cx: number; cy: number; diameter: number },
+    c: CorrectionInputDTO,
   ): Promise<void>;
 
   // rois / annotations / conditions

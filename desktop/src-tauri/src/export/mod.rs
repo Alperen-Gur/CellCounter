@@ -7,7 +7,9 @@
 //!   * [`provenance`] — provenance JSON sidecar
 //!   * [`report`]     — PDF report
 
+pub mod annotated;
 pub mod csv;
+pub mod geojson;
 pub mod provenance;
 pub mod report;
 pub mod roi;

@@ -129,7 +129,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
           type="button"
           className="cc-edit-toolbar__btn"
           disabled={!editor.canUndo}
-          title="Undo (⌘Z)"
+          title="Undo (Ctrl+Z)"
           onClick={() => editor.undo()}
         >
           <span className="cc-edit-toolbar__glyph" aria-hidden="true">
@@ -141,7 +141,7 @@ export function EditingToolbar({ editor }: EditingToolbarProps) {
           type="button"
           className="cc-edit-toolbar__btn"
           disabled={!editor.canRedo}
-          title="Redo (⌘⇧Z)"
+          title="Redo (Ctrl+Shift+Z / Ctrl+Y)"
           onClick={() => editor.redo()}
         >
           <span className="cc-edit-toolbar__glyph" aria-hidden="true">

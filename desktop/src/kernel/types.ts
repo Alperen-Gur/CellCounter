@@ -24,7 +24,8 @@
 // ---------------------------------------------------------------------------
 
 export interface DetectionParams {
-  modelId: string; // v1: always "cp-cyto3"
+  /** Windows 1.0.8 allowlist: cpsam_v2 | cp-cyto3 | sd-fluo (enforced by Rust). */
+  modelId: string;
   pxPerUm: number;
   confidenceThreshold: number; // analysis filter; cells below are hidden, never deleted
   channels: [number, number]; // [cyto, nuclei]; 0=gray,1=r,2=g,3=b. default [0,0]
@@ -104,6 +105,8 @@ export interface ImageDTO {
   confidenceOverride?: number; // per-image cutoff; overrides global
   notes?: string;
   storedPath: string; // resolved by backend (Images/<id>.<ext>)
+  /** App-owned original vendor container used by detection/quantification. */
+  analysisPath?: string;
   thumbPath: string; // Thumbnails/<id>.jpg
   /**
    * Number of cells in this image's saved detection (0 when none ran). Denormalized
@@ -139,6 +142,8 @@ export interface CalibrationDTO {
     | "tiffBaseline"
     | "olympus"
     | "zeiss"
+    | "nikon"
+    | "leica"
     | "imagej"
     | "preset"
     | "manual"

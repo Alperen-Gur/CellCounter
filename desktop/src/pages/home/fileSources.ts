@@ -102,7 +102,10 @@ export function subscribeFileDrop(
 // ---------------------------------------------------------------------------
 
 /** Extensions offered in the native open panel filter. */
-const IMAGE_EXT_FILTER = ["jpg", "jpeg", "png", "tif", "tiff", "bmp"];
+const IMAGE_EXT_FILTER = [
+  "jpg", "jpeg", "png", "tif", "tiff", "bmp",
+  "nd2", "czi", "lif", "oir", "vsi",
+];
 
 /**
  * Shape of the dialog plugin's `open` we depend on. Declared locally so this

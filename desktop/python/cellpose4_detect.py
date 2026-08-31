@@ -192,16 +192,14 @@ def _resolve_model_name(raw_model: str) -> str:
     the known app prefixes, then map any 3.x model name to ``cpsam`` (cellpose 4
     ignores ``model_type=`` and only honours ``pretrained_model=``).
     """
-    model_name = raw_model
-    for prefix in ("cp4-", "cellpose4-", "cellpose-", "cp-"):
-        if model_name.startswith(prefix):
-            model_name = model_name[len(prefix):]
-            break
-    if model_name in ("cyto3", "cyto2", "nuclei", "cyto"):
-        log(f"[cellpose_detect] '{model_name}' is a cellpose 3 model name; "
-            "using 'cpsam' (the v4 default).")
-        model_name = "cpsam"
-    return model_name
+    # The Rust host maps the one supported app id (`cpsam_v2`) to this exact
+    # checkpoint slug. Refuse every other name: silently turning a requested
+    # model into CPSAM would make provenance false.
+    if raw_model != "cpsam":
+        raise ValueError(
+            f"unsupported Cellpose 4 model {raw_model!r}; expected 'cpsam'"
+        )
+    return raw_model
 
 
 def _warn_if_not_v4() -> None:

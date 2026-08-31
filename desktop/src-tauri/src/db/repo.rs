@@ -21,8 +21,9 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::db::models::{
-    cells_from_json, cells_to_json, min_confidence, BatchDto, BinPresetDto, CalibrationPresetDto,
-    CellDto, ConditionDto, CorrectionInput, DetectionDto, GroundTruthDto, ImageDto, RoiDto,
+    cell_diameters_from_json, cells_from_json, cells_to_json, min_confidence, BatchDto,
+    BinPresetDto, CalibrationPresetDto, CellDto, ConditionDto, CorrectionInput, DetectionDto,
+    DetectionSummaryDto, GroundTruthDto, ImageDto, ModelVersionDto, RoiDto,
 };
 use crate::db::schema;
 use crate::paths::FileStore;
@@ -34,6 +35,9 @@ use crate::paths::FileStore;
 /// (see `uncorrected_for`), which is why `uncorrected_cell_count` can just
 /// `SUM` the column: the only caller passes exactly this value.
 const REVIEW_QUEUE_CUTOFF: f64 = 0.65;
+/// Deliberately below SQLite's legacy 999-variable limit. Bulk callers are one
+/// IPC request but execute bounded prepared statements internally.
+const SQLITE_IN_CHUNK: usize = 500;
 
 /// Managed SQLite state. A single mutex-guarded connection is sufficient for a
 /// desktop app (all access is short and serialized); no pool needed.
@@ -88,6 +92,58 @@ impl Db {
     pub fn store(&self) -> &FileStore {
         &self.store
     }
+
+    pub(crate) fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.lock()
+    }
+}
+
+pub(crate) fn model_checkpoint_for(db: &Db, derived_id: &str) -> Result<Option<String>, String> {
+    let Some(version_id) = derived_id.strip_prefix("cp-cyto3@") else {
+        return Ok(None);
+    };
+    if version_id.is_empty() {
+        return Ok(None);
+    }
+    let conn = db.lock()?;
+    conn.query_row(
+        "SELECT checkpoint_path FROM model_versions WHERE id = ?1 AND model_id = 'cp-cyto3'",
+        [version_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn model_versions(db: State<'_, Db>) -> Result<Vec<ModelVersionDto>, String> {
+    let conn = db.lock()?;
+    let mut statement = conn
+        .prepare(
+            "SELECT id, model_id, version, created_at, trained_on_images,
+                    trained_on_corrections, checkpoint_path, metrics_json
+               FROM model_versions WHERE model_id = 'cp-cyto3'
+              ORDER BY version DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let versions = statement
+        .query_map([], |row| {
+            let metrics_json: String = row.get(7)?;
+            Ok(ModelVersionDto {
+                id: row.get(0)?,
+                model_id: row.get(1)?,
+                version: row.get(2)?,
+                created_at: row.get(3)?,
+                trained_on_images: row.get(4)?,
+                trained_on_corrections: row.get(5)?,
+                checkpoint_path: row.get(6)?,
+                metrics: serde_json::from_str(&metrics_json).unwrap_or_default(),
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(versions)
 }
 
 /// Open the store and register it as Tauri managed state. Call from `lib.rs`
@@ -193,12 +249,17 @@ fn backfill_detection_counts(conn: &Connection) -> rusqlite::Result<()> {
 fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<ImageDto> {
     let id: String = row.get("id")?;
     let file_name: String = row.get("file_name")?;
-    // Extension for the stored path comes from the file name (lowercased).
-    let ext = std::path::Path::new(&file_name)
+    // Vendor imports keep the original display name but store a projected PNG;
+    // `stored_ext` records that physical representation explicitly.
+    let fallback_ext = std::path::Path::new(&file_name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("tif")
         .to_ascii_lowercase();
+    let ext = row
+        .get::<_, Option<String>>("stored_ext")
+        .unwrap_or(None)
+        .unwrap_or(fallback_ext);
     let stored_path = store.image_path(&id, &ext).to_string_lossy().into_owned();
     let thumb_path = store.thumb_path(&id).to_string_lossy().into_owned();
     // `cell_count` is only present when the query joins `detections` (e.g.
@@ -215,6 +276,7 @@ fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<ImageDto> {
         confidence_override: row.get("confidence_override")?,
         notes: row.get("notes")?,
         stored_path,
+        analysis_path: row.get::<_, Option<String>>("analysis_path").unwrap_or(None),
         thumb_path,
         cell_count,
     })
@@ -230,10 +292,9 @@ fn batch_image_ids(conn: &Connection, batch_id: &str) -> rusqlite::Result<Vec<St
     Ok(ids)
 }
 
-fn row_to_batch(conn: &Connection, row: &Row) -> rusqlite::Result<BatchDto> {
+fn row_to_batch_base(row: &Row) -> rusqlite::Result<BatchDto> {
     let id: String = row.get("id")?;
     let thresholds_json: String = row.get("thresholds_json")?;
-    let image_ids = batch_image_ids(conn, &id)?;
     Ok(BatchDto {
         id,
         display_name: row.get("display_name")?,
@@ -243,8 +304,14 @@ fn row_to_batch(conn: &Connection, row: &Row) -> rusqlite::Result<BatchDto> {
         thresholds: thresholds_from_json(&thresholds_json),
         condition: row.get("condition")?,
         px_per_um_source: row.get("px_per_um_source")?,
-        image_ids,
+        image_ids: Vec::new(),
     })
+}
+
+fn row_to_batch(conn: &Connection, row: &Row) -> rusqlite::Result<BatchDto> {
+    let mut batch = row_to_batch_base(row)?;
+    batch.image_ids = batch_image_ids(conn, &batch.id)?;
+    Ok(batch)
 }
 
 fn row_to_roi(row: &Row) -> rusqlite::Result<RoiDto> {
@@ -291,37 +358,52 @@ fn row_to_condition(row: &Row) -> rusqlite::Result<ConditionDto> {
 #[tauri::command]
 pub fn all_batches(db: State<'_, Db>) -> Result<Vec<BatchDto>, String> {
     let conn = db.lock()?;
-    let ids = collect_ids(&conn, "SELECT id FROM batches ORDER BY created_at DESC", [])?;
-    fetch_batches_by_ids(&conn, &ids)
+    fetch_all_batches(&conn)
 }
 
-/// Collect a single `id` column from `sql` into a `Vec<String>`. Shared by the
-/// batch-list commands (the ids are gathered first because `row_to_batch` runs
-/// its own `image_ids` sub-query, which can't borrow the outer statement's row).
-fn collect_ids(
-    conn: &Connection,
-    sql: &str,
-    params: impl rusqlite::Params,
-) -> Result<Vec<String>, String> {
-    let mut s = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let ids = s
-        .query_map(params, |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
+/// Read all batch rows plus all ordered image ids in two fixed queries. The old
+/// path executed two queries per batch (`fetch_batch` + `batch_image_ids`), so
+/// navigation grew linearly in round-trips even before any image was opened.
+fn fetch_all_batches(conn: &Connection) -> Result<Vec<BatchDto>, String> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM batches ORDER BY created_at DESC")
+        .map_err(|error| error.to_string())?;
+    let batches = stmt
+        .query_map([], row_to_batch_base)
+        .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    Ok(ids)
+        .map_err(|error| error.to_string())?;
+    attach_all_batch_image_ids(conn, batches)
 }
 
-/// Build the `BatchDto` for each id (skipping any that vanished between the id
-/// scan and the fetch). Shared by `all_batches` and `batches_matching`.
-fn fetch_batches_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<BatchDto>, String> {
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(b) = fetch_batch(conn, id).map_err(|e| e.to_string())? {
-            out.push(b);
+fn attach_all_batch_image_ids(
+    conn: &Connection,
+    mut batches: Vec<BatchDto>,
+) -> Result<Vec<BatchDto>, String> {
+    let positions: std::collections::HashMap<String, usize> = batches
+        .iter()
+        .enumerate()
+        .map(|(index, batch)| (batch.id.clone(), index))
+        .collect();
+    let mut stmt = conn
+        .prepare(
+            "SELECT batch_id, id FROM images
+             WHERE batch_id IS NOT NULL
+             ORDER BY imported_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        let (batch_id, image_id) = row.map_err(|error| error.to_string())?;
+        if let Some(index) = positions.get(&batch_id) {
+            batches[*index].image_ids.push(image_id);
         }
     }
-    Ok(out)
+    Ok(batches)
 }
 
 fn fetch_batch(conn: &Connection, id: &str) -> rusqlite::Result<Option<BatchDto>> {
@@ -376,12 +458,15 @@ pub fn create_batch(
 #[tauri::command]
 pub fn batches_matching(db: State<'_, Db>, condition: String) -> Result<Vec<BatchDto>, String> {
     let conn = db.lock()?;
-    let ids = collect_ids(
-        &conn,
-        "SELECT id FROM batches WHERE condition = ?1 ORDER BY created_at DESC",
-        params![condition],
-    )?;
-    fetch_batches_by_ids(&conn, &ids)
+    let mut stmt = conn
+        .prepare("SELECT * FROM batches WHERE condition = ?1 ORDER BY created_at DESC")
+        .map_err(|error| error.to_string())?;
+    let batches = stmt
+        .query_map(params![condition], row_to_batch_base)
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    attach_all_batch_image_ids(&conn, batches)
 }
 
 /// Delete a batch (cascades to images/detections/corrections/rois/annotations)
@@ -389,39 +474,70 @@ pub fn batches_matching(db: State<'_, Db>, condition: String) -> Result<Vec<Batc
 #[tauri::command]
 pub fn delete_batch(db: State<'_, Db>, id: String) -> Result<(), String> {
     let conn = db.lock()?;
-    remove_image_files_for_batch(&conn, &db.store, &id).map_err(|e| e.to_string())?;
+    let files = image_files_for_batch(&conn, &id).map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM batches WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-fn remove_image_files_for_batch(
-    conn: &Connection,
-    store: &FileStore,
-    batch_id: &str,
-) -> rusqlite::Result<()> {
-    let mut stmt = conn.prepare("SELECT id, file_name FROM images WHERE batch_id = ?1")?;
-    let rows = stmt
-        .query_map(params![batch_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, file_name) in rows {
-        remove_image_files(store, &id, &file_name);
+    drop(conn);
+    for (image_id, file_name, stored_ext, analysis_path) in files {
+        remove_image_files(
+            &db.store,
+            &image_id,
+            &file_name,
+            stored_ext.as_deref(),
+            analysis_path.as_deref(),
+        );
     }
     Ok(())
 }
 
-fn remove_image_files(store: &FileStore, id: &str, file_name: &str) {
+fn image_files_for_batch(
+    conn: &Connection,
+    batch_id: &str,
+) -> rusqlite::Result<Vec<(String, String, Option<String>, Option<String>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_name, stored_ext, analysis_path FROM images WHERE batch_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![batch_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn remove_image_files(
+    store: &FileStore,
+    id: &str,
+    file_name: &str,
+    stored_ext: Option<&str>,
+    analysis_path: Option<&str>,
+) {
     if file_name.is_empty() {
         return; // guard against removing wrong/root paths (mirrors Swift B1-3)
     }
-    let ext = std::path::Path::new(file_name)
+    let ext = stored_ext.map(str::to_string).unwrap_or_else(|| std::path::Path::new(file_name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("tif")
-        .to_ascii_lowercase();
+        .to_ascii_lowercase());
     let _ = std::fs::remove_file(store.image_path(id, &ext));
+    if let Some(path) = analysis_path {
+        let path = std::path::Path::new(path);
+        if path.starts_with(store.analysis_dir()) || path.starts_with(store.originals_dir()) {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Some(source_ext) = std::path::Path::new(file_name)
+            .extension()
+            .and_then(|value| value.to_str())
+        {
+            let _ = std::fs::remove_file(store.original_path(id, source_ext));
+        }
+    }
     let _ = std::fs::remove_file(store.thumb_path(id));
 }
 
@@ -464,6 +580,32 @@ pub fn all_images(db: State<'_, Db>) -> Result<Vec<ImageDto>, String> {
     Ok(out)
 }
 
+/// Resolve only the images belonging to one batch. This keeps Results opening
+/// proportional to the selected batch instead of deserializing/transferring the
+/// user's entire image library and filtering it in React.
+#[tauri::command]
+pub fn images_for_batch(
+    db: State<'_, Db>,
+    batch_id: String,
+) -> Result<Vec<ImageDto>, String> {
+    let conn = db.lock()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT images.*, COALESCE(detections.cell_count, 0) AS cell_count
+             FROM images
+             LEFT JOIN detections ON detections.image_id = images.id
+             WHERE images.batch_id = ?1
+             ORDER BY images.imported_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let images = stmt
+        .query_map(params![batch_id], |row| row_to_image(row, &db.store))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    Ok(images)
+}
+
 /// Insert a freshly-imported image row (called by the importer command after it
 /// writes files). Kept in the repo so all DB writes live behind one mutex.
 #[allow(clippy::too_many_arguments)]
@@ -476,13 +618,15 @@ pub fn insert_image_row(
     height_px: i64,
     imported_at: &str,
     file_hash: Option<&str>,
+    stored_ext: Option<&str>,
+    analysis_path: Option<&str>,
 ) -> Result<ImageDto, String> {
     let conn = db.lock()?;
     conn.execute(
         "INSERT INTO images
            (id, file_name, original_path, width_px, height_px, imported_at,
-            confidence_override, file_hash, notes, batch_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, NULL)",
+            confidence_override, file_hash, notes, stored_ext, analysis_path, batch_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL, ?8, ?9, NULL)",
         params![
             id,
             file_name,
@@ -490,7 +634,9 @@ pub fn insert_image_row(
             width_px,
             height_px,
             imported_at,
-            file_hash
+            file_hash,
+            stored_ext,
+            analysis_path,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -569,19 +715,26 @@ pub fn duplicate_groups(db: State<'_, Db>) -> Result<Vec<Vec<ImageDto>>, String>
 #[tauri::command]
 pub fn delete_image(db: State<'_, Db>, id: String) -> Result<(), String> {
     let conn = db.lock()?;
-    let file_name: Option<String> = conn
+    let files: Option<(String, Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT file_name FROM images WHERE id = ?1",
+            "SELECT file_name, stored_ext, analysis_path FROM images WHERE id = ?1",
             params![id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    if let Some(fname) = file_name {
-        remove_image_files(&db.store, &id, &fname);
-    }
     conn.execute("DELETE FROM images WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    drop(conn);
+    if let Some((file_name, stored_ext, analysis_path)) = files {
+        remove_image_files(
+            &db.store,
+            &id,
+            &file_name,
+            stored_ext.as_deref(),
+            analysis_path.as_deref(),
+        );
+    }
     Ok(())
 }
 
@@ -639,52 +792,39 @@ pub fn set_image_confidence_override(
 // COMMANDS — detections & corrections
 // ===========================================================================
 
-/// Save (replace) the 1:1 detection for an image. Because `idx_detection_image`
-/// is unique, we upsert on `image_id` — re-running detection replaces the row
-/// (matching the Swift "we re-run to replace" 1:1 relationship).
-#[tauri::command]
-pub fn save_detection(
-    db: State<'_, Db>,
-    image_id: String,
-    detector_id: String,
-    cells: Vec<CellDto>,
-    image_stats: Option<std::collections::BTreeMap<String, f64>>,
-) -> Result<DetectionDto, String> {
-    let conn = db.lock()?;
-    let cells_json = cells_to_json(&cells).map_err(|e| e.to_string())?;
-    let min_conf = min_confidence(&cells);
-    let stats_json = match &image_stats {
-        Some(m) if !m.is_empty() => Some(serde_json::to_string(m).map_err(|e| e.to_string())?),
+/// Upsert the detection blob on the supplied connection/transaction. Keeping
+/// this core independent of Tauri state lets `commit_cell_edit` combine the one
+/// blob write and all audit rows in a single SQLite transaction.
+fn upsert_detection(
+    conn: &Connection,
+    image_id: &str,
+    detector_id: &str,
+    cells: &[CellDto],
+    image_stats: &Option<std::collections::BTreeMap<String, f64>>,
+) -> Result<(String, String), String> {
+    let cells_json = cells_to_json(cells).map_err(|error| error.to_string())?;
+    let min_conf = min_confidence(cells);
+    let stats_json = match image_stats {
+        Some(stats) if !stats.is_empty() => {
+            Some(serde_json::to_string(stats).map_err(|error| error.to_string())?)
+        }
         _ => None,
     };
     let now = now_iso8601();
-    // Preserve the correction log across re-detection. `corrections` FKs on
-    // `detections.id` (ON DELETE CASCADE), so the old DELETE+INSERT-with-a-new-id
-    // silently wiped every hand-correction whenever the user re-ran detection.
-    // Instead reuse the existing detection id (1:1 per image) and UPDATE the
-    // cells in place, so the append-only correction log stays attached (it feeds
-    // the future train-from-GUI seam).
-    //
-    // Denormalised counter (kept in sync on both branches below): `cell_count` is
-    // simply the number of cells; `uncorrected_count` is the sub-cutoff cells not
-    // yet triaged (see `uncorrected_for`).
     let cell_count = cells.len() as i64;
     let existing_id: Option<String> = conn
         .query_row(
             "SELECT id FROM detections WHERE image_id = ?1",
             params![image_id],
-            |r| r.get(0),
+            |row| row.get(0),
         )
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     let id = match existing_id {
         Some(existing) => {
-            // Re-detection reuses this detection id, so its correction log is
-            // still attached (that is the whole point of the in-place upsert).
-            // A cell already triaged before the re-run must NOT re-enter the
-            // Review queue, so exclude its id when counting uncorrected cells.
-            let corrected = corrected_cell_ids(&conn, &existing).map_err(|e| e.to_string())?;
-            let uncorrected = uncorrected_for(&cells, &corrected);
+            let corrected =
+                corrected_cell_ids(conn, &existing).map_err(|error| error.to_string())?;
+            let uncorrected = uncorrected_for(cells, &corrected);
             conn.execute(
                 "UPDATE detections
                    SET detector_id = ?2, ran_at = ?3, cells_json = ?4,
@@ -702,14 +842,11 @@ pub fn save_detection(
                     uncorrected
                 ],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
             existing
         }
         None => {
-            // Brand-new detection: no correction rows can exist yet, so every
-            // sub-cutoff cell is uncorrected.
-            let empty = std::collections::HashSet::new();
-            let uncorrected = uncorrected_for(&cells, &empty);
+            let uncorrected = uncorrected_for(cells, &std::collections::HashSet::new());
             let id = new_id();
             conn.execute(
                 "INSERT INTO detections
@@ -728,10 +865,26 @@ pub fn save_detection(
                     uncorrected
                 ],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
             id
         }
     };
+    Ok((id, now))
+}
+
+/// Save (replace) the 1:1 detection for an image. Because `idx_detection_image`
+/// is unique, we upsert on `image_id` — re-running detection replaces the row
+/// (matching the Swift "we re-run to replace" 1:1 relationship).
+#[tauri::command]
+pub fn save_detection(
+    db: State<'_, Db>,
+    image_id: String,
+    detector_id: String,
+    cells: Vec<CellDto>,
+    image_stats: Option<std::collections::BTreeMap<String, f64>>,
+) -> Result<DetectionDto, String> {
+    let conn = db.lock()?;
+    let (id, now) = upsert_detection(&conn, &image_id, &detector_id, &cells, &image_stats)?;
     Ok(DetectionDto {
         id,
         image_id,
@@ -780,35 +933,176 @@ pub fn get_detections(
         return Ok(Vec::new());
     }
     let conn = db.lock()?;
-    // Build a `?,?,…` placeholder list so the IN-clause is a single prepared
-    // statement (no string interpolation of ids).
-    let placeholders = std::iter::repeat("?")
-        .take(image_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT * FROM detections WHERE image_id IN ({placeholders})"
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let params = rusqlite::params_from_iter(image_ids.iter());
-    let out = stmt
-        .query_map(params, |r| {
-            let cells_json: String = r.get("cells_json")?;
-            let stats_json: Option<String> = r.get("image_stats_json")?;
-            let image_stats = stats_json.and_then(|s| serde_json::from_str(&s).ok());
-            Ok(DetectionDto {
-                id: r.get("id")?,
-                image_id: r.get("image_id")?,
-                detector_id: r.get("detector_id")?,
-                ran_at: r.get("ran_at")?,
-                cells: cells_from_json(&cells_json),
-                image_stats,
+    let mut out = Vec::new();
+    for chunk in image_ids.chunks(SQLITE_IN_CHUNK) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT * FROM detections WHERE image_id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                let cells_json: String = row.get("cells_json")?;
+                let stats_json: Option<String> = row.get("image_stats_json")?;
+                let image_stats = stats_json.and_then(|json| serde_json::from_str(&json).ok());
+                Ok(DetectionDto {
+                    id: row.get("id")?,
+                    image_id: row.get("image_id")?,
+                    detector_id: row.get("detector_id")?,
+                    ran_at: row.get("ran_at")?,
+                    cells: cells_from_json(&cells_json),
+                    image_stats,
+                })
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            out.push(row.map_err(|error| error.to_string())?);
+        }
+    }
     Ok(out)
+}
+
+fn mini_size_bin(diameter_um: f64, thresholds: &[f64]) -> usize {
+    thresholds
+        .iter()
+        .position(|threshold| diameter_um < *threshold)
+        .unwrap_or(thresholds.len())
+        .min(4)
+}
+
+fn detection_summaries_for_connection(
+    conn: &Connection,
+    image_ids: &[String],
+    thresholds: &[f64],
+) -> Result<Vec<DetectionSummaryDto>, String> {
+    let mut summaries = Vec::new();
+    for chunk in image_ids.chunks(SQLITE_IN_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT image_id, cell_count, cells_json
+             FROM detections WHERE image_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            let (image_id, cell_count, cells_json) = row.map_err(|error| error.to_string())?;
+            let mut bins = vec![0_i64; 5];
+            for diameter in cell_diameters_from_json(&cells_json) {
+                bins[mini_size_bin(diameter, thresholds)] += 1;
+            }
+            summaries.push(DetectionSummaryDto {
+                image_id,
+                cell_count,
+                size_bins: bins,
+            });
+        }
+    }
+    Ok(summaries)
+}
+
+/// Compact, contour-free thumbnail summaries. One IPC request may cover a very
+/// large library; SQLite work is chunked below its parameter ceiling.
+#[tauri::command]
+pub fn detection_summaries(
+    db: State<'_, Db>,
+    image_ids: Vec<String>,
+    thresholds: Vec<f64>,
+) -> Result<Vec<DetectionSummaryDto>, String> {
+    if image_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = db.lock()?;
+    detection_summaries_for_connection(&conn, &image_ids, &thresholds)
+}
+
+fn commit_cell_edit_on_connection(
+    conn: &mut Connection,
+    image_id: &str,
+    detector_id: &str,
+    cells: &[CellDto],
+    image_stats: &Option<std::collections::BTreeMap<String, f64>>,
+    corrections: &[CorrectionInput],
+) -> Result<String, String> {
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let (detection_id, _) =
+        upsert_detection(&tx, image_id, detector_id, cells, image_stats)?;
+
+    // Insertion order is the edit-event order (remove originals before adding
+    // merged/split results). All rows and the final mask succeed or roll back
+    // together; there is no per-correction transaction or cells_json re-decode.
+    {
+        let mut insert = tx
+            .prepare(
+                "INSERT INTO corrections
+                   (id, detection_id, kind, cell_id, cx, cy, diameter, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|error| error.to_string())?;
+        for correction in corrections {
+            insert
+                .execute(params![
+                    new_id(),
+                    detection_id,
+                    correction.kind,
+                    correction.cell_id,
+                    correction.cx,
+                    correction.cy,
+                    correction.diameter,
+                    now_iso8601()
+                ])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    // Compute the exact final Review count from the cells already supplied by
+    // the frontend and the now-complete correction set. No stored blob parse is
+    // needed, even for a merge/split/bulk-delete with many audit rows.
+    let corrected = corrected_cell_ids(&tx, &detection_id).map_err(|error| error.to_string())?;
+    let uncorrected = uncorrected_for(cells, &corrected);
+    tx.execute(
+        "UPDATE detections SET uncorrected_count = ?2 WHERE id = ?1",
+        params![detection_id, uncorrected],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(detection_id)
+}
+
+/// One logical editor commit: one IPC call, one serialized detection write, one
+/// SQLite transaction, and N ordered correction inserts within that transaction.
+#[tauri::command]
+pub fn commit_cell_edit(
+    db: State<'_, Db>,
+    image_id: String,
+    detector_id: String,
+    cells: Vec<CellDto>,
+    image_stats: Option<std::collections::BTreeMap<String, f64>>,
+    corrections: Vec<CorrectionInput>,
+) -> Result<String, String> {
+    let mut conn = db.lock()?;
+    commit_cell_edit_on_connection(
+        &mut conn,
+        &image_id,
+        &detector_id,
+        &cells,
+        &image_stats,
+        &corrections,
+    )
 }
 
 #[tauri::command]
@@ -1214,7 +1508,7 @@ pub fn uncorrected_cell_count(db: State<'_, Db>, below_confidence: f64) -> Resul
 }
 
 /// Delete every batch (cascades to images/detections/corrections/rois/annotations)
-/// and wipe the on-disk Images + Thumbnails dirs. Preserves workflow config
+/// and wipe the on-disk Images + Originals + Thumbnails dirs. Preserves workflow config
 /// (conditions, presets, model_versions) and the python venv (mirrors
 /// `wipeAllUserData`).
 #[tauri::command]
@@ -1228,10 +1522,212 @@ pub fn wipe_all_user_data(db: State<'_, Db>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let images_dir = db.store.images_dir();
+    let analysis_dir = db.store.analysis_dir();
+    let originals_dir = db.store.originals_dir();
     let thumbs_dir = db.store.thumbs_dir();
     let _ = std::fs::remove_dir_all(&images_dir);
+    let _ = std::fs::remove_dir_all(&analysis_dir);
+    let _ = std::fs::remove_dir_all(&originals_dir);
     let _ = std::fs::remove_dir_all(&thumbs_dir);
     std::fs::create_dir_all(&images_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&analysis_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&originals_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&thumbs_dir).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_connection() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .expect("foreign keys");
+        schema::create_schema(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO batches
+               (id, name, created_at, display_name, model_id, px_per_um, thresholds_json)
+             VALUES ('batch', 'Batch', '2026-01-01T00:00:00Z', 'Batch', 'cp-cyto3', 1.0, '[5,10,15,20]')",
+            [],
+        )
+        .expect("batch");
+        conn
+    }
+
+    fn insert_image(conn: &Connection, id: &str, imported_at: &str) {
+        conn.execute(
+            "INSERT INTO images
+               (id, file_name, original_path, width_px, height_px, imported_at, batch_id)
+             VALUES (?1, ?2, ?3, 100, 100, ?4, 'batch')",
+            params![id, format!("{id}.png"), format!("/{id}.png"), imported_at],
+        )
+        .expect("image");
+    }
+
+    fn cell(id: &str, diameter_um: f64, confidence: f64) -> CellDto {
+        CellDto {
+            id: id.to_string(),
+            cx: 10.0,
+            cy: 20.0,
+            diameter_um,
+            diameter_px: diameter_um,
+            confidence,
+            area_um2: None,
+            perimeter_um: None,
+            circularity: None,
+            eccentricity: None,
+            mean_intensity: None,
+            integrated_density: None,
+            centroid_um_x: None,
+            centroid_um_y: None,
+            aspect_ratio: None,
+            solidity: None,
+            edge_touching: None,
+            likely_clump: None,
+            likely_debris: None,
+            size_class: None,
+            is_manual: None,
+            // A contour verifies the summary projection ignores heavy geometry.
+            contour_px: Some(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]),
+        }
+    }
+
+    fn correction(kind: &str, cell_id: &str) -> CorrectionInput {
+        CorrectionInput {
+            kind: kind.to_string(),
+            cell_id: cell_id.to_string(),
+            cx: 10.0,
+            cy: 20.0,
+            diameter: 8.0,
+        }
+    }
+
+    #[test]
+    fn cell_edit_commits_blob_and_ordered_corrections_atomically() {
+        let mut conn = test_connection();
+        insert_image(&conn, "image", "2026-01-01T00:00:01Z");
+        let cells = vec![cell("merged", 8.0, 0.2), cell("untouched", 12.0, 0.3)];
+        let corrections = vec![
+            correction("remove", "old-a"),
+            correction("remove", "old-b"),
+            correction("add", "merged"),
+        ];
+
+        let detection_id = commit_cell_edit_on_connection(
+            &mut conn,
+            "image",
+            "cellpose/cyto3",
+            &cells,
+            &None,
+            &corrections,
+        )
+        .expect("atomic edit");
+
+        let (stored_count, uncorrected, cells_json): (i64, i64, String) = conn
+            .query_row(
+                "SELECT cell_count, uncorrected_count, cells_json FROM detections WHERE id = ?1",
+                params![detection_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("detection row");
+        assert_eq!(stored_count, 2);
+        assert_eq!(uncorrected, 1, "only untouched low-confidence cell remains");
+        assert_eq!(cells_from_json(&cells_json).len(), 2);
+
+        let kinds = {
+            let mut stmt = conn
+                .prepare("SELECT kind FROM corrections ORDER BY rowid")
+                .expect("correction query");
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .expect("correction rows")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("correction kinds")
+        };
+        assert_eq!(kinds, vec!["remove", "remove", "add"]);
+    }
+
+    #[test]
+    fn cell_edit_rolls_back_detection_when_any_correction_fails() {
+        let mut conn = test_connection();
+        insert_image(&conn, "image", "2026-01-01T00:00:01Z");
+        conn.execute_batch(
+            "CREATE TRIGGER fail_test_correction
+             BEFORE INSERT ON corrections
+             WHEN NEW.kind = 'force-failure'
+             BEGIN SELECT RAISE(ABORT, 'forced test failure'); END;",
+        )
+        .expect("trigger");
+
+        let result = commit_cell_edit_on_connection(
+            &mut conn,
+            "image",
+            "cellpose/cyto3",
+            &[cell("new", 8.0, 0.9)],
+            &None,
+            &[
+                correction("add", "new"),
+                correction("force-failure", "new"),
+            ],
+        );
+        assert!(result.is_err());
+        let detections: i64 = conn
+            .query_row("SELECT COUNT(*) FROM detections", [], |row| row.get(0))
+            .expect("detection count");
+        let corrections: i64 = conn
+            .query_row("SELECT COUNT(*) FROM corrections", [], |row| row.get(0))
+            .expect("correction count");
+        assert_eq!((detections, corrections), (0, 0));
+    }
+
+    #[test]
+    fn summary_query_chunks_large_id_lists_and_returns_five_bins() {
+        let mut conn = test_connection();
+        let tx = conn.transaction().expect("insert transaction");
+        let cells = vec![cell("a", 2.0, 0.9), cell("b", 11.0, 0.9), cell("c", 40.0, 0.9)];
+        let cells_json = cells_to_json(&cells).expect("cells json");
+        let mut ids = Vec::new();
+        for index in 0..=SQLITE_IN_CHUNK {
+            let image_id = format!("image-{index}");
+            tx.execute(
+                "INSERT INTO images
+                   (id, file_name, original_path, width_px, height_px, imported_at, batch_id)
+                 VALUES (?1, ?2, ?3, 100, 100, ?4, 'batch')",
+                params![
+                    image_id,
+                    format!("{index}.png"),
+                    format!("/{index}.png"),
+                    format!("2026-01-01T00:{:02}:{:02}Z", (index / 60) % 60, index % 60)
+                ],
+            )
+            .expect("image");
+            tx.execute(
+                "INSERT INTO detections
+                   (id, image_id, detector_id, ran_at, cells_json, min_confidence, cell_count, uncorrected_count)
+                 VALUES (?1, ?2, 'cellpose/cyto3', '2026-01-01T00:00:00Z', ?3, 0.9, 3, 0)",
+                params![format!("detection-{index}"), image_id, cells_json],
+            )
+            .expect("detection");
+            ids.push(image_id);
+        }
+        tx.commit().expect("insert commit");
+
+        let summaries =
+            detection_summaries_for_connection(&conn, &ids, &[5.0, 10.0, 15.0, 20.0])
+                .expect("summaries");
+        assert_eq!(summaries.len(), SQLITE_IN_CHUNK + 1);
+        assert!(summaries
+            .iter()
+            .all(|summary| summary.cell_count == 3 && summary.size_bins == [1, 0, 1, 0, 1]));
+    }
+
+    #[test]
+    fn batch_enumeration_preserves_order_without_per_batch_fetches() {
+        let conn = test_connection();
+        insert_image(&conn, "older", "2026-01-01T00:00:01Z");
+        insert_image(&conn, "newer", "2026-01-01T00:00:02Z");
+        let batches = fetch_all_batches(&conn).expect("batches");
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].image_ids, vec!["newer", "older"]);
+    }
 }

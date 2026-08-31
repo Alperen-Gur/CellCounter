@@ -104,16 +104,15 @@ export function useResultsData(): ResultsData {
         setLoading(false);
         return;
       }
-      // The batch carries imageIds; resolve to full ImageDTOs in that declared
-      // order. allImages() is the port's only image read, so we filter to this
-      // batch's ids client-side. Ordering MUST follow `batch.imageIds` (not
+      // Resolve only this batch's images, then preserve the batch's declared
+      // order. Ordering MUST follow `batch.imageIds` (not
       // importedAt): the Batch table navigates by row position in this same
       // `imageIds` order (BatchTable.openInResults → setCurrentImageIdx), and
       // the seg-npy panel resolves `batch.imageIds[currentImageIdx]`, so any
       // other ordering here would open a different image than the one clicked.
-      const all = await port.allImages();
+      const scoped = await port.imagesForBatch(b.id);
       if (req !== batchReqRef.current) return;
-      const byId = new Map(all.map((im) => [im.id, im]));
+      const byId = new Map(scoped.map((im) => [im.id, im]));
       const ordered = b.imageIds
         .map((id) => byId.get(id))
         .filter((im): im is ImageDTO => im !== undefined);

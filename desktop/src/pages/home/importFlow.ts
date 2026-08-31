@@ -53,6 +53,14 @@ export const SUPPORTED_EXTENSIONS = [
   "tif",
   "tiff",
   "bmp",
+  // Recognized microscopy containers are intentionally allowed through the
+  // UI filter so the Rust importer can return a precise, visible platform
+  // status instead of silently dropping them.
+  "nd2",
+  "czi",
+  "lif",
+  "oir",
+  "vsi",
 ] as const;
 
 /** Lowercased extension of a path (no dot), or "" if none. */
@@ -529,7 +537,7 @@ async function runDetection(
 
     try {
       const result = await transport.detect(
-        prep.image.storedPath,
+        prep.image.analysisPath ?? prep.image.storedPath,
         params,
         onProgress,
         controller.signal,
@@ -668,7 +676,7 @@ export async function rerunDetection(
 
   try {
     const result = await transport.detect(
-      image.storedPath,
+      image.analysisPath ?? image.storedPath,
       params,
       onProgress,
       controller.signal,

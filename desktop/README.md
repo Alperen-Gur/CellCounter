@@ -1,65 +1,67 @@
-# CellCounter desktop
+# CellCounter Windows desktop
 
-Cross-platform rebuild of CellCounter, a desktop application that wraps
-[Cellpose](https://github.com/MouseLand/cellpose) to count and size-classify
-cells in microscopy images. This directory targets Windows, Linux, and macOS.
+This directory contains the Windows-native CellCounter 1.0.8 application: the
+React interface hosted by Tauri 2 with a Rust persistence/export layer and
+local Python model sidecars. The stable Swift application under
+`CellCounting/` remains the macOS product.
 
-The top-level `CellCounting/` directory contains the original, stable native
-macOS app written in Swift. This `desktop/` build is a separate implementation
-that brings the same workflow to all three platforms. See the top-level
-`README.md` for the project as a whole.
+The Windows release produces a WiX `.msi` and an NSIS setup `.exe`. End-user
+installation, model setup, data locations, privacy, backup, and troubleshooting
+are documented in [the Windows guide](../docs/WINDOWS.md).
 
-## Status
+## Development prerequisites
 
-Preview (version 0.1.0). The code compiles in CI on Windows, Linux, and macOS,
-but it has not yet been runtime-verified on real data. Prebuilt installers are
-published on the GitHub Releases page under `desktop-v*` tags.
+- Node.js 22.18.x with npm
+- Rust 1.88 or newer
+- The current Tauri 2 Windows prerequisites, including Microsoft C++ Build
+  Tools and WebView2
 
-## Tech stack
+The packaged app bundles a checksum-verified `uv` helper. Developers building
+locally must place the target-specific executable at
+`src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe`, following Tauri's external
+binary naming rule.
 
-- Tauri v2 with a Rust backend (`src-tauri/`).
-- React and TypeScript frontend built with Vite (`src/`).
-- A Python sidecar that runs Cellpose (`python/`).
+## Develop and verify
 
-## Prerequisites
-
-- Node.js (with npm).
-- The Rust toolchain (`rustup`, which provides `cargo`). See the
-  [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for the
-  platform-specific system dependencies.
-- [uv](https://docs.astral.sh/uv/) for the Python environment used by the
-  Cellpose sidecar in `python/`.
-
-## Development
-
-Install the frontend dependencies, then start the app in development mode:
-
-```
-npm install
-npm run tauri dev
+```powershell
+npm ci
+npm run verify:windows
+npm run tauri -- dev
 ```
 
-`npm run tauri dev` starts the Vite dev server and launches the Tauri window.
+The portable checks verify the 1.0.8 identity, exact three-model catalog,
+explicit parity inventory, bundle resources, native targets, Windows workflow,
+and operator documentation.
 
-## Build
+## Build native installers
 
-Build the installers for the current platform:
+Run on 64-bit Windows after staging the `uv` sidecar:
 
+```powershell
+npm ci
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+npm run build:windows
+node scripts/verify-windows-artifacts.mjs --write-checksums
 ```
-npm run tauri build
-```
 
-This produces the native installers for the host operating system, for example
-`.msi` and `.exe` on Windows and `.dmg` on macOS.
+The resulting artifacts are under `src-tauri/target/release/bundle/`:
 
-## Directory layout
+- `msi/*.msi`
+- `nsis/*-setup.exe`
+- `SHA256SUMS.txt`
 
-- `src/` React and TypeScript frontend (Vite).
-- `src-tauri/` Rust backend, Tauri configuration (`tauri.conf.json`), and
-  bundled resources.
-- `python/` Python sidecar that runs Cellpose, with its dependencies managed by
-  uv (`pyproject.toml`, `uv.lock`).
+The dedicated Windows GitHub Actions workflow performs the same validation and
+uploads unsigned installer artifacts without creating or modifying a GitHub
+Release.
+
+## Layout
+
+- `src/` — React/TypeScript interface and portable kernels
+- `src-tauri/` — Rust backend, capabilities, and native bundle configuration
+- `python/` — locally executed Cellpose/StarDist sidecars
+- `scripts/` — portable release and packaging assertions
 
 ## License
 
-See the `LICENSE` file at the top level of the repository.
+MIT; see the repository-level `LICENSE`.

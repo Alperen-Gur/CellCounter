@@ -13,7 +13,8 @@
  *   thresholds [20,30] · pxPerUm 2.6 (10× preset) · confidence 0.50 ·
  *   activeModelId "cp-cyto3" · channels [0,0] · manualMarkerDiameterUm 20 ·
  *   backgroundSubtract false · rollingBallRadius 50 · watershedSplit false ·
- *   watershedMinDistanceUm 8 · useGpu true · maxParallel hardware-aware
+ *   watershedMinDistanceUm 8 · useGpu false on the CPU-only Windows v1 runtime
+ *   · maxParallel hardware-aware
  *   (half the logical cores, clamped 1..4 — see `defaultMaxParallel`).
  */
 
@@ -39,7 +40,7 @@ export interface AnalysisParamsSlice {
   rollingBallRadius: number; // 50
   watershedSplit: boolean;
   watershedMinDistanceUm: number; // 8
-  useGpu: boolean; // default true
+  useGpu: boolean; // Windows v1 runtime is CPU-only; retained for DTO compatibility
   maxParallel: number; // default: half the logical cores, clamped 1..4 (see defaultMaxParallel)
 
   setThresholds(t: number[]): void;
@@ -228,7 +229,7 @@ export const useAppStore = create<AppStore>()(
       rollingBallRadius: 50,
       watershedSplit: false,
       watershedMinDistanceUm: 8,
-      useGpu: true,
+      useGpu: false,
       maxParallel: defaultMaxParallel(),
 
       // Store thresholds ascending so every consumer (calibration binIndex/
@@ -246,7 +247,10 @@ export const useAppStore = create<AppStore>()(
       setRollingBallRadius: (v) => set({ rollingBallRadius: v }),
       setWatershedSplit: (v) => set({ watershedSplit: v }),
       setWatershedMinDistanceUm: (v) => set({ watershedMinDistanceUm: v }),
-      setUseGpu: (v) => set({ useGpu: v }),
+      // Windows v1 deliberately installs CPU-only Torch/TensorFlow packages.
+      // Keep this frozen-contract field, but never persist or rehydrate a
+      // placebo GPU selection that the packaged runtime cannot honor.
+      setUseGpu: () => set({ useGpu: false }),
       setMaxParallel: (v) => set({ maxParallel: v }),
 
       // ---- SessionSlice (in-memory) ----
@@ -372,6 +376,11 @@ export const useAppStore = create<AppStore>()(
         watershedMinDistanceUm: state.watershedMinDistanceUm,
         useGpu: state.useGpu,
         maxParallel: state.maxParallel,
+      }),
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as Partial<AppStore>),
+        useGpu: false,
       }),
     },
   ),

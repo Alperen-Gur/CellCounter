@@ -76,8 +76,10 @@ export default function HomePage() {
   const hooksRef = useRef<ImportFlowHooks>({
     navigate: go,
     onDuplicates: () => Promise.resolve({}),
-    onImportError: (path, message) =>
-      console.warn(`[home] import failed for ${path}: ${message}`),
+    onImportError: (path, message) => {
+      console.warn(`[home] import failed for ${path}: ${message}`);
+      useAppStore.getState().setDetectionError(`${path.split(/[\\/]/).pop()}: ${message}`);
+    },
   });
   hooksRef.current = {
     navigate: go,
@@ -85,8 +87,10 @@ export default function HomePage() {
       new Promise<Record<string, DuplicateDecision> | null>((resolve) => {
         setPending({ session, resolve });
       }),
-    onImportError: (path, message) =>
-      console.warn(`[home] import failed for ${path}: ${message}`),
+    onImportError: (path, message) => {
+      console.warn(`[home] import failed for ${path}: ${message}`);
+      useAppStore.getState().setDetectionError(`${path.split(/[\\/]/).pop()}: ${message}`);
+    },
   };
 
   // Probe once whether the native picker is available (plugin-dialog present).

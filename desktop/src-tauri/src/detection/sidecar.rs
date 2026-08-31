@@ -55,9 +55,10 @@
 //!   * structured `{error,hint}` stdout → `sidecarFailed`
 //!   * exit codes {15,-15,143,9,-9,137} ⇒ `cancelled`
 //!
-//! CUDA: v1 pins CPU torch wheels for portability (see pyproject.toml). GPU
-//! selection still flows through `use_gpu`/`--no-gpu`; wiring a real CUDA build
-//! is a future TODO — no code change needed here, only the wheel index.
+//! Windows v1 pins CPU-only Torch/TensorFlow runtimes for reproducibility (see
+//! pyproject.toml). The backend therefore forces `use_gpu = false` at the IPC
+//! trust boundary; the preserved DTO field cannot turn a CPU package into a
+//! GPU runtime or create a placebo setting.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -85,6 +86,12 @@ const OWNED_SCRIPTS: &[&str] = &[
     "cellpose_train.py",
     "stardist_detect.py",
     "sam_detect.py",
+    "intensity_assays.py",
+    "area_assays_detect.py",
+    "puncta_detect.py",
+    "track_cells.py",
+    "neurite_outgrowth.py",
+    "image_prepare.py",
 ];
 
 /// Signal-ish exit codes that mean the host terminated us on purpose.
@@ -199,11 +206,23 @@ struct ActiveRun {
 // Resolve + argv (shared by warm-worker and one-shot paths)
 // ===========================================================================
 
-/// The app-facing model id with the Cellpose `cp-` namespace prefix removed —
-/// the bare model string the Python sidecars expect (`cp-cyto3` → `cyto3`,
-/// `cpsam` → `cpsam`). Mirrors the Swift host's model-id prefix strip.
-pub fn strip_model_prefix(model_id: &str) -> &str {
-    model_id.strip_prefix("cp-").unwrap_or(model_id)
+/// The complete model allowlist for the Windows 1.0.8 release. Keeping this
+/// mapping closed is intentional: an unknown app id must fail before spawning
+/// Python, never get stripped/defaulted into a different model.
+pub const WINDOWS_MODEL_IDS: [&str; 3] = ["cpsam_v2", "cp-cyto3", "sd-fluo"];
+
+/// Exact Python-side model name for a supported app id.
+pub fn runtime_model_name(model_id: &str) -> Option<&'static str> {
+    match model_id {
+        "cpsam_v2" => Some("cpsam"),
+        "cp-cyto3" => Some("cyto3"),
+        "sd-fluo" => Some("2D_versatile_fluo"),
+        _ => None,
+    }
+}
+
+pub fn is_supported_model(model_id: &str) -> bool {
+    runtime_model_name(model_id).is_some()
 }
 
 /// Whether an app-facing model id routes to the Cellpose-SAM (`cellpose>=4`)
@@ -211,7 +230,11 @@ pub fn strip_model_prefix(model_id: &str) -> &str {
 /// than the base cyto3 env. The frozen contract fixes the SAM id as bare
 /// `cpsam` (no `cp-` prefix), so the test is on the prefix-stripped slug.
 pub fn is_cellpose_sam(model_id: &str) -> bool {
-    strip_model_prefix(model_id) == "cpsam"
+    model_id == "cpsam_v2"
+}
+
+pub fn is_stardist(model_id: &str) -> bool {
+    model_id == "sd-fluo"
 }
 
 /// Version-aware `import cellpose` probe for the Cellpose-SAM (`cellpose>=4`)
@@ -253,7 +276,17 @@ fn resolve_sidecar(
             return Err("Cellpose-SAM python venv (venv4) is not installed".into());
         }
         Ok((python, script))
-    } else {
+    } else if is_stardist(model_id) {
+        let python = store.venv_stardist_python();
+        let script = store.python_script("stardist_detect.py");
+        if !script.exists() {
+            return Err("sidecar script stardist_detect.py is not staged".into());
+        }
+        if !python.exists() {
+            return Err("StarDist Python environment is not installed".into());
+        }
+        Ok((python, script))
+    } else if model_id == "cp-cyto3" {
         let python = store.venv_python();
         let script = store.python_script("cellpose_detect.py");
         if !script.exists() {
@@ -263,6 +296,8 @@ fn resolve_sidecar(
             return Err("python venv is not installed".into());
         }
         Ok((python, script))
+    } else {
+        Err(format!("unsupported model id: {model_id}"))
     }
 }
 
@@ -304,7 +339,9 @@ pub(crate) fn resolve_helper_python(store: &FileStore) -> Option<std::path::Path
 ///
 /// (`--restore` is cp-cyto3-r only; not in v1, so never emitted.)
 fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -> Vec<String> {
-    let model = strip_model_prefix(&p.model_id).to_string();
+    let model = runtime_model_name(&p.model_id)
+        .expect("build_argv is only called after model allowlist validation")
+        .to_string();
 
     let mut args: Vec<String> = vec![
         script.to_string_lossy().into_owned(),
@@ -317,9 +354,13 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
         "--conf".into(),
         p.confidence_threshold.to_string(),
     ];
+    if let Some(checkpoint) = p.checkpoint_path.as_deref() {
+        args.push("--checkpoint".into());
+        args.push(checkpoint.to_string());
+    }
 
     let is_default_channels = p.channels == [0, 0];
-    if !is_default_channels {
+    if !is_stardist(&p.model_id) && !is_default_channels {
         args.push("--channels".into());
         args.push(format!("{},{}", p.channels[0], p.channels[1]));
     }
@@ -340,11 +381,11 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
     args.push(p.small_threshold_um.to_string());
     args.push("--large-threshold".into());
     args.push(p.large_threshold_um.to_string());
-    if p.expected_diameter_um > 0.0 {
+    if !is_stardist(&p.model_id) && p.expected_diameter_um > 0.0 {
         args.push("--diameter".into());
         args.push(p.expected_diameter_um.to_string());
     }
-    if !p.use_gpu {
+    if !is_stardist(&p.model_id) && !p.use_gpu {
         args.push("--no-gpu".into());
     }
     args
@@ -356,7 +397,9 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
 /// (image / conf / thresholds / bg-subtract / watershed) are NOT here — they
 /// arrive per-request over stdin.
 fn build_serve_argv(script: &std::path::Path, p: &DetectionParams) -> Vec<String> {
-    let model = strip_model_prefix(&p.model_id).to_string();
+    let model = runtime_model_name(&p.model_id)
+        .expect("build_serve_argv is only called after model allowlist validation")
+        .to_string();
 
     let mut args: Vec<String> = vec![
         script.to_string_lossy().into_owned(),
@@ -369,6 +412,10 @@ fn build_serve_argv(script: &std::path::Path, p: &DetectionParams) -> Vec<String
         "--pxPerUm".into(),
         p.px_per_um.to_string(),
     ];
+    if let Some(checkpoint) = p.checkpoint_path.as_deref() {
+        args.push("--checkpoint".into());
+        args.push(checkpoint.to_string());
+    }
 
     let is_default_channels = p.channels == [0, 0];
     if !is_default_channels {
@@ -427,11 +474,40 @@ fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String 
 /// (`model=cyto3|…`), so a warm cyto3 worker (base `.venv`) is never reused for
 /// a cpsam request — which must run the `.venv4` + `cellpose4_detect.py` pair.
 fn config_signature(p: &DetectionParams) -> String {
-    let model = strip_model_prefix(&p.model_id);
+    let model = runtime_model_name(&p.model_id)
+        .expect("config_signature is only called after model allowlist validation");
     format!(
-        "model={model}|gpu={}|channels={},{}",
-        p.use_gpu, p.channels[0], p.channels[1]
+        "model={model}|checkpoint={}|gpu={}|channels={},{}",
+        p.checkpoint_path.as_deref().unwrap_or("base"),
+        p.use_gpu,
+        p.channels[0],
+        p.channels[1]
     )
+}
+
+fn resolve_derived_checkpoint(
+    db: &Db,
+    store: &FileStore,
+    model_id: &str,
+) -> Result<Option<String>, String> {
+    if !model_id.starts_with("cp-cyto3@") {
+        return Ok(None);
+    }
+    let raw = crate::db::repo::model_checkpoint_for(db, model_id)?
+        .ok_or_else(|| "The selected fine-tuned cp-cyto3 version does not exist.".to_string())?;
+    let models_dir = std::fs::canonicalize(store.models_dir())
+        .map_err(|error| format!("Could not resolve the model store: {error}"))?;
+    let checkpoint = std::fs::canonicalize(&raw)
+        .map_err(|error| format!("The selected checkpoint is missing: {error}"))?;
+    if !checkpoint.is_file() || !checkpoint.starts_with(&models_dir) {
+        return Err("The selected checkpoint is not a regular file inside CellCounter's model store.".to_string());
+    }
+    Ok(Some(checkpoint.to_string_lossy().into_owned()))
+}
+
+fn enforce_windows_runtime_contract(params: &mut DetectionParams) {
+    params.checkpoint_path = None;
+    params.use_gpu = false;
 }
 
 /// Warm-worker pool capacity per signature: `available_parallelism` capped at
@@ -478,17 +554,45 @@ fn parse_progress_line(run_id: &str, line: &str) -> Option<DetectionProgress> {
 #[tauri::command]
 pub async fn run_detection(
     app: AppHandle,
+    db: State<'_, Db>,
     image_path: String,
-    params: DetectionParams,
+    mut params: DetectionParams,
     run_id: String,
 ) -> Result<DetectionResultDto, DetectionErrorDto> {
     let store = FileStore::from_app(&app).map_err(|_| DetectionErrorDto::ImageDecodeFailed)?;
+    let requested_model_id = params.model_id.clone();
+    // `checkpointPath` is an internal trust-boundary field. Never honor a value
+    // deserialized from IPC; only the canonical DB lineage lookup below may set it.
+    enforce_windows_runtime_contract(&mut params);
+    if requested_model_id.starts_with("cp-cyto3@") {
+        params.checkpoint_path = resolve_derived_checkpoint(&db, &store, &requested_model_id)
+            .map_err(|_| DetectionErrorDto::ModelNotInstalled {
+                model_id: requested_model_id.clone(),
+            })?;
+        params.model_id = "cp-cyto3".to_string();
+    }
 
     let (python, script) = resolve_sidecar(&store, &params.model_id).map_err(|_| {
         DetectionErrorDto::ModelNotInstalled {
             model_id: params.model_id.clone(),
         }
     })?;
+
+    // StarDist's public API is one-shot only. Do not attempt the Cellpose
+    // `--serve` handshake (and do not hide a failed handshake behind a retry):
+    // route it directly to the cancellable one-shot runner.
+    if is_stardist(&params.model_id) {
+        return run_one_shot(
+            &app,
+            &python,
+            &script,
+            &store,
+            &image_path,
+            &params,
+            &run_id,
+        )
+        .await;
+    }
 
     // Each path registers the run in the cancel registry only once it owns a
     // process, so a cancel that arrives before then is a harmless no-op (the
@@ -1149,6 +1253,12 @@ async fn run_one_shot(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if is_stardist(&params.model_id) {
+        // Keep pretrained weights inside CellCounter's own local model store;
+        // do not scatter them through the user's global Keras cache.
+        cmd.env("KERAS_HOME", store.models_dir().join("keras"))
+            .env("TF_CPP_MIN_LOG_LEVEL", "2");
+    }
     crate::proc::hide_console_tokio(&mut cmd);
 
     let mut child: Child = cmd
@@ -1395,11 +1505,30 @@ pub async fn cancel_detection(app: AppHandle, run_id: String) -> Result<(), Stri
 #[tauri::command]
 pub async fn detection_availability(
     app: AppHandle,
-    _db: State<'_, Db>,
-    model_id: String,
+    db: State<'_, Db>,
+    mut model_id: String,
 ) -> Result<Availability, String> {
     let store = FileStore::from_app(&app)?;
+    if model_id.starts_with("cp-cyto3@") {
+        if let Err(reason) = resolve_derived_checkpoint(&db, &store, &model_id) {
+            return Ok(Availability {
+                installed: false,
+                reason: Some(reason),
+            });
+        }
+        model_id = "cp-cyto3".to_string();
+    }
     let cpsam = is_cellpose_sam(&model_id);
+    let stardist = is_stardist(&model_id);
+
+    if !is_supported_model(&model_id) {
+        return Ok(Availability {
+            installed: false,
+            reason: Some(format!(
+                "Unsupported model id `{model_id}`. Windows 1.0.8 supports cpsam_v2, cp-cyto3, and sd-fluo."
+            )),
+        });
+    }
 
     // Route to the model-appropriate venv python, staged detect script, and
     // import probe (the cpsam probe asserts cellpose >= 4).
@@ -1408,6 +1537,12 @@ pub async fn detection_availability(
             store.venv4_python(),
             store.python_script("cellpose4_detect.py"),
             CELLPOSE4_IMPORT_PROBE,
+        )
+    } else if stardist {
+        (
+            store.venv_stardist_python(),
+            store.python_script("stardist_detect.py"),
+            "import stardist, csbdeep, tensorflow",
         )
     } else {
         (
@@ -1428,9 +1563,20 @@ pub async fn detection_availability(
             installed: false,
             reason: Some(if cpsam {
                 "Cellpose-SAM environment (venv4) is not installed.".into()
+            } else if stardist {
+                "StarDist environment (.venvsd) is not installed.".into()
             } else {
                 "Python environment is not installed.".into()
             }),
+        });
+    }
+    if stardist && !store.stardist_weights_dir().is_dir() {
+        return Ok(Availability {
+            installed: false,
+            reason: Some(
+                "StarDist fluorescence weights are missing. Reinstall sd-fluo from Models."
+                    .into(),
+            ),
         });
     }
 
@@ -1459,6 +1605,8 @@ pub async fn detection_availability(
             installed: false,
             reason: Some(if cpsam {
                 format!("Cellpose-SAM (cellpose >= 4) is not importable from venv4. {tail}")
+            } else if stardist {
+                format!("StarDist is not importable from its isolated environment. {tail}")
             } else {
                 format!("Cellpose is not importable from the environment. {tail}")
             }),
@@ -1568,5 +1716,114 @@ pub fn sweep_orphans(python_dir: std::path::PathBuf) {
 
     if killed > 0 {
         eprintln!("[sidecar] reaped {killed} orphan subprocess(es) from prior session");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(model_id: &str) -> DetectionParams {
+        DetectionParams {
+            model_id: model_id.to_string(),
+            checkpoint_path: None,
+            px_per_um: 2.6,
+            confidence_threshold: 0.55,
+            channels: [2, 1],
+            background_subtract: true,
+            rolling_ball_radius: 42,
+            watershed_split: true,
+            watershed_min_distance_um: 7.6,
+            small_threshold_um: 20.0,
+            large_threshold_um: 30.0,
+            expected_diameter_um: 24.0,
+            use_gpu: false,
+        }
+    }
+
+    fn value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter()
+            .position(|v| v == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn windows_model_allowlist_is_exact_and_ordered() {
+        assert_eq!(WINDOWS_MODEL_IDS, ["cpsam_v2", "cp-cyto3", "sd-fluo"]);
+        assert_eq!(runtime_model_name("cpsam_v2"), Some("cpsam"));
+        assert_eq!(runtime_model_name("cp-cyto3"), Some("cyto3"));
+        assert_eq!(runtime_model_name("sd-fluo"), Some("2D_versatile_fluo"));
+        for unsupported in ["cpsam", "cyto3", "sd-he", "", "unknown"] {
+            assert_eq!(runtime_model_name(unsupported), None, "{unsupported}");
+            assert!(!is_supported_model(unsupported));
+        }
+    }
+
+    #[test]
+    fn client_cannot_inject_a_checkpoint_or_gpu_into_windows_runtime() {
+        for model_id in WINDOWS_MODEL_IDS {
+            let mut request = params(model_id);
+            request.checkpoint_path = Some(r"C:\untrusted\model.pt".to_string());
+            request.use_gpu = true;
+            enforce_windows_runtime_contract(&mut request);
+            let args = build_argv(std::path::Path::new("detect.py"), "image.tif", &request);
+            assert!(!args.iter().any(|value| value == "--checkpoint"));
+            if model_id != "sd-fluo" {
+                assert!(args.iter().any(|value| value == "--no-gpu"));
+            }
+            assert!(!request.use_gpu);
+        }
+    }
+
+    #[test]
+    fn backend_checkpoint_is_part_of_worker_identity_and_argv() {
+        let mut request = params("cp-cyto3");
+        request.checkpoint_path = Some(r"C:\CellCounter\Models\v1.ccmodel".to_string());
+        let args = build_serve_argv(std::path::Path::new("detect.py"), &request);
+        assert_eq!(value_after(&args, "--checkpoint"), Some(r"C:\CellCounter\Models\v1.ccmodel"));
+        assert!(config_signature(&request).contains("v1.ccmodel"));
+    }
+
+    #[test]
+    fn cellpose_argv_maps_exact_checkpoint_and_preserves_controls() {
+        let args = build_argv(std::path::Path::new("detect.py"), r"C:\data\cell 1.tif", &params("cp-cyto3"));
+        assert_eq!(value_after(&args, "--model"), Some("cyto3"));
+        assert_eq!(value_after(&args, "--image"), Some(r"C:\data\cell 1.tif"));
+        assert_eq!(value_after(&args, "--channels"), Some("2,1"));
+        assert_eq!(value_after(&args, "--diameter"), Some("24"));
+        assert_eq!(value_after(&args, "--watershed-min-distance"), Some("8"));
+        assert!(args.iter().any(|v| v == "--no-gpu"));
+    }
+
+    #[test]
+    fn cpsam_v2_maps_only_to_cpsam_checkpoint() {
+        let args = build_serve_argv(std::path::Path::new("cellpose4_detect.py"), &params("cpsam_v2"));
+        assert_eq!(value_after(&args, "--model"), Some("cpsam"));
+        assert!(is_cellpose_sam("cpsam_v2"));
+        assert!(!is_cellpose_sam("cpsam"));
+    }
+
+    #[test]
+    fn stardist_argv_never_receives_cellpose_only_flags() {
+        let args = build_argv(std::path::Path::new("stardist_detect.py"), r"D:\images\nuclei.tif", &params("sd-fluo"));
+        assert_eq!(value_after(&args, "--model"), Some("2D_versatile_fluo"));
+        for forbidden in ["--channels", "--diameter", "--no-gpu"] {
+            assert!(!args.iter().any(|v| v == forbidden), "{forbidden}");
+        }
+        assert!(args.iter().any(|v| v == "--bg-subtract"));
+        assert!(args.iter().any(|v| v == "--watershed"));
+    }
+
+    #[test]
+    fn progress_parser_filters_bars_and_extracts_device() {
+        assert!(parse_progress_line("run", "10%|██| 1/10").is_none());
+        match parse_progress_line("run", "[cellpose_detect] using device: cuda:0 (torch)") {
+            Some(DetectionProgress::Device { run_id, device }) => {
+                assert_eq!(run_id, "run");
+                assert_eq!(device, "CUDA:0");
+            }
+            other => panic!("unexpected progress: {other:?}"),
+        }
     }
 }

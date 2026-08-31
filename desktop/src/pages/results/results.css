@@ -1000,3 +1000,65 @@
     border-top: 1px solid var(--cc-border);
   }
 }
+.rv-assay {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0 var(--cc-space-4);
+}
+
+.rv-assay__title {
+  color: var(--cc-text);
+  font-size: var(--cc-text-sm);
+  font-weight: 650;
+}
+
+.rv-assay__hint {
+  margin: 0;
+  color: var(--cc-text-tertiary);
+  font-size: var(--cc-text-xs);
+  line-height: 1.45;
+}
+
+.rv-assay__controls,
+.rv-assay__numbers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.rv-assay select,
+.rv-assay input,
+.rv-assay button {
+  min-height: 29px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-bg-elevated);
+  color: var(--cc-text);
+  font: inherit;
+  font-size: var(--cc-text-xs);
+}
+
+.rv-assay select,
+.rv-assay button { padding: 5px 8px; }
+.rv-assay input { width: 58px; padding: 4px 6px; }
+.rv-assay__numbers label { color: var(--cc-text-secondary); font-size: var(--cc-text-xs); }
+.rv-assay__run { align-self: flex-start; color: var(--cc-accent-strong) !important; cursor: pointer; }
+.rv-assay__actions { display: flex; align-items: center; gap: 8px; }
+.rv-assay__secondary { align-self: flex-start; cursor: pointer; }
+.rv-assay__error { color: var(--cc-danger); font-size: var(--cc-text-xs); line-height: 1.45; }
+
+.rv-assay__result { margin: 0; max-height: 260px; overflow: auto; }
+.rv-assay__result > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--cc-divider); }
+.rv-assay__result dt { color: var(--cc-text-tertiary); font-size: 10px; overflow-wrap: anywhere; }
+.rv-assay__result dd { margin: 0; color: var(--cc-text); font-size: var(--cc-text-xs); font-variant-numeric: tabular-nums; }
+
+.rv-profile-preview { position: relative; cursor: crosshair; overflow: hidden; border-radius: var(--cc-radius-sm); background: #05070a; }
+.rv-profile-preview img { display: block; width: 100%; height: auto; max-height: 180px; object-fit: contain; }
+.rv-profile-dot { position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; border: 1px solid white; pointer-events: none; }
+.rv-profile-dot--start { background: #22c55e; }
+.rv-profile-dot--end { background: #f97316; }
+.rv-profile-plot { display: grid; grid-template-columns: 1fr 1fr; color: var(--cc-accent-strong); }
+.rv-profile-plot svg { grid-column: 1 / -1; width: 100%; height: 80px; border-bottom: 1px solid var(--cc-divider); }
+.rv-profile-plot span { color: var(--cc-text-tertiary); font-size: 10px; }
+.rv-profile-plot span:last-child { text-align: right; }

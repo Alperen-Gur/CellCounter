@@ -67,6 +67,10 @@ def parse_args():
              "(restore_type='denoise_cyto3'). Used by the cp-cyto3-r model.",
     )
     parser.add_argument(
+        "--checkpoint", default=None,
+        help="App-confined fine-tuned Cellpose checkpoint path.",
+    )
+    parser.add_argument(
         "--diameter", type=float, default=0.0,
         help="Explicit expected cell diameter in µm for the Cellpose size prior. "
              "0 (default) derives it from the size bins ((small+large)/2), "
@@ -135,7 +139,13 @@ def build_model(cp_models, model_type: str, args, torch_mod):
                 log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
         return m
 
-    if getattr(args, "restore", False):
+    if getattr(args, "checkpoint", None):
+        checkpoint = os.path.realpath(args.checkpoint)
+        if not os.path.isfile(checkpoint):
+            raise FileNotFoundError("fine-tuned checkpoint is missing")
+        log("[cellpose_detect] loading explicit fine-tuned checkpoint")
+        model = _build(pretrained_model=checkpoint)
+    elif getattr(args, "restore", False):
         log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
         try:
             model = _build(model_type=model_type, restore_type="denoise_cyto3")

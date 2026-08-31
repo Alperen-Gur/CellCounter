@@ -283,17 +283,18 @@ export function matchAction(
 // Display helpers (shortcuts sheet)
 // ---------------------------------------------------------------------------
 
-const MOD_GLYPH = "⌘";
-const SHIFT_GLYPH = "⇧";
-const ALT_GLYPH = "⌥";
+function usesAppleShortcutGlyphs(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
 
 /** Pretty-print a single chord string into its glyph form (e.g. "mod+shift+z" → "⌘⇧Z"). */
 export function displayChord(chord: string): string {
   const p = parseChord(chord);
+  const apple = usesAppleShortcutGlyphs();
   let out = "";
-  if (p.mod) out += MOD_GLYPH;
-  if (p.alt) out += ALT_GLYPH;
-  if (p.shift) out += SHIFT_GLYPH;
+  if (p.mod) out += apple ? "⌘" : "Ctrl+";
+  if (p.alt) out += apple ? "⌥" : "Alt+";
+  if (p.shift) out += apple ? "⇧" : "Shift+";
   out += keyTokenLabel(p.key);
   return out;
 }
@@ -318,7 +319,7 @@ function keyTokenLabel(key: string): string {
     case "Delete":
       return "Delete";
     case "Backspace":
-      return "⌫";
+      return usesAppleShortcutGlyphs() ? "⌫" : "Backspace";
     case "Tab":
       return "Tab";
     case "":
@@ -334,7 +335,6 @@ function keyTokenLabel(key: string): string {
  * form with " / ". Returns "" for unbound actions.
  */
 export function bindingDisplay(binding: KeyBinding): string {
-  if (binding.display !== undefined) return binding.display;
   if (binding.keys.length === 0) return "";
   return binding.keys.map(displayChord).join(" / ");
 }

@@ -49,34 +49,34 @@ export interface ModelCatalogEntry {
  */
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
+    id: "cpsam_v2",
+    name: "Cellpose-SAM v2",
+    description:
+      "The strongest general-purpose detector for difficult, irregular, and crowded cells. Runs locally in its own Cellpose 4 environment.",
+    glyph: "layers",
+    available: true,
+    backend: "Cellpose 4 · isolated Python sidecar",
+    sizeLabel: "~1.15 GB weights",
+  },
+  {
     id: "cp-cyto3",
     name: "Cellpose cyto3",
     description:
-      "General cytoplasm segmentation. The default detector — runs locally via the uv-managed Python sidecar on CPU (MPS on Apple silicon).",
+      "Fast, compact general cytoplasm segmentation for routine brightfield and fluorescence work. Runs locally through the uv-managed Python sidecar.",
     glyph: "scope",
     available: true,
     backend: "Cellpose · Python sidecar",
     sizeLabel: "~26 MB weights",
   },
   {
-    id: "cp-cyto3-r",
-    name: "Cellpose cyto3 (restore)",
+    id: "sd-fluo",
+    name: "StarDist versatile fluorescence",
     description:
-      "cyto3 with the image-restoration pass for noisy / low-contrast fields. Planned for a later release.",
-    glyph: "sliders",
-    available: false,
-    backend: "Cellpose · Python sidecar",
-    sizeLabel: "coming soon",
-  },
-  {
-    id: "cpsam",
-    name: "Cellpose-SAM",
-    description:
-      "SAM ViT-encoder segmentation (Cellpose-SAM / CPSAM) for large or irregular cells — the fix when cyto3 under-segments and merges neighboring large cells into one mask. Heavier and slower than cyto3; installs its own Python sidecar environment (cellpose ≥4) and downloads its weights on first run.",
-    glyph: "layers",
+      "Fast star-convex instance segmentation for fluorescent nuclei. Runs locally in an isolated TensorFlow environment with the exact 2D versatile fluorescence weights.",
+    glyph: "scope",
     available: true,
-    backend: "Cellpose-SAM (CPSAM) · Python sidecar",
-    sizeLabel: "~1.15 GB weights · ~3.5 GB installed",
+    backend: "StarDist · isolated Python sidecar",
+    sizeLabel: "pretrained fluorescence weights",
   },
 ] as const;
 

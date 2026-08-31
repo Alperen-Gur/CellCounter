@@ -1,13 +1,27 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.8",
+  "description": "CellCounter native Windows application",
   "type": "module",
+  "engines": {
+    "node": ">=22.18.0 <23"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:windows": "tauri build --bundles msi,nsis",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "verify:models": "node scripts/verify-models.mjs",
+    "verify:python": "python3 -m unittest discover -s python -p 'test_*.py'",
+    "verify:parity": "node scripts/verify-parity.mjs",
+    "verify:speed": "node scripts/verify-speed-contract.mjs",
+    "verify:windows-bundle": "node scripts/verify-windows-bundle.mjs",
+    "verify:windows-ci": "node scripts/verify-windows-ci.mjs",
+    "verify:windows-docs": "node scripts/verify-windows-docs.mjs",
+    "verify:windows-artifacts": "node scripts/verify-windows-artifacts.mjs",
+    "verify:windows": "node scripts/verify-windows.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

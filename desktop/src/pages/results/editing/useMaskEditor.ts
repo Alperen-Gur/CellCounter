@@ -10,18 +10,16 @@
  *   - loads the detection's cells (+ its `detectionId`) and the ground-truth
  *     annotations for the current image,
  *   - constructs the engine with the current calibration context,
- *   - subscribes to `engine.onCommit` and, for every committed `EditEvent`,
- *       (1) persists the full new cell list into the saved detection blob, and
- *       (2) writes one `corrections` row per logical change with the right
- *           `kind` (add|remove|move|resize|manual) — the audit trail that feeds
- *           the future train-from-GUI seam (§3.5),
+ *   - subscribes to `engine.onCommit` and serializes each `EditEvent` through a
+ *     small promise queue into one atomic backend commit: the final cell list
+ *     is written once and all audit rows are inserted in the same transaction,
  *   - keeps React re-rendering by mirroring `engine.cells` into component state.
  *
- * The engine is the source of truth WHILE editing; `saveDetection` persists the
- * result so the sidebar (feat-results-viewer) recomputes stats from the same
- * numbers. The low-confidence display filter is NON-destructive: hidden cells
- * stay in the engine and are round-tripped untouched (mirrors ResultsView,
- * which merges the visible-filtered slice back into the full `liveCells`).
+ * The engine is the source of truth WHILE editing; the atomic edit commit
+ * persists its snapshots so the sidebar recomputes stats from the same numbers.
+ * The low-confidence display filter is NON-destructive: hidden cells stay in
+ * the engine and are round-tripped untouched (mirrors ResultsView, which merges
+ * the visible-filtered slice back into the full `liveCells`).
  *
  * We do NOT re-implement any engine logic here — every mutation goes through the
  * `MaskEditEngine` public API. This hook only wires it to React + the ports.
@@ -215,6 +213,8 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
   // Latest imageStats loaded with the detection, so re-saving edits preserves
   // the QC / colony numbers the sidecar produced.
   const imageStatsRef = useRef<Record<string, number> | undefined>(undefined);
+  const activeImageIdRef = useRef(imageId);
+  activeImageIdRef.current = imageId;
   // Read editor-mode inside the (stable) onCommit callback without re-subscribing.
   const modeRef = useRef(editorMode);
   useEffect(() => {
@@ -279,10 +279,16 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
     engine?.setContext({ pxPerUm, manualMarkerDiameterUm });
   }, [engine, pxPerUm, manualMarkerDiameterUm]);
 
-  // ── subscribe: persist detection + append corrections on every commit ──
+  // ── subscribe: ordered, atomic detection + corrections commits ──
   useEffect(() => {
     if (!engine) return;
     const port = getPort();
+    // The engine may emit another edit (especially rapid undo/redo) before the
+    // prior IPC finishes. Serialize those snapshots so an older write can never
+    // land after a newer one. A rejected item is caught on the chain so later
+    // edits can still repair persistence with their complete final snapshot.
+    let commitQueue: Promise<void> = Promise.resolve();
+    let carriedCorrections: CorrectionRow[] = [];
     const unsub = engine.onCommit((event, nextCells) => {
       // Mirror engine state into React so the overlay re-renders immediately.
       setCells(nextCells);
@@ -293,32 +299,34 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
       if (event.kind === "removed" && event.cells.length === 0) return;
 
       const imgId = imageId;
-      const detId = detectionId;
       if (!imgId) return;
-
-      // (1) Persist the full new cell list back into the detection blob. This
-      //     re-saves the SAME 1:1 detection row (unique per image) so the
-      //     sidebar recomputes counts/bins from the edited numbers.
-      void port
-        .saveDetection(imgId, detectorIdRef.current, nextCells, imageStatsRef.current)
-        .then((saved) => {
-          // First-ever save for an image with no prior detection row: capture the
-          // freshly-minted id so subsequent corrections attach to it.
-          if (!detId && saved?.id) setDetectionId(saved.id);
-          return saved?.id ?? detId;
-        })
-        .then((idForCorrections) => {
-          // (2) Append the correction rows for the audit trail.
-          if (!idForCorrections) return;
-          const rows = correctionsFor(event, modeRef.current === "manualCount");
-          return Promise.all(
-            rows.map((r) => port.recordCorrection(idForCorrections, r)),
+      const detectorId = detectorIdRef.current;
+      const imageStats = imageStatsRef.current;
+      const rows = correctionsFor(event, modeRef.current === "manualCount");
+      commitQueue = commitQueue
+        .then(async () => {
+          const corrections = [...carriedCorrections, ...rows];
+          const savedId = await port.commitCellEdit(
+            imgId,
+            detectorId,
+            nextCells,
+            imageStats,
+            corrections,
           );
+          carriedCorrections = [];
+          // Don't let an old image's delayed commit overwrite the id shown for
+          // a newly-selected image. The persistence write itself remains valid.
+          if (activeImageIdRef.current === imgId) setDetectionId(savedId);
         })
-        .catch((err) => console.warn("[useMaskEditor] persist failed:", err));
+        .catch((err) => {
+          // Preserve audit rows across a recoverable local IPC/SQLite failure.
+          // The next complete snapshot retries them in the same atomic commit.
+          carriedCorrections = [...carriedCorrections, ...rows];
+          console.warn("[useMaskEditor] persist failed:", err);
+        });
     });
     return unsub;
-  }, [engine, imageId, detectionId]);
+  }, [engine, imageId]);
 
   // ── mutations (thin wrappers — the engine.onCommit subscription persists) ──
 

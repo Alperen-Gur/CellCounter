@@ -24,6 +24,7 @@ dependencies = [
     "scikit-image",
     "torch",
     "torchvision",
+    "tifffile",
 ]
 
 # --- CPU torch/torchvision for portability (decision (b)) ------------------

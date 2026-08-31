@@ -1,7 +1,7 @@
 //! lib.rs — Tauri backend entry point.
 //!
 //! Declares every backend module and registers ALL `#[command]`s (persistence,
-//! image import, detection transport, uv env, and the export/seg-npy stubs) in
+//! image import, detection transport, uv env, and export/seg-npy commands) in
 //! one `invoke_handler`. Manages the two pieces of shared state — the SQLite
 //! `Db` and the `SidecarManager` — and, on startup, opens the store, runs the
 //! orphan sweep for stray sidecar processes, and stages the python project.
@@ -10,10 +10,11 @@
 //!   paths      — app-data dir tree (FileStore analogue)
 //!   db         — schema / models / repo (PersistencePort commands)
 //!   images     — importer (decode + sha256 + thumbnail + EXIF probe)
-//!   detection  — ipc / sidecar (transport) + seg_npy stub
+//!   detection  — ipc / sidecar (transport) + seg_npy round-trip
 //!   env        — uv bootstrap (install streaming + availability)
-//!   export     — roi / csv / provenance / report stubs
+//!   export     — ROI / CSV / provenance / report / annotated / GeoJSON writers
 
+pub mod analysis;
 pub mod db;
 pub mod detection;
 pub mod env;
@@ -33,6 +34,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(SidecarManager::new())
+        .manage(analysis::runner::AssayManager::default())
+        .manage(analysis::training::TrainingManager::default())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -56,6 +59,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // ── portable analysis sidecars ──
+            analysis::runner::assay_availability,
+            analysis::runner::run_assay,
+            analysis::runner::cancel_assay,
+            analysis::runner::line_profile,
+            analysis::training::run_fine_tune,
+            analysis::training::cancel_fine_tune,
             // ── persistence: batches ──
             db::repo::all_batches,
             db::repo::batch,
@@ -65,6 +75,7 @@ pub fn run() {
             db::repo::cleanup_empty_batches,
             // ── persistence: images ──
             db::repo::all_images,
+            db::repo::images_for_batch,
             db::repo::image_matching_hash,
             db::repo::duplicate_groups,
             db::repo::delete_image,
@@ -75,6 +86,8 @@ pub fn run() {
             db::repo::save_detection,
             db::repo::get_detection,
             db::repo::get_detections,
+            db::repo::detection_summaries,
+            db::repo::commit_cell_edit,
             db::repo::record_correction,
             // ── persistence: rois ──
             db::repo::rois,
@@ -96,6 +109,7 @@ pub fn run() {
             db::repo::upsert_calibration_preset,
             db::repo::delete_calibration_preset,
             db::repo::bin_presets,
+            db::repo::model_versions,
             // ── persistence: counts / review / wipe ──
             db::repo::total_image_count,
             db::repo::total_batch_count,
@@ -108,17 +122,20 @@ pub fn run() {
             detection::sidecar::run_detection,
             detection::sidecar::cancel_detection,
             detection::sidecar::detection_availability,
-            // ── seg-npy I/O (stub) ──
+            // ── seg-npy I/O ──
             detection::seg_npy::seg_npy_import,
             detection::seg_npy::seg_npy_export,
             // ── uv env ──
             env::uv::env_install,
             env::uv::env_availability,
             env::uv::env_uv_available,
-            // ── export (stubs) ──
+            // ── export ──
             export::roi::export_imagej_roi,
+            export::annotated::export_annotated_png,
+            export::annotated::export_batch_annotated_pngs,
             export::csv::export_cells_csv,
             export::csv::export_batch_summary_csv,
+            export::geojson::export_geojson,
             export::provenance::export_provenance,
             export::report::export_pdf_report,
         ])

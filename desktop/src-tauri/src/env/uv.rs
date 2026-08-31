@@ -32,13 +32,17 @@
 //! like the Swift installer's `output` tail.
 
 use std::process::Stdio;
+use std::fmt::Write as _;
 
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::detection::ipc::Availability;
-use crate::detection::sidecar::{is_cellpose_sam, CELLPOSE4_IMPORT_PROBE};
+use crate::detection::sidecar::{
+    is_cellpose_sam, is_stardist, is_supported_model, CELLPOSE4_IMPORT_PROBE,
+};
 use crate::paths::FileStore;
 
 /// Tauri event name the install log lines are emitted on.
@@ -87,6 +91,7 @@ fn uv_executable() -> String {
 /// one). 3.11 is inside the supported range and has good wheel coverage for the
 /// pinned deps (cellpose 3.x / numpy<2 / CPU torch).
 const PINNED_PYTHON: &str = "3.11";
+const PINNED_IO_PYTHON: &str = "3.12";
 
 /// App-facing base (cyto3) model id. Used only as the `modelId` stamp for a
 /// legacy no-arg `env_install()` call (which installs the base env); the frontend
@@ -106,6 +111,19 @@ const BASE_MODEL_ID: &str = "cp-cyto3";
 /// lockfile) so it stays fully isolated from the base env's `pyproject.toml` +
 /// `uv.lock`.
 const CP4_PIP_PACKAGES: &[&str] = &["cellpose>=4", "numpy<2", "scipy", "scikit-image", "torch"];
+
+/// StarDist is isolated because its TensorFlow/Keras dependency graph must not
+/// mutate either Cellpose runtime. These bounds reflect the Python 3.11 Windows
+/// wheel set and are intentionally explicit for repeatable installs.
+const STARDIST_PIP_PACKAGES: &[&str] = &[
+    "stardist>=0.9,<0.10",
+    "csbdeep>=0.8,<0.9",
+    "tensorflow>=2.16,<2.17",
+    "numpy<2",
+    "pillow",
+    "scipy",
+    "scikit-image",
+];
 
 /// Cheap "is the staged copy already current?" check: identical length and
 /// byte-for-byte contents. Reading both files is fine here — the sidecar scripts
@@ -209,7 +227,7 @@ fn long_path_warning(venv_dir: &std::path::Path) -> Option<String> {
 /// The source dir is resolved from the Tauri resource dir when packaged, else
 /// from the dev-repo `desktop/python`. Missing sources are skipped (the caller
 /// surfaces "scripts not staged" via availability).
-fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String> {
+pub(crate) fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String> {
     use tauri::Manager;
     let dest = store.python_dir();
     std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
@@ -293,11 +311,122 @@ pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(),
     // the cyto3 card's filtered log.
     let model_id = model_id.unwrap_or_else(|| BASE_MODEL_ID.to_string());
 
-    if is_cellpose_sam(&model_id) {
-        install_cellpose4_env(&app, &store, &model_id).await
-    } else {
-        install_base_env(&app, &store, &model_id).await
+    if !is_supported_model(&model_id) {
+        return Err(format!(
+            "Unsupported model id `{model_id}`. Windows 1.0.8 supports cpsam_v2, cp-cyto3, and sd-fluo."
+        ));
     }
+
+    if is_cellpose_sam(&model_id) {
+        install_cellpose4_env(&app, &store, &model_id).await?;
+    } else if is_stardist(&model_id) {
+        install_stardist_env(&app, &store, &model_id).await?;
+    } else {
+        install_base_env(&app, &store, &model_id).await?;
+    }
+    if let Err(error) = install_microscopy_io_env(&app, &store, &model_id).await {
+        let _ = app.emit(
+            INSTALL_LOG_EVENT,
+            InstallLogLine {
+                stream: "stderr".to_string(),
+                line: format!(
+                    "Model installed, but optional microscopy readers are unavailable: {error}"
+                ),
+                model_id: model_id.clone(),
+            },
+        );
+    }
+    Ok(())
+}
+
+async fn install_microscopy_io_env(
+    app: &AppHandle,
+    store: &FileStore,
+    model_id: &str,
+) -> Result<(), String> {
+    let venv_dir = store.venv_io_dir();
+    let requirements = store.python_dir().join("microscopy-requirements.txt");
+    if !requirements.exists() {
+        return Err("the pinned microscopy reader requirements were not staged".to_string());
+    }
+    let requirements_bytes = std::fs::read(&requirements)
+        .map_err(|error| format!("could not read microscopy requirements: {error}"))?;
+    let mut fingerprint = String::with_capacity(64);
+    for byte in Sha256::digest(&requirements_bytes) {
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    let sentinel = venv_dir.join(".cellcounter-readers");
+    if std::fs::read_to_string(&sentinel)
+        .ok()
+        .is_some_and(|value| value.trim() == fingerprint)
+        && microscopy_io_probe(store).await
+    {
+        return Ok(());
+    }
+    if let Some(msg) = long_path_warning(&venv_dir) {
+        return Err(msg);
+    }
+    let mut venv_cmd = Command::new(uv_executable());
+    venv_cmd
+        .arg("venv")
+        .arg(&venv_dir)
+        .arg("--python")
+        .arg(PINNED_IO_PYTHON)
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut venv_cmd);
+    run_streamed_command(app, venv_cmd, "microscopy reader venv", model_id).await?;
+
+    let mut pip_cmd = Command::new(uv_executable());
+    pip_cmd
+        .arg("pip")
+        .arg("install")
+        .arg("--python")
+        .arg(store.venv_io_python())
+        .arg("--require-hashes")
+        .arg("-r")
+        .arg(&requirements)
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut pip_cmd);
+    run_streamed_command(app, pip_cmd, "microscopy readers", model_id).await?;
+    if !microscopy_io_probe(store).await {
+        return Err("the pinned reader environment failed its import probe".to_string());
+    }
+    std::fs::write(&sentinel, fingerprint)
+        .map_err(|error| format!("could not record microscopy reader version: {error}"))?;
+    Ok(())
+}
+
+async fn microscopy_io_probe(store: &FileStore) -> bool {
+    let python = store.venv_io_python();
+    if !python.exists() {
+        return false;
+    }
+    let mut command = Command::new(python);
+    command
+        .args([
+            "-c",
+            "import numpy, PIL, tifffile, czifile, nd2, liffile, oiffile, oirfile, openslide",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut command);
+    tokio::time::timeout(std::time::Duration::from_secs(20), command.status())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|status| status.success())
 }
 
 /// Base (cyto3, `cellpose>=3,<4`) install: `uv sync --frozen` the staged
@@ -450,6 +579,69 @@ async fn install_cellpose4_env(
     run_streamed_command(app, prefetch_cmd, "cellpose-sam weight prefetch", model_id).await
 }
 
+/// Install StarDist and its pretrained fluorescence weights in `.venvsd`.
+/// The environment is independent from Cellpose and every subprocess is
+/// created without a console window on Windows.
+async fn install_stardist_env(
+    app: &AppHandle,
+    store: &FileStore,
+    model_id: &str,
+) -> Result<(), String> {
+    let venv_dir = store.venv_stardist_dir();
+    if let Some(msg) = long_path_warning(&venv_dir) {
+        return Err(msg);
+    }
+
+    let mut venv_cmd = Command::new(uv_executable());
+    venv_cmd
+        .arg("venv")
+        .arg(&venv_dir)
+        .arg("--python")
+        .arg(PINNED_PYTHON)
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut venv_cmd);
+    run_streamed_command(app, venv_cmd, "uv venv", model_id).await?;
+
+    let python = store.venv_stardist_python();
+    let mut pip_cmd = Command::new(uv_executable());
+    pip_cmd
+        .arg("pip")
+        .arg("install")
+        .arg("--python")
+        .arg(&python)
+        .args(STARDIST_PIP_PACKAGES)
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut pip_cmd);
+    run_streamed_command(app, pip_cmd, "uv pip install", model_id).await?;
+
+    // Make installation transactional from the user's point of view: a model
+    // is not reported ready until its exact weights can be constructed.
+    let mut prefetch_cmd = Command::new(&python);
+    prefetch_cmd
+        .arg("-c")
+        .arg("from stardist.models import StarDist2D; StarDist2D.from_pretrained('2D_versatile_fluo')")
+        .current_dir(store.python_dir())
+        .env("TF_CPP_MIN_LOG_LEVEL", "2")
+        .env("KERAS_HOME", store.models_dir().join("keras"))
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut prefetch_cmd);
+    run_streamed_command(app, prefetch_cmd, "StarDist weight prefetch", model_id).await
+}
+
 /// Spawn a fully-configured `Command`, stream its stdout+stderr as
 /// [`INSTALL_LOG_EVENT`] lines (the Models page live tail, each stamped with
 /// `model_id` so concurrent installs stay isolated — FIX 5), and map the exit
@@ -579,13 +771,29 @@ pub async fn env_availability(
     model_id: Option<String>,
 ) -> Result<Availability, String> {
     let store = FileStore::from_app(&app)?;
-    let cpsam = is_cellpose_sam(model_id.as_deref().unwrap_or(""));
+    let model_id = model_id.unwrap_or_else(|| BASE_MODEL_ID.to_string());
+    let cpsam = is_cellpose_sam(&model_id);
+    let stardist = is_stardist(&model_id);
+
+    if !is_supported_model(&model_id) {
+        return Ok(Availability {
+            installed: false,
+            reason: Some(format!(
+                "Unsupported model id `{model_id}`. Windows 1.0.8 supports cpsam_v2, cp-cyto3, and sd-fluo."
+            )),
+        });
+    }
 
     // Route to the model-appropriate venv + import probe. cpsam checks `.venv4`
     // with the version-asserting probe; everything else checks the base `.venv`
     // with a plain `import cellpose`.
     let (python, probe) = if cpsam {
         (store.venv4_python(), CELLPOSE4_IMPORT_PROBE)
+    } else if stardist {
+        (
+            store.venv_stardist_python(),
+            "import stardist, csbdeep, tensorflow",
+        )
     } else {
         (store.venv_python(), "import cellpose")
     };
@@ -595,9 +803,20 @@ pub async fn env_availability(
             installed: false,
             reason: Some(if cpsam {
                 "Cellpose-SAM environment (venv4) is not installed.".into()
+            } else if stardist {
+                "StarDist environment (.venvsd) is not installed.".into()
             } else {
                 "Python environment is not installed.".into()
             }),
+        });
+    }
+    if stardist && !store.stardist_weights_dir().is_dir() {
+        return Ok(Availability {
+            installed: false,
+            reason: Some(
+                "StarDist fluorescence weights are missing. Reinstall sd-fluo from Models."
+                    .into(),
+            ),
         });
     }
     let mut cmd = Command::new(&python);
@@ -623,6 +842,8 @@ pub async fn env_availability(
             installed: false,
             reason: Some(if cpsam {
                 format!("Cellpose-SAM (cellpose >= 4) is not importable from venv4. {tail}")
+            } else if stardist {
+                format!("StarDist is not importable from its isolated environment. {tail}")
             } else {
                 format!("Cellpose is not importable. {tail}")
             }),

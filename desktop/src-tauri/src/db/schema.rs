@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS images (
   confidence_override REAL,
   file_hash           TEXT,
   notes               TEXT,
+  stored_ext          TEXT,
+  analysis_path       TEXT,
   batch_id            TEXT REFERENCES batches(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_images_hash ON images(file_hash);
@@ -183,7 +185,19 @@ pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<bool> {
         "uncorrected_count",
         "ALTER TABLE detections ADD COLUMN uncorrected_count INTEGER NOT NULL DEFAULT 0",
     )?;
-    Ok(added_cell || added_uncorrected)
+    let added_stored_ext = add_column_if_missing(
+        conn,
+        "images",
+        "stored_ext",
+        "ALTER TABLE images ADD COLUMN stored_ext TEXT",
+    )?;
+    let added_analysis_path = add_column_if_missing(
+        conn,
+        "images",
+        "analysis_path",
+        "ALTER TABLE images ADD COLUMN analysis_path TEXT",
+    )?;
+    Ok(added_cell || added_uncorrected || added_stored_ext || added_analysis_path)
 }
 
 /// Add `column` to `table` via `alter_sql`, but only if it is not already
