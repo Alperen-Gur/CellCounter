@@ -20,7 +20,7 @@
 import Foundation
 
 /// Result of running a detection sidecar to completion.
-struct SidecarOutcome {
+nonisolated struct SidecarOutcome {
     var exitCode: Int32
     var stdout: Data
     var stderr: Data
@@ -52,7 +52,7 @@ enum SidecarProcessRunner {
     /// but well below the point where holding it (plus the pipe copy and the
     /// decoded model objects) threatens a modest lab laptop. Past this we fail
     /// with `.payloadTooLarge` rather than decode an unbounded payload.
-    static let maxStdoutBytes = 256 * 1024 * 1024
+    nonisolated static let maxStdoutBytes = 256 * 1024 * 1024
 
     /// Spawn `pythonURL args…` off the main actor and return its full stdout,
     /// stderr, and exit code once it terminates.
@@ -179,7 +179,7 @@ enum SidecarProcessRunner {
 /// Thread-safe byte accumulator. `readabilityHandler` fires on a background
 /// queue and `terminationHandler` reads `snapshot()` — both serialize through
 /// `lock`.
-private final class SidecarDataSink: @unchecked Sendable {
+nonisolated private final class SidecarDataSink: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
     /// Optional hard cap. Once the accumulated payload would exceed this many
@@ -223,7 +223,7 @@ private final class SidecarDataSink: @unchecked Sendable {
 /// multi-byte character) so split progress lines aren't dropped. Accessed only
 /// from the pipe's serial readability queue and the termination handler, but
 /// guarded by a lock for safety.
-private final class SidecarLineBuffer: @unchecked Sendable {
+nonisolated private final class SidecarLineBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
 
@@ -260,7 +260,7 @@ private final class SidecarLineBuffer: @unchecked Sendable {
 }
 
 /// One-shot resume guard for the Process termination handler.
-private final class SidecarResumeFlag: @unchecked Sendable {
+nonisolated private final class SidecarResumeFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
     func markAndCheck() -> Bool {

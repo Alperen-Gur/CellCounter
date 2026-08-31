@@ -59,7 +59,7 @@ struct SAMDownloader: ModelDownloader {
     }
 
     /// `~/.cache/micro_sam/models/<model_type>` — where micro_sam stores checkpoints.
-    private func cacheDir(for modelType: String) -> URL {
+    static func cacheDir(for modelType: String) -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
             .appendingPathComponent(".cache/micro_sam/models", isDirectory: true)
@@ -76,7 +76,7 @@ struct SAMDownloader: ModelDownloader {
         guard let py = venvPython() else { return false }
         // Cached-only lookup: never forks.
         guard Self.importCache.cachedAnswer(pythonURL: py) == true else { return false }
-        let dir = cacheDir(for: modelType)
+        let dir = Self.cacheDir(for: modelType)
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
             return false
         }
@@ -91,7 +91,7 @@ struct SAMDownloader: ModelDownloader {
             Self.importCache.isImportable(pythonURL: py)
         }.value
         if !importable { return false }
-        let dir = cacheDir(for: modelType)
+        let dir = Self.cacheDir(for: modelType)
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
             return false
         }
@@ -155,7 +155,7 @@ struct SAMDownloader: ModelDownloader {
 
         // 4) Verify the cache dir landed.
         await MainActor.run { progress.stage = .verifying }
-        let dir = cacheDir(for: modelType)
+        let dir = Self.cacheDir(for: modelType)
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         if contents.isEmpty {
             await MainActor.run {
@@ -177,7 +177,7 @@ struct SAMDownloader: ModelDownloader {
         // so the conservative behaviour: only remove the dir, and let other
         // models re-download on next install. The pip-installed micro_sam
         // package itself stays in the venv.
-        let dir = cacheDir(for: modelType)
+        let dir = Self.cacheDir(for: modelType)
         if FileManager.default.fileExists(atPath: dir.path) {
             try FileManager.default.removeItem(at: dir)
         }
@@ -186,7 +186,7 @@ struct SAMDownloader: ModelDownloader {
     @MainActor
     func diskUsageBytes(modelId: String) -> Int64 {
         guard let modelType = Self.modelType(for: modelId) else { return 0 }
-        let dir = cacheDir(for: modelType)
+        let dir = Self.cacheDir(for: modelType)
         var total: Int64 = 0
         if let en = FileManager.default.enumerator(at: dir,
                                                     includingPropertiesForKeys: [.fileSizeKey],

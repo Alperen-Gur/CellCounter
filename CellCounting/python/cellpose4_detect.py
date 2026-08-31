@@ -55,7 +55,13 @@ from _cellpose_common import log, emit_error  # noqa: E402
 # tqdm patch — bridge cellpose's weight-download progress to our stderr UI.
 # ---------------------------------------------------------------------------
 
+_TQDM_BRIDGED = False
+
+
 def install_tqdm_progress_bridge() -> None:
+    global _TQDM_BRIDGED
+    if _TQDM_BRIDGED:
+        return
     try:
         import tqdm as _tqdm_mod
     except ImportError:
@@ -105,10 +111,14 @@ def install_tqdm_progress_bridge() -> None:
     _tqdm_mod.tqdm.__init__ = _patched_init
     _tqdm_mod.tqdm.update = _patched_update
     _tqdm_mod.tqdm.close = _patched_close
+    _TQDM_BRIDGED = True
     log("[cellpose_detect] tqdm progress bridge installed for weight downloads")
 
 
-def parse_args():
+_MODEL_CACHE = {}
+
+
+def parse_args(argv=None):
     parser = cc.build_arg_parser(
         description="Cellpose 4 (CPSAM) detection sidecar for CellCounter",
         default_model="cpsam",
@@ -121,15 +131,15 @@ def parse_args():
              "derived from --small-threshold/--large-threshold bins. "
              "Default 0.0 (disabled; falls back to the bins-derived value).",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 # ---------------------------------------------------------------------------
 # Main pipeline.
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    args = parse_args()
+def main(argv=None) -> None:
+    args = parse_args(argv)
     channels = cc.parse_channels(args.channels)
 
     log("[cellpose_detect] cellpose 4 sidecar starting")
@@ -193,24 +203,31 @@ def main() -> None:
 
     # Model construction (triggers the 1.15 GB CPSAM weights download on
     # first run; the tqdm bridge installed above streams progress).
-    log(f"[cellpose_detect] constructing CellposeModel(pretrained_model={model_name!r}, "
-        f"gpu={use_gpu_kw}) — may download weights on first run")
-    try:
-        if override_device is not None:
-            model = cp_models.CellposeModel(
-                gpu=use_gpu_kw,
-                pretrained_model=model_name,
-                device=override_device,
-            )
-        else:
-            model = cp_models.CellposeModel(
-                gpu=use_gpu_kw,
-                pretrained_model=model_name,
-            )
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] model load failed: {exc!r}")
-        emit_error("model-load-failed", hint=str(exc), exit_code=4)
-        return
+    model_key = (model_name, str(override_device), bool(use_gpu_kw))
+    model = _MODEL_CACHE.get(model_key)
+    if model is None:
+        log(f"[cellpose_detect] constructing CellposeModel(pretrained_model={model_name!r}, "
+            f"gpu={use_gpu_kw}) — may download weights on first run")
+        try:
+            if override_device is not None:
+                model = cp_models.CellposeModel(
+                    gpu=use_gpu_kw,
+                    pretrained_model=model_name,
+                    device=override_device,
+                )
+            else:
+                model = cp_models.CellposeModel(
+                    gpu=use_gpu_kw,
+                    pretrained_model=model_name,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] model load failed: {exc!r}")
+            emit_error("model-load-failed", hint=str(exc), exit_code=4)
+            return
+        _MODEL_CACHE.clear()
+        _MODEL_CACHE[model_key] = model
+    else:
+        log("[cellpose_detect] reusing initialized model")
 
     # Belt-and-brace: move the net to the requested device if cellpose didn't.
     if override_device is not None:
@@ -293,4 +310,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv[1:]:
+        cc.serve_ndjson(main)
+    else:
+        main()

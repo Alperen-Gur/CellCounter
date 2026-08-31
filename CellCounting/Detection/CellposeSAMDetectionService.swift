@@ -40,36 +40,36 @@ struct CellposeSAMDetectionService: DetectionService {
         let channelArg = input.channels.map(String.init).joined(separator: ",")
         let isDefaultChannels = (input.channels == [0, 0] || input.channels.isEmpty)
 
-        var args = [
-            scriptURL.path,
+        let resolvedModelName = Self.resolvedModelName(input.modelId, fallback: modelId)
+        var requestArgs = [
             "--image", imageURL.path,
             // The catalog id IS the cellpose `pretrained_model` string
             // (cpsam / cpsam_v2 / cpdino / cpdino-vitb). Hardcoding "cpsam"
             // here would silently run the original checkpoint no matter which
             // row the user activated. Prefer the input's id, falling back to
             // this instance's, and to cpsam only if neither is a cp4 id.
-            "--model", Self.resolvedModelName(input.modelId, fallback: modelId),
+            "--model", resolvedModelName,
             "--pxPerUm", String(input.pxPerUm),
             "--conf", String(input.confidenceThreshold),
         ]
         if !isDefaultChannels {
-            args += ["--channels", channelArg]
+            requestArgs += ["--channels", channelArg]
         }
         // Z-projection + which channel to segment on. Only the sidecars
         // built on `_cellpose_common.build_arg_parser` accept these;
         // StarDist/SAM hand-roll their parsers and would exit 2.
-        args += ChannelStackSettings.sidecarArguments()
+        requestArgs += ChannelStackSettings.sidecarArguments()
         if input.backgroundSubtract {
-            args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
+            requestArgs += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
-        args += input.preprocessingArguments
+        requestArgs += input.preprocessingArguments
         if input.watershedSplit {
-            args += [
+            requestArgs += [
                 "--watershed",
                 "--watershed-min-distance", String(input.watershedMinDistance),
             ]
         }
-        args += [
+        requestArgs += [
             "--small-threshold", String(input.smallThreshold),
             "--large-threshold", String(input.largeThreshold),
         ]
@@ -83,20 +83,31 @@ struct CellposeSAMDetectionService: DetectionService {
         // CLI contract).
         let expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
         if expectedDiameterUm > 0 {
-            args += ["--diameter", String(expectedDiameterUm)]
+            requestArgs += ["--diameter", String(expectedDiameterUm)]
         }
         if !input.useGPU {
-            args += ["--no-gpu"]
+            requestArgs += ["--no-gpu"]
         }
 
         let outcome: SidecarOutcome
+        let detectionStageNotification = Notification.Name("ccDetectionStage")
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args) { line in
+            let key = PersistentSidecarKey(
+                pythonPath: pythonURL.standardizedFileURL.path,
+                scriptPath: scriptURL.standardizedFileURL.path,
+                modelSignature: "cellpose4|\(resolvedModelName)|gpu=\(input.useGPU)")
+            outcome = try await ReusableSidecarRunner.run(
+                key: key,
+                pythonURL: pythonURL,
+                scriptURL: scriptURL,
+                requestArgs: requestArgs) { line in
                 NotificationCenter.default.post(
-                    name: .ccDetectionStage,
+                    name: detectionStageNotification,
                     object: nil,
                     userInfo: ["line": line])
             }
+        } catch let error as DetectionError {
+            throw error
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }

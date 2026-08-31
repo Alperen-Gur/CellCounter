@@ -66,7 +66,7 @@ struct OmniposeDownloader: ModelDownloader {
     }
 
     /// `~/.cellpose_omni/models/` — where `cellpose_omni` caches weights.
-    private static var weightsDir: URL {
+    static var weightsDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cellpose_omni/models", isDirectory: true)
     }

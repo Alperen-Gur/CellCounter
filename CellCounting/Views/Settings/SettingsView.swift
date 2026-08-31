@@ -1030,8 +1030,10 @@ private struct ModelsSection: View {
     @Bindable var state: AppState
     // cc-verify-checksums and cc-use-gpu are AppState-owned; bind via `$state.*`.
 
-    /// Bumps to force a re-read of disk usage after Remove.
+    /// Bumps to cancel/restart the background inventory after storage changes.
     @State private var storageTick: Int = 0
+    @State private var storageGroups: [StorageGroup] = []
+    @State private var isRefreshingStorage = false
 
     /// One on-disk resource, possibly shared by several model ids.
     private struct StorageGroup: Identifiable {
@@ -1043,28 +1045,30 @@ private struct ModelsSection: View {
         let sizeBytes: Int64
     }
 
-    /// Installed models grouped by the storage they actually share. All Cellpose
-    /// variants (cyto3 / cyto2 / nuclei / restore) and Cellpose-SAM share the one
-    /// `~/.cellpose/models` weight cache, so they collapse into a single row
-    /// instead of five identical "1.39 GB" lines. Families with distinct storage
-    /// keep their own rows.
-    private var storageGroups: [StorageGroup] {
-        _ = storageTick
+    /// Resolve only cheap catalog/install metadata on MainActor. Recursive file
+    /// walks are represented as immutable URL requests and measured later by
+    /// `ModelStorageInventory` on a detached utility task.
+    private func storagePlan() -> ([StorageGroup], [ModelStorageInventory.Request]) {
         let installed = state.models.filter {
             state.detectorRegistry.isInstalled($0.id, models: state.models)
         }
         var groups: [StorageGroup] = []
+        var requests: [ModelStorageInventory.Request] = []
 
         let cellposeLike = installed.filter { $0.family == .cellpose || $0.family == .cellpose4 }
-        if let rep = cellposeLike.first {
+        if !cellposeLike.isEmpty {
             groups.append(StorageGroup(
                 id: "cellpose-shared",
                 title: "Cellpose models",
                 subtitle: "Shared weight cache · " + cellposeLike.map(\.name).joined(separator: ", "),
                 iconName: "cpu",
                 modelIds: cellposeLike.map(\.id),
-                sizeBytes: state.detectorRegistry.diskUsageBytes(rep.id, models: state.models)
+                sizeBytes: 0
             ))
+            requests.append(.init(
+                id: "cellpose-shared",
+                roots: [FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".cellpose/models", isDirectory: true)]))
         }
 
         for m in installed where m.family != .cellpose && m.family != .cellpose4 {
@@ -1074,10 +1078,45 @@ private struct ModelsSection: View {
                 subtitle: nil,
                 iconName: Self.iconName(for: m),
                 modelIds: [m.id],
-                sizeBytes: state.detectorRegistry.diskUsageBytes(m.id, models: state.models)
+                sizeBytes: 0
             ))
+            requests.append(.init(id: m.id, roots: Self.storageRoots(for: m)))
         }
-        return groups
+        return (groups, requests)
+    }
+
+    private static func storageRoots(for model: DetectionModelInfo) -> [URL] {
+        switch model.family {
+        case .stardist:
+            return StarDistDownloader.weightsDirURL(for: model.id).map { [$0] } ?? []
+        case .sam:
+            guard let modelType = SAMDownloader.modelType(for: model.id) else { return [] }
+            return [SAMDownloader.cacheDir(for: modelType)]
+        case .omnipose:
+            return [OmniposeDownloader.venvDir, OmniposeDownloader.weightsDir]
+        case .custom:
+            return CustomModelStore.entry(for: model.id).map { [$0.url] } ?? []
+        case .cellpose, .cellpose4, .classical, .ensemble, .all:
+            return []
+        }
+    }
+
+    @MainActor
+    private func refreshStorage() async {
+        isRefreshingStorage = true
+        let (groups, requests) = storagePlan()
+        let sizes = await ModelStorageInventory.measure(requests)
+        guard !Task.isCancelled else { return }
+        storageGroups = groups.map { group in
+            StorageGroup(
+                id: group.id,
+                title: group.title,
+                subtitle: group.subtitle,
+                iconName: group.iconName,
+                modelIds: group.modelIds,
+                sizeBytes: sizes[group.id] ?? 0)
+        }
+        isRefreshingStorage = false
     }
 
     private static func iconName(for m: DetectionModelInfo) -> String {
@@ -1142,9 +1181,10 @@ private struct ModelsSection: View {
                 .padding(.top, 22)
                 .padding(.bottom, 10)
 
-            let groups = storageGroups
-            if groups.isEmpty {
-                Text("Nothing installed yet — pick a model on the Models tab.")
+            if storageGroups.isEmpty {
+                Text(isRefreshingStorage
+                     ? "Calculating model storage…"
+                     : "Nothing installed yet — pick a model on the Models tab.")
                     .font(.system(size: 12))
                     .foregroundStyle(Tokens.textTertiary)
                     .padding(.horizontal, 14)
@@ -1156,7 +1196,7 @@ private struct ModelsSection: View {
                     )
             } else {
                 VStack(spacing: 0) {
-                    ForEach(groups) { g in
+                    ForEach(storageGroups) { g in
                         StorageRow(
                             title: g.title,
                             subtitle: g.subtitle,
@@ -1171,6 +1211,21 @@ private struct ModelsSection: View {
                         .strokeBorder(Tokens.border, lineWidth: 0.5)
                 )
             }
+        }
+        .task(id: storageTick) {
+            await refreshStorage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccModelStorageChanged)) { _ in
+            storageTick &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccVenvChanged)) { _ in
+            storageTick &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccVenv4Changed)) { _ in
+            storageTick &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CustomModelStore.changedNotification)) { _ in
+            storageTick &+= 1
         }
     }
 }

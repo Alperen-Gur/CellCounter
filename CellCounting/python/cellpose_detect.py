@@ -43,7 +43,10 @@ import _cellpose_common as cc  # noqa: E402
 from _cellpose_common import log, emit_error  # noqa: E402
 
 
-def parse_args():
+_MODEL_CACHE = {}
+
+
+def parse_args(argv=None):
     """Build the shared parser, then add the v3.x-only --restore flag."""
     parser = cc.build_arg_parser(
         description="Cellpose 3.x detection sidecar for CellCounter",
@@ -61,11 +64,11 @@ def parse_args():
              "derived from --small-threshold/--large-threshold bins. "
              "Default 0.0 (disabled; falls back to the bins-derived value).",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv=None) -> None:
+    args = parse_args(argv)
     channels = cc.parse_channels(args.channels)
 
     # Lazy imports — so the import-error branch can emit a structured error
@@ -136,22 +139,32 @@ def main() -> None:
                 log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
         return m
 
-    try:
-        if args.restore:
-            log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
-            try:
-                model = _build_model(model_type=model_type, restore_type="denoise_cyto3")
-            except TypeError:
-                # Older cellpose builds don't accept restore_type on CellposeModel; degrade gracefully.
-                log("[cellpose_detect] CellposeModel doesn't accept restore_type; "
-                    "falling back to plain model")
+    model_key = (model_type, bool(args.restore), str(override_device), bool(use_gpu_kw))
+    model = _MODEL_CACHE.get(model_key)
+    if model is None:
+        try:
+            if args.restore:
+                log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
+                try:
+                    model = _build_model(model_type=model_type, restore_type="denoise_cyto3")
+                except TypeError:
+                    # Older cellpose builds don't accept restore_type on CellposeModel; degrade gracefully.
+                    log("[cellpose_detect] CellposeModel doesn't accept restore_type; "
+                        "falling back to plain model")
+                    model = _build_model(model_type=model_type)
+            else:
                 model = _build_model(model_type=model_type)
-        else:
-            model = _build_model(model_type=model_type)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] model load failed: {exc!r}")
-        emit_error("model-load-failed", hint=str(exc), exit_code=4)
-        return
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] model load failed: {exc!r}")
+            emit_error("model-load-failed", hint=str(exc), exit_code=4)
+            return
+        # A worker is keyed by this same construction signature on the host.
+        # Keep one entry here too so an accidental signature change cannot
+        # retain several multi-GB models in one Python process.
+        _MODEL_CACHE.clear()
+        _MODEL_CACHE[model_key] = model
+    else:
+        log("[cellpose_detect] reusing initialized model")
 
     # Pass-13: derive an explicit expected diameter (in pixels) from the user's
     # bin thresholds and calibration. Without this, cellpose 3.x runs its size
@@ -243,4 +256,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv[1:]:
+        cc.serve_ndjson(main)
+    else:
+        main()

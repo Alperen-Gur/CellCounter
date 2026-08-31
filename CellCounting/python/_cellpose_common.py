@@ -70,6 +70,8 @@ two prefixes.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import math
 import os
@@ -95,6 +97,54 @@ def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
     sys.stdout.write(json.dumps(payload))
     sys.stdout.flush()
     sys.exit(exit_code)
+
+
+def serve_ndjson(run_once) -> None:
+    """Serve serialized detection requests over newline-delimited JSON.
+
+    The process keeps imported modules and the caller's model cache alive
+    between requests. Each input line is ``{"request_id": ..., "args": [...]}``
+    and each output line is an envelope containing the unchanged one-shot
+    stdout payload plus its logical exit code. Logs continue to use stderr, so
+    the host can stream progress exactly as it does for a one-shot process.
+
+    Requests are deliberately executed one at a time: Cellpose model objects
+    are not documented as thread-safe, and serialization prevents concurrent
+    eval calls from multiplying peak model/GPU memory.
+    """
+    for raw_line in sys.stdin:
+        request_id = None
+        output = io.StringIO()
+        exit_code = 0
+        try:
+            request = json.loads(raw_line)
+            request_id = request.get("request_id")
+            argv = request.get("args")
+            if not isinstance(request_id, str) or not isinstance(argv, list):
+                raise ValueError("request_id must be a string and args must be an array")
+            if not all(isinstance(value, str) for value in argv):
+                raise ValueError("every args value must be a string")
+            with contextlib.redirect_stdout(output):
+                try:
+                    run_once(argv)
+                except SystemExit as exc:
+                    exit_code = int(exc.code) if isinstance(exc.code, int) else 1
+        except Exception as exc:  # noqa: BLE001
+            exit_code = 70
+            log(f"[cellpose_detect] worker request failed: {exc!r}")
+            output = io.StringIO()
+            output.write(json.dumps({
+                "error": "worker-request-failed",
+                "hint": str(exc),
+            }, separators=(",", ":")))
+
+        response = {
+            "request_id": request_id,
+            "exit_code": exit_code,
+            "stdout": output.getvalue(),
+        }
+        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------

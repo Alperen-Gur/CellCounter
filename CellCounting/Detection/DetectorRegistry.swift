@@ -145,6 +145,7 @@ final class DetectorRegistry: ObservableObject {
                                                     registry: self,
                                                     models: models)
                 }
+                NotificationCenter.default.post(name: .ccModelStorageChanged, object: modelId)
             }
             do {
                 progress.stage = .checkingDependencies
@@ -164,6 +165,7 @@ final class DetectorRegistry: ObservableObject {
               let dl = downloaders[info.family] else { return }
         try dl.uninstall(modelId: modelId)
         installs[modelId] = nil
+        NotificationCenter.default.post(name: .ccModelStorageChanged, object: modelId)
     }
 
     func diskUsageBytes(_ modelId: String, models: [DetectionModelInfo]) -> Int64 {

@@ -9,8 +9,8 @@ import Foundation
 ///         venv/                    ← created by install_python.sh
 ///           bin/python3
 ///         install_python.sh        ← copied from bundle, chmod +x
-///         cellpose_detect.py       ← copied from bundle every launch so
-///         cellpose_train.py          updates ship cleanly
+///         cellpose_detect.py       ← content-matched with the bundle so
+///         cellpose_train.py          updates ship without no-op launch writes
 ///         _preprocessing.py
 ///         _watershed.py
 ///         _colony.py
@@ -171,9 +171,54 @@ enum PythonRuntime {
         return nil
     }
 
+    /// Copy one bundled helper if its bytes or required permissions changed.
+    /// Updated files are copied to a sibling temporary path and atomically
+    /// replaced, so a crash can never leave a half-written Python module.
+    /// Returns true only when the destination was mutated.
+    @discardableResult
+    static func stageFile(
+        source: URL,
+        destination: URL,
+        permissions: Int? = nil,
+        fileManager fm: FileManager = .default
+    ) throws -> Bool {
+        try fm.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+
+        if fm.fileExists(atPath: destination.path),
+           fm.contentsEqual(atPath: source.path, andPath: destination.path) {
+            guard let permissions else { return false }
+            let attributes = try? fm.attributesOfItem(atPath: destination.path)
+            let existing = (attributes?[.posixPermissions] as? NSNumber)?.intValue
+            guard existing != permissions else { return false }
+            try fm.setAttributes([.posixPermissions: permissions], ofItemAtPath: destination.path)
+            return true
+        }
+
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).stage-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: temporary) }
+        try fm.copyItem(at: source, to: temporary)
+        if let permissions {
+            try fm.setAttributes([.posixPermissions: permissions], ofItemAtPath: temporary.path)
+        }
+        if fm.fileExists(atPath: destination.path) {
+            _ = try fm.replaceItemAt(
+                destination,
+                withItemAt: temporary,
+                backupItemName: nil,
+                options: [])
+        } else {
+            try fm.moveItem(at: temporary, to: destination)
+        }
+        return true
+    }
+
     /// Mirror bundled python helpers + the install script into `FileStore`'s
-    /// writable python dir. Re-runnable: existing files are overwritten so app
-    /// updates propagate. Returns the directory the scripts live in.
+    /// writable python dir. Re-runnable: byte-identical files are left alone,
+    /// while app updates atomically replace stale copies. Returns the directory
+    /// the scripts live in.
     ///
     /// Throws `StagingError.installScriptMissing` if the bundle is missing
     /// install_python.sh (the symptom of the synced-group bug we fixed in
@@ -193,10 +238,9 @@ enum PythonRuntime {
                 continue
             }
             let dst = dir.appendingPathComponent(name)
-            if fm.fileExists(atPath: dst.path) {
-                try? fm.removeItem(at: dst)
+            if try stageFile(source: src, destination: dst, fileManager: fm) {
+                NSLog("[PythonRuntime] updated bundled helper: \(name)")
             }
-            try fm.copyItem(at: src, to: dst)
         }
 
         // install_python.sh — REQUIRED. Without it, nothing else matters.
@@ -211,12 +255,13 @@ enum PythonRuntime {
             throw StagingError.installScriptMissing(searched: probed)
         }
         let dst = FileStore.shared.pythonInstallScriptURL
-        if fm.fileExists(atPath: dst.path) {
-            try? fm.removeItem(at: dst)
+        if try stageFile(
+            source: scriptSrc,
+            destination: dst,
+            permissions: 0o755,
+            fileManager: fm) {
+            NSLog("[PythonRuntime] updated install_python.sh: \(scriptSrc.path) -> \(dst.path)")
         }
-        try fm.copyItem(at: scriptSrc, to: dst)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
-        NSLog("[PythonRuntime] staged install_python.sh: \(scriptSrc.path) -> \(dst.path)")
 
         // Pass-19 hotfix: Pass-18 K4 extracted the shared install logic into
         // `_lib_install.sh`, which `install_python.sh` and `install_python_cp4.sh`
@@ -230,13 +275,14 @@ enum PythonRuntime {
                               : (fm.fileExists(atPath: libSrcFlat.path) ? libSrcFlat : nil)
             if let libSrc {
                 let libDst = FileStore.shared.pythonDir.appendingPathComponent("_lib_install.sh")
-                if fm.fileExists(atPath: libDst.path) {
-                    try? fm.removeItem(at: libDst)
-                }
                 do {
-                    try fm.copyItem(at: libSrc, to: libDst)
-                    try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: libDst.path)
-                    NSLog("[PythonRuntime] staged _lib_install.sh: \(libSrc.path) -> \(libDst.path)")
+                    if try stageFile(
+                        source: libSrc,
+                        destination: libDst,
+                        permissions: 0o755,
+                        fileManager: fm) {
+                        NSLog("[PythonRuntime] updated _lib_install.sh: \(libSrc.path) -> \(libDst.path)")
+                    }
                 } catch {
                     NSLog("[PythonRuntime] WARNING: failed to stage _lib_install.sh: \(error)")
                 }
@@ -251,14 +297,14 @@ enum PythonRuntime {
         // Cellpose4Availability surfaces the missing-installer case to the UI.
         if let cp4Src = bundledInstallCp4ScriptURL() {
             let cp4Dst = FileStore.shared.pythonInstallCp4ScriptURL
-            if fm.fileExists(atPath: cp4Dst.path) {
-                try? fm.removeItem(at: cp4Dst)
-            }
             do {
-                try fm.copyItem(at: cp4Src, to: cp4Dst)
-                try fm.setAttributes([.posixPermissions: 0o755],
-                                     ofItemAtPath: cp4Dst.path)
-                NSLog("[PythonRuntime] staged install_python_cp4.sh: \(cp4Src.path) -> \(cp4Dst.path)")
+                if try stageFile(
+                    source: cp4Src,
+                    destination: cp4Dst,
+                    permissions: 0o755,
+                    fileManager: fm) {
+                    NSLog("[PythonRuntime] updated install_python_cp4.sh: \(cp4Src.path) -> \(cp4Dst.path)")
+                }
             } catch {
                 NSLog("[PythonRuntime] WARNING: failed to stage cp4 installer: \(error)")
             }

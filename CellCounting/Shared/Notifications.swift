@@ -54,4 +54,9 @@ extension Notification.Name {
     /// Raw value preserved verbatim from the string-form post in
     /// `Services/CellposeInstaller.swift` ("cellpose-install-completed").
     static let ccCellposeInstallCompleted = Notification.Name("cellpose-install-completed")
+
+    /// Posted after a registry-managed model install or uninstall changes the
+    /// directories shown by Settings. The Models storage inventory observes
+    /// this and refreshes its off-main cached measurements.
+    static let ccModelStorageChanged = Notification.Name("ccModelStorageChanged")
 }
