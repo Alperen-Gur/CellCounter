@@ -1,7 +1,9 @@
-# Model artifact mount
+# CellCounter Web model assets
 
-Release packaging places validated, checksummed ONNX artifacts below this
-directory at the exact versioned URLs declared by `src/models/catalog.ts`.
-Weights are intentionally ignored by Git and are not present in this source
-checkout. See `src/models/BUILD-CONTRACT.md` before changing a manifest from
-`buildRequired` to `ready`.
+Production segmentation weights are not included in the v0.1.0 web preview.
+The application reports learned inference as unavailable and does not upload
+images or silently substitute another model.
+
+Future web releases may provide validated, same-origin model assets for local
+WebGPU inference. The native macOS and Windows releases are currently the
+recommended choice when learned segmentation is required.

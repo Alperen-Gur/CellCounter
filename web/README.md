@@ -1,0 +1,81 @@
+<div align="center">
+
+# CellCounter Web
+
+Private microscopy analysis in an installable, fully client-side PWA.
+
+[![Web preview](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
+[![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
+
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
+
+</div>
+
+---
+
+CellCounter Web brings the microscopy workspace to modern browsers without an account, image upload,
+telemetry, or application server. Imported images, measurements, corrections, study metadata, and exports stay
+on the device.
+
+> [!IMPORTANT]
+> Version 0.1.0 is a functional preview, but production weights for its three learned segmentation models are
+> not bundled. The interface reports learned inference as unavailable instead of substituting another model.
+> Use the native macOS or Windows release when live model inference is required.
+
+## Highlights
+
+- PNG, JPEG, WebP, BMP, TIFF, and OME-TIFF import, including folders
+- Image navigation, contours, selection, add/remove/resize/merge/split corrections, and undo/redo
+- Calibrated morphology, intensity, colocalization, confluence, wound, spheroid, puncta, spatial, tracking,
+  neurite, and line-profile analysis
+- Local project storage with lazy image restoration and offline PWA support
+- CSV, JSON, ImageJ ROI, GeoJSON, annotated image, label mask, NumPy label map, and PDF exports
+- Responsive, keyboard-accessible light and dark interfaces
+
+Proprietary microscope containers such as ND2, CZI, LIF, OIR, and VSI are not available in the browser. Convert
+them locally to OME-TIFF before import. See the [browser guide](../docs/WEB.md) for the complete format and
+capability notes.
+
+## Privacy
+
+All image processing happens in the browser. CellCounter Web does not include an upload or remote-inference
+route. Projects are stored in browser-managed local storage and can be removed from **Settings**. When production
+model assets become available, they will be loaded from the same origin and verified before local use.
+
+## Run locally
+
+Requirements:
+
+- Node.js `^20.19.0` or `>=22.12.0`
+- A current browser with WebGPU, Web Workers, IndexedDB, and `createImageBitmap`
+- HTTPS for production use; `localhost` is sufficient for development
+
+```sh
+npm ci
+npm run dev
+```
+
+Create a production build:
+
+```sh
+npm run build
+```
+
+The static PWA is emitted to `dist/` and can be served from any HTTPS origin. No application server is required.
+
+## Verify
+
+```sh
+npm test -- --run
+npm run verify:privacy
+npm run verify:workflow
+npm run verify:models
+npm run verify:core
+npm run verify:parity
+npm run verify:parity-analysis
+```
+
+## License
+
+MIT — see the repository-level [LICENSE](../LICENSE).

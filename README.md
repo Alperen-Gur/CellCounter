@@ -2,32 +2,43 @@
 
 # CellCounter
 
-Desktop application for quantifying cells in microscopy images.
-Segmentation, per-cell measurements, assays and export, through a graphical interface.
+Private cell quantification for microscopy images.
+Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
-[![Latest release](https://img.shields.io/github/v/release/Alperen-Gur/CellCounter?label=macOS&color=0a7ea4)](https://github.com/Alperen-Gur/CellCounter/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-v1.0.9-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9)
+[![Windows](https://img.shields.io/badge/Windows-v1.0.8-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
+[![Web](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-15%2B-lightgrey?logo=apple&logoColor=white)](#macos--current-release)
-[![Windows · Linux](https://img.shields.io/badge/Windows%20·%20Linux-preview-orange)](#windows--macos--linux--cross-platform-preview)
 
-[Install](#install) · [Quick start](#quick-start) · [What it does](#what-it-does) · [Limitations](#statistical-notes-and-limitations) · [Citing](#citing)
+[Platforms](#platforms) · [What it does](#what-it-does) · [Quick start](#quick-start) · [Limitations](#statistical-notes-and-limitations) · [Citing](#citing)
 
 </div>
 
 ---
 
-CellCounter reads a folder of microscopy images, segments the cells with a choice of models, and reports
-per-cell measurements, size distributions and assay results. It handles the file formats microscopes write,
-Z-stacks and multi-channel images, and covers counts, size classes, marker-positive fractions, colocalization,
-confluence, wound closure, foci per cell and migration.
+CellCounter turns microscopy images into reviewable cell masks, measurements, size distributions, and assay
+results. It supports counts, size classes, marker-positive fractions, colocalization, confluence, wound closure,
+foci per cell, migration, and more through a focused graphical interface.
 
 These analyses are usually done with an ImageJ macro or a CellProfiler pipeline. CellCounter does them through
 a graphical interface instead. It applies to any cell type a supported model can segment.
 
-Processing is local. There is no account, no upload, and no network transfer of image data.
+Image analysis is local by design. CellCounter does not require an account and does not upload microscopy images.
 
-<!-- SCREENSHOTS: add docs/images/hero.png and the gallery below. See docs/images/README.md. -->
+## Platforms
+
+| Platform | Release | Availability |
+|---|---|---|
+| **macOS** | [v1.0.9](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9) | Native universal app for macOS 15 or later |
+| **Windows** | [v1.0.8](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
+| **Web** | [v0.1.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) | Installable, fully client-side PWA for modern WebGPU browsers |
+
+> [!NOTE]
+> The web preview keeps images in the browser and includes the browser-native analysis workspace, but its three
+> learned segmentation models are not bundled yet. Use the macOS or Windows app when live model inference is
+> required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
+> [web guide](docs/WEB.md).
 
 ## Why it exists
 
@@ -39,11 +50,15 @@ general-purpose tools do not provide directly:
 | **Installation without environment setup** | The installer sets up the Python environment in the background. There is no conda, pip, or PATH configuration. |
 | **Size classes in addition to masks** | Cells are binned into size categories in micrometres, using a pixel size read from the image metadata. |
 | **Assays in addition to counts** | Marker-positive fraction, colocalization, confluence, wound closure, foci per cell, and others. |
-| **Local processing** | Everything runs on the local machine. For images derived from patient material this is a requirement. |
+| **Local processing** | Analysis remains on the device, helping laboratories keep sensitive image data under their own control. |
 
 ## What it does
 
 ### Segmentation
+
+The macOS app offers the complete model catalog below. Windows v1.0.8 focuses on three validated families:
+Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. The web preview exposes the same three-model catalog,
+with learned inference clearly marked unavailable until validated browser weights are distributed.
 
 | Model | Best for |
 |---|---|
@@ -58,9 +73,10 @@ Plus a **second-opinion** mode: run two detectors and review only the cells wher
 
 ### Images
 
-Reads Zeiss `.czi`, Nikon `.nd2`, Leica `.lif`, Olympus `.oif` `.oib` `.oir`, and TIFF / OME-TIFF / PNG —
-no conversion step. Handles **Z-stacks** (max / sum / mean projection) and **multi-channel** images,
-including which channel to segment on.
+The native apps read Zeiss `.czi`, Nikon `.nd2`, Leica `.lif`, Olympus `.oif` `.oib` `.oir`, and TIFF / OME-TIFF /
+PNG. They support **Z-stacks** (max / sum / mean projection) and **multi-channel** images, including selection of
+the segmentation channel. The web preview supports common browser formats plus TIFF and OME-TIFF; proprietary
+microscope containers should be converted locally to OME-TIFF first.
 
 ### Measurements and assays
 
@@ -118,20 +134,19 @@ including which channel to segment on.
 
 ### Large batches
 
-The native macOS app keeps navigation and review work incremental: Home uses denormalized summaries,
-the image strip is lazy, decoded masks and image previews are bounded in memory, Review fetches small pages,
-and manual edits serialize their mask payload off the UI thread. Opening a 600–700 image library therefore
-does not decode every mask or load every full-resolution image up front.
+CellCounter opens large libraries progressively, keeps previews and masks within a bounded working set, and
+moves expensive analysis away from the interface. Browsing and review remain responsive without loading every
+full-resolution image at once.
 
 ## Install
 
 ### macOS — current release
 
-[![Download](https://img.shields.io/github/v/release/Alperen-Gur/CellCounter?label=Download%20for%20macOS&style=for-the-badge&color=0a7ea4)](https://github.com/Alperen-Gur/CellCounter/releases/latest)
+[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.9-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9)
 
 Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 
-1. Download `CellCounter-v*.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases/latest).
+1. Download `CellCounter-v1.0.9.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9).
 2. Unzip and move **`CellCounting.app`** into Applications.
    *(The application is called CellCounter; the bundle on disk is still named `CellCounting.app`.)*
 3. The app is not notarized, so the first launch is blocked. Open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough: [docs/INSTALL.md](docs/INSTALL.md).
@@ -140,30 +155,38 @@ Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 <details>
 <summary>macOS says the app is "damaged"</summary>
 
-It isn't. That message is Gatekeeper blocking an unsigned, quarantined download. Move the app to Applications and run:
+This message normally means Gatekeeper has blocked the unsigned, quarantined download. Confirm that the archive
+came from the official release, move the app to Applications, and run:
 
 ```bash
 xattr -cr /Applications/CellCounting.app
 ```
 
-Then open it normally. This applies to all unsigned builds here, including the cross-platform `.dmg`.
+Then open it normally.
 </details>
 
-### Windows · macOS · Linux — cross-platform preview
+### Windows — current release
 
-A rebuild (Tauri + React, in [`desktop/`](desktop/)) is published as a `desktop-v*` **prerelease**:
+[![Download](https://img.shields.io/badge/Download-Windows%20v1.0.8-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
 
-| Platform | File | Note |
-|---|---|---|
-| Windows | `CellCounter_*_x64-setup.exe` | Unsigned — SmartScreen warns; **More info → Run anyway** |
-| macOS | `CellCounter_*_universal.dmg` | Unsigned — right-click → Open |
-| Linux | — | Builds in CI; no packaged installer yet |
+Requires **64-bit Windows 10 or Windows 11**. Choose the `.exe` for a standard workstation installation or the
+`.msi` for managed deployment. Both contain the same native application.
 
-`uv` is bundled, so nothing extra to install. On first run, open the Models tab and install Cellpose.
+The installers are currently unsigned, so Windows SmartScreen may show an unknown-publisher warning. Verify the
+download against the supplied `SHA256SUMS.txt` before continuing. The application provides three local model
+families: Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. See the
+[Windows installation guide](docs/WINDOWS.md) for model setup, upgrades, backup, and troubleshooting.
 
-> [!NOTE]
-> The preview installs and runs but has **not** been verified at runtime on real data, and it lags the macOS
-> app: it has Cellpose-SAM and the per-cell shape metrics, but not the vendor formats, Z-stacks or the assay suite.
+### Web — private PWA preview
+
+[![Download](https://img.shields.io/badge/Download-Web%20v0.1.0%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
+
+The web edition is a fully client-side PWA with no account, upload, telemetry, or application server. Download
+the release archive and serve it from HTTPS or `localhost`, then install it from a current WebGPU-capable browser.
+Its browser-native import, curation, measurement, assay, and export tools are available offline after installation.
+
+Production model weights are not included in v0.1.0, so learned segmentation is intentionally unavailable in
+this preview. See the [web guide](docs/WEB.md) for supported formats, browser requirements, and current limits.
 
 ## Quick start
 
@@ -173,17 +196,12 @@ A rebuild (Tauri + React, in [`desktop/`](desktop/)) is published as a `desktop-
 4. Run detection, then review the overlay and fix any misses by hand.
 5. Open **Compare** to test two conditions, or **Export** for a PDF, CSV, ROI set or GeoJSON.
 
-## How it works
+## Privacy and local processing
 
-The interface handles loading, calibration, correction, size-binning, assays, statistics and export.
-A local Python sidecar does the segmentation. They talk over a pipe. No data leaves the computer.
-
-```
-   Your images ──▶  CellCounter GUI  ──▶  Python sidecar (Cellpose)
-                         ▲                        │
-                         └────── masks, counts ───┘
-                    calibration · size bins · assays · stats · export
-```
+Native analysis runs on the computer where CellCounter is installed. The web edition processes imported images
+inside the browser. CellCounter has no image-upload or remote-inference path in these releases. Network access is
+used only when the operating system or user requests supporting software or model files; microscopy images are
+not included in those requests.
 
 ## Statistical notes and limitations
 
@@ -235,23 +253,6 @@ population shows no evidence of two distinct groups — an automatic threshold w
 uniform population and report a confident, meaningless percentage.
 </details>
 
-## Roadmap
-
-Done and in CI:
-
-- [x] Windows, Linux and macOS from one Tauri + React codebase
-- [x] One-command environment setup via [`uv`](https://github.com/astral-sh/uv)
-- [x] Cellpose-GUI parity — draw, merge, split, undo/redo, `_seg.npy` interchange
-- [x] Persistent-worker engine — the model stays loaded across a batch
-
-Not yet:
-
-- [ ] Verified cross-platform release, after the pipeline is checked on real batches
-- [ ] Feature parity between the cross-platform app and macOS
-- [ ] In-browser version — Cellpose `cyto3` client-side on WebGPU, no installation
-- [ ] Train-from-GUI — the Fine-tune screen is currently an illustrative demo on
-      synthetic data; training on your own corrected cells is not wired up yet
-
 ## A note on the name
 
 Several tools share the name "Cell Counter". This project is not affiliated with, and is distinct from, the 2014
@@ -262,7 +263,7 @@ counting). CellCounter here is a Cellpose-driven counting and size-classificatio
 ## Citing
 
 If CellCounter is useful in your work, please cite it (see [CITATION.cff](CITATION.cff)) **and** the segmentation
-model you ran. Because segmentation is entirely Cellpose-mediated:
+model you ran:
 
 - Stringer, C., Wang, T., Michaelos, M., & Pachitariu, M. (2021). Cellpose: a generalist algorithm for cellular segmentation. *Nature Methods* **18**, 100–106.
 - Pachitariu, M., & Stringer, C. (2022). Cellpose 2.0: how to train your own model. *Nature Methods* **19**, 1634–1641.
@@ -271,9 +272,10 @@ model you ran. Because segmentation is entirely Cellpose-mediated:
 
 ## Built on
 
-[Cellpose](https://github.com/MouseLand/cellpose) (BSD-3-Clause) performs the segmentation. PyTorch, NumPy,
-SciPy, scikit-image and tifffile provide the computation; vendor microscope formats are read with permissive
-BSD-3 readers. Full inventory and licenses: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+[Cellpose](https://github.com/MouseLand/cellpose), [StarDist](https://github.com/stardist/stardist), and
+[Omnipose](https://github.com/kevinjohncutler/omnipose) provide learned segmentation families. PyTorch, NumPy,
+SciPy, scikit-image, tifffile, and format-specific readers support the native analysis pipeline. Full inventory
+and licenses: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 ## License
 
