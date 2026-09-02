@@ -11,7 +11,7 @@ Segmentation, per-cell measurements, assays, correction, and export on macOS, Wi
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Platforms](#platforms) · [What it does](#what-it-does) · [Quick start](#quick-start) · [Limitations](#statistical-notes-and-limitations) · [Citing](#citing)
+[Platforms](#platforms) · [What it does](#what-it-does) · [Complete feature list](docs/FEATURES.md) · [Quick start](#quick-start) · [Limitations](#statistical-notes-and-limitations) · [Citing](#citing)
 
 </div>
 
@@ -38,7 +38,7 @@ Image analysis is local by design. CellCounter does not require an account and d
 > The web preview keeps images in the browser and includes the browser-native analysis workspace, but its three
 > learned segmentation models are not bundled yet. Use the macOS or Windows app when live model inference is
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
-> [web guide](docs/WEB.md).
+> [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
 
 ## Why it exists
 
@@ -56,7 +56,7 @@ general-purpose tools do not provide directly:
 
 ### Segmentation
 
-The macOS app offers the complete model catalog below. Windows v1.0.8 focuses on three validated families:
+The macOS app offers the full set of model families summarized below. Windows v1.0.8 focuses on three validated families:
 Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. The web preview exposes the same three-model catalog,
 with learned inference clearly marked unavailable until validated browser weights are distributed.
 
@@ -70,13 +70,21 @@ with learned inference clearly marked unavailable until validated browser weight
 | **Your own model** | Load a fine-tuned Cellpose checkpoint or a StarDist model directory |
 
 Plus a **second-opinion** mode: run two detectors and review only the cells where they disagree.
+The macOS catalog also includes Cellpose-SAM v2, Cellpose-DINO ViT-L and ViT-B, multiple StarDist and Omnipose
+checkpoints, and Otsu, triangle, adaptive, and manual threshold variants. Models that are still being validated
+are marked as unavailable in the application rather than presented as runnable.
 
 ### Images
 
-The native apps read Zeiss `.czi`, Nikon `.nd2`, Leica `.lif`, Olympus `.oif` `.oib` `.oir`, and TIFF / OME-TIFF /
-PNG. They support **Z-stacks** (max / sum / mean projection) and **multi-channel** images, including selection of
-the segmentation channel. The web preview supports common browser formats plus TIFF and OME-TIFF; proprietary
-microscope containers should be converted locally to OME-TIFF first.
+The native apps read JPEG, PNG, BMP, TIFF / OME-TIFF, and common microscope containers. macOS supports Zeiss
+`.czi`, Nikon `.nd2`, Leica `.lif`, and Olympus `.oif` `.oib` `.oir`; Windows supports `.czi`, `.nd2`, `.lif`,
+`.oir`, and `.vsi`. macOS offers max, sum, and mean **Z-stack** projections plus channel selection and naming;
+Windows prepares a maximum projection and exposes analysis-channel controls. The web preview supports JPEG, PNG,
+WebP, BMP, TIFF, and OME-TIFF; proprietary microscope containers should be converted locally to OME-TIFF first.
+
+Calibration can be read from compatible OME, ImageJ, TIFF, and microscope metadata or entered manually from a
+known pixel size or scale bar. Named calibration presets, configurable size bins, and analysis protocols make
+the same settings reusable across a study.
 
 ### Microscopy workspace on macOS
 
@@ -87,7 +95,8 @@ The macOS app includes a native, layer-based workspace for exploratory image ana
 - Align image layers, create bounded-memory tile mosaics, and build or manually correct cell lineages.
 - Paint class labels and export 16-bit training masks for use with a separate model-training workflow.
 - Record repeatable local workflows for layer, axis, registration, and stitching operations.
-- Create keyframed animations of axis, camera, layer visibility, and opacity changes.
+- Save and reopen workspace projects, control layer visibility and opacity, and create keyframed GIF animations
+  of axis, camera, visibility, and opacity changes.
 
 Workspace projects and images stay on the Mac. The extension browser exposes only bundled, curated capabilities;
 it does not download or execute third-party plugin code.
@@ -133,6 +142,21 @@ it does not download or execute third-party plugin code.
 </td></tr>
 </table>
 
+### Review and analysis workflow
+
+- **Library and batches** — browse imported images, organize conditions, inspect batch summaries, and find exact duplicates.
+- **Focused review** — triage low-confidence detections, attach per-image notes and review confidence, and keep correction history with undo and redo.
+- **Image inspection** — switch channels and Z projections, inspect intensity histograms and calibrated line profiles, and apply include/exclude regions of interest.
+- **Quality control** — review focus and illumination indicators, confidence and diameter distributions, drift, detector agreement, and fields ranked for attention.
+- **Detection refinement** — adjust confidence and expected diameter, use preprocessing presets and background subtraction, split touching cells, and rerun detection without losing the source image.
+
+### Fine-tuning and model history
+
+Windows v1.0.8 supports local Cellpose `cyto3` fine-tuning with a held-out test split, progress and cancellation,
+versioned checkpoints, and explicit activation. The macOS app includes local training and model-version history
+with rollback, while parts of its guided annotation and evaluation experience remain clearly marked as preview.
+The web preview does not train models; corrected label masks and ROI data can be exported for later workflows.
+
 ### Correction, comparison, export
 
 - **Manual correction** — add, delete, merge, split, resize, or trace a cell by hand. Corrections persist and the exported count is the corrected count.
@@ -142,7 +166,7 @@ it does not download or execute third-party plugin code.
 - **Quality insights** — cached confidence/diameter plots, drift trends, detector agreement, and preprocessing recommendations are recomputed only when a batch changes.
 - **Compare** two conditions with a Mann-Whitney U test and effect size — read the [limitations](#statistical-notes-and-limitations) first.
 - **Score against ground truth** — F1, precision, recall vs. your own hand counts.
-- **Export** — PDF report, annotated images, per-cell CSV, per-image summary CSV with one column per size bin, ImageJ ROI sets, and GeoJSON (QuPath).
+- **Export** — PDF reports, annotated images, per-cell CSV, per-image summary CSV with one column per size bin, ImageJ ROI sets, GeoJSON (QuPath), and reproducibility metadata. macOS can also export ground-truth annotations and create a self-contained sample folder containing the source, overlay, tables, ROIs, Markdown and PDF reports.
 - **Analysis protocols** — save model, diameter, bins and calibration to a file so a whole lab runs identical settings.
 - **Duplicate detection** (SHA-256) so the same field is never counted twice.
 
@@ -151,6 +175,9 @@ it does not download or execute third-party plugin code.
 CellCounter opens large libraries progressively, keeps previews and masks within a bounded working set, and
 moves expensive analysis away from the interface. Browsing and review remain responsive without loading every
 full-resolution image at once.
+
+The [complete feature list](docs/FEATURES.md) records the public functionality available in each released
+edition, including platform adaptations, preview features, and intentional limitations.
 
 ## Install
 

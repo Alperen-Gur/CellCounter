@@ -137,4 +137,5 @@ artifact.
   build required.
 - Live fine-tuning is unavailable because the exact training weights and native
   training runtime are absent and browser memory limits make parity unsafe.
+  Corrected label masks and include/exclude ROI data can be exported for later workflows.
 - 3D learned inference and OME-Zarr are not claimed by the current web build.
