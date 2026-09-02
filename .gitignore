@@ -56,3 +56,6 @@ sample_data/private/
 *.pem
 *.key
 secrets.*
+
+# Local development tooling
+.unlazy/

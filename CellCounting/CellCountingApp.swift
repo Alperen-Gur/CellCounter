@@ -74,6 +74,8 @@ struct CellCountingApp: App {
                     .keyboardShortcut("k", modifiers: [.command, .shift])
                 Button("Settings") { state.view = .settings }
                     .keyboardShortcut(",", modifiers: [.command])
+                Button("Microscopy Workspace") { state.view = .workspace }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
                 Button("Cancel") {
                     state.showCalibration = false
                     state.showInstallCellpose = false

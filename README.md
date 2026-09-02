@@ -5,7 +5,7 @@
 Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
-[![macOS](https://img.shields.io/badge/macOS-v1.0.9-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9)
+[![macOS](https://img.shields.io/badge/macOS-v1.0.10-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10)
 [![Windows](https://img.shields.io/badge/Windows-v1.0.8-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
 [![Web](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
@@ -30,7 +30,7 @@ Image analysis is local by design. CellCounter does not require an account and d
 
 | Platform | Release | Availability |
 |---|---|---|
-| **macOS** | [v1.0.9](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9) | Native universal app for macOS 15 or later |
+| **macOS** | [v1.0.10](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10) | Native universal app for macOS 15 or later |
 | **Windows** | [v1.0.8](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
 | **Web** | [v0.1.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) | Installable, fully client-side PWA for modern WebGPU browsers |
 
@@ -77,6 +77,20 @@ The native apps read Zeiss `.czi`, Nikon `.nd2`, Leica `.lif`, Olympus `.oif` `.
 PNG. They support **Z-stacks** (max / sum / mean projection) and **multi-channel** images, including selection of
 the segmentation channel. The web preview supports common browser formats plus TIFF and OME-TIFF; proprietary
 microscope containers should be converted locally to OME-TIFF first.
+
+### Microscopy workspace on macOS
+
+The macOS app includes a native, layer-based workspace for exploratory image analysis and presentation:
+
+- Browse multidimensional time, Z, and channel axes without loading an entire sequence into memory.
+- Open local OME-Zarr / OME-NGFF multiscale datasets and plates, with automatic resolution selection.
+- Align image layers, create bounded-memory tile mosaics, and build or manually correct cell lineages.
+- Paint class labels and export 16-bit training masks for use with a separate model-training workflow.
+- Record repeatable local workflows for layer, axis, registration, and stitching operations.
+- Create keyframed animations of axis, camera, layer visibility, and opacity changes.
+
+Workspace projects and images stay on the Mac. The extension browser exposes only bundled, curated capabilities;
+it does not download or execute third-party plugin code.
 
 ### Measurements and assays
 
@@ -142,11 +156,11 @@ full-resolution image at once.
 
 ### macOS — current release
 
-[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.9-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9)
+[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.10-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10)
 
 Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 
-1. Download `CellCounter-v1.0.9.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.9).
+1. Download `CellCounter-v1.0.10.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10).
 2. Unzip and move **`CellCounting.app`** into Applications.
    *(The application is called CellCounter; the bundle on disk is still named `CellCounting.app`.)*
 3. The app is not notarized, so the first launch is blocked. Open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough: [docs/INSTALL.md](docs/INSTALL.md).

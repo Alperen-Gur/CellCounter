@@ -85,6 +85,7 @@ struct AppSidebar: View {
                 NavItemView(icon: "image",   label: "Images",  count: imageCount > 0 ? imageCount : nil, isActive: state.view == .imagesLibrary) { state.view = .imagesLibrary }
                 NavItemView(icon: "library", label: "Batches", count: batchCount > 0 ? batchCount : nil, isActive: state.view == .batch)          { state.view = .batch }
                 NavItemView(icon: "compare", label: "Compare", isActive: state.view == .compare) { state.view = .compare }
+                NavItemView(icon: "workspace", label: "Workspace", isActive: state.view == .workspace) { state.view = .workspace }
 
                 SidebarSectionLabel(text: "System")
                 NavItemView(icon: "cpu",      label: "Models",    isActive: state.view == .models)   { state.view = .models }

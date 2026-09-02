@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import SwiftData
 
 enum AppView: String, Hashable, CaseIterable {
-    case home, processing, results, batch, models, fineTune, settings, queue, reviewQueue, compare, imagesLibrary
+    case home, processing, results, batch, workspace, models, fineTune, settings, queue, reviewQueue, compare, imagesLibrary
 }
 
 @MainActor
@@ -28,6 +28,12 @@ private struct DecodedCellsCacheEntry {
 final class AppState {
     // Routing
     var view: AppView = .home
+
+    /// Workspace lifetime follows the app, not the conditional navigation branch.
+    /// Large decoded caches can therefore be trimmed deliberately instead of being
+    /// destroyed and recreated every time the user checks another screen.
+    @ObservationIgnored
+    let workspaceSession = WorkspaceSession()
 
     // Modals
     var showCalibration = false

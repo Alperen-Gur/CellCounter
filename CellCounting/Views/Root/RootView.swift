@@ -130,6 +130,7 @@ struct RootView: View {
         case .processing: ProcessingView(state: state)
         case .results:    ResultsView(state: state, fullScreenEdit: $fullScreenEdit)
         case .batch:      BatchView(state: state)
+        case .workspace:  WorkspaceView(state: state, session: state.workspaceSession)
         case .models:     ModelsView(state: state)
         case .fineTune:   FineTuneView(state: state)
         case .settings:   SettingsView(state: state)

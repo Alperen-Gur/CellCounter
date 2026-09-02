@@ -64,6 +64,7 @@ struct AppToolbar: View {
         case .reviewQueue:    return "Review queue"
         case .compare:        return "Compare conditions"
         case .imagesLibrary:  return "Images"
+        case .workspace:      return "Workspace"
         }
     }
 
@@ -106,7 +107,7 @@ struct AppToolbar: View {
             }.appButton()
             Button { state.view = .home } label: { Icon("x") }
                 .appButton(.ghost).frame(width: 28, height: 28)
-        case .batch:
+        case .batch, .workspace:
             EmptyView()
         case .fineTune:
             Button { state.view = .home } label: { Icon("x") }

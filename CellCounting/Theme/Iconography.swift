@@ -49,6 +49,7 @@ enum Icons {
         case "refresh":   return "arrow.clockwise"
         case "scope":     return "scope"
         case "viewfinder": return "viewfinder"
+        case "workspace": return "square.3.layers.3d"
         default:          return "circle"
         }
     }
