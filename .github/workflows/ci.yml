@@ -132,6 +132,7 @@ jobs:
           /tmp/cellcounter-test-env/bin/pip install numpy scipy scikit-image tifffile pillow
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_training_dataset.py
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_assay_worker.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_detection_startup.py
 
   # AGPL guard — this project is MIT. Fail if any Ultralytics/YOLO (AGPL-3.0)
   # reference is reintroduced into tracked source, keeping THIRD_PARTY_LICENSES

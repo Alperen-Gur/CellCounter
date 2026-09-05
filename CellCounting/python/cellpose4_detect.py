@@ -55,64 +55,9 @@ from _cellpose_common import log, emit_error  # noqa: E402
 # tqdm patch — bridge cellpose's weight-download progress to our stderr UI.
 # ---------------------------------------------------------------------------
 
-_TQDM_BRIDGED = False
-
-
 def install_tqdm_progress_bridge() -> None:
-    global _TQDM_BRIDGED
-    if _TQDM_BRIDGED:
-        return
-    try:
-        import tqdm as _tqdm_mod
-    except ImportError:
-        log("[cellpose_detect] tqdm not importable; weight-download progress "
-            "will be silent")
-        return
-
-    _orig_init = _tqdm_mod.tqdm.__init__
-    _orig_update = _tqdm_mod.tqdm.update
-    _orig_close = _tqdm_mod.tqdm.close
-
-    def _is_byte_bar(self) -> bool:
-        # cellpose's download bar uses unit="B" / unit_scale=True. Filter on
-        # those so we don't spam stderr for unrelated tqdm bars (segmentation
-        # progress for example) — those are bounded and short.
-        return (getattr(self, "unit", "") == "B"
-                and bool(getattr(self, "unit_scale", False)))
-
-    def _patched_init(self, *args, **kwargs):
-        _orig_init(self, *args, **kwargs)
-        if _is_byte_bar(self):
-            total = self.total or 0
-            log(f"[cellpose_detect] downloading weights: 0 / "
-                f"{total / (1024 * 1024):.1f} MB (starting…)")
-            self._cc_last_log_pct = -1
-
-    def _patched_update(self, n=1):
-        ret = _orig_update(self, n)
-        if _is_byte_bar(self):
-            total = self.total or 0
-            done = self.n or 0
-            if total > 0:
-                pct = int(done * 100 / total)
-                if pct != getattr(self, "_cc_last_log_pct", -1) and pct % 5 == 0:
-                    log(f"[cellpose_detect] downloading weights: "
-                        f"{done / (1024 * 1024):.1f} / "
-                        f"{total / (1024 * 1024):.1f} MB ({pct}%)")
-                    self._cc_last_log_pct = pct
-        return ret
-
-    def _patched_close(self):
-        if _is_byte_bar(self) and (self.total or 0) > 0:
-            log(f"[cellpose_detect] downloading weights: done "
-                f"({(self.total or 0) / (1024 * 1024):.1f} MB)")
-        return _orig_close(self)
-
-    _tqdm_mod.tqdm.__init__ = _patched_init
-    _tqdm_mod.tqdm.update = _patched_update
-    _tqdm_mod.tqdm.close = _patched_close
-    _TQDM_BRIDGED = True
-    log("[cellpose_detect] tqdm progress bridge installed for weight downloads")
+    """Keep the existing public entry point; both Cellpose versions share it."""
+    cc.install_tqdm_progress_bridge()
 
 
 _MODEL_CACHE = {}
@@ -209,17 +154,21 @@ def main(argv=None) -> None:
         log(f"[cellpose_detect] constructing CellposeModel(pretrained_model={model_name!r}, "
             f"gpu={use_gpu_kw}) — may download weights on first run")
         try:
-            if override_device is not None:
-                model = cp_models.CellposeModel(
-                    gpu=use_gpu_kw,
-                    pretrained_model=model_name,
-                    device=override_device,
-                )
-            else:
-                model = cp_models.CellposeModel(
-                    gpu=use_gpu_kw,
-                    pretrained_model=model_name,
-                )
+            with cc.model_loading_progress():
+                if override_device is not None:
+                    model = cp_models.CellposeModel(
+                        gpu=use_gpu_kw,
+                        pretrained_model=model_name,
+                        device=override_device,
+                    )
+                else:
+                    model = cp_models.CellposeModel(
+                        gpu=use_gpu_kw,
+                        pretrained_model=model_name,
+                    )
+        except cc.ModelDownloadError as exc:
+            emit_error("model-download-failed", hint=str(exc), exit_code=4)
+            return
         except Exception as exc:  # noqa: BLE001
             log(f"[cellpose_detect] model load failed: {exc!r}")
             emit_error("model-load-failed", hint=str(exc), exit_code=4)

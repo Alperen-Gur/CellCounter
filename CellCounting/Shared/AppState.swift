@@ -1181,7 +1181,9 @@ final class AppState {
                         batch.pxPerUm = px; batch.pxPerUmSource = calibrated.calibrationSource
                         try self.repos.context.save()
                     }
-                    if self.analysisSetupJobId == job.id { self.openImage(id: imageId) }
+                    // Keep the presenting screen stable while setup is open.
+                    // Import already selected this batch/image; navigation is an
+                    // explicit setup action, not a second layout during presentation.
                 }
             } catch {
                 self.lastDetectionError = error.localizedDescription; self.showDetectionError = true

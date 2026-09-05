@@ -40,6 +40,12 @@ nonisolated struct SidecarOutcome {
         if Self.signalCodes.contains(exitCode) {
             throw DetectionError.cancelled
         }
+        // Preserve actionable model/download errors even when framework logs
+        // are verbose or the child exits before normal payload decoding.
+        if let payload = try? JSONDecoder().decode(SidecarError.self, from: stdout) {
+            let message = payload.error + (payload.hint.map { ": \($0)" } ?? "")
+            throw DetectionError.sidecarFailed(exitCode: exitCode, stderr: message)
+        }
         let stderrText = String(data: stderr, encoding: .utf8) ?? ""
         throw DetectionError.sidecarFailed(exitCode: exitCode, stderr: stderrText)
     }

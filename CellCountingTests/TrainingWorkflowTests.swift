@@ -1,5 +1,7 @@
 import Foundation
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import Testing
 @testable import CellCounting
 
@@ -19,6 +21,81 @@ struct TrainingWorkflowTests {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("training-test-\(UUID())")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func nativeBitmap(_ bytes: [UInt8], width: Int, height: Int, components: Int,
+                              grayscale: Bool = false,
+                              info: CGBitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue)) throws -> CGImage {
+        let provider = try #require(CGDataProvider(data: Data(bytes) as CFData))
+        return try #require(CGImage(width: width, height: height, bitsPerComponent: 8,
+            bitsPerPixel: components * 8, bytesPerRow: width * components,
+            space: grayscale ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: info, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+    }
+
+    @Test func nativePreviewPreservesStraightAlphaSourceChannelsAndLuminance() throws {
+        let image = try nativeBitmap([240, 20, 10, 0, 0, 210, 50, 127, 12, 25, 220, 255],
+                                     width: 3, height: 1, components: 4)
+        let red = try #require(try NativeSourcePreview.plane(in: image, channel: 0, rgbLuminance: false))
+        #expect(red.values == [240, 0, 12]) // Alpha is ignored, never composited.
+        #expect(try NativeSourcePreview.plane(in: image, channel: 1, rgbLuminance: false)?.values == [20, 210, 25])
+        #expect(try NativeSourcePreview.plane(in: image, channel: 2, rgbLuminance: false)?.values == [10, 50, 220])
+        let luminance = try #require(try NativeSourcePreview.plane(in: image, channel: 2, rgbLuminance: true))
+        for (value, expected) in zip(luminance.values, [84.64, 128.97, 43.343]) {
+            #expect(abs(Double(value) - expected) < 0.00003)
+        }
+        let mean = try #require(try NativeSourcePreview.plane(in: image, channel: nil, rgbLuminance: false))
+        #expect(mean.values[0] == 90)
+        #expect(throws: TrainingDatasetError.self) {
+            try NativeSourcePreview.plane(in: image, channel: 3, rgbLuminance: false)
+        }
+    }
+
+    @Test func nativePreviewHandlesGrayAndLittleEndianLayoutsConservatively() throws {
+        let gray = try nativeBitmap([10, 90, 220, 40], width: 2, height: 2, components: 1, grayscale: true,
+                                    info: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue))
+        let plane = try #require(try NativeSourcePreview.plane(in: gray, channel: 0, rgbLuminance: true))
+        #expect(plane.width == 2 && plane.height == 2)
+        #expect(plane.values == [10, 90, 220, 40]) // Source rows are not flipped.
+        #expect(throws: TrainingDatasetError.self) {
+            try NativeSourcePreview.plane(in: gray, channel: 1, rgbLuminance: false)
+        }
+        let little = try nativeBitmap([30, 20, 10, 255], width: 1, height: 1, components: 4,
+            info: [.byteOrder32Little, CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue)])
+        #expect(try NativeSourcePreview.plane(in: little, channel: 0, rgbLuminance: false)?.values == [10])
+        let premultiplied = try nativeBitmap([10, 20, 30, 127], width: 1, height: 1, components: 4,
+            info: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue))
+        #expect(try NativeSourcePreview.plane(in: premultiplied, channel: 0, rgbLuminance: false) == nil)
+    }
+
+    @Test func nativePreviewPercentilesMatchLinearInterpolationAndConstantPlanes() throws {
+        #expect(try NativeSourcePreview.displayBytes([0, 10, 20, 30, 40]) == [0, 62, 127, 192, 255])
+        #expect(try NativeSourcePreview.displayBytes([51, 51, 51]) == [0, 0, 0])
+        #expect(throws: TrainingDatasetError.self) { try NativeSourcePreview.displayBytes([0, .nan]) }
+    }
+
+    @MainActor @Test func ordinaryPNGPreviewReturnsNativePixelsBeforePythonDiscovery() async throws {
+        let directory = try temporary(); defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("source.png")
+        let image = try nativeBitmap([0, 0, 200, 255, 80, 180, 100, 255, 160, 40, 0, 255, 240, 220, 255, 255],
+                                     width: 2, height: 2, components: 4)
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        var item = TrainingSample(id: UUID(), name: "source.png", sourceURL: url, width: 2, height: 2,
+                                  cells: [], group: "fixture", sourceHash: "", segmentChannel: 0)
+        let native = try #require(try NativeSourcePreview.png(for: item))
+        let preview = try await TrainingDatasetService.preview(for: item)
+        #expect(preview == native)
+        let decodedSource = try #require(CGImageSourceCreateWithData(preview as CFData, nil))
+        let decodedImage = try #require(CGImageSourceCreateImageAtIndex(decodedSource, 0, nil))
+        let pixels = try #require(try NativeSourcePreview.plane(in: decodedImage, channel: 0, rgbLuminance: false))
+        #expect(pixels.width == 2 && pixels.height == 2)
+        #expect(pixels.values == [0, 84, 170, 255])
+        item.sourceURL = directory.appendingPathComponent("microscopy.ome.tif")
+        #expect(try NativeSourcePreview.png(for: item) == nil)
+        item.sourceURL = url; item.zProjection = "invalid"
+        #expect(throws: TrainingDatasetError.self) { try NativeSourcePreview.png(for: item) }
     }
 
     @MainActor @Test func datasetSelectionSnapshotsLatestMasksAndPlaneSettings() {

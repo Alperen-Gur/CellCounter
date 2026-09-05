@@ -71,6 +71,9 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     channels = cc.parse_channels(args.channels)
 
+    log("[cellpose_detect] loading Cellpose runtime…", flush=True)
+    cc.install_tqdm_progress_bridge()
+
     # Lazy imports — so the import-error branch can emit a structured error
     # without crashing on bare ImportError.
     try:
@@ -142,18 +145,23 @@ def main(argv=None) -> None:
     model_key = (model_type, bool(args.restore), str(override_device), bool(use_gpu_kw))
     model = _MODEL_CACHE.get(model_key)
     if model is None:
+        log(f"[cellpose_detect] loading {model_type} model — first use may download weights", flush=True)
         try:
-            if args.restore:
-                log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
-                try:
-                    model = _build_model(model_type=model_type, restore_type="denoise_cyto3")
-                except TypeError:
-                    # Older cellpose builds don't accept restore_type on CellposeModel; degrade gracefully.
-                    log("[cellpose_detect] CellposeModel doesn't accept restore_type; "
-                        "falling back to plain model")
+            with cc.model_loading_progress():
+                if args.restore:
+                    log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
+                    try:
+                        model = _build_model(model_type=model_type, restore_type="denoise_cyto3")
+                    except TypeError:
+                        # Older cellpose builds don't accept restore_type on CellposeModel; degrade gracefully.
+                        log("[cellpose_detect] CellposeModel doesn't accept restore_type; "
+                            "falling back to plain model")
+                        model = _build_model(model_type=model_type)
+                else:
                     model = _build_model(model_type=model_type)
-            else:
-                model = _build_model(model_type=model_type)
+        except cc.ModelDownloadError as exc:
+            emit_error("model-download-failed", hint=str(exc), exit_code=4)
+            return
         except Exception as exc:  # noqa: BLE001
             log(f"[cellpose_detect] model load failed: {exc!r}")
             emit_error("model-load-failed", hint=str(exc), exit_code=4)

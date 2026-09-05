@@ -148,6 +148,129 @@ def serve_ndjson(run_once) -> None:
 
 
 # ---------------------------------------------------------------------------
+# First-use model loading — visible, bounded network operations.
+# ---------------------------------------------------------------------------
+
+class ModelDownloadError(RuntimeError):
+    """The weights are unavailable; image loading/inference is not the failure."""
+
+
+def install_tqdm_progress_bridge() -> None:
+    """Translate byte bars into newline stages the native UI does not filter.
+
+    Patch the class once per worker so model reuse cannot stack wrappers. A
+    partial bar closing on cancellation or error must never announce success.
+    """
+    try:
+        import tqdm
+    except ImportError:
+        return
+    bar_type = tqdm.tqdm
+    if getattr(bar_type, "_cc_download_bridge", False):
+        return
+    original_init = bar_type.__init__
+    original_update = bar_type.update
+    original_close = bar_type.close
+
+    def is_bytes(bar):
+        return getattr(bar, "unit", "") == "B" and bool(getattr(bar, "unit_scale", False))
+
+    def progress(bar, final=False):
+        import time
+        total = float(getattr(bar, "total", 0) or 0)
+        done = float(getattr(bar, "n", 0) or 0)
+        now = time.monotonic()
+        previous = getattr(bar, "_cc_last_bytes", 0)
+        bucket = int(done * 20 / total) if total > 0 else 0
+        changed = bucket > getattr(bar, "_cc_last_bucket", -1) if total > 0 else done - previous >= 1024 * 1024
+        if not final and not changed and now - getattr(bar, "_cc_last_time", now) < 2:
+            return
+        if final and getattr(bar, "_cc_closed", False):
+            return
+        if final:
+            bar._cc_closed = True
+        bar._cc_last_time = now
+        bar._cc_last_bytes = done
+        bar._cc_last_bucket = bucket
+        amount = f"{done / (1024 * 1024):.1f} MB"
+        if total > 0:
+            amount = f"{done / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB ({min(100, int(done * 100 / total))}%)"
+        # Only a complete known-size bar is independently evidence of success.
+        # The download wrapper below confirms unknown-size downloads on return.
+        status = "downloaded weights" if final and total > 0 and done >= total else "downloading weights"
+        log(f"[cellpose_detect] {status}: {amount}", flush=True)
+
+    def patched_init(bar, *args, **kwargs):
+        original_init(bar, *args, **kwargs)
+        if is_bytes(bar):
+            bar._cc_last_bucket = -1
+            bar._cc_last_time = 0
+            bar._cc_closed = False
+            progress(bar)
+
+    def patched_update(bar, n=1):
+        result = original_update(bar, n)
+        if is_bytes(bar):
+            progress(bar)
+        return result
+
+    def patched_close(bar):
+        if is_bytes(bar):
+            progress(bar, final=True)
+        return original_close(bar)
+
+    bar_type.__init__ = patched_init
+    bar_type.update = patched_update
+    bar_type.close = patched_close
+    bar_type._cc_download_bridge = True
+
+
+@contextlib.contextmanager
+def model_loading_progress():
+    """Bound Cellpose's lazy weight-download I/O and distinguish its failures.
+
+    This worker processes one request at a time. Restore the library hooks on
+    exit so cached-model evaluations and subsequent requests retain its API.
+    No download happens here unless Cellpose itself requests missing weights.
+    """
+    from cellpose import utils
+    original_download = getattr(utils, "download_url_to_file", None)
+    original_open = getattr(utils, "urlopen", None)
+    if original_download is None:
+        yield
+        return
+
+    def open_with_timeout(*args, **kwargs):
+        # Covers connection and each socket read. A slow but progressing large
+        # checkpoint is allowed to finish; a silent stalled socket is bounded.
+        kwargs.setdefault("timeout", 30)
+        return original_open(*args, **kwargs)
+
+    def download(url, destination, *args, **kwargs):
+        name = os.path.basename(os.fspath(destination))
+        log(f"[cellpose_detect] downloading weights for {name} — one-time model setup", flush=True)
+        try:
+            value = original_download(url, destination, *args, **kwargs)
+        except Exception as exc:
+            message = (f"Could not download the {name} model weights. "
+                       f"Check your internet connection and retry. {exc}")
+            log(f"[cellpose_detect] {message}", flush=True)
+            raise ModelDownloadError(message) from exc
+        log(f"[cellpose_detect] weights ready: {name}", flush=True)
+        return value
+
+    utils.download_url_to_file = download
+    if original_open is not None:
+        utils.urlopen = open_with_timeout
+    try:
+        yield
+    finally:
+        utils.download_url_to_file = original_download
+        if original_open is not None:
+            utils.urlopen = original_open
+
+
+# ---------------------------------------------------------------------------
 # Argument parser — the shared shape.
 # ---------------------------------------------------------------------------
 

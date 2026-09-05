@@ -61,6 +61,13 @@ enum TrainingDatasetService {
     }
 
     @MainActor static func preview(for sample: TrainingSample, preferredFamily: ModelFamily? = nil) async throws -> Data {
+        let native = Task.detached(priority: .userInitiated) { try NativeSourcePreview.png(for: sample) }
+        if let data = try await withTaskCancellationHandler(operation: {
+            try await native.value
+        }, onCancel: { native.cancel() }) {
+            return data
+        }
+        try Task.checkCancellation()
         let interpreters = PythonRuntime.vendorReaderInterpreters(preferredFamily: preferredFamily)
         guard !interpreters.isEmpty,
               let script = PythonRuntime.stagedScriptURL(named: "_training_dataset.py")

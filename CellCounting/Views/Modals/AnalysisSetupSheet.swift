@@ -12,12 +12,51 @@ struct AnalysisSetupSheet: View {
     @State private var message: String?
     @State private var previewImage: NSImage?
     @State private var previewCells: [DetectedCell] = []
-    @State private var previewLoadId = UUID()
-    @State private var sourcePreviewTask: Task<Void, Never>?
+    @State private var previewImageId: UUID?
+    @State private var previewError: String?
+    @State private var preparingPlane = false
     private var job: AnalysisJob? { state.jobScheduler.job(jobId) }
     private var selectedItem: AnalysisJobItem? { job?.items.first { $0.id == selectedItemId } ?? job?.items.first }
     private var selectedImage: ImageRecord? { selectedItem?.imageId.flatMap { state.repos.image(id: $0) } }
     private var modelReady: Bool { state.detectorRegistry.isInstalled(settings.modelId, models: state.models) }
+
+    init(state: AppState, jobId: UUID) {
+        self.state = state
+        self.jobId = jobId
+        let job = state.jobScheduler.job(jobId)
+        _settings = State(initialValue: job?.settings ?? AnalysisRunSettings())
+        _preset = State(initialValue: job?.taskPreset ?? .countCells)
+        _selectedItemId = State(initialValue: job?.items.first?.id)
+    }
+
+    private var imageSelection: Binding<UUID?> {
+        Binding(get: { selectedItem?.id }, set: { selectedItemId = $0 })
+    }
+
+    private struct SourcePreviewKey: Equatable {
+        var itemId: UUID?
+        var imageId: UUID?
+        var family: String
+        var sourcePlane: Bool
+        var channel: Int
+        var channels: [Int]
+        var projection: String
+    }
+    private var sourcePreviewKey: SourcePreviewKey {
+        SourcePreviewKey(itemId: selectedItem?.id, imageId: selectedItem?.imageId,
+                         family: settings.modelFamily, sourcePlane: settings.supportsSourceChannels && modelReady,
+                         channel: settings.segmentChannel, channels: settings.channels, projection: settings.zProjection)
+    }
+    private struct MaskPreviewKey: Equatable {
+        var imageId: UUID?
+        var detectionId: UUID?
+        var revision: Int?
+        var settings: AnalysisRunSettings
+    }
+    private var maskPreviewKey: MaskPreviewKey {
+        MaskPreviewKey(imageId: selectedImage?.id, detectionId: selectedImage?.detection?.id,
+                       revision: selectedImage?.detection?.cellsRevision, settings: settings)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -31,11 +70,11 @@ struct AnalysisSetupSheet: View {
             }
             HStack(alignment: .top, spacing: 22) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Representative image", selection: $selectedItemId) {
+                    Picker("Representative image", selection: imageSelection) {
+                        if job?.items.isEmpty != false { Text("No images").tag(nil as UUID?) }
                         ForEach(job?.items ?? []) { item in Text(item.fileName).tag(Optional(item.id)) }
                     }
-                    .onChange(of: selectedItemId) { _, _ in loadSample() }
-                    GeometryReader { geometry in
+                    GeometryReader { _ in
                         ZStack {
                             Rectangle().fill(Color.black.opacity(0.9))
                             if let image = previewImage {
@@ -63,8 +102,13 @@ struct AnalysisSetupSheet: View {
                                 }
                             } else { Text("Preparing representative image…").foregroundStyle(.white) }
                         }
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                    }.frame(minWidth: 380, minHeight: 310)
+                    }.frame(minWidth: 380).frame(height: 310)
+                    if preparingPlane {
+                        Text("Preparing selected channel…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let previewError {
+                        Text(previewError).font(.caption).foregroundStyle(.orange).lineLimit(3)
+                    }
                     if let image = selectedImage {
                         Text("\(image.widthPx) × \(image.heightPx) pixels · \(previewCells.count) masks")
                             .font(.callout).foregroundStyle(.secondary)
@@ -83,6 +127,9 @@ struct AnalysisSetupSheet: View {
                             .onChange(of: preset) { _, new in settings = new.applying(to: settings); edited = true }
                         Text(preset.detail).font(.callout).foregroundStyle(.secondary)
                         Picker("Model", selection: $settings.modelId) {
+                            if !state.models.contains(where: { $0.id == settings.modelId && $0.family != .ensemble }) {
+                                Text(settings.modelName).tag(settings.modelId)
+                            }
                             ForEach(state.models.filter { $0.family != .ensemble }) { model in Text(model.name).tag(model.id) }
                         }.onChange(of: settings.modelId) { _, id in
                             if let model = state.models.first(where: { $0.id == id }) {
@@ -107,6 +154,10 @@ struct AnalysisSetupSheet: View {
                             Text("px/µm").foregroundStyle(.secondary)
                         }
                         Text("Source: \(settings.calibrationSource)").font(.caption).foregroundStyle(.secondary)
+                        if selectedImage != nil, selectedImage?.sourcePxPerUm == nil {
+                            Text("No scale metadata in this image. Confirm pixels per µm for calibrated measurements.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         if let scale = selectedImage?.sourcePxPerUm {
                             Button("Use image metadata (\(scale.formatted()) px/µm)") {
                                 settings.pxPerUm = scale; settings.calibrationSource = selectedImage?.sourceCalibrationSource ?? "metadata"
@@ -158,18 +209,14 @@ struct AnalysisSetupSheet: View {
         .padding(24).frame(width: 850)
         .background(Tokens.bg)
         .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
-        .onDisappear { sourcePreviewTask?.cancel() }
-        .task {
-            if let job { settings = job.settings; preset = job.taskPreset; selectedItemId = job.items.first?.id }
-            refreshPreview()
-        }
+        .task(id: sourcePreviewKey) { await loadSourcePreview() }
+        .task(id: maskPreviewKey) { await loadPreviewMasks() }
         .onChange(of: job?.settings) { _, new in if let new, !edited { settings = new } }
         .onChange(of: selectedItem?.imageId) { _, _ in
             if settings.calibrationSource == "unconfirmed", let scale = selectedImage?.sourcePxPerUm {
                 settings.pxPerUm = scale
                 settings.calibrationSource = selectedImage?.sourceCalibrationSource ?? "metadata"
             }
-            refreshPreview()
         }
         .onChange(of: settings) { old, new in if old != new { edited = true } }
     }
@@ -188,48 +235,58 @@ struct AnalysisSetupSheet: View {
         return actions
     }
 
-    private func refreshPreview() {
+    /// One task per source/plane selection. Metadata, job status, confidence and
+    /// mask updates never restart the image reader, and leaving cancels it.
+    private func loadSourcePreview() async {
+        guard let item = selectedItem else { return }
+        previewError = nil
+        preparingPlane = false
+        if previewImageId != item.imageId {
+            previewImage = nil
+            previewImageId = item.imageId
+        }
+        if item.imageId == nil {
+            do { _ = try await state.jobScheduler.prepareSample(jobId, itemId: item.id) }
+            catch { if !Task.isCancelled { previewError = error.localizedDescription } }
+            return // Observed imageId starts the next task after import finishes.
+        }
         guard let record = selectedImage else { return }
-        let loadId = UUID(); previewLoadId = loadId
         let snapshot = settings
-        let useSource = snapshot.supportsSourceChannels && modelReady
-        previewImage = nil; previewCells = []
-        sourcePreviewTask?.cancel()
-        sourcePreviewTask = Task {
-            do {
-                let image: NSImage?
-                if useSource {
-                    let data = try await TrainingDatasetService.preview(image: record, settings: snapshot)
-                    image = NSImage(data: data)
-                } else {
-                    let url = record.displayURL
-                    image = await Task.detached(priority: .userInitiated) { ImageLoader.cachedDisplayImage(at: url) }.value
-                }
-                guard !Task.isCancelled, selectedImage?.id == record.id, previewLoadId == loadId else { return }
-                previewImage = image
-                if let detection = record.detection,
-                   detection.runSettings?.hasSameInputs(as: snapshot) != false {
-                    let cells = await state.loadCells(for: detection)
-                    guard !Task.isCancelled, selectedImage?.id == record.id, previewLoadId == loadId else { return }
-                    previewCells = cells
-                }
-            } catch {
-                guard !Task.isCancelled, previewLoadId == loadId else { return }
-                message = "Source preview could not be loaded: " + error.localizedDescription
-            }
+        if previewImageId != record.id {
+            previewImage = nil
+            previewImageId = record.id
         }
+        let url = record.displayURL
+        let original = await Task.detached(priority: .userInitiated) {
+            ImageLoader.cachedReviewPreview(at: url)
+        }.value
+        guard !Task.isCancelled else { return }
+        previewImage = original
+        guard snapshot.supportsSourceChannels && modelReady else {
+            preparingPlane = false
+            if original == nil { previewError = "This image could not be displayed." }
+            return
+        }
+        preparingPlane = true
+        do {
+            let data = try await TrainingDatasetService.preview(image: record, settings: snapshot)
+            guard !Task.isCancelled else { return }
+            if let image = NSImage(data: data) { previewImage = image }
+            else { previewError = "The selected channel could not be displayed. Showing the original image." }
+        } catch {
+            guard !Task.isCancelled else { return }
+            previewError = "Showing the original image. Selected channel: " + error.localizedDescription
+        }
+        preparingPlane = false
     }
-    private func loadSample() {
-        guard let item = selectedItem, !busy else { return }
-        if item.imageId != nil { refreshPreview(); return }
-        busy = true
-        Task {
-            defer { busy = false }
-            do {
-                _ = try await state.jobScheduler.prepareSample(jobId, itemId: item.id)
-                refreshPreview()
-            } catch { message = error.localizedDescription }
-        }
+
+    private func loadPreviewMasks() async {
+        previewCells = []
+        guard let record = selectedImage, let detection = record.detection,
+              detection.runSettings?.hasSameInputs(as: settings) == true else { return }
+        let cells = await state.loadCells(for: detection)
+        guard !Task.isCancelled else { return }
+        previewCells = cells
     }
     private func saveThen(_ action: @escaping @MainActor () -> Void) {
         busy = true
@@ -248,7 +305,6 @@ struct AnalysisSetupSheet: View {
                 try await state.jobScheduler.updateDraft(jobId, settings: settings, preset: preset)
                 try await state.commitAnalysisSetup(jobId)
                 try await state.jobScheduler.preview(jobId, itemId: item.id)
-                refreshPreview()
                 message = "Preview complete. Review the masks before processing the batch."
             } catch { message = error.localizedDescription }
         }

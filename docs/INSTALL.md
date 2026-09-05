@@ -1,6 +1,6 @@
 # Installing CellCounter
 
-## macOS v1.0.11
+## macOS v1.0.12
 
 CellCounter requires **macOS 15 or later**. The macOS download is a **universal build for Intel and Apple Silicon Macs**. Python environments and model dependencies are installed separately for your Mac when needed.
 
@@ -8,7 +8,7 @@ The application is **ad-hoc signed and not notarized**. macOS may block its firs
 
 ### Install and open
 
-1. Download `CellCounter-v1.0.11.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
+1. Download `CellCounter-v1.0.12.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
 2. Unzip the download and drag **CellCounting.app** into **Applications**. The application is called CellCounter; its bundle on disk is named `CellCounting.app`. Quit an older copy before replacing it. Replacing the application is separate from resetting its saved library.
 3. Open the application. If macOS blocks it, dismiss the message without moving the app to Trash.
 4. Open **System Settings → Privacy & Security** and find the message about CellCounter being blocked. Choose **Open Anyway**, then confirm **Open** when prompted. Depending on your Mac's security policy, administrator approval may be required.
@@ -34,6 +34,16 @@ Task presets provide starting points. Marker positivity and wound closure need t
 4. If installation fails, retain the log and the model name for a bug report, then use the available retry or repair action.
 
 The application download does not include all Python dependencies or model weights. After the required components are installed, image analysis runs locally. Local fine-tuning additionally requires the Cellpose 3.x environment, existing compatible weights and reviewed segmentation masks; see the [v1.0.11 release notes](releases/v1.0.11.md).
+
+### First preview and model downloads
+
+Ordinary PNG, JPEG and BMP previews do not need Python startup when their pixel layout is supported. The original image stays visible while the selected channel is prepared. Scientific formats may still require their Python reader.
+
+Some Cellpose checkpoints download on the first analysis even after the Python environment is installed. Keep the app open while **downloading weights** shows progress. A stalled connection reports a download failure; restore connectivity and retry the image. After an interrupted session, reopen the app and resume the paused job in **Processing**. Completed model downloads are reused.
+
+**No calibration metadata found** is expected for many screenshots and ordinary photographs. It does not mean segmentation failed. Enter a known pixels-per-micrometre scale for calibrated measurements; a screenshot alone does not establish that scale.
+
+See the [v1.0.12 hotfix notes](releases/v1.0.12.md).
 
 ### Find keyboard shortcuts
 
