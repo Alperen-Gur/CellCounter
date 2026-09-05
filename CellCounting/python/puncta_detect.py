@@ -165,7 +165,8 @@ def main() -> None:
         return
 
     try:
-        planes, meta = _imageio.load_planes(args.image, z_project=args.z_project, channel=None)
+        from _assay_worker import load_raw_planes
+        planes, meta = load_raw_planes(args.image, z_project=args.z_project, channel=None)
     except Exception as exc:  # noqa: BLE001
         log(f"[puncta_detect] load_planes failed: {exc!r}")
         emit_error("image-load-failed", hint=str(exc), exit_code=3)
@@ -202,8 +203,11 @@ def main() -> None:
     if args.cells_json:
         polygons, centroid_entries = _load_cells_json(args.cells_json)
         if polygons:
-            label_map, label_id_map = _assays_puncta.rasterize_polygons(
-                polygons, (height_px, width_px))
+            from _assay_worker import cached_value
+            shape = (height_px, width_px)
+            label_map, label_id_map = cached_value(
+                "puncta-polygons", [polygons, shape],
+                lambda: _assays_puncta.rasterize_polygons(polygons, shape))
             log(f"[puncta_detect] rasterized {len(polygons)} cell polygon(s) into a label map")
             if centroid_entries:
                 log(f"[puncta_detect] {len(centroid_entries)} cell(s) had no polygon and were "

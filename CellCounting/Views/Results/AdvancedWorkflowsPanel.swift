@@ -248,6 +248,8 @@ private struct WorkflowSection<Content: View>: View {
 struct MaskCuratorPanel: View {
     @Bindable var state: AppState
     @State private var variants: [SegmentationVariantRecord] = []
+    @State private var comparing: SegmentationVariantRecord?
+    @State private var variantPage = 0
 
     var body: some View {
         Group {
@@ -256,8 +258,8 @@ struct MaskCuratorPanel: View {
                 Text("SAVED MASK VARIANTS")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Tokens.textTertiary)
-                ForEach(variants.prefix(8)) { variant in
-                    HStack(spacing: 8) {
+                ForEach(Array(variants.dropFirst(variantPage * 8).prefix(8))) { variant in
+                    VStack(alignment: .leading, spacing: 6) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(variant.label).font(.system(size: 11.5, weight: .medium))
                                 .foregroundStyle(Tokens.text).lineLimit(1)
@@ -265,31 +267,52 @@ struct MaskCuratorPanel: View {
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(Tokens.textTertiary)
                         }
-                        Spacer()
+                        HStack(spacing: 8) {
+                        Button("Compare") { comparing = variant }.appButton(.ghost, size: .sm)
                         Button("Use") { apply(variant) }.appButton(.ghost, size: .sm)
                         Button {
                             state.repos.deleteSegmentationVariant(variant); refresh()
                         } label: { Image(systemName: "trash") }
                             .buttonStyle(.plain).foregroundStyle(Tokens.textTertiary)
+                        Spacer()
+                        }
                     }
                     .padding(8).background(Tokens.bgSunken)
                     .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.sm))
+                }
+                if variants.count > 8 {
+                    HStack {
+                        Button("Newer") { variantPage = max(0, variantPage - 1) }.disabled(variantPage == 0)
+                        Spacer()
+                        Text("\(variantPage + 1) / \((variants.count + 7) / 8)")
+                        Spacer()
+                        Button("Older") { variantPage += 1 }.disabled((variantPage + 1) * 8 >= variants.count)
+                    }.font(.system(size: 10)).buttonStyle(.plain)
                 }
             }
             .padding(.top, 4)
             }
         }
         .onAppear(perform: refresh)
+        .onChange(of: state.currentImage?.id) { comparing = nil; refresh() }
+        .onChange(of: state.currentImage?.detection?.id) { refresh() }
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { _ in refresh() }
+        .sheet(item: $comparing) { variant in
+            if let image = state.currentImage, image.id == variant.imageId {
+                VariantComparisonView(state: state, image: image, variant: variant,
+                                      onApply: { apply(variant) })
+            }
+        }
     }
 
     private func refresh() {
         guard let image = state.currentImage else { variants = []; return }
         variants = state.repos.segmentationVariants(for: image.id)
+        variantPage = min(variantPage, max(0, (variants.count - 1) / 8))
     }
 
     private func apply(_ variant: SegmentationVariantRecord) {
-        guard let image = state.currentImage else { return }
+        guard let image = state.currentImage, image.id == variant.imageId else { return }
         let result = state.repos.applySegmentationVariant(variant, to: image)
         NotificationCenter.default.post(name: .ccCorrectionsChanged, object: image.id,
                                         userInfo: ["reviewDelta": result?.reviewCountDelta ?? 0])
@@ -332,7 +355,7 @@ struct QualityInsightsPanel: View {
                 riskList(snapshot.riskImages)
             }
         }
-        .task(id: state.currentBatch?.contentRevision) { await load(force: false) }
+        .task(id: "\(state.currentBatch?.id.uuidString ?? "none")-\(state.currentBatch?.contentRevision ?? -1)") { await load(force: false) }
     }
 
     private var header: some View {

@@ -31,7 +31,7 @@ struct StarDistDownloader: ModelDownloader {
     /// Tracks whether `import stardist` succeeded already this session, so we
     /// don't shell out for `isInstalled` every time the list refreshes.
     /// Keyed by python executable path to invalidate if the venv moves.
-    private static let importCache = PythonModuleImportCache(module: "stardist")
+    nonisolated private static let importCache = PythonModuleImportCache(module: "stardist")
 
     /// Cheap, main-safe. The expensive `import stardist` check is
     /// only consulted from `Self.importCache`, which caches an answer per
@@ -85,12 +85,16 @@ struct StarDistDownloader: ModelDownloader {
         }
 
         // 1) Install stardist + tensorflow + csbdeep if needed.
-        if !Self.importCache.isImportable(pythonURL: pythonURL) {
+        if !(await Task.detached(priority: .utility) {
+            Self.importCache.isImportable(pythonURL: pythonURL)
+        }.value) {
             await progress.appendAsync("[stardist] installing python dependencies …")
             try await Self.pipInstallStarDistStack(pythonURL: pythonURL, progress: progress)
             Self.importCache.invalidate(pythonURL: pythonURL)
             // Re-check; surface a clean error if pip silently failed.
-            if !Self.importCache.isImportable(pythonURL: pythonURL) {
+            if !(await Task.detached(priority: .utility) {
+                Self.importCache.isImportable(pythonURL: pythonURL)
+            }.value) {
                 throw NSError(domain: "StarDistDownloader", code: 2, userInfo: [
                     NSLocalizedDescriptionKey:
                         "pip install completed but `import stardist` still fails."

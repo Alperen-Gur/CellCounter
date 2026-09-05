@@ -81,9 +81,9 @@ struct ClassicalDetectionService: DetectionService {
         // Z-projection + which channel to segment on. Only the sidecars
         // built on `_cellpose_common.build_arg_parser` accept these;
         // StarDist/SAM hand-roll their parsers and would exit 2.
-        args += ChannelStackSettings.sidecarArguments()
+        args += input.channelStackArguments
         if method == "manual" {
-            let value = UserDefaults.standard.double(forKey: Self.manualThresholdKey)
+            let value = input.manualThreshold
             if value > 0 {
                 args += ["--threshold-value", String(value)]
             }
@@ -104,7 +104,7 @@ struct ClassicalDetectionService: DetectionService {
         // An explicit expected diameter is a genuinely useful prior here: it
         // widens the watershed seed spacing so two cells of diameter D aren't
         // split into four fragments.
-        let expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
+        let expectedDiameterUm = input.expectedDiameterUm
         if expectedDiameterUm > 0 {
             args += ["--diameter", String(expectedDiameterUm)]
         }
@@ -159,7 +159,18 @@ struct ClassicalDownloader: ModelDownloader {
     func probeInstalled(modelId: String) async -> Bool {
         // No subprocess needed: scikit-image and scipy are guaranteed by
         // install_python.sh, so venv presence is the whole answer.
-        await MainActor.run { isInstalled(modelId: modelId) }
+        guard ClassicalDetectionService.isKnownModelId(modelId),
+              UserDefaults.standard.object(forKey: "cc-cellpose-importable") as? Bool != false else { return false }
+        let sentinel = FileStore.shared.installIncompleteSentinel
+        let script = FileStore.shared.pythonDir.appendingPathComponent("cellpose_detect.py")
+        let directory = FileStore.shared.pythonVenvDir.appendingPathComponent("bin")
+        return await Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            return !fm.fileExists(atPath: sentinel.path)
+                && fm.fileExists(atPath: script.path)
+                && (fm.isExecutableFile(atPath: directory.appendingPathComponent("python3").path)
+                    || fm.isExecutableFile(atPath: directory.appendingPathComponent("python").path))
+        }.value
     }
 
     func install(modelId: String, progress: ModelInstallProgress) async throws {

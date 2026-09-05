@@ -30,31 +30,14 @@ struct ModelsView: View {
         }
     }
 
-    /// True when a cellpose-family model is currently active but the venv is
-    /// entirely missing. Drives the "Active model is not installed" banner —
-    /// distinct from the broken-venv banner that fires for half-built venvs.
-    /// Reads both the @Observable mirror (for SwiftUI re-renders after
-    /// `ccVenvChanged`) and the filesystem (to survive stale-cache races on
-    /// first render before the observer fires).
     private var isActiveCellposeMissing: Bool {
-        guard let info = state.models.first(where: { $0.id == state.activeModelId }),
-              info.family == .cellpose else { return false }
-        // Touch the observable so SwiftUI re-renders on mirror changes.
-        let mirror = state.activeModelInstallState
-        if case .installed = mirror { return false }
-        let venv = FileStore.shared.pythonVenvDir
-        return !FileManager.default.fileExists(atPath: venv.path)
+        state.models.first(where: { $0.id == state.activeModelId })?.family == .cellpose
+            && state.installStateCache.get(state.activeModelId) == .notInstalled
     }
 
-    /// Pass-16: same as `isActiveCellposeMissing` but for the cellpose 4.x
-    /// (CPSAM) family. Drives the same banner shape — but the CTA opens the
-    /// 4.x install sheet (`showInstallCellpose4`) instead of the 3.x one.
     private var isActiveCellpose4Missing: Bool {
-        guard let info = state.models.first(where: { $0.id == state.activeModelId }),
-              info.family == .cellpose4 else { return false }
-        let mirror = state.activeModelInstallState
-        if case .installed = mirror { return false }
-        return !FileManager.default.fileExists(atPath: FileStore.shared.pythonVenv4Dir.path)
+        state.models.first(where: { $0.id == state.activeModelId })?.family == .cellpose4
+            && state.installStateCache.get(state.activeModelId) == .notInstalled
     }
 
     /// Reads the cache, NOT the registry — avoids subprocess on the main
@@ -94,7 +77,7 @@ struct ModelsView: View {
                 //   2. The venv is entirely missing AND the user's active
                 //      model is in the cellpose family — surfaces an install
                 //      affordance even though no partial install exists.
-                if let reason = CellposeBrokenProbe.reason() {
+                if let reason = state.installStateCache.cellposeBrokenReason {
                     BrokenVenvBanner(
                         title: "Cellpose install is broken — \(reason)",
                         subtitle: "Reinstalling will delete the partial environment and start over.",
@@ -158,13 +141,11 @@ struct ModelsView: View {
             .frame(maxWidth: 1000, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        // ⌘F — focus search field
-        .overlay(
-            Button("") { searchFocused = true }
-                .keyboardShortcut("f", modifiers: [.command])
-                .hidden()
-                .allowsHitTesting(false)
-        )
+        .focusedSceneValue(\.cellCounterShortcuts, ScreenShortcutActions(
+            find: { searchFocused = true },
+            newItem: { showAddModel = true },
+            run: { state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry) }
+        ))
         .onAppear {
             // Pass-16: refresh if ANY model is still .unknown (not "all" — the
             // active model's single-id probe populates only its own cache
@@ -178,12 +159,15 @@ struct ModelsView: View {
             }
             if hasUnknown {
                 state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)
-                state.refreshActiveModelInstallState()
-                state.refreshDetector()
             }
         }
         // After the install sheet closes, re-check availability so rows flip
         // from "Get" to "Activate" without a manual refresh.
+        .onChange(of: state.showInstallCellpose4) { _, isShowing in
+            if !isShowing {
+                state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)
+            }
+        }
         .onChange(of: state.showInstallCellpose) { _, isShowing in
             if !isShowing {
                 state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)

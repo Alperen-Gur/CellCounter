@@ -27,7 +27,7 @@ struct KeyboardShortcutsSheet: View {
                             .font(.system(size: 18, weight: .bold))
                             .tracking(-0.01 * 18)
                             .foregroundStyle(Tokens.text)
-                        Text("Per-screen shortcuts — active only in the corresponding view.")
+                        Text("Menus show which actions are available. Canvas letter keys work only while the canvas has focus.")
                             .font(.system(size: 12.5))
                             .foregroundStyle(Tokens.textTertiary)
                     }
@@ -48,79 +48,9 @@ struct KeyboardShortcutsSheet: View {
                 // Body — scrollable groups
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        ShortcutGroup(title: "Global", rows: [
-                            ("⌘O",        "Open images…"),
-                            ("⌘⇧O",       "Open folder…"),
-                            ("⌘,",        "Settings"),
-                            ("⌘.",        "Cancel current sheet"),
-                            ("⌘/",        "Keyboard shortcuts (this sheet)"),
-                        ])
-                        ShortcutGroup(title: "Home", rows: [
-                            ("⌘D",        "Choose images… (primary CTA)"),
-                            ("⌘⇧D",       "Choose folder…"),
-                        ])
-                        ShortcutGroup(title: "Results", rows: [
-                            ("Space",      "Toggle overlay (master fills + outlines)"),
-                            ("X",          "Toggle filled masks only"),
-                            ("Z",          "Toggle outline strokes only"),
-                            ("⌘+  /  ⌘=", "Zoom in"),
-                            ("⌘-",        "Zoom out"),
-                            ("⌘0",        "Fit to view"),
-                            ("⌘1",        "Box overlay mode"),
-                            ("⌘2",        "Outline overlay mode"),
-                            ("←  /  →",   "Previous / Next image in batch"),
-                            ("⌘E",        "Export annotated PNG"),
-                            ("⌘⇧E",       "Export PNG + CSV"),
-                            ("⌘R",        "Re-run detection on current image"),
-                            ("V",         "Cell-edit mode: View"),
-                            ("A",         "Cell-edit mode: Add"),
-                            ("R",         "Cell-edit mode: Remove"),
-                            ("M",         "Cell-edit mode: Merge"),
-                            ("C",         "Cell-edit mode: Manual count"),
-                            ("Delete",    "Remove selected cell"),
-                            ("Esc",       "Exit edit mode → View, clear selection"),
-                            ("⌘Z",        "Undo"),
-                            ("⌘⇧Z / ⌘Y", "Redo"),
-                        ])
-                        ShortcutGroup(title: "Batches", rows: [
-                            ("Delete",    "Delete current batch (confirm)"),
-                            ("⌘E",        "Export per-image summary CSV"),
-                        ])
-                        ShortcutGroup(title: "Images Library", rows: [
-                            ("Delete",    "Delete selected image (confirm)"),
-                            ("Return",    "Open in Results"),
-                            ("⌘A",        "Select all"),
-                        ])
-                        ShortcutGroup(title: "Models", rows: [
-                            ("⌘F",        "Focus search field"),
-                        ])
-                        ShortcutGroup(title: "Review Queue", rows: [
-                            ("R",         "Reject"),
-                            ("K",         "Keep"),
-                            ("E",         "Edit diameter"),
-                            ("→",         "Next without action"),
-                            ("Esc",       "Exit review queue → Home"),
-                        ])
-                        ShortcutGroup(title: "Fine-tune", rows: [
-                            ("⌘←",        "Previous step"),
-                            ("⌘→",        "Next step"),
-                            ("Space",     "Pause / resume training (Step 4 only)"),
-                        ])
-                        ShortcutGroup(title: "Calibration Sheet", rows: [
-                            ("Return",    "Save (when valid)"),
-                            ("Esc",       "Cancel"),
-                        ])
-                        ShortcutGroup(title: "Onboarding Sheet", rows: [
-                            ("Return",    "Next / Get started"),
-                            ("Esc",       "Skip onboarding"),
-                        ])
-                        ShortcutGroup(title: "Install Sheet", rows: [
-                            ("Return",    "Install / Retry"),
-                            ("Esc",       "Close (when not installing)"),
-                        ])
-                        ShortcutGroup(title: "Compare", rows: [
-                            ("⌘E",        "Export comparison CSV"),
-                        ])
+                        ForEach(KeyboardShortcutRegistry.groups) { group in
+                            ShortcutGroup(title: group.title, rows: group.rows)
+                        }
                     }
                     .padding(.horizontal, 24)
                     .padding(.bottom, 20)

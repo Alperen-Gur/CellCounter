@@ -71,6 +71,11 @@ from _cellpose_common import log, emit_error  # noqa: E402 — read-only reuse.
 # ---------------------------------------------------------------------------
 
 def _load_image_array(path: str):
+    from _assay_worker import cached_file_load
+    return cached_file_load('area_assays_detect.py:_load_image_array', path, lambda: _load_image_array_uncached(path))
+
+
+def _load_image_array_uncached(path: str):
     """Open an image file -> uint8 numpy array (HxW gray, or HxWx3 RGB)."""
     import numpy as np
     from PIL import Image
@@ -94,6 +99,11 @@ def _load_image_array(path: str):
 
 
 def _load_mask_array(path: str):
+    from _assay_worker import cached_file_load
+    return cached_file_load('area_assays_detect.py:_load_mask_array', path, lambda: _load_mask_array_uncached(path))
+
+
+def _load_mask_array_uncached(path: str):
     """Open a mask/label image file -> int numpy array (0 = background).
     Any nonzero pixel is foreground; multi-valued (labeled) PNGs work
     unchanged since `_assays_area.confluence` only tests `> 0`."""

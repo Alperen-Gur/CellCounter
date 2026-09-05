@@ -60,7 +60,7 @@ struct AppToolbar: View {
         case .models:     return "Models"
         case .fineTune:   return "Fine-tune"
         case .settings:   return "Settings"
-        case .queue:          return "Queue"
+        case .queue:          return "Processing"
         case .reviewQueue:    return "Review queue"
         case .compare:        return "Compare conditions"
         case .imagesLibrary:  return "Images"
@@ -98,12 +98,11 @@ struct AppToolbar: View {
                 .appButton(.ghost)
                 .frame(width: 28, height: 28)
         case .results:
-            ModelToolbarPill(state: state, family: activeFamily)
-            if !state.canRunDetection {
-                ModelNotInstalledPill { openInstallSheetForActive() }
+            if let batch = state.currentBatch {
+                Button("Analysis setup") { state.openAnalysisSetup(for: batch) }.appButton()
             }
             Button { state.showCalibration = true } label: {
-                HStack(spacing: 6) { Icon("ruler"); Text(String(format: "%.1f px/µm", state.pxPerUm)) }
+                HStack(spacing: 6) { Icon("ruler"); Text(String(format: "%.1f px/µm", state.currentBatch?.pxPerUm ?? state.pxPerUm)) }
             }.appButton()
             Button { state.view = .home } label: { Icon("x") }
                 .appButton(.ghost).frame(width: 28, height: 28)

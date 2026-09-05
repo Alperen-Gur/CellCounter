@@ -71,10 +71,10 @@ struct RetrainBanner: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("You've corrected \(totalCorrections) images.")
+                Text("You've made \(totalCorrections) corrections.")
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(Tokens.text)
-                Text("Improving the model from these takes about ~\(estimatedMinutes) minutes.")
+                Text("Review these masks and evaluate a locally trained model on held-out images.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Tokens.textTertiary)
             }

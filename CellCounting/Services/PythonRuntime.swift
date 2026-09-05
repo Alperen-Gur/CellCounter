@@ -32,6 +32,8 @@ enum PythonRuntime {
     static let bundledScriptNames: [String] = [
         "cellpose_detect.py",
         "cellpose_train.py",
+        "_training_dataset.py",
+        "_assay_worker.py",
         // Pass-18 (K4): shared helpers for both cellpose detect scripts.
         // Both `cellpose_detect.py` and `cellpose4_detect.py` import this
         // module — if it's missing from the staged dir, neither sidecar runs.

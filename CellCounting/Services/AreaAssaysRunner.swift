@@ -19,15 +19,6 @@ import Foundation
 // creates it, so a user has to have run that install once before an area
 // assay can run, even though the assay itself never touches Cellpose.
 //
-// ⚠️ INTEGRATION GAP (see the agent report for full detail): as of this
-// pass, `"_assays_area.py"` and `"area_assays_detect.py"` are NOT YET in
-// `PythonRuntime.bundledScriptNames` (Services/PythonRuntime.swift) — the
-// single source of truth for which `python/*.py` files `PythonRuntime.
-// stageScripts()` copies from the app bundle into the writable, executable
-// `FileStore.pythonDir` on install/update. Until that array (owned by
-// another pass — not edited here) lists these two files, `resolve()` below
-// will only find them via the DEV-ONLY source-tree fallback (see
-// `devSourceTreeScriptURL`), never in a real installed/distributed .app.
 enum AreaAssaysRunner {
 
     private static let scriptName = "area_assays_detect.py"
@@ -39,15 +30,8 @@ enum AreaAssaysRunner {
         case unavailable(reason: String)
     }
 
-    /// DEV-ONLY fallback: resolves a python helper directly from the source
-    /// tree via `#filePath`, so the assay is exercisable during development
-    /// before the bundling wire-up described above lands. `#filePath` is a
-    /// compile-time constant naming THIS source file's location on the
-    /// machine that built the binary — meaningless (and harmlessly absent)
-    /// on any other machine, so this never fires for a distributed build.
-    /// Delete this function (and its one call site below) once
-    /// `PythonRuntime.bundledScriptNames` lists the two new scripts and a
-    /// real Xcode build stages them like every other sidecar helper.
+    /// Source-tree fallback for development. Distributed builds resolve staged
+    /// or bundled helpers; a build-machine source path does not exist there.
     private static func devSourceTreeScriptURL(named name: String) -> URL? {
         let thisFile = URL(fileURLWithPath: #filePath)         // .../CellCounting/Services/AreaAssaysRunner.swift
         let servicesDir = thisFile.deletingLastPathComponent() // .../CellCounting/Services/
@@ -78,8 +62,7 @@ enum AreaAssaysRunner {
             return .available(pythonURL: py, scriptURL: dev)
         }
         return .unavailable(reason:
-            "area_assays_detect.py isn't bundled yet (PythonRuntime.bundledScriptNames needs it "
-            + "added — see AreaAssaysRunner.swift's header comment).")
+            "area_assays_detect.py isn't staged or bundled in this build.")
     }
 
     // MARK: Errors
@@ -144,12 +127,14 @@ enum AreaAssaysRunner {
             throw AreaAssayRunnerError.notAvailable(reason: reason)
         }
 
-        let fullArgs = [scriptURL.path] + args
         let outcome: SidecarOutcome
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL,
-                                                          args: fullArgs,
-                                                          trackerKind: .other)
+            outcome = try await AssayWorkerService.shared.run(pythonURL: pythonURL,
+                                                            scriptURL: scriptURL, args: args)
+        } catch is CancellationError {
+            throw AreaAssayRunnerError.cancelled
+        } catch DetectionError.cancelled {
+            throw AreaAssayRunnerError.cancelled
         } catch {
             throw AreaAssayRunnerError.sidecarFailed(error.localizedDescription)
         }

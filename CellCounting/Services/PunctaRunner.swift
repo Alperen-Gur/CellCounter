@@ -167,12 +167,14 @@ enum PunctaRunner {
             throw PunctaRunnerError.notAvailable(reason: reason)
         }
 
-        let fullArgs = [scriptURL.path] + args
         let outcome: SidecarOutcome
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL,
-                                                        args: fullArgs,
-                                                        trackerKind: .other)
+            outcome = try await AssayWorkerService.shared.run(pythonURL: pythonURL,
+                                                            scriptURL: scriptURL, args: args)
+        } catch is CancellationError {
+            throw PunctaRunnerError.cancelled
+        } catch DetectionError.cancelled {
+            throw PunctaRunnerError.cancelled
         } catch {
             throw PunctaRunnerError.sidecarFailed(error.localizedDescription)
         }

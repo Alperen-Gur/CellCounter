@@ -20,6 +20,8 @@ struct EditableOverlay: View {
     var viewScale: Double = 1.0
     /// Optional offset into the view's coordinate space.
     var viewOffset: CGPoint = .zero
+    /// Visible viewport in source pixels, supplied by the enclosing scroll view.
+    var visibleSourceRect: CGRect? = nil
     /// Reports edits as they happen so the caller can persist or update mirrored state.
     var onEdit: ((EditEvent) -> Void)? = nil
     /// When nil, the view is non-interactive (read-only). When non-nil, edits write through.
@@ -73,6 +75,18 @@ struct EditableOverlay: View {
         enum Corner { case topLeft, topRight, bottomLeft, bottomRight }
     }
 
+    @State private var geometryCache = OverlayGeometryCache()
+    private var geometry: CellSpatialIndex {
+        geometryCache.prepare(cells: cells, revision: renderRevision)
+    }
+
+    private func cellsWithCentroids(in rect: CGRect) -> [DetectedCell] {
+        geometry.query(rect).indices.compactMap { index in
+            let cell = cells[index]
+            return rect.contains(CGPoint(x: cell.cx, y: cell.cy)) ? cell : nil
+        }
+    }
+
     @State private var selectedCellId: UUID? = nil
     @State private var mergeFirstId: UUID? = nil
     @State private var dragSession: DragSession? = nil
@@ -93,14 +107,19 @@ struct EditableOverlay: View {
     // When `externalSelectedCellIds` is non-nil, that binding is the source of truth.
     @State private var internalSelectedCellIds: Set<UUID> = []
     private var selectedCellIds: Set<UUID> {
-        get { externalSelectedCellIds?.wrappedValue ?? internalSelectedCellIds }
+        get {
+            let ids = externalSelectedCellIds?.wrappedValue ?? internalSelectedCellIds
+            guard !ids.isEmpty else { return [] }
+            let index = geometry
+            return Set(ids.filter { index.indicesByID[$0] != nil })
+        }
         nonmutating set {
             if let b = externalSelectedCellIds { b.wrappedValue = newValue }
             else { internalSelectedCellIds = newValue }
         }
     }
-    // Anchor for shift-range selection (cell index in cells array at last plain click).
-    @State private var selectionAnchorIndex: Int? = nil
+    // Stable identity keeps shift-selection anchored when filtering reorders cells.
+    @State private var selectionAnchorId: UUID? = nil
     // Pass-15 (A2): selection-rectangle drag in .view mode (source-pixel space).
     @State private var selectRectStart: CGPoint? = nil
     @State private var selectRectCurrent: CGPoint? = nil
@@ -138,55 +157,48 @@ struct EditableOverlay: View {
             }
         }
         .contentShape(Rectangle())
+        .onChange(of: renderRevision) { _, _ in reconcileSelection() }
+        .onChange(of: cells.count) { _, _ in reconcileSelection() }
+        .onChange(of: externalSelectedCellIds?.wrappedValue) { _, _ in reconcileExternalSelection() }
         .gesture(interactive ? primaryGesture : nil)
         .focusable(interactive)
         .focusEffectDisabled()
-        .onKeyPress(.init("v")) { setMode(.view); return .handled }
-        .onKeyPress(.init("a")) { setMode(.add); return .handled }
-        .onKeyPress(.init("r")) { setMode(.remove); return .handled }
-        .onKeyPress(.init("m")) { setMode(.merge); return .handled }
-        .onKeyPress(.init("c")) { setMode(.manualCount); return .handled }
-        // Pass-17 (Lane B): "g" for ground-truth annotation mode.
-        .onKeyPress(.init("g")) { setMode(.annotate); return .handled }
-        // Fix #1: "t" for the trace / outline-drawing mode.
-        .onKeyPress(.init("t")) { setMode(.trace); return .handled }
-        .onKeyPress(.init("p")) { setMode(.promptPoint); return .handled }
-        .onKeyPress(.init("b")) { setMode(.promptBox); return .handled }
+        .focusedValue(\.cellCounterEditingShortcuts, editingShortcuts)
+        .onKeyPress(keys: [.init("v"), .init("a"), .init("r"), .init("m"),
+                           .init("c"), .init("g"), .init("t"), .init("p"), .init("b")]) { press in
+            guard interactive, press.modifiers.isEmpty else { return .ignored }
+            switch press.key {
+            case .init("v"): setMode(.view)
+            case .init("a"): setMode(.add)
+            case .init("r"): setMode(.remove)
+            case .init("m"): setMode(.merge)
+            case .init("c"): setMode(.manualCount)
+            case .init("g"): setMode(.annotate)
+            case .init("t"): setMode(.trace)
+            case .init("p"): setMode(.promptPoint)
+            case .init("b"): setMode(.promptBox)
+            default: return .ignored
+            }
+            return .handled
+        }
         // Bug #6 / Pass-15 (A2): Delete / Backspace — remove selection (multi or single)
-        .onKeyPress(.delete) {
-            guard interactive else { return .ignored }
+        .onKeyPress(keys: [.delete]) { press in
+            guard interactive, press.modifiers.isEmpty else { return .ignored }
             return performDeleteFromKeyboard()
         }
-        .onKeyPress(.deleteForward) {
-            guard interactive else { return .ignored }
+        .onKeyPress(keys: [.deleteForward]) { press in
+            guard interactive, press.modifiers.isEmpty else { return .ignored }
             return performDeleteFromKeyboard()
         }
         // Bug #6: Escape — clear selection + reset to view mode
-        .onKeyPress(.escape) {
-            guard interactive else { return .ignored }
+        .onKeyPress(keys: [.escape]) { press in
+            guard interactive, press.modifiers.isEmpty else { return .ignored }
             selectedCellId = nil
             selectedCellIds.removeAll()
-            selectionAnchorIndex = nil
+            selectionAnchorId = nil
             mergeFirstId = nil
             dragSession = nil
             setMode(.view)
-            return .handled
-        }
-        // Bug #6: Cmd+Z undo, Cmd+Shift+Z redo
-        .onKeyPress(keys: [.init("z")]) { press in
-            guard interactive else { return .ignored }
-            if press.modifiers.contains(.command) && press.modifiers.contains(.shift) {
-                performRedo()
-                return .handled
-            } else if press.modifiers.contains(.command) {
-                performUndo()
-                return .handled
-            }
-            return .ignored
-        }
-        .onKeyPress(keys: [.init("y")]) { press in
-            guard interactive, press.modifiers.contains(.command) else { return .ignored }
-            performRedo()
             return .handled
         }
         .onHover { inside in
@@ -209,6 +221,20 @@ struct EditableOverlay: View {
         }
     }
 
+    private var editingShortcuts: ScreenShortcutActions? {
+        guard interactive else { return nil }
+        return ScreenShortcutActions(
+            selectAll: {
+                selectedCellIds = Set(cells.map(\.id))
+                selectedCellId = nil
+                mergeFirstId = nil
+            },
+            deleteSelection: { _ = performDeleteFromKeyboard() },
+            undo: undoStack.isEmpty ? nil : { performUndo() },
+            redo: redoStack.isEmpty ? nil : { performRedo() }
+        )
+    }
+
     // MARK: — Cell rendering (Canvas) — non-hit-testing layer
 
     /// Fixed visual radius (in points) for manual count markers — independent of cell diameter.
@@ -221,14 +247,18 @@ struct EditableOverlay: View {
     /// full-canvas repaint of every cell and contour. `CellsCanvas` redraws only
     /// when its actual drawing inputs change (cells edited, zoom, re-bin).
     private var cellsLayer: some View {
-        CellsCanvas(cells: cells,
+        let index = geometry
+        return CellsCanvas(cells: cells,
+                    geometry: index,
+                    pathCache: geometryCache,
                     renderRevision: renderRevision,
                     thresholds: thresholds,
                     overlayMode: overlayMode,
                     uncertaintyThreshold: uncertaintyThreshold,
                     palette: palette,
                     viewScale: viewScale,
-                    viewOffset: viewOffset)
+                    viewOffset: viewOffset,
+                    visibleSourceRect: visibleSourceRect)
             .equatable()
             .allowsHitTesting(false)
     }
@@ -239,7 +269,10 @@ struct EditableOverlay: View {
     private var selectionRingLayer: some View {
         Canvas { ctx, _ in
             guard selectedCellId != nil || mergeFirstId != nil else { return }
-            for c in cells {
+            let index = geometry
+            let ids = Set([selectedCellId, mergeFirstId].compactMap { $0 })
+            for offset in ids.compactMap({ index.indicesByID[$0] }).sorted() {
+                let c = cells[offset]
                 let isMergeStaged = (mergeFirstId == c.id)
                 let isSelected = (selectedCellId == c.id)
                 guard isSelected || isMergeStaged else { continue }
@@ -303,7 +336,7 @@ struct EditableOverlay: View {
                     // Highlight cells inside the rect (in source space).
                     let srcRect = CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
                                          width: abs(b.x - a.x), height: abs(b.y - a.y))
-                    ForEach(cells.filter { srcRect.contains(CGPoint(x: $0.cx, y: $0.cy)) }) { c in
+                    ForEach(cellsWithCentroids(in: srcRect)) { c in
                         let cr = (c.diameterPx * viewScale) / 2
                         let cxv = c.cx * viewScale + viewOffset.x
                         let cyv = c.cy * viewScale + viewOffset.y
@@ -541,7 +574,7 @@ struct EditableOverlay: View {
         guard let a = selectRectStart, let b = selectRectCurrent else { return }
         let r = CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
                        width: abs(b.x - a.x), height: abs(b.y - a.y))
-        let inside = cells.filter { r.contains(CGPoint(x: $0.cx, y: $0.cy)) }.map(\.id)
+        let inside = cellsWithCentroids(in: r).map(\.id)
         if selectRectExtend {
             selectedCellIds = selectRectBaseline.union(inside)
         } else {
@@ -616,7 +649,7 @@ struct EditableOverlay: View {
             height: abs(b.y - a.y)
         )
         guard r.width > 1 && r.height > 1 else { return }
-        let victims = cells.filter { r.contains(CGPoint(x: $0.cx, y: $0.cy)) }
+        let victims = cellsWithCentroids(in: r)
         guard !victims.isEmpty else { return }
         for c in victims {
             removeCell(id: c.id, emit: true)
@@ -892,55 +925,9 @@ struct EditableOverlay: View {
     }
 
     private func hitTest(at p: CGPoint) -> DetectedCell? {
-        // Iterate in reverse so latest-drawn cell wins on overlap.
-        for c in cells.reversed() {
-            let dx = p.x - c.cx
-            let dy = p.y - c.cy
-            if c.isManual {
-                // Manual markers are fixed 14pt circles in view-space; convert back to source pixels.
-                let hitRadiusSrc = Self.manualMarkerRadius / max(viewScale, 0.0001)
-                if (dx * dx + dy * dy) <= hitRadiusSrc * hitRadiusSrc { return c }
-            } else if let contour = c.contourPx, contour.count >= 3 {
-                // Responsiveness: point-in-polygon is O(vertices) per cell, so a
-                // click over N contour cells is O(N·V). Reject the far-away cells
-                // with a cheap centroid-distance test first — a contour vertex
-                // can't sit more than ~one diameter from the centroid, so this
-                // pre-filter never discards a true hit. Only survivors pay the
-                // full ray-cast (Pass-14 semantics: match the filled shape).
-                let bound = c.diameterPx
-                if (dx * dx + dy * dy) > bound * bound { continue }
-                if Self.pointInPolygon(p, polygon: contour) { return c }
-            } else {
-                let r = c.diameterPx / 2
-                if overlayMode == .outline {
-                    if (dx * dx + dy * dy) <= r * r { return c }
-                } else {
-                    if abs(dx) <= r && abs(dy) <= r { return c }
-                }
-            }
-        }
-        return nil
-    }
-
-    /// Ray-casting point-in-polygon test. Polygon vertices and `p` are both
-    /// expected to be in source-image-pixel coordinates.
-    private static func pointInPolygon(_ p: CGPoint, polygon: [CGPoint]) -> Bool {
-        guard polygon.count >= 3 else { return false }
-        var inside = false
-        var j = polygon.count - 1
-        for i in 0..<polygon.count {
-            let pi = polygon[i]
-            let pj = polygon[j]
-            if ((pi.y > p.y) != (pj.y > p.y)) {
-                let denom = pj.y - pi.y
-                if denom != 0 {
-                    let xIntersect = (pj.x - pi.x) * (p.y - pi.y) / denom + pi.x
-                    if p.x < xIntersect { inside.toggle() }
-                }
-            }
-            j = i
-        }
-        return inside
+        let index = geometry.hitIndex(at: p, cells: cells, outline: overlayMode == .outline,
+                                     manualRadius: Self.manualMarkerRadius / max(viewScale, 0.0001))
+        return index.map { cells[$0] }
     }
 
     // MARK: — Coordinate helpers
@@ -1103,6 +1090,30 @@ struct EditableOverlay: View {
         return lower + upper
     }
 
+    /// Table/plot selection is authoritative even when geometry stays unchanged.
+    /// Drop old resize/delete affordances when an external selection replaces it.
+    private func reconcileExternalSelection() {
+        let retained = selectedCellIds
+        if mode == .view {
+            selectedCellId = retained.count == 1 ? retained.first : nil
+        } else if let selectedCellId, !retained.contains(selectedCellId) {
+            self.selectedCellId = nil
+        }
+        if let mergeFirstId, !retained.contains(mergeFirstId) { self.mergeFirstId = nil }
+        if let selectionAnchorId, !retained.contains(selectionAnchorId) { self.selectionAnchorId = nil }
+    }
+
+    private func reconcileSelection() {
+        let index = geometry
+        let retained = selectedCellIds
+        selectedCellIds = retained
+        if let selectedCellId, index.indicesByID[selectedCellId] == nil { self.selectedCellId = nil }
+        if let mergeFirstId, index.indicesByID[mergeFirstId] == nil { self.mergeFirstId = nil }
+        if let selectionAnchorId, index.indicesByID[selectionAnchorId] == nil {
+            self.selectionAnchorId = nil
+        }
+    }
+
     private func setMode(_ m: EditorMode) {
         guard let binding = editorMode else { return }
         binding.wrappedValue = m
@@ -1112,7 +1123,7 @@ struct EditableOverlay: View {
         // any other mode means clicks have a different meaning.
         if m != .view {
             selectedCellIds.removeAll()
-            selectionAnchorIndex = nil
+            selectionAnchorId = nil
         }
         // Pass-17 (Lane B): annotate mode never interacts with cells —
         // clear the drag/select state to avoid stray rectangles.
@@ -1139,7 +1150,7 @@ struct EditableOverlay: View {
             // Click on empty space in .view mode clears everything.
             selectedCellId = nil
             selectedCellIds.removeAll()
-            selectionAnchorIndex = nil
+            selectionAnchorId = nil
             return
         }
         let cmd = modifiers.contains(.command)
@@ -1153,15 +1164,15 @@ struct EditableOverlay: View {
             } else {
                 selectedCellIds.insert(h.id)
             }
-            selectionAnchorIndex = idx
+            selectionAnchorId = h.id
             // When the multi-set is active, drop the single-cell focus so the
             // resize handles + delete floater don't fight with the highlight.
             selectedCellId = selectedCellIds.count == 1 ? selectedCellIds.first : nil
         } else if shift, let endIdx = idx {
             // Range-add between anchor (or current single-selection) and click,
             // by reading order in the cells array.
-            let anchor = selectionAnchorIndex
-                ?? (selectedCellId.flatMap { id in cells.firstIndex(where: { $0.id == id }) })
+            let anchor = selectionAnchorId.flatMap { geometry.indicesByID[$0] }
+                ?? (selectedCellId.flatMap { geometry.indicesByID[$0] })
                 ?? endIdx
             let lo = min(anchor, endIdx)
             let hi = max(anchor, endIdx)
@@ -1175,7 +1186,7 @@ struct EditableOverlay: View {
             // Plain click — replace selection with just this cell.
             selectedCellIds = [h.id]
             selectedCellId = h.id
-            selectionAnchorIndex = idx
+            selectionAnchorId = h.id
         }
     }
 
@@ -1208,14 +1219,16 @@ struct EditableOverlay: View {
             removeCell(id: id, emit: true)
         }
         selectedCellIds.removeAll()
-        selectionAnchorIndex = nil
+        selectionAnchorId = nil
     }
 
     /// Painted on top of cellsLayer — does not touch F1/F2's drawing.
     private var multiSelectionHighlight: some View {
         Canvas { ctx, _ in
             guard !selectedCellIds.isEmpty else { return }
-            for c in cells where selectedCellIds.contains(c.id) {
+            let index = geometry
+            for offset in selectedCellIds.compactMap({ index.indicesByID[$0] }).sorted() {
+                let c = cells[offset]
                 let r = (c.diameterPx * viewScale) / 2
                 let cxv = c.cx * viewScale + viewOffset.x
                 let cyv = c.cy * viewScale + viewOffset.y
@@ -1334,6 +1347,68 @@ private extension EditableOverlay.DragSession.Corner {
     }
 }
 
+/// One current-image index and a bounded cache of source paths. Panning, zoom,
+/// palette changes and selection reuse vertices; geometry revisions invalidate.
+final class OverlayGeometryCache {
+    private var previousCells: [DetectedCell] = []
+    private var previousRevision: Int?
+    private var index: CellSpatialIndex?
+    private struct CachedPath { let path: Path; let vertices: Int }
+    private var paths: [UUID: CachedPath] = [:]
+    private var pathOrder: [UUID] = []
+    private var evictionHead = 0
+    private(set) var cachedVertices = 0
+    private(set) var indexBuildCount = 0
+    let maxVertices: Int
+    let maxPaths: Int
+    var cachedPathCount: Int { paths.count }
+
+    init(maxVertices: Int = 250_000, maxPaths: Int = 8_192) {
+        self.maxVertices = max(0, maxVertices)
+        self.maxPaths = max(0, maxPaths)
+    }
+
+    func prepare(cells: [DetectedCell], revision: Int?) -> CellSpatialIndex {
+        let unchanged = index != nil && previousRevision == revision
+            && (revision != nil || previousCells == cells)
+        if !unchanged {
+            previousCells = cells
+            previousRevision = revision
+            index = CellSpatialIndex(cells: cells)
+            paths.removeAll(keepingCapacity: true)
+            cachedVertices = 0
+            pathOrder.removeAll(keepingCapacity: true)
+            evictionHead = 0
+            indexBuildCount += 1
+        }
+        return index!
+    }
+
+    func path(for id: UUID, contour: [CGPoint]) -> Path {
+        if let cached = paths[id] { return cached.path }
+        var path = Path()
+        if let first = contour.first {
+            path.move(to: first)
+            for point in contour.dropFirst() { path.addLine(to: point) }
+            path.closeSubpath()
+        }
+        guard contour.count <= maxVertices, maxPaths > 0 else { return path }
+        while !paths.isEmpty && (paths.count >= maxPaths || cachedVertices + contour.count > maxVertices) {
+            let oldest = pathOrder[evictionHead]
+            evictionHead += 1
+            if let removed = paths.removeValue(forKey: oldest) { cachedVertices -= removed.vertices }
+        }
+        if evictionHead > maxPaths {
+            pathOrder.removeFirst(evictionHead)
+            evictionHead = 0
+        }
+        pathOrder.append(id)
+        paths[id] = CachedPath(path: path, vertices: contour.count)
+        cachedVertices += contour.count
+        return path
+    }
+}
+
 // MARK: — Cell render layer (extracted for redraw isolation)
 
 /// The per-cell drawing (manual pins, filled contours, bbox/outline fallbacks),
@@ -1344,6 +1419,8 @@ private extension EditableOverlay.DragSession.Corner {
 /// full-canvas redraws" win: previously every click re-rendered all contours.
 private struct CellsCanvas: View, Equatable {
     let cells: [DetectedCell]
+    let geometry: CellSpatialIndex
+    let pathCache: OverlayGeometryCache
     let renderRevision: Int?
     let thresholds: [Double]
     let overlayMode: OverlayMode
@@ -1351,11 +1428,21 @@ private struct CellsCanvas: View, Equatable {
     let palette: OverlayPalette
     let viewScale: Double
     let viewOffset: CGPoint
+    let visibleSourceRect: CGRect?
 
     var body: some View {
-        Canvas { ctx, _ in
-            var manualSequence = 0
-            for c in cells {
+        Canvas { ctx, size in
+            let scale = max(viewScale, 0.0001)
+            let viewport = visibleSourceRect ?? CGRect(
+                x: -viewOffset.x / scale, y: -viewOffset.y / scale,
+                width: size.width / scale, height: size.height / scale)
+            // Include pins and strokes whose center lies just outside the clip.
+            let region = viewport.insetBy(dx: -9 / scale, dy: -9 / scale)
+            var sourceContext = ctx
+            sourceContext.translateBy(x: viewOffset.x, y: viewOffset.y)
+            sourceContext.scaleBy(x: viewScale, y: viewScale)
+            for cellIndex in geometry.query(region).indices {
+                let c = cells[cellIndex]
                 let isManual = c.isManual
                 let r = (c.diameterPx * viewScale) / 2
                 let cxv = c.cx * viewScale + viewOffset.x
@@ -1365,7 +1452,6 @@ private struct CellsCanvas: View, Equatable {
                 if isManual {
                     // Manual marker: fixed 14pt pin — small circle with sequential number.
                     // Visual size is FIXED regardless of cell diameter (diameter still used for stats).
-                    manualSequence += 1
                     let mr = EditableOverlay.manualMarkerRadius
                     let pinRect = CGRect(x: cxv - mr, y: cyv - mr, width: mr * 2, height: mr * 2)
                     let circlePath = Path(ellipseIn: pinRect)
@@ -1373,7 +1459,7 @@ private struct CellsCanvas: View, Equatable {
                     ctx.stroke(circlePath, with: .color(.white), style: StrokeStyle(lineWidth: 1.5))
 
                     // Draw sequential number centered inside the pin
-                    let label = "\(manualSequence)"
+                    let label = "\(geometry.manualOrdinals[cellIndex])"
                     let resolved = ctx.resolve(
                         Text(label)
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -1392,23 +1478,14 @@ private struct CellsCanvas: View, Equatable {
                         // Pass-14: paint the per-cell mask as a filled polygon
                         // in the bin color. Independent of OverlayMode — whenever
                         // contour data is present we use it.
-                        var poly = Path()
-                        let first = contour[0]
-                        poly.move(to: CGPoint(
-                            x: first.x * viewScale + viewOffset.x,
-                            y: first.y * viewScale + viewOffset.y))
-                        for i in 1..<contour.count {
-                            let p = contour[i]
-                            poly.addLine(to: CGPoint(
-                                x: p.x * viewScale + viewOffset.x,
-                                y: p.y * viewScale + viewOffset.y))
-                        }
-                        poly.closeSubpath()
-                        ctx.fill(poly, with: .color(col.opacity(0.25)))
+                        let sourcePath = pathCache.path(for: c.id, contour: contour)
+                        sourceContext.fill(sourcePath, with: .color(col.opacity(0.25)))
+                        // Transform the context, retaining the exact cached path;
+                        // divide strokes/dashes to preserve their screen size.
                         let style: StrokeStyle = isUncertain
-                            ? StrokeStyle(lineWidth: 1, dash: [3.5, 3])
-                            : StrokeStyle(lineWidth: 1)
-                        ctx.stroke(poly, with: .color(col), style: style)
+                            ? StrokeStyle(lineWidth: 1 / scale, dash: [3.5 / scale, 3 / scale])
+                            : StrokeStyle(lineWidth: 1 / scale)
+                        sourceContext.stroke(sourcePath, with: .color(col), style: style)
                     } else {
                         let path = overlayMode == .outline
                             ? Path(ellipseIn: rect)
@@ -1430,6 +1507,7 @@ private struct CellsCanvas: View, Equatable {
     static func == (l: CellsCanvas, r: CellsCanvas) -> Bool {
         guard l.viewScale == r.viewScale,
               l.viewOffset == r.viewOffset,
+              l.visibleSourceRect == r.visibleSourceRect,
               l.overlayMode == r.overlayMode,
               l.uncertaintyThreshold == r.uncertaintyThreshold,
               l.palette == r.palette,

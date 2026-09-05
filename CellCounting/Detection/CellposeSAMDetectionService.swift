@@ -58,7 +58,7 @@ struct CellposeSAMDetectionService: DetectionService {
         // Z-projection + which channel to segment on. Only the sidecars
         // built on `_cellpose_common.build_arg_parser` accept these;
         // StarDist/SAM hand-roll their parsers and would exit 2.
-        requestArgs += ChannelStackSettings.sidecarArguments()
+        requestArgs += input.channelStackArguments
         if input.backgroundSubtract {
             requestArgs += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
@@ -73,15 +73,9 @@ struct CellposeSAMDetectionService: DetectionService {
             "--small-threshold", String(input.smallThreshold),
             "--large-threshold", String(input.largeThreshold),
         ]
-        // Explicit expected-diameter override (µm) — same wiring as the 3.x
-        // service. A non-Auto diameter makes the sidecar use THIS value as the
-        // Cellpose-SAM size prior instead of deriving it from the size bins
-        // ((small+large)/2), decoupling segmentation from the bins. Read from
-        // UserDefaults (mirrored by `AppState.expectedDiameterUm`) because
-        // `DetectionInput` is owned elsewhere; 0 == "Auto" == omit the arg, so
-        // Python keeps its current behavior (matches the shared `--diameter`
-        // CLI contract).
-        let expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
+        // Freeze the explicit diameter with the job. Zero omits the override
+        // and retains the sidecar's automatic diameter behavior.
+        let expectedDiameterUm = input.expectedDiameterUm
         if expectedDiameterUm > 0 {
             requestArgs += ["--diameter", String(expectedDiameterUm)]
         }

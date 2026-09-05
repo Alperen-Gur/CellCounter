@@ -6,12 +6,16 @@ on:
     paths:
       - "desktop/**"
       - "CellCounting/**"
+      - "CellCountingTests/**"
+      - "scripts/verify-workflow-upgrade.sh"
       - "CellCounting.xcodeproj/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "desktop/**"
       - "CellCounting/**"
+      - "CellCountingTests/**"
+      - "scripts/verify-workflow-upgrade.sh"
       - "CellCounting.xcodeproj/**"
 
 # Cancel superseded runs on the same ref.
@@ -32,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.18.0
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -109,16 +113,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build native macOS app
+      - name: Test native macOS app
         run: |
-          xcodebuild build \
+          export TEST_RUNNER_CELLCOUNTER_DATA_ROOT="$(mktemp -d)"
+          xcodebuild test \
             -project CellCounting.xcodeproj \
-            -target CellCounting \
-            -configuration Debug \
+            -scheme CellCounting \
+            -destination 'platform=macOS' \
+            -only-testing:CellCountingTests \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=""
+
+      - name: Verify training and assay workers
+        run: |
+          python3 -m venv /tmp/cellcounter-test-env
+          /tmp/cellcounter-test-env/bin/pip install numpy scipy scikit-image tifffile pillow
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_training_dataset.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_assay_worker.py
 
   # AGPL guard — this project is MIT. Fail if any Ultralytics/YOLO (AGPL-3.0)
   # reference is reintroduced into tracked source, keeping THIRD_PARTY_LICENSES

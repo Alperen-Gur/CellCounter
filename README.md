@@ -2,10 +2,12 @@
 
 # CellCounter
 
+<img src="docs/branding/CellCounter-icon.png" alt="CellCounter app icon" width="96" height="96">
+
 Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
-[![macOS](https://img.shields.io/badge/macOS-v1.0.10-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10)
+[![macOS](https://img.shields.io/badge/macOS-v1.0.11-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.11)
 [![Windows](https://img.shields.io/badge/Windows-v1.0.8-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
 [![Web](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
@@ -30,7 +32,7 @@ Image analysis is local by design. CellCounter does not require an account and d
 
 | Platform | Release | Availability |
 |---|---|---|
-| **macOS** | [v1.0.10](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10) | Native universal app for macOS 15 or later |
+| **macOS** | [v1.0.11](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.11) | Native universal app for macOS 15 or later |
 | **Windows** | [v1.0.8](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
 | **Web** | [v0.1.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) | Installable, fully client-side PWA for modern WebGPU browsers |
 
@@ -39,6 +41,28 @@ Image analysis is local by design. CellCounter does not require an account and d
 > learned segmentation models are not bundled yet. Use the macOS or Windows app when live model inference is
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
 > [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
+
+## New in macOS v1.0.11
+
+macOS v1.0.11 adds an **inspect → preview → process → review** workflow. Windows and the web retain their
+current releases and platform-specific capabilities.
+
+- The Models page shares background availability checks instead of repeating runtime imports on first navigation.
+- Screen-aware keyboard commands appear in the menus and in **Help → Keyboard Shortcuts** (`⌘/`), with standard
+  text editing preserved. A new microscopy icon is included in the macOS app assets.
+- Import and inspect before installing a detector; choose a representative image and preview masks before a batch.
+- Keep processing in a persistent queue, browse completed images, pause after the current image, resume after
+  relaunch, and retry failures without repeating successful images. Interrupted work waits for you to resume.
+- Select the same cells in an image, measurement table, or scatter plot; compare saved mask variants with linked
+  pan/zoom and added, removed, and changed outlines.
+- Start from cell counting, nuclei, marker positivity, or wound-closure tasks. Each result retains its original
+  analysis settings; current calibration and review filters are shown separately.
+- Train Cellpose 3.x from explicitly reviewed library masks, keeping specimen groups together across training,
+  validation, and held-out evaluation. Activation requires a real checkpoint and a verified evaluation report.
+- Reuse warm assay workers and bounded source/mask caches; draw visible masks using cached paths. Prepare the
+  next source only within a conservative memory budget while model inference remains serial.
+
+See the [release notes](docs/releases/v1.0.11.md) and [native workflow details](docs/FEATURES.md#macos-v1011-workflow) for supported behavior and limits.
 
 ## Why it exists
 
@@ -153,8 +177,10 @@ it does not download or execute third-party plugin code.
 ### Fine-tuning and model history
 
 Windows v1.0.8 supports local Cellpose `cyto3` fine-tuning with a held-out test split, progress and cancellation,
-versioned checkpoints, and explicit activation. The macOS app includes local training and model-version history
-with rollback, while parts of its guided annotation and evaluation experience remain clearly marked as preview.
+versioned checkpoints, and explicit activation. macOS v1.0.11 trains compatible Cellpose 3.x models from reviewed
+library masks, keeps independent specimen groups in separate train/validation/test partitions, and evaluates
+the selected checkpoint on held-out images. Training requires at least three specimen groups and six epochs;
+checkpoint activation checks the saved evaluation report and weight-file hash. Version history supports rollback.
 The web preview does not train models; corrected label masks and ROI data can be exported for later workflows.
 
 ### Correction, comparison, export
@@ -183,20 +209,22 @@ edition, including platform adaptations, preview features, and intentional limit
 
 ### macOS — current release
 
-[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.10-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10)
+[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.11-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.11)
 
 Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 
-1. Download `CellCounter-v1.0.10.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.10).
+1. Download `CellCounter-v1.0.11.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.11).
 2. Unzip and move **`CellCounting.app`** into Applications.
    *(The application is called CellCounter; the bundle on disk is still named `CellCounting.app`.)*
 3. The app is not notarized, so the first launch is blocked. Open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough: [docs/INSTALL.md](docs/INSTALL.md).
-4. On first use, open the **Models** tab and click Install. The app sets up its own Python environment — a few minutes, once.
+4. Import images to inspect them immediately. When ready to detect cells, install a model from **Models**,
+   return to **Analysis setup**, preview a representative image, then process the batch. Vendor formats need
+   their compatible Python reader before import.
 
 <details>
 <summary>macOS says the app is "damaged"</summary>
 
-This message normally means Gatekeeper has blocked the unsigned, quarantined download. Confirm that the archive
+This message normally means Gatekeeper has blocked the ad-hoc-signed, quarantined download. Confirm that the archive
 came from the official release, move the app to Applications, and run:
 
 ```bash
@@ -231,11 +259,16 @@ this preview. See the [web guide](docs/WEB.md) for supported formats, browser re
 
 ## Quick start
 
-1. Open a folder of images.
-2. Pick a model in the **Models** tab and install it if needed.
-3. Set the pixel size — filled in automatically when the files carry calibration metadata.
-4. Run detection, then review the overlay and fix any misses by hand.
-5. Open **Compare** to test two conditions, or **Export** for a PDF, CSV, ROI set or GeoJSON.
+For macOS v1.0.11:
+
+1. Open images with **⌘O**, or a folder with **⌘⇧O**. Choose a representative image in **Analysis setup**.
+2. Choose a task and model; confirm the pixel size and source channels. Install the model from **Models** if needed.
+3. Choose **Preview this image** to inspect masks, then **Process batch**. Use **Import and inspect** to defer detection.
+4. Open **Processing** to pause, resume, retry failures, or browse completed images. Review linked image/table/plot selections and correct masks.
+5. Compare saved mask variants, use **Compare** for two conditions, or export a PDF, CSV, ROI set or GeoJSON.
+6. Open **Help → Keyboard Shortcuts** (**⌘/**) for the available commands.
+
+See the [Windows guide](docs/WINDOWS.md) and [web guide](docs/WEB.md) for their respective workflows.
 
 ## Privacy and local processing
 

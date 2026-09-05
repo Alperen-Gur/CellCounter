@@ -1,13 +1,26 @@
 import Foundation
 import Combine
 
-/// Drives a fine-tune training run — either by spawning the cellpose Python sidecar,
-/// or by simulating one with a decaying-loss curve on the same timer cadence.
-///
-/// Either way: when complete it writes a small `.ccmodel` JSON blob to
-/// `FileStore.shared.modelsDir` so the rest of the app has a real checkpoint stand-in.
+/// Runs only real training. Missing labels, failed inference or invalid weights
+/// are failures; completion requires successful held-out evaluation and reload.
 @MainActor
 final class TrainingService: ObservableObject {
+    /// Shared with the background scheduler. The permit stays held until a
+    /// cancelled subprocess has actually exited, including a suspended process.
+    static let activityChangedNotification = Notification.Name("ccTrainingActivityChanged")
+    private static var activeOwner: UUID?
+    static var isTrainingActive: Bool { activeOwner != nil }
+    private static func acquirePermit(_ owner: UUID) -> Bool {
+        guard activeOwner == nil else { return false }
+        activeOwner = owner
+        NotificationCenter.default.post(name: activityChangedNotification, object: nil)
+        return true
+    }
+    private static func releasePermit(_ owner: UUID) {
+        guard activeOwner == owner else { return }
+        activeOwner = nil
+        NotificationCenter.default.post(name: activityChangedNotification, object: nil)
+    }
     enum Progress {
         case idle
         case running(epoch: Int, totalEpochs: Int, trainLoss: Double, valLoss: Double, eta: Int)
@@ -15,502 +28,292 @@ final class TrainingService: ObservableObject {
         case complete(FTMetrics)
         case failed(String)
     }
-
     @Published var progress: Progress = .idle
+    @Published var device: String?
+    @Published var earlyStopped: Int?
+    @Published var currentLR: Double?
+    @Published var status = ""
+    @Published private(set) var canActivateCheckpoint = false
+    private(set) var lastCheckpointURL: URL?
+    private(set) var lastConfig: TrainingConfig?
+    private(set) var lastManifest: TrainingManifest?
+    private var process: Process?
+    private var prepareTask: Task<Void, Never>?
+    private var stagingTask: Task<URL, Error>?
+    private var runID = UUID()
+    private var cachedSamples: [TrainingSample] = []
+    private var cachedSplit = TrainingSplit()
+    private var cachedEarlyStop = true
+    private var pendingMetrics: FTMetrics?
+    private var diagnostic = ""
+    private var lastRunning: Progress?
 
-    /// Most recent training device reported by the subprocess (DEVICE stderr line).
-    @Published var device: String? = nil
-    /// Set when the subprocess emits EARLY_STOPPED epoch=<n>. Holds the epoch number.
-    @Published var earlyStopped: Int? = nil
-    /// Most recently parsed learning rate from EPOCH lines (for the UI).
-    @Published var currentLR: Double? = nil
-
-    /// Last-completed checkpoint URL — surfaced for StepEvaluate to embed in `ModelVersionRecord`.
-    private(set) var lastCheckpointURL: URL? = nil
-    /// Training config snapshot from the last `start()` call (epochs/lr/batchSize/baseModel/augment).
-    private(set) var lastConfig: TrainingConfig? = nil
-
-    // MARK: — Internal state
-
-    private var process: Process? = nil
-    private var stdoutHandle: FileHandle? = nil
-    /// Task that streams stdout via AsyncBytes — replaces the old `readabilityHandler` closure.
-    private var streamTask: Task<Void, Never>? = nil
-    /// Streams stderr so we can pick up DEVICE + diagnostic lines.
-    private var stderrTask: Task<Void, Never>? = nil
-    /// B1-7: staging directory created by stageImageDirectory — cleaned up in cancel() and on completion.
-    private var stagedDir: URL? = nil
-
-    private var fauxTimer: Timer? = nil
-    private var fauxEpoch: Int = 0
-    private var fauxTotalEpochs: Int = 0
-    private var fauxIsPaused: Bool = false
-    private var fauxStartedAt: Date = .init()
-
-    // Cached so pause/resume keeps the same trajectory.
-    private var cachedBaseModel: String = ""
-    private var cachedLR: Double = 0
-    private var cachedBatchSize: Int = 0
-    private var cachedAugment: Bool = false
-    private var cachedImageURLs: [URL] = []
-    private var cachedAnnotated: Int = 0
-    // Cached toggles + resume target so resume(...) can re-invoke.
-    private var cachedEarlyStop: Bool = true
-    private var cachedMixedPrecision: Bool = true
-    private var cachedResumeFrom: URL? = nil
-
-    private var trainHistory: [Double] = []
-    private var valHistory: [Double] = []
-
-    // MARK: — Public API
-
-    func start(epochs: Int,
-               baseModel: String,
-               lr: Double,
-               batchSize: Int,
-               augment: Bool,
-               imageURLs: [URL],
-               annotated: Int,
-               earlyStop: Bool = true,
-               mixedPrecision: Bool = true,
-               resumeFrom: URL? = nil) {
+    /// `imageURLs` is kept for existing callers, but URLs alone never constitute
+    /// a labeled dataset. Callers must provide reviewed corrected mask snapshots.
+    func start(epochs: Int, baseModel: String, lr: Double, batchSize: Int,
+               augment: Bool, imageURLs: [URL], annotated: Int,
+               earlyStop: Bool = true, mixedPrecision: Bool = false,
+               resumeFrom: URL? = nil, samples: [TrainingSample]? = nil,
+               split: TrainingSplit = TrainingSplit()) {
         cancel()
-
-        cachedBaseModel = baseModel
-        cachedLR = lr
-        cachedBatchSize = batchSize
-        cachedAugment = augment
-        cachedImageURLs = imageURLs
-        cachedAnnotated = annotated
-        cachedEarlyStop = earlyStop
-        cachedMixedPrecision = mixedPrecision
-        cachedResumeFrom = resumeFrom
-        fauxTotalEpochs = max(1, epochs)
-        fauxEpoch = 0
-        fauxIsPaused = false
-        fauxStartedAt = Date()
-        trainHistory.removeAll()
-        valHistory.removeAll()
-        // Reset pass-4 published state for the new run.
-        device = nil
-        earlyStopped = nil
-        currentLR = nil
-
-        lastConfig = TrainingConfig(
-            epochs: epochs, lr: lr, batchSize: batchSize, augment: augment,
-            baseModel: baseModel, imageCount: imageURLs.count, annotated: annotated
-        )
-
-        switch CellposeAvailability.detect() {
-        case .available(let pythonURL, _):
-            // Resolve cellpose_train.py — sibling of detect script (same /python dir).
-            let trainScriptURL = resolveTrainScriptURL()
-            if let trainURL = trainScriptURL,
-               FileManager.default.fileExists(atPath: trainURL.path),
-               !imageURLs.isEmpty {
-                startSubprocess(python: pythonURL,
-                                script: trainURL,
-                                epochs: epochs, lr: lr,
-                                batchSize: batchSize, augment: augment,
-                                baseModel: baseModel,
-                                imageURLs: imageURLs,
-                                earlyStop: earlyStop,
-                                mixedPrecision: mixedPrecision,
-                                resumeFrom: resumeFrom)
-                return
+        let token = runID
+        lastCheckpointURL = nil; lastManifest = nil; pendingMetrics = nil
+        canActivateCheckpoint = false; diagnostic = ""; device = nil
+        earlyStopped = nil; currentLR = nil
+        guard let samples, !samples.isEmpty else {
+            progress = .failed("Select and review corrected cell masks in Fine-tune before training. Image files alone do not contain labels.")
+            return
+        }
+        guard epochs >= 6, batchSize > 0, lr.isFinite, lr > 0 else {
+            progress = .failed("Use at least six epochs, a positive learning rate and batch size."); return
+        }
+        guard !mixedPrecision else {
+            progress = .failed("This Cellpose 3.x training workflow uses full precision. Turn off mixed precision."); return
+        }
+        let resumeURL: URL?
+        if let resumeFrom { resumeURL = resumeFrom }
+        else if let custom = CustomModelStore.entry(for: baseModel), custom.kind == .cellpose, custom.runtime == .base {
+            resumeURL = custom.url
+        } else { resumeURL = nil }
+        guard ["cp-cyto3", "cp-nuclei"].contains(baseModel) || resumeURL != nil else {
+            progress = .failed("Select Cellpose cyto3, nuclei, or a Cellpose 3.x custom checkpoint."); return
+        }
+        guard case .available(let python, _) = CellposeAvailability.detect() else {
+            progress = .failed("Install a Cellpose 3.x model in Models before training."); return
+        }
+        guard let script = PythonRuntime.stagedScriptURL(named: "cellpose_train.py")
+                ?? PythonRuntime.bundledPythonURL(named: "cellpose_train.py") else {
+            progress = .failed("The training helper is missing. Reinstall the app."); return
+        }
+        guard Self.acquirePermit(token) else {
+            progress = .failed("Another training run is still active or stopping. Wait for it to finish before starting again.")
+            return
+        }
+        cachedSamples = samples; cachedSplit = split; cachedEarlyStop = earlyStop
+        lastConfig = TrainingConfig(epochs: epochs, lr: lr, batchSize: batchSize,
+                                    augment: augment, baseModel: baseModel,
+                                    imageCount: samples.count, annotated: samples.filter(\.reviewed).count,
+                                    imageURLs: samples.map(\.sourceURL))
+        status = "Preparing reviewed masks…"
+        progress = .running(epoch: 0, totalEpochs: epochs, trainLoss: .nan, valLoss: .nan, eta: 0)
+        let stage = FileManager.default.temporaryDirectory.appendingPathComponent("cellcounter-training-\(token)", isDirectory: true)
+        let staging = Task.detached(priority: .userInitiated) {
+            try TrainingDatasetService.stage(samples: samples, split: split, in: stage)
+        }
+        stagingTask = staging
+        prepareTask = Task { [weak self] in
+            do {
+                let manifest = try await staging.value
+                guard let self, self.runID == token, !Task.isCancelled else {
+                    try? FileManager.default.removeItem(at: stage)
+                    Self.releasePermit(token)
+                    return
+                }
+                self.lastManifest = try JSONDecoder().decode(TrainingManifest.self, from: Data(contentsOf: manifest))
+                self.launch(python: python, script: script, manifest: manifest, stage: stage,
+                            token: token, epochs: epochs, baseModel: baseModel, lr: lr,
+                            batchSize: batchSize, augment: augment, earlyStop: earlyStop,
+                            resumeFrom: resumeURL)
+            } catch {
+                try? FileManager.default.removeItem(at: stage)
+                Self.releasePermit(token)
+                guard let self, self.runID == token, !Task.isCancelled else { return }
+                self.progress = .failed(error.localizedDescription)
             }
-            startFaux(epochs: epochs)
-
-        case .missingScripts, .missingVenv, .missingInstaller, .venvBroken:
-            startFaux(epochs: epochs)
         }
     }
 
-    /// Re-invoke training resuming from a previously saved checkpoint.
-    /// Uses the last `start(...)` config; if no prior config exists, this is a no-op.
     func resume(from checkpoint: URL) {
-        guard let cfg = lastConfig else { return }
-        start(epochs: cfg.epochs,
-              baseModel: cfg.baseModel,
-              lr: cfg.lr,
-              batchSize: cfg.batchSize,
-              augment: cfg.augment,
-              imageURLs: cachedImageURLs,
-              annotated: cachedAnnotated,
-              earlyStop: cachedEarlyStop,
-              mixedPrecision: cachedMixedPrecision,
-              resumeFrom: checkpoint)
+        guard let config = lastConfig else { return }
+        start(epochs: config.epochs, baseModel: config.baseModel, lr: config.lr,
+              batchSize: config.batchSize, augment: config.augment,
+              imageURLs: config.imageURLs, annotated: config.annotated,
+              earlyStop: cachedEarlyStop, resumeFrom: checkpoint, samples: cachedSamples, split: cachedSplit)
     }
-
     func pause() {
-        if process != nil {
-            process?.suspend()
-            progress = .paused
-            return
-        }
-        fauxIsPaused = true
-        progress = .paused
+        guard let process, process.isRunning, process.suspend() else { return }
+        lastRunning = progress; progress = .paused; status = "Paused"
     }
-
     func resume() {
-        if let p = process {
-            p.resume()
-            // Progress will recover from next stdout line.
-            return
-        }
-        if fauxIsPaused {
-            fauxIsPaused = false
-            // Ensure timer is alive.
-            if fauxTimer == nil { startFauxTimer() }
-        }
+        guard let process, process.isRunning, process.resume() else { return }
+        progress = lastRunning ?? .idle; status = "Resuming…"
     }
-
     func cancel() {
-        process?.terminate()
+        let previousID = runID
+        runID = UUID()
+        prepareTask?.cancel(); prepareTask = nil
+        stagingTask?.cancel(); stagingTask = nil
+        if let process, process.isRunning { process.resume(); process.terminate() }
+        else { Self.releasePermit(previousID) }
         process = nil
-        streamTask?.cancel()
-        streamTask = nil
-        stderrTask?.cancel()
-        stderrTask = nil
-        stdoutHandle = nil
-
-        fauxTimer?.invalidate()
-        fauxTimer = nil
-
-        // B1-7: clean up staging directory on cancel
-        if let dir = stagedDir {
-            try? FileManager.default.removeItem(at: dir)
-            stagedDir = nil
-        }
-
         if case .complete = progress {} else { progress = .idle }
     }
 
-    // MARK: — Subprocess path
-
-    private func startSubprocess(python: URL,
-                                  script: URL,
-                                  epochs: Int,
-                                  lr: Double,
-                                  batchSize: Int,
-                                  augment: Bool,
-                                  baseModel: String,
-                                  imageURLs: [URL],
-                                  earlyStop: Bool,
-                                  mixedPrecision: Bool,
-                                  resumeFrom: URL?) {
-        let staged = stageImageDirectory(urls: imageURLs)
-        self.stagedDir = staged  // B1-7: track so we can clean up on completion/cancel
-        let outputURL = freshCheckpointURL()
-        lastCheckpointURL = outputURL
-
-        let proc = Process()
-        proc.executableURL = python
-        var arguments: [String] = [
-            script.path,
-            "--images", staged.path,
-            "--epochs", String(epochs),
-            "--lr", String(lr),
-            "--batch-size", String(batchSize),
-            "--augment", augment ? "1" : "0",
-            "--base-model", baseModel,
-            "--output", outputURL.path,
-            "--output-dir", outputURL.deletingLastPathComponent().path,
-            "--early-stop", earlyStop ? "1" : "0",
-            "--mixed-precision", mixedPrecision ? "1" : "0",
-        ]
-        if let resume = resumeFrom {
-            arguments.append("--resume")
-            arguments.append(resume.path)
-        }
-        proc.arguments = arguments
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-
-        let handle = outPipe.fileHandleForReading
-        let errHandle = errPipe.fileHandleForReading
-        // Stream stdout line-by-line via AsyncBytes — no shared mutable buffer across threads.
-        let streamingTask = Task { [weak self] in
+    private func launch(python: URL, script: URL, manifest: URL, stage: URL,
+                        token: UUID, epochs: Int, baseModel: String, lr: Double,
+                        batchSize: Int, augment: Bool, earlyStop: Bool, resumeFrom: URL?) {
+        let output = FileStore.shared.modelsDir.appendingPathComponent("training-\(token).ccmodel")
+        let proc = Process(); proc.executableURL = python
+        proc.arguments = [script.path, "--manifest", manifest.path, "--epochs", String(epochs),
+                          "--lr", String(lr), "--batch-size", String(batchSize),
+                          "--augment", augment ? "1" : "0", "--base-model", baseModel,
+                          "--output", output.path, "--early-stop", earlyStop ? "1" : "0"]
+        if let resumeFrom { proc.arguments! += ["--resume", resumeFrom.path] }
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONUNBUFFERED"] = "1"; proc.environment = environment
+        let out = Pipe(), err = Pipe(); proc.standardOutput = out; proc.standardError = err
+        let stdoutTask = Task { [weak self] in
             do {
-                for try await line in handle.bytes.lines {
-                    if Task.isCancelled { return }
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    await MainActor.run {
-                        self?.handleSubprocessLine(trimmed, epochs: epochs)
-                    }
+                for try await line in out.fileHandleForReading.bytes.lines {
+                    guard let self, self.runID == token else { continue }
+                    self.consume(line, epochs: epochs)
                 }
-            } catch {
-                // Stream broken — most likely process was terminated. Nothing actionable.
-            }
+            } catch {}
         }
-        // Drain stderr for the DEVICE line and diagnostics.
-        let stderrStreamTask = Task { [weak self] in
+        let stderrTask = Task { [weak self] in
             do {
-                for try await line in errHandle.bytes.lines {
-                    if Task.isCancelled { return }
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    await MainActor.run {
-                        self?.handleStderrLine(trimmed)
-                    }
+                for try await line in err.fileHandleForReading.bytes.lines {
+                    guard let self, self.runID == token else { continue }
+                    if line.hasPrefix("DEVICE ") { self.device = String(line.dropFirst(7)) }
+                    self.diagnostic = String((self.diagnostic + "\n" + line).suffix(4000))
                 }
-            } catch {
-                // Stream broken — ignore.
-            }
+            } catch {}
         }
-        proc.terminationHandler = { [weak self] p in
+        // Install before launch so even immediate failures are observed.
+        // Await both pipes before inspecting DONE or report files.
+        proc.terminationHandler = { [weak self] terminated in
             Task { @MainActor in
-                guard let self else { return }
-                self.streamTask?.cancel()
-                self.streamTask = nil
-                self.stderrTask?.cancel()
-                self.stderrTask = nil
-                self.stdoutHandle = nil
-                // B1-7: clean up staging dir when subprocess finishes
-                if let dir = self.stagedDir {
-                    try? FileManager.default.removeItem(at: dir)
-                    self.stagedDir = nil
+                await stdoutTask.value; await stderrTask.value
+                defer {
+                    try? FileManager.default.removeItem(at: stage)
+                    Self.releasePermit(token)
                 }
-                if p.terminationStatus != 0 {
-                    // If we already published .complete, leave it. Otherwise fall back to faux.
-                    if case .complete = self.progress { return }
-                    if case .failed = self.progress { return }
-                    self.startFaux(epochs: epochs)
-                }
-            }
-        }
-
-        do {
-            try proc.run()
-            self.process = proc
-            self.stdoutHandle = handle
-            self.streamTask = streamingTask
-            self.stderrTask = stderrStreamTask
-            progress = .running(epoch: 0, totalEpochs: epochs,
-                                trainLoss: 2.4, valLoss: 2.5,
-                                eta: epochs * 18)
-        } catch {
-            self.process = nil
-            self.stdoutHandle = nil
-            streamingTask.cancel()
-            stderrStreamTask.cancel()
-            self.streamTask = nil
-            self.stderrTask = nil
-            startFaux(epochs: epochs)
-        }
-    }
-
-    /// Parse stderr looking for the device announcement.
-    /// Format: `DEVICE <name>` (anywhere in the line).
-    private func handleStderrLine(_ line: String) {
-        if let range = line.range(of: "DEVICE ") {
-            let name = String(line[range.upperBound...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !name.isEmpty {
-                self.device = name
-            }
-        }
-    }
-
-    private func handleSubprocessLine(_ line: String, epochs: Int) {
-        // EPOCH n train=x val=y eta=z lr=l
-        if line.hasPrefix("EPOCH ") {
-            let parts = line.split(separator: " ")
-            var epoch = 0; var train = 0.0; var val = 0.0; var eta = 0
-            var lrParsed: Double? = nil
-            for p in parts {
-                if let n = Int(p) { epoch = n; continue }
-                if p.hasPrefix("train=") { train = Double(p.dropFirst(6)) ?? 0 }
-                else if p.hasPrefix("val=") { val = Double(p.dropFirst(4)) ?? 0 }
-                else if p.hasPrefix("eta=") { eta = Int(p.dropFirst(4)) ?? 0 }
-                else if p.hasPrefix("lr=") { lrParsed = Double(p.dropFirst(3)) }
-            }
-            trainHistory.append(train)
-            valHistory.append(val)
-            if let lrParsed { self.currentLR = lrParsed }
-            progress = .running(epoch: epoch, totalEpochs: epochs,
-                                trainLoss: train, valLoss: val, eta: eta)
-            return
-        }
-        // EARLY_STOPPED epoch=<n>
-        if line.hasPrefix("EARLY_STOPPED ") {
-            for p in line.split(separator: " ") {
-                if p.hasPrefix("epoch=") {
-                    if let n = Int(p.dropFirst(6)) {
-                        self.earlyStopped = n
-                    }
-                }
-            }
-            return
-        }
-        // DONE ap50=… f1=… precision=… recall=… meanDiamError=…
-        if line.hasPrefix("DONE ") {
-            var ap50 = 0.0, f1 = 0.0, pr = 0.0, rc = 0.0, mde = 0.0
-            for p in line.split(separator: " ") {
-                if p.hasPrefix("ap50=") { ap50 = Double(p.dropFirst(5)) ?? 0 }
-                else if p.hasPrefix("f1=") { f1 = Double(p.dropFirst(3)) ?? 0 }
-                else if p.hasPrefix("precision=") { pr = Double(p.dropFirst(10)) ?? 0 }
-                else if p.hasPrefix("recall=") { rc = Double(p.dropFirst(7)) ?? 0 }
-                else if p.hasPrefix("meanDiamError=") { mde = Double(p.dropFirst(14)) ?? 0 }
-            }
-            let m = FTMetrics(ap50: ap50, f1: f1, precision: pr, recall: rc, meanDiamError: mde)
-            // Wrap a header into the checkpoint that the subprocess wrote.
-            writeCheckpointSidecar(metrics: m)
-            progress = .complete(m)
-            return
-        }
-        // Cellpose not installed sentinel — bail to faux.
-        if line.contains("\"cellpose-not-installed\"") {
-            progress = .failed("cellpose-not-installed")
-            startFaux(epochs: epochs)
-            return
-        }
-    }
-
-    // MARK: — Faux trainer
-
-    private func startFaux(epochs: Int) {
-        fauxEpoch = 0
-        fauxTotalEpochs = max(1, epochs)
-        fauxIsPaused = false
-        trainHistory.removeAll()
-        valHistory.removeAll()
-        if lastCheckpointURL == nil {
-            lastCheckpointURL = freshCheckpointURL()
-        }
-        progress = .running(epoch: 0, totalEpochs: epochs,
-                            trainLoss: 2.4, valLoss: 2.5,
-                            eta: epochs * 18)
-        startFauxTimer()
-    }
-
-    private func startFauxTimer() {
-        fauxTimer?.invalidate()
-        let t = Timer(timeInterval: 0.36, repeats: true) { [weak self] timer in
-            Task { @MainActor in
-                guard let self else { timer.invalidate(); return }
-                if self.fauxIsPaused { return }
-                let next = self.fauxEpoch + 1
-                if next > self.fauxTotalEpochs {
-                    timer.invalidate()
-                    self.fauxTimer = nil
-                    let m = FTMetrics(ap50: 0.912, f1: 0.887,
-                                      precision: 0.901, recall: 0.875,
-                                      meanDiamError: 0.34)
-                    self.writeFauxCheckpoint(metrics: m)
-                    // B1-7: clean up staging dir at faux trainer completion
-                    if let dir = self.stagedDir {
-                        try? FileManager.default.removeItem(at: dir)
-                        self.stagedDir = nil
-                    }
-                    self.progress = .complete(m)
+                guard let self, self.runID == token else {
+                    Self.removeIncompleteCheckpoint(output)
                     return
                 }
-                let newLoss = Swift.max(0.18, 2.4 * exp(-Double(next) / 12) + Double.random(in: 0..<0.04))
-                let newVloss = Swift.max(0.22, 2.5 * exp(-Double(next) / 14) + Double.random(in: 0..<0.06))
-                self.trainHistory.append(newLoss)
-                self.valHistory.append(newVloss)
-                self.fauxEpoch = next
-                self.progress = .running(epoch: next, totalEpochs: self.fauxTotalEpochs,
-                                          trainLoss: newLoss, valLoss: newVloss,
-                                          eta: (self.fauxTotalEpochs - next) * 18)
+                self.process = nil
+                guard terminated.terminationStatus == 0, let expected = self.pendingMetrics else {
+                    self.canActivateCheckpoint = false
+                    Self.removeIncompleteCheckpoint(output)
+                    self.progress = .failed(self.status.hasPrefix("Error: ") ? String(self.status.dropFirst(7)) : "Training failed. \(self.diagnostic)")
+                    return
+                }
+                do {
+                    let metrics = try Self.validateResult(checkpoint: output)
+                    guard metrics == expected else { throw TrainingDatasetError.invalid("Training report and completion metrics do not match.") }
+                    self.lastCheckpointURL = output; self.canActivateCheckpoint = true
+                    self.status = "Training and held-out evaluation complete"
+                    self.progress = .complete(metrics)
+                } catch {
+                    Self.removeIncompleteCheckpoint(output)
+                    self.progress = .failed(error.localizedDescription)
+                }
             }
         }
-        RunLoop.main.add(t, forMode: .common)
-        fauxTimer = t
-    }
-
-    // MARK: — Checkpoint writers
-
-    private func freshCheckpointURL() -> URL {
-        let id = UUID().uuidString.prefix(8)
-        return FileStore.shared.modelsDir
-            .appendingPathComponent("training-\(id).ccmodel")
-    }
-
-    /// For the faux trainer: writes a small JSON blob containing config + metrics + URL hashes.
-    private func writeFauxCheckpoint(metrics: FTMetrics) {
-        guard let url = lastCheckpointURL, let cfg = lastConfig else { return }
-        let blob = CheckpointBlob(
-            kind: "faux",
-            createdAt: ISO8601DateFormatter().string(from: Date()),
-            config: cfg,
-            metrics: CheckpointBlob.MetricsBlob(metrics: metrics),
-            trainedImageHashes: cfg.imageURLs.map { hash($0.path) },
-            trainHistory: trainHistory,
-            valHistory: valHistory
-        ).withImageURLs(cachedImageURLs)
-        writeBlob(blob, to: url)
-    }
-
-    /// For the subprocess path: the python writes the binary weights to lastCheckpointURL.
-    /// We add a sibling `.json` with the config + metrics + image hashes.
-    private func writeCheckpointSidecar(metrics: FTMetrics) {
-        guard let url = lastCheckpointURL, let cfg = lastConfig else { return }
-        let blob = CheckpointBlob(
-            kind: "cellpose",
-            createdAt: ISO8601DateFormatter().string(from: Date()),
-            config: cfg,
-            metrics: CheckpointBlob.MetricsBlob(metrics: metrics),
-            trainedImageHashes: cachedImageURLs.map { hash($0.path) },
-            trainHistory: trainHistory,
-            valHistory: valHistory
-        )
-        let sidecar = url.deletingPathExtension().appendingPathExtension("json")
-        writeBlob(blob, to: sidecar)
-    }
-
-    private func writeBlob(_ blob: CheckpointBlob, to url: URL) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(blob) {
-            try? data.write(to: url, options: .atomic)
+        do {
+            try proc.run()
+            ChildProcessTracker.shared.register(proc, kind: .other)
+            process = proc
+        } catch {
+            proc.terminationHandler = nil
+            stdoutTask.cancel(); stderrTask.cancel()
+            try? out.fileHandleForReading.close(); try? err.fileHandleForReading.close()
+            try? FileManager.default.removeItem(at: stage)
+            Self.releasePermit(token)
+            progress = .failed("Could not start training: \(error.localizedDescription)")
         }
     }
 
-    // MARK: — Helpers
-
-    private func resolveTrainScriptURL() -> URL? {
-        // Prefer the FileStore-staged copy (lives next to the venv).
-        if let staged = PythonRuntime.stagedScriptURL(named: "cellpose_train.py") {
-            return staged
+    private func consume(_ line: String, epochs: Int) {
+        if line.hasPrefix("STATUS ") {
+            if case .paused = progress {} else { status = String(line.dropFirst(7)) }
+            return
         }
-        return PythonRuntime.bundledPythonURL(named: "cellpose_train.py")
-    }
-
-    /// Stages the (possibly scattered) input images into one directory the python script can consume.
-    private func stageImageDirectory(urls: [URL]) -> URL {
-        let stage = FileStore.shared.modelsDir.appendingPathComponent("staging-\(UUID().uuidString.prefix(6))",
-                                                                       isDirectory: true)
-        try? FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-        for url in urls {
-            let dest = stage.appendingPathComponent(url.lastPathComponent)
-            // B3-7: prefer hard link (same-volume, works under sandbox grants);
-            // fall back to full copy if linkItem fails (cross-volume or permission denied).
-            // Symlinks can be denied by the sandbox even when the original URL has been granted.
-            do {
-                try FileManager.default.linkItem(at: url, to: dest)
-            } catch {
-                try? FileManager.default.copyItem(at: url, to: dest)
+        if line.hasPrefix("EPOCH ") {
+            let parts = line.split(separator: " ")
+            let fields = Dictionary(parts.dropFirst(2).compactMap { part -> (String, String)? in
+                let pair = part.split(separator: "=", maxSplits: 1)
+                return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
+            }, uniquingKeysWith: { _, new in new })
+            guard parts.count > 1, let epoch = Int(parts[1]),
+                  let train = fields["train"].flatMap(Double.init), train.isFinite,
+                  let val = fields["val"].flatMap(Double.init), val.isFinite else { return }
+            currentLR = fields["lr"].flatMap(Double.init)
+            let measurement = Progress.running(epoch: epoch, totalEpochs: epochs, trainLoss: train,
+                                               valLoss: val, eta: fields["eta"].flatMap(Int.init) ?? 0)
+            if case .paused = progress { lastRunning = measurement }
+            else {
+                status = "Training epoch \(epoch) of \(epochs)"
+                progress = measurement
             }
-        }
-        return stage
+        } else if line.hasPrefix("EARLY_STOPPED epoch=") {
+            earlyStopped = Int(line.dropFirst("EARLY_STOPPED epoch=".count))
+        } else if line.hasPrefix("DONE "), let data = String(line.dropFirst(5)).data(using: .utf8) {
+            pendingMetrics = try? JSONDecoder().decode(FTMetrics.self, from: data)
+        } else if let data = line.data(using: .utf8),
+                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let error = payload["error"] as? String { status = "Error: \(error)" }
     }
 
-    private func hash(_ s: String) -> String {
-        var h: UInt64 = 1469598103934665603
-        for b in s.utf8 {
-            h ^= UInt64(b)
-            h = h &* 1099511628211
+    private static func removeIncompleteCheckpoint(_ output: URL) {
+        let files = [output, output.deletingPathExtension().appendingPathExtension("json"),
+                     output.deletingPathExtension().appendingPathExtension("best"),
+                     output.deletingLastPathComponent().appendingPathComponent("models")
+                        .appendingPathComponent(output.deletingPathExtension().lastPathComponent + "-last")]
+        for file in files { try? FileManager.default.removeItem(at: file) }
+    }
+
+    nonisolated static func validateResult(checkpoint: URL) throws -> FTMetrics {
+        let attributes = try FileManager.default.attributesOfItem(atPath: checkpoint.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              (attributes[.size] as? NSNumber)?.intValue ?? 0 >= 1024 else {
+            throw TrainingDatasetError.invalid("Training did not produce a usable checkpoint file.")
         }
-        return String(h, radix: 16)
+        let reportURL = checkpoint.deletingPathExtension().appendingPathExtension("json")
+        let report = try JSONDecoder().decode(TrainingResultReport.self, from: Data(contentsOf: reportURL))
+        let m = report.metrics
+        guard report.kind == "cellpose", report.checkpointValidated,
+              report.checkpointHash == (try TrainingDatasetService.fileHash(checkpoint)),
+              m.isValid, report.dataset.samples.filter({ $0.partition == "test" }).count == m.testImages,
+              report.dataset.samples.contains(where: { $0.partition == "train" }),
+              report.dataset.samples.contains(where: { $0.partition == "validation" }) else {
+            throw TrainingDatasetError.invalid("The checkpoint has no verified held-out evaluation, or its contents changed.")
+        }
+        var partitions: [String: String] = [:]
+        var hashes = Set<String>()
+        for entry in report.dataset.samples {
+            guard ["train", "validation", "test"].contains(entry.partition), !entry.group.isEmpty,
+                  entry.sourceHash.count == 64, entry.labelsHash.count == 64,
+                  hashes.insert(entry.sourceHash).inserted,
+                  partitions[entry.group] == nil || partitions[entry.group] == entry.partition else {
+                throw TrainingDatasetError.invalid("The training report contains duplicate images or specimen leakage.")
+            }
+            partitions[entry.group] = entry.partition
+        }
+        return m
+    }
+
+    func copyValidatedCheckpoint(to destination: URL) throws {
+        guard canActivateCheckpoint, let source = lastCheckpointURL else {
+            throw TrainingDatasetError.invalid("Complete training and held-out evaluation before saving a model.")
+        }
+        _ = try Self.validateResult(checkpoint: source)
+        let fm = FileManager.default
+        try fm.copyItem(at: source, to: destination)
+        do {
+            try fm.copyItem(at: source.deletingPathExtension().appendingPathExtension("json"),
+                            to: destination.deletingPathExtension().appendingPathExtension("json"))
+            _ = try Self.validateResult(checkpoint: destination)
+        } catch {
+            try? fm.removeItem(at: destination)
+            try? fm.removeItem(at: destination.deletingPathExtension().appendingPathExtension("json"))
+            throw error
+        }
     }
 }
 
-// MARK: — Types
-
-struct TrainingConfig: Codable {
+nonisolated struct TrainingConfig: Codable {
     var epochs: Int
     var lr: Double
     var batchSize: Int
@@ -518,37 +321,13 @@ struct TrainingConfig: Codable {
     var baseModel: String
     var imageCount: Int
     var annotated: Int
-    /// Populated by the writer on-disk so we have provenance after the fact.
     var imageURLs: [URL] = []
 }
 
-private struct CheckpointBlob: Codable {
-    let kind: String
-    let createdAt: String
-    var config: TrainingConfig
-    let metrics: MetricsBlob
-    let trainedImageHashes: [String]
-    let trainHistory: [Double]
-    let valHistory: [Double]
-
-    struct MetricsBlob: Codable {
-        let ap50: Double
-        let f1: Double
-        let precision: Double
-        let recall: Double
-        let meanDiamError: Double
-        init(metrics: FTMetrics) {
-            self.ap50 = metrics.ap50
-            self.f1 = metrics.f1
-            self.precision = metrics.precision
-            self.recall = metrics.recall
-            self.meanDiamError = metrics.meanDiamError
-        }
-    }
-
-    func withImageURLs(_ urls: [URL]) -> CheckpointBlob {
-        var copy = self
-        copy.config.imageURLs = urls
-        return copy
-    }
+nonisolated struct TrainingResultReport: Codable {
+    var kind: String
+    var checkpointHash: String
+    var checkpointValidated: Bool
+    var dataset: TrainingManifest
+    var metrics: FTMetrics
 }

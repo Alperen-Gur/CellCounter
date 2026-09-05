@@ -13,6 +13,14 @@ struct ImagesLibraryView: View {
     @State private var multiSelectMode = false
     @State private var showFindDuplicates = false
     @State private var isHashingForDupes = false
+    @State private var search = ""
+    @FocusState private var searchFocused: Bool
+    @FocusState private var gridFocused: Bool
+
+    private var visibleImages: [ImageRecord] {
+        search.isEmpty ? images : images.filter { (imageNames[$0.id] ?? $0.fileName).localizedCaseInsensitiveContains(search) }
+    }
+    private var selectedImage: ImageRecord? { visibleImages.first { selectedIDs.contains($0.id) } }
 
     private let columns = [
         GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)
@@ -30,6 +38,9 @@ struct ImagesLibraryView: View {
                 VStack(spacing: 0) {
                     // Toolbar strip
                     HStack(spacing: 10) {
+                        TextField("Find images", text: $search)
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
+                            .focused($searchFocused)
                         Spacer()
                         if multiSelectMode && !selectedIDs.isEmpty {
                             Button {
@@ -78,7 +89,7 @@ struct ImagesLibraryView: View {
 
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(images, id: \.id) { image in
+                            ForEach(visibleImages, id: \.id) { image in
                                 ImageThumbCell(
                                     image: image,
                                     displayName: imageNames[image.id] ?? image.fileName,
@@ -92,6 +103,14 @@ struct ImagesLibraryView: View {
                         }
                         .padding(20)
                     }
+                    .focusable().focused($gridFocused)
+                    .onKeyPress(keys: [.delete, .return]) { press in
+                        guard press.modifiers.isEmpty, !KeyboardShortcutContext.isEditingText,
+                              !KeyboardShortcutContext.hasNativeSheet, !KeyboardShortcutContext.hasOverlay(state) else { return .ignored }
+                        if press.key == .delete, !selectedIDs.isEmpty { deleteSelected(); return .handled }
+                        if press.key == .return, let image = selectedImage { openImage(image); return .handled }
+                        return .ignored
+                    }
                 }
             }
         }
@@ -103,38 +122,30 @@ struct ImagesLibraryView: View {
         .sheet(isPresented: $showFindDuplicates) {
             FindDuplicatesSheet(state: state, onDismiss: { showFindDuplicates = false; reload() })
         }
-        // Delete — delete selected image(s) with confirmation
-        .overlay(
-            Group {
-                Button("") {
-                    // Only delete when there's an explicit selection. Previously
-                    // a bare Delete with nothing selected targeted images.first —
-                    // an arbitrary image the user almost certainly wasn't focused
-                    // on. With no selection this is now a no-op.
-                    if !selectedIDs.isEmpty { deleteSelected() }
-                }
-                .keyboardShortcut(.delete, modifiers: [])
-                .hidden()
-                .allowsHitTesting(false)
-                // ⌘A — select all
-                Button("") {
-                    multiSelectMode = true
-                    selectedIDs = Set(images.map(\.id))
-                }
-                .keyboardShortcut("a", modifiers: [.command])
-                .hidden()
-                .allowsHitTesting(false)
-            }
-        )
-        // Enter — open selected (first selected or first image) in Results
-        .onKeyPress(.return) {
-            if let firstSelected = selectedIDs.first,
-               let image = images.first(where: { $0.id == firstSelected }) {
-                handleTap(image: image)
-                return .handled
-            }
-            return .ignored
+        .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
+    }
+
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        if !images.isEmpty { actions.find = { searchFocused = true } }
+        if !visibleImages.isEmpty {
+            actions.selectAll = { multiSelectMode = true; selectedIDs = Set(visibleImages.map(\.id)); gridFocused = true }
+            actions.previous = { selectAdjacent(-1) }
+            actions.next = { selectAdjacent(1) }
         }
+        if !selectedIDs.isEmpty { actions.deleteSelection = { deleteSelected() } }
+        if selectedImage != nil { actions.openSelection = { if let image = selectedImage { openImage(image) } } }
+        if !selectedIDs.isEmpty || !search.isEmpty {
+            actions.cancel = { selectedIDs = []; search = ""; searchFocused = false }
+        }
+        return actions
+    }
+
+    private func selectAdjacent(_ delta: Int) {
+        guard !visibleImages.isEmpty else { return }
+        let current = selectedImage.flatMap { image in visibleImages.firstIndex { $0.id == image.id } }
+        let index = max(0, min(visibleImages.count - 1, (current ?? (delta > 0 ? -1 : visibleImages.count)) + delta))
+        multiSelectMode = true; selectedIDs = [visibleImages[index].id]; gridFocused = true
     }
 
     // MARK: — Helpers
@@ -154,6 +165,7 @@ struct ImagesLibraryView: View {
             .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
         images = loaded
         imageNames = disambiguatedNames(for: loaded)
+        selectedIDs.formIntersection(Set(loaded.map(\.id)))
     }
 
     /// Pass-17: back-fill hashes for any un-hashed images, then present FindDuplicatesSheet.
@@ -231,10 +243,14 @@ struct ImagesLibraryView: View {
             }
             return
         }
+        openImage(image)
+    }
+
+    private func openImage(_ image: ImageRecord) {
         // Navigate to results for this image.
         guard let batch = image.batch else { return }
         state.currentBatchId = batch.id
-        let sorted = batch.images.sorted { $0.importedAt < $1.importedAt }
+        let sorted = state.orderedImages(in: batch)
         if let idx = sorted.firstIndex(where: { $0.id == image.id }) {
             state.currentImageIdx = idx
         }

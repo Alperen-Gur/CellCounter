@@ -20,7 +20,7 @@ struct CellposeSAMDownloader: ModelDownloader {
     let family: ModelFamily = .cellpose4
 
     /// Distinct from the 3.x cache key so the two probes don't clobber each other.
-    private static let importableCacheKey = Cellpose4Availability.importableCacheKey
+    nonisolated private static let importableCacheKey = "cc-cellpose4-importable"
 
     // MARK: - isInstalled (cheap, main-safe)
 
@@ -35,9 +35,13 @@ struct CellposeSAMDownloader: ModelDownloader {
     // MARK: - probeInstalled (deep, off-main)
 
     func probeInstalled(modelId: String) async -> Bool {
-        let python: URL? = await MainActor.run { Self.sharedPythonURL() }
-        guard let python else { return false }
-        return await Task.detached(priority: .userInitiated) {
+        // Snapshot immutable locations on the actor; all filesystem access and
+        // Python work happen in the detached closure below.
+        let directory = FileStore.shared.pythonVenv4Dir
+        let sentinel = FileStore.shared.cellpose4InstallIncompleteSentinel
+        let script = FileStore.shared.pythonDir.appendingPathComponent("cellpose4_detect.py")
+        return await Task.detached(priority: .utility) {
+            guard let python = Self.probePythonURL(directory: directory, sentinel: sentinel, script: script) else { return false }
             let ok = Self.runPythonImportCheck(pythonURL: python)
             UserDefaults.standard.set(ok, forKey: Self.importableCacheKey)
             return ok
@@ -71,7 +75,7 @@ struct CellposeSAMDownloader: ModelDownloader {
         }
 
         // Fast path: already importable.
-        if Self.isCellposeSAMImportable(pythonURL: python) {
+        if await Self.isCellposeSAMImportable(pythonURL: python) {
             await MainActor.run {
                 progress.append("cellpose 4 already importable; nothing to install")
                 progress.stage = .ready
@@ -99,7 +103,7 @@ struct CellposeSAMDownloader: ModelDownloader {
         }
 
         await MainActor.run { progress.stage = .verifying }
-        let importable = Self.isCellposeSAMImportable(pythonURL: python, useCache: false)
+        let importable = await Self.isCellposeSAMImportable(pythonURL: python, useCache: false)
         if !importable {
             throw CellposeSAMDownloaderError.pipFailed("cellpose 4 still not importable after pip install")
         }
@@ -191,13 +195,13 @@ struct CellposeSAMDownloader: ModelDownloader {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/bin/bash")
             proc.arguments = [scriptURL.path, venvPath, scriptsDir]
-            proc.currentDirectoryURL = FileStore.shared.pythonDir
+            proc.currentDirectoryURL = URL(fileURLWithPath: scriptsDir, isDirectory: true)
 
             let pipe = Pipe()
             proc.standardOutput = pipe
             proc.standardError = pipe
             try proc.run()
-            ChildProcessTracker.shared.register(proc, kind: .other)
+            await MainActor.run { ChildProcessTracker.shared.register(proc, kind: .install) }
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
             if let text = String(data: data, encoding: .utf8), !text.isEmpty {
@@ -225,6 +229,18 @@ struct CellposeSAMDownloader: ModelDownloader {
         try? fm.removeItem(at: FileStore.shared.cellpose4InstallIncompleteSentinel)
     }
 
+    /// A deep refresh checks the interpreter even after a previous failed
+    /// import. The cached availability verdict must not prevent recovery.
+    nonisolated private static func probePythonURL(directory: URL, sentinel: URL, script: URL) -> URL? {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: sentinel.path), fm.fileExists(atPath: script.path) else { return nil }
+        for executable in ["python3", "python"] {
+            let url = directory.appendingPathComponent("bin/" + executable)
+            if fm.isExecutableFile(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
     private static func sharedPythonURL() -> URL? {
         if case let .available(py, _) = Cellpose4Availability.detect() {
             return py
@@ -236,16 +252,18 @@ struct CellposeSAMDownloader: ModelDownloader {
     ///   0  → cellpose >= 4.0 importable (this is what we want)
     ///   2  → cellpose < 4 importable (wrong venv — should never hit in venv4)
     ///   1  → import failed
-    private static func isCellposeSAMImportable(pythonURL: URL, useCache: Bool = true) -> Bool {
+    nonisolated private static func isCellposeSAMImportable(pythonURL: URL, useCache: Bool = true) async -> Bool {
         if useCache, let cached = UserDefaults.standard.object(forKey: importableCacheKey) as? Bool {
             return cached
         }
-        let ok = runPythonImportCheck(pythonURL: pythonURL)
+        let ok = await Task.detached(priority: .utility) {
+            runPythonImportCheck(pythonURL: pythonURL)
+        }.value
         UserDefaults.standard.set(ok, forKey: importableCacheKey)
         return ok
     }
 
-    private static func runPythonImportCheck(pythonURL: URL) -> Bool {
+    nonisolated private static func runPythonImportCheck(pythonURL: URL) -> Bool {
         let probe = """
         import sys
         try:
@@ -260,19 +278,7 @@ struct CellposeSAMDownloader: ModelDownloader {
         except Exception:
             sys.exit(1)
         """
-        let p = Process()
-        p.executableURL = pythonURL
-        p.arguments = ["-c", probe]
-        let null = Pipe()
-        p.standardOutput = null
-        p.standardError = null
-        do {
-            try p.run()
-            p.waitUntilExit()
-            return p.terminationStatus == 0
-        } catch {
-            return false
-        }
+        return ModelProbeRunner.run(pythonURL: pythonURL, code: probe)
     }
 
     /// Stream `python -m pip install …` lines into `progress`. Functionally
@@ -395,7 +401,7 @@ enum CellposeSAMDownloaderError: LocalizedError {
 
 // MARK: - Resume flag (one-shot continuation guard, file-private)
 
-private final class CellposeSAMPipResumeFlag: @unchecked Sendable {
+private nonisolated final class CellposeSAMPipResumeFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
     func markAndCheck() -> Bool {

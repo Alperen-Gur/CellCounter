@@ -16,6 +16,8 @@ struct CompareView: View {
     @State private var selected: Set<String> = []
     @State private var exportError: String? = nil
     @State private var analysisRevision = 0
+    @State private var search = ""
+    @FocusState private var searchFocused: Bool
 
     private let maxSelected = 4
     private let minSelected = 1
@@ -30,8 +32,11 @@ struct CompareView: View {
             CompareIntroStrip()
                 .padding(.horizontal, 24).padding(.top, 14).padding(.bottom, 2)
 
+            TextField("Find conditions", text: $search).textFieldStyle(.roundedBorder)
+                .focused($searchFocused).frame(maxWidth: 300).padding(.horizontal, 24).padding(.top, 10)
+
             ChipRow(
-                conditions: conditions,
+                conditions: search.isEmpty ? conditions : conditions.filter { $0.name.localizedCaseInsensitiveContains(search) },
                 selected: $selected,
                 maxSelected: maxSelected
             )
@@ -89,23 +94,28 @@ struct CompareView: View {
             for: Notification.Name("ccCorrectionsChanged"))) { _ in
                 analysisRevision &+= 1
             }
-        // ⌘E — Export comparison CSV
-        .overlay(
-            Button("") {
-                let selectedConditions = conditions.filter { selected.contains($0.name) }
-                guard !selectedConditions.isEmpty else { return }
-                let panel = NSSavePanel()
-                panel.allowedContentTypes = [.commaSeparatedText]
-                panel.nameFieldStringValue = "compare-conditions.csv"
-                panel.begin { resp in
-                    guard resp == .OK, let url = panel.url else { return }
-                    exportCSV(conditions: selectedConditions, to: url)
-                }
-            }
-            .keyboardShortcut("e", modifiers: [.command])
-            .hidden()
-            .allowsHitTesting(false)
-        )
+        .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
+    }
+
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        actions.find = { searchFocused = true }
+        actions.run = { refresh() }
+        if !conditions.isEmpty { actions.selectAll = { selected = Set(conditions.prefix(maxSelected).map(\.name)) } }
+        if !selected.isEmpty { actions.export = { presentComparisonExport() } }
+        return actions
+    }
+
+    private func presentComparisonExport() {
+        let selectedConditions = conditions.filter { selected.contains($0.name) }
+        guard !selectedConditions.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "compare-conditions.csv"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            exportCSV(conditions: selectedConditions, to: url)
+        }
     }
 
     private func exportCSV(conditions: [ConditionRecord], to url: URL) {

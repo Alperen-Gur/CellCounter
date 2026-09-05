@@ -66,7 +66,7 @@ struct CustomModelDetectionService: DetectionService {
         // Z-projection + which channel to segment on. Only the sidecars
         // built on `_cellpose_common.build_arg_parser` accept these;
         // StarDist/SAM hand-roll their parsers and would exit 2.
-        args += ChannelStackSettings.sidecarArguments()
+        args += input.channelStackArguments
         if input.backgroundSubtract {
             args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
@@ -81,7 +81,7 @@ struct CustomModelDetectionService: DetectionService {
         ]
         // Same `--diameter` contract as the Cellpose services: 0 == "Auto" ==
         // omit the flag so the sidecar keeps its bin-derived prior.
-        let expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
+        let expectedDiameterUm = input.expectedDiameterUm
         if expectedDiameterUm > 0 {
             args += ["--diameter", String(expectedDiameterUm)]
         }
@@ -181,7 +181,7 @@ struct CustomModelDownloader: ModelDownloader {
     func probeInstalled(modelId: String) async -> Bool {
         // Everything the check needs is a filesystem stat, so the deep probe is
         // the same as the cheap one. No subprocess to hop off-main for.
-        await MainActor.run { isInstalled(modelId: modelId) }
+        await Task.detached(priority: .utility) { isInstalled(modelId: modelId) }.value
     }
 
     func install(modelId: String, progress: ModelInstallProgress) async throws {

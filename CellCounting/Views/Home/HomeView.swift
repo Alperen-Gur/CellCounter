@@ -21,59 +21,12 @@ struct HomeView: View {
         }
         .frame(maxWidth: 980)
         .frame(maxWidth: .infinity)
-        // ⌘D — Choose images (primary CTA)
-        // ⌘⇧D — Choose folder
-        .overlay(
-            Group {
-                Button("") { homeChooseImages(state: state) }
-                    .keyboardShortcut("d", modifiers: [.command])
-                    .hidden()
-                    .allowsHitTesting(false)
-                    .disabled(!state.canRunDetection)
-                Button("") { homeChooseFolder(state: state) }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
-                    .hidden()
-                    .allowsHitTesting(false)
-                    .disabled(!state.canRunDetection)
-            }
-        )
         // Surface detection failures (no model installed, sidecar crash, etc.)
         // as a system alert so the user never silently lands in an empty Results screen.
         .alert("Detection failed",
                isPresented: $state.showDetectionError,
                actions: { Button("OK", role: .cancel) {} },
                message: { Text(state.lastDetectionError ?? "Unknown error.") })
-    }
-}
-
-// MARK: — Home shortcut helpers (free functions to keep struct lean)
-
-private func homeChooseImages(state: AppState) {
-    presentOpenPanel(allowedExtensions: Array(ImageLoader.supported), allowFolders: false, allowMultiple: true) { urls in
-        Task { @MainActor in
-            guard !urls.isEmpty else { return }
-            // Always import — when conditions exist the in-view picker may not be
-            // available (cmd-D is a global shortcut), so go straight to analyze.
-            // The user can tag the batch later from Batch view.
-            state.importAndAnalyze(urls: urls)
-        }
-    }
-}
-
-private func homeChooseFolder(state: AppState) {
-    presentOpenPanel(allowedExtensions: Array(ImageLoader.supported), allowFolders: true, allowMultiple: false) { urls in
-        Task { @MainActor in
-            guard let folder = urls.first else { return }
-            let files: [URL]
-            if let enumerator = FileManager.default.enumerator(at: folder,
-                                                                includingPropertiesForKeys: [.isRegularFileKey],
-                                                                options: [.skipsHiddenFiles]) {
-                files = enumerator.compactMap { $0 as? URL }
-                    .filter { ImageLoader.supported.contains($0.pathExtension.lowercased()) }
-            } else { files = [] }
-            guard !files.isEmpty else { return }
-            state.importAndAnalyze(urls: files)
-        }
     }
 }
 
@@ -144,7 +97,7 @@ private struct DropZone: View {
                     .tracking(-0.21)
                     .foregroundStyle(Tokens.text)
 
-                Text("One image, a folder, or a whole batch — we'll detect and size every cell.")
+                Text("Inspect an image, preview your settings, then process the batch.")
                     .font(.system(size: 13.5))
                     .foregroundStyle(Tokens.textSecondary)
                     .multilineTextAlignment(.center)
@@ -161,10 +114,8 @@ private struct DropZone: View {
                         }
                     }
                     .appButton(.primary, size: .lg)
-                    .disabled(!state.canRunDetection)
-                    .help(state.canRunDetection
-                          ? "Pick one or more images to analyze."
-                          : "The active model isn't installed. Open Models to install it.")
+                    .disabled(state.isPreparingImport)
+                    .help("Import images, inspect a sample, then choose how to analyze them.")
 
                     Button {
                         chooseFolder()
@@ -175,10 +126,8 @@ private struct DropZone: View {
                         }
                     }
                     .appButton(.standard, size: .lg)
-                    .disabled(!state.canRunDetection)
-                    .help(state.canRunDetection
-                          ? "Pick a folder of images to analyze."
-                          : "The active model isn't installed. Open Models to install it.")
+                    .disabled(state.isPreparingImport)
+                    .help("Import a folder and preview your settings before processing.")
                 }
             }
             .padding(32)

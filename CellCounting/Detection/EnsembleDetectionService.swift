@@ -141,20 +141,11 @@ struct EnsembleDetectionService: DetectionService {
         let inputA = Self.rewrite(input, modelId: primaryModelId)
         let inputB = Self.rewrite(input, modelId: secondaryModelId)
 
-        // Run both. They are separate subprocesses, so let them overlap.
-        async let resultA = primary.detect(inputA)
-        async let resultB = secondary.detect(inputB)
-
-        let a: DetectionResult
-        let b: DetectionResult
-        do {
-            a = try await resultA
-            b = try await resultB
-        } catch let error as DetectionError {
-            // A cancel is a cancel — don't dress it up as an ensemble failure.
-            if case .cancelled = error { throw error }
-            throw error
-        }
+        // Keep inference serial: independent GPU runtimes can otherwise hold
+        // both models' working sets at once on the same device.
+        let a = try await primary.detect(inputA)
+        try Task.checkCancellation()
+        let b = try await secondary.detect(inputB)
 
         let match = EnsembleMatcher.match(a: a.cells, b: b.cells)
 
@@ -222,7 +213,11 @@ struct EnsembleDetectionService: DetectionService {
                        watershedMinDistance: input.watershedMinDistance,
                        smallThreshold: input.smallThreshold,
                        largeThreshold: input.largeThreshold,
-                       useGPU: input.useGPU)
+                       useGPU: input.useGPU,
+                       expectedDiameterUm: input.expectedDiameterUm,
+                       zProjection: input.zProjection,
+                       segmentChannel: input.segmentChannel,
+                       manualThreshold: input.manualThreshold)
     }
 }
 

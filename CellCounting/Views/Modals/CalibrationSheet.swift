@@ -1010,8 +1010,8 @@ private struct OnboardingStep {
 
     static let all: [OnboardingStep] = [
         .init(
-            title: "Drop an image, get a count",
-            desc: "Drag any microscope image onto CellCounter and Cellpose detects your cells in seconds — colored by size bin, counted in the sidebar, broken down in the histogram."
+            title: "Inspect, preview, then count",
+            desc: "Import microscope images, check calibration and channels on a representative image, then preview the masks before processing your batch. You can inspect images before installing a detector."
         ),
         .init(
             title: "Calibrate per objective",

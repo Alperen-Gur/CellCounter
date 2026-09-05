@@ -1,53 +1,48 @@
 # Installing CellCounter
 
-## macOS
+## macOS v1.0.11
 
-CellCounter v1.0.2 is a native macOS app. It is **ad-hoc signed but not yet
-notarized**, so macOS Gatekeeper will warn you the first time you open it. This
-is expected; here's how to get past it.
+CellCounter requires **macOS 15 or later**. The macOS download is a **universal build for Intel and Apple Silicon Macs**. Python environments and model dependencies are installed separately for your Mac when needed.
 
-### Step by step
+The application is **ad-hoc signed and not notarized**. macOS may block its first launch because Apple has not verified the developer or notarized the app.
 
-1. **Download** the latest `CellCounter-<version>.zip` from the
-   [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
-2. **Unzip** it (double-click) and drag **CellCounting.app** into
-   **Applications**. The application is called CellCounter; the bundle on disk
-   is still named `CellCounting.app`. If you're replacing an older copy, delete
-   the old one first.
-3. **Double-click** CellCounter. macOS will say it "cannot be opened because
-   Apple cannot check it for malicious software." Click **Done** (do not move it
-   to Trash).
-4. Open **System Settings → Privacy & Security**. Scroll to the bottom — you'll
-   see a line about CellCounter being blocked. Click **Open Anyway**.
-5. Double-click CellCounter again. Confirm with **Open**. From now on it opens
-   normally.
+### Install and open
 
-### Setting up the segmentation engine
+1. Download `CellCounter-v1.0.11.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
+2. Unzip the download and drag **CellCounting.app** into **Applications**. The application is called CellCounter; its bundle on disk is named `CellCounting.app`. Quit an older copy before replacing it. Replacing the application is separate from resetting its saved library.
+3. Open the application. If macOS blocks it, dismiss the message without moving the app to Trash.
+4. Open **System Settings → Privacy & Security** and find the message about CellCounter being blocked. Choose **Open Anyway**, then confirm **Open** when prompted. Depending on your Mac's security policy, administrator approval may be required.
+5. Open CellCounter again if it did not launch automatically. Subsequent launches should use the same installed copy.
 
-The app ships without the Python environment (it's large and platform-specific),
-so the first time you want to run detection:
+The release uses ad-hoc signing; it does not include an Apple Developer ID signature or Apple notarization. Managed institutional Macs may require your IT administrator to approve installation.
 
-1. Go to the **Models** tab.
-2. Click **Install Cellpose…**.
-3. Wait for the install to finish — it downloads Python packages and the model
-   weights, takes a few minutes, and only happens once. The lower part of the
-   dialog shows a live log; if anything fails, that log is what to screenshot in
-   a bug report.
+### Start with your images
 
-### Why isn't it notarized / on the App Store?
+1. On **Home**, open or drop supported images, or use **File → Open Images…** (`⌘O`) or **Open Folder…** (`⌘⇧O`).
+2. In **Set up analysis**, inspect a representative image and choose a task, calibration, model, channels and Z projection as appropriate. You can import and inspect images before installing a segmentation model. Some proprietary formats require optional Python readers.
+3. If you want segmentation, install the selected model from **Models**. Return to **Processing → Continue setup** to continue the saved setup.
+4. With the model installed, run **Preview** on the representative image, inspect the masks, and adjust the settings before starting the batch. Matching preview results are reused.
+5. Use **Processing** to follow progress, pause after an image, resume or retry failed images. Open completed images to review them while the remaining images process. Interrupted jobs are restored as paused after relaunch.
 
-Notarization needs a paid Apple Developer account. For a research tool shared
-with a handful of labs, the "Open Anyway" step above is the pragmatic path. If
-this sees wider use, notarization is on the list.
+Task presets provide starting points. Marker positivity and wound closure need their corresponding assay settings and measurements; choosing a preset does not itself perform the assay.
 
-## Windows / Linux
+### Install a segmentation engine
 
-Not available yet — the cross-platform build is in progress. See the Roadmap in
-the [README](../README.md).
+1. Open **Models** and choose the model you intend to use.
+2. Use its installation action. Cellpose 3 and Cellpose 4/SAM have separate environments; other model families may have their own requirements.
+3. Allow the required Python packages and model weights to download. Installation can take several minutes. The installation dialog shows progress and a live log.
+4. If installation fails, retain the log and the model name for a bug report, then use the available retry or repair action.
 
-## Delivery note for institutional email
+The application download does not include all Python dependencies or model weights. After the required components are installed, image analysis runs locally. Local fine-tuning additionally requires the Cellpose 3.x environment, existing compatible weights and reviewed segmentation masks; see the [v1.0.11 release notes](releases/v1.0.11.md).
 
-Some university mail servers reject `.app` bundles and `.zip` files that contain
-them, even when everything is legitimate. If you're
-sending CellCounter to a colleague, use a file-share link (institutional cloud,
-Sciebo, WeTransfer) rather than an email attachment.
+### Find keyboard shortcuts
+
+Open **Help → Keyboard Shortcuts** with `⌘/`, or use the shortcuts section in **Settings**. Menus show the actions available on the current screen; disabled actions have no applicable target. Letter keys for cell editing apply when the image canvas has focus. Search fields and text editors keep normal Mac text selection and undo behavior.
+
+## Other platforms
+
+For the separate Windows application, see the [Windows guide](WINDOWS.md). This macOS release does not include a native Linux package. The [web guide](WEB.md) describes the browser preview and its separate capability limits.
+
+## Sharing with colleagues
+
+Some institutional mail servers reject application bundles or archives that contain them. Share the official release link instead of attaching the application to an email.

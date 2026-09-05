@@ -47,6 +47,10 @@ struct DetectionInput {
     /// False forces CPU. Plumbed through each detector to its sidecar
     /// (Cellpose: `--no-gpu` arg; StarDist/SAM similarly). Default true.
     let useGPU: Bool
+    let expectedDiameterUm: Double
+    let zProjection: String
+    let segmentChannel: Int
+    let manualThreshold: Double
 
     init(imageURL: URL?,
          modelId: String,
@@ -60,7 +64,11 @@ struct DetectionInput {
          watershedMinDistance: Int = 8,
          smallThreshold: Double = 20,
          largeThreshold: Double = 30,
-         useGPU: Bool = true) {
+         useGPU: Bool = true,
+         expectedDiameterUm: Double = 0,
+         zProjection: String = "max",
+         segmentChannel: Int = 0,
+         manualThreshold: Double = 0) {
         self.imageURL = imageURL
         self.modelId = modelId
         self.pxPerUm = pxPerUm
@@ -74,10 +82,17 @@ struct DetectionInput {
         self.smallThreshold = smallThreshold
         self.largeThreshold = largeThreshold
         self.useGPU = useGPU
+        self.expectedDiameterUm = expectedDiameterUm
+        self.zProjection = zProjection
+        self.segmentChannel = segmentChannel
+        self.manualThreshold = manualThreshold
     }
 }
 
 extension DetectionInput {
+    var channelStackArguments: [String] {
+        ["--z-project", zProjection, "--segment-channel", String(segmentChannel)]
+    }
     var preprocessingArguments: [String] {
         var args: [String] = []
         if preprocessingPreset.usesCLAHE { args.append("--clahe") }

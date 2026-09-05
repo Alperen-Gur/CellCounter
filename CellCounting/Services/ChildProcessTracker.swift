@@ -73,6 +73,7 @@ final class ChildProcessTracker {
         "neurite_outgrowth.py",
         "area_assays_detect.py",
         "intensity_assays.py",
+        "_assay_worker.py", "_training_dataset.py",
         // Environment bootstrap.
         "install_python.sh",
     ]

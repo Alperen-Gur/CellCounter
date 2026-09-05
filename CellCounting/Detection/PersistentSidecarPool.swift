@@ -9,10 +9,19 @@ nonisolated struct PersistentSidecarKey: Hashable, Sendable {
     let modelSignature: String
 }
 
-nonisolated enum PersistentSidecarError: Error {
+nonisolated enum PersistentSidecarError: LocalizedError {
     case launchFailed(String)
     case protocolFailure(String)
     case processTerminated(status: Int32, stderr: Data)
+
+    var errorDescription: String? {
+        switch self {
+        case .launchFailed(let detail), .protocolFailure(let detail): return detail
+        case .processTerminated(let status, let stderr):
+            let detail = String(data: stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return detail.isEmpty ? "Python worker exited with status \(status)." : String(detail.suffix(400))
+        }
+    }
 }
 
 /// Long-lived sidecar pool. Each worker serializes its own request queue so a
@@ -27,6 +36,7 @@ actor PersistentSidecarPool {
         pythonURL: URL,
         scriptURL: URL,
         args: [String],
+        trackerKind: ChildProcessTracker.Kind = .detection,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> SidecarOutcome {
         let worker: PersistentSidecarWorker
@@ -37,7 +47,8 @@ actor PersistentSidecarPool {
             do {
                 worker = try PersistentSidecarWorker(
                     pythonURL: pythonURL,
-                    scriptURL: scriptURL)
+                    scriptURL: scriptURL,
+                    trackerKind: trackerKind)
                 workers[key] = worker
             } catch {
                 workers[key] = nil
@@ -152,7 +163,7 @@ nonisolated private final class PersistentSidecarWorker: @unchecked Sendable {
         return healthy && process.isRunning
     }
 
-    init(pythonURL: URL, scriptURL: URL) throws {
+    init(pythonURL: URL, scriptURL: URL, trackerKind: ChildProcessTracker.Kind) throws {
         process = Process()
         stdoutPipe = Pipe()
         stderrPipe = Pipe()
@@ -180,7 +191,7 @@ nonisolated private final class PersistentSidecarWorker: @unchecked Sendable {
             try process.run()
             Task { @MainActor in
                 if process.isRunning {
-                    ChildProcessTracker.shared.register(process, kind: .detection)
+                    ChildProcessTracker.shared.register(process, kind: trackerKind)
                 }
             }
         } catch {

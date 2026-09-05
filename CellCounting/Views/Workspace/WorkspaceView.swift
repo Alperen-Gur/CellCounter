@@ -20,23 +20,50 @@ struct WorkspaceView: View {
         VStack(spacing: 0) {
             header
             statusBar
-            HStack(spacing: 0) {
-                layerSidebar
-                    .frame(width: 246)
-                Divider().overlay(Tokens.divider)
-                workspaceCanvas
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                Divider().overlay(Tokens.divider)
-                inspector
-                    .frame(width: 354)
-            }
+            workspaceColumns
         }
         .background(Tokens.bg)
-        .onKeyPress(keys: [.init("s")]) { press in
-            guard press.modifiers.contains(.command) else { return .ignored }
-            presentWorkspaceSave()
-            return .handled
+        .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
+    }
+
+    private var workspaceColumns: some View {
+        HStack(spacing: 0) {
+            layerSidebar.frame(width: 246)
+            Divider().overlay(Tokens.divider)
+            workspaceCanvas.frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider().overlay(Tokens.divider)
+            inspector.frame(width: 354)
         }
+    }
+
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        if session.isBusy {
+            actions.cancel = { session.cancelCurrentWork() }
+        } else {
+            actions.openSelection = { presentWorkspaceOpen() }
+            actions.newItem = { session.reset() }
+            actions.save = { presentWorkspaceSave() }
+            if !session.workspace.layers.isEmpty {
+                actions.export = { presentAnimationSave() }
+            }
+        }
+        if !session.workspace.layers.isEmpty {
+            actions.previous = { selectLayer(-1) }
+            actions.next = { selectLayer(1) }
+        }
+        actions.zoomIn = { zoom = min(8, zoom + 0.15) }
+        actions.zoomOut = { zoom = max(0.2, zoom - 0.15) }
+        actions.fit = { zoom = 1 }
+        return actions
+    }
+
+    private func selectLayer(_ delta: Int) {
+        let layers = session.workspace.layers
+        guard !layers.isEmpty else { return }
+        let current = layers.firstIndex { $0.id == session.selectedLayerID }
+        let index = max(0, min(layers.count - 1, (current ?? (delta > 0 ? -1 : layers.count)) + delta))
+        session.selectLayer(layers[index].id)
     }
 
     private var header: some View {

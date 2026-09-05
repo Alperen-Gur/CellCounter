@@ -44,7 +44,7 @@ struct OmniposeDetectionService: DetectionService {
         // Z-projection + which channel to segment on. Only the sidecars
         // built on `_cellpose_common.build_arg_parser` accept these;
         // StarDist/SAM hand-roll their parsers and would exit 2.
-        args += ChannelStackSettings.sidecarArguments()
+        args += input.channelStackArguments
         if input.backgroundSubtract {
             args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
@@ -61,7 +61,7 @@ struct OmniposeDetectionService: DetectionService {
         // premise is that an elongated cell has no meaningful "diameter", and
         // its own docs recommend leaving the prior unset for the omni models.
         // We forward a diameter only when the user explicitly pinned one.
-        let expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
+        let expectedDiameterUm = input.expectedDiameterUm
         if expectedDiameterUm > 0 {
             args += ["--diameter", String(expectedDiameterUm)]
         }

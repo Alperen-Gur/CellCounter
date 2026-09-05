@@ -7,15 +7,32 @@ import SwiftData
 struct SettingsView: View {
     @Bindable var state: AppState
     @State private var section: SettingsSection = .general
+    @State private var sectionSearch = ""
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            SettingsSidebar(selection: $section)
+            VStack(spacing: 0) {
+                TextField("Find settings", text: $sectionSearch).textFieldStyle(.roundedBorder)
+                    .focused($searchFocused).padding(12)
+                SettingsSidebar(selection: $section, search: sectionSearch)
+            }.frame(width: 200)
             Rectangle().fill(Tokens.divider).frame(width: 0.5)
             SettingsBody(section: section, state: state)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bg)
+        .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
+    }
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        actions.find = { searchFocused = true }
+        let sections = SettingsSection.allCases
+        if let index = sections.firstIndex(of: section) {
+            if index > 0 { actions.previous = { section = sections[index-1] } }
+            if index+1 < sections.count { actions.next = { section = sections[index+1] } }
+        }
+        return actions
     }
 }
 
@@ -38,6 +55,19 @@ enum SettingsSection: String, CaseIterable {
         }
     }
 
+    var searchTerms: String {
+        switch self {
+        case .general: return "General default model background preprocessing rolling ball parallel preparation watershed"
+        case .appearance: return "Appearance theme colors dark light overlay"
+        case .bins: return "Default bins size thresholds"
+        case .conditions: return "Conditions groups experiments labels"
+        case .calibration: return "Calibration presets pixels micrometers objective scale"
+        case .models: return "Models storage disk download runtime Python GPU"
+        case .output: return "Output folder export CSV separator timestamp"
+        case .shortcuts: return "Shortcuts keyboard keys commands"
+        case .about: return "About version updates license"
+        }
+    }
     var icon: String {
         switch self {
         case .general:     return "settings"
@@ -57,10 +87,14 @@ enum SettingsSection: String, CaseIterable {
 
 private struct SettingsSidebar: View {
     @Binding var selection: SettingsSection
+    var search = ""
+    private var sections: [SettingsSection] {
+        SettingsSection.allCases.filter { search.isEmpty || $0.searchTerms.localizedCaseInsensitiveContains(search) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ForEach(SettingsSection.allCases, id: \.self) { sec in
+            ForEach(sections, id: \.self) { sec in
                 NavItemView(icon: sec.icon, label: sec.label,
                             isActive: selection == sec) {
                     selection = sec
@@ -225,14 +259,13 @@ private struct GeneralSection: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
-            SetRow(label: "Max parallel images",
-                   desc: "Higher uses more memory, finishes batches faster") {
+            SetRow(label: "Image preparation",
+                   desc: "Prepare the next image during analysis when memory allows") {
                 Menu {
-                    ForEach(parallelOptions, id: \.value) { opt in
-                        Button(opt.label) { state.maxParallel = opt.value }
-                    }
+                    Button("One image at a time") { state.maxParallel = 1 }
+                    Button("Automatic") { state.maxParallel = 2 }
                 } label: {
-                    SelectPill(label: "\(state.maxParallel)")
+                    SelectPill(label: state.maxParallel > 1 ? "Automatic" : "One at a time")
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
@@ -1356,23 +1389,14 @@ private struct OutputSection: View {
 // MARK: - Shortcuts
 
 private struct ShortcutsSection: View {
-    private let shortcuts: [(key: String, label: String)] = [
-        ("⌘O",      "Open files…"),
-        ("⌘⇧O",    "Open folder…"),
-        ("⌘R",      "Re-analyze current image"),
-        ("⌘E",      "Export current"),
-        ("⌘⇧E",    "Export batch"),
-        ("⌘1 / ⌘2","Switch image bin overlay (bbox / outline)"),
-        ("Space",    "Toggle overlay"),
-        ("⌘+ / ⌘−", "Zoom"),
-        ("⌘0",      "Fit to view"),
-        ("⌘,",      "Settings"),
-    ]
+    private var shortcuts: [(key: String, label: String)] {
+        KeyboardShortcutRegistry.groups.flatMap { group in group.rows.map { (key: $0.0, label: $0.1) } }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: "Keyboard shortcuts",
-                           subtitle: "Click any binding to remap it.")
+                           subtitle: "Available commands follow the current screen. Text editing keeps its standard shortcuts.")
 
             VStack(spacing: 0) {
                 ForEach(shortcuts.indices, id: \.self) { i in

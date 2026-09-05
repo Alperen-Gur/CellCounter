@@ -1,27 +1,9 @@
 import SwiftUI
 
-/// Menu commands for analysis protocols + GeoJSON export.
-///
-/// NOT YET WIRED UP: `Commands` groups only take effect when attached to a
-/// `Scene` via the `.commands { }` modifier, which lives in
-/// `CellCountingApp.swift` (outside this agent's ownership for this pass —
-/// see the task's file-ownership list). To wire this in, add one line to
-/// that file's existing `.commands { }` block:
-/// ```swift
-/// .commands {
-///     CommandGroup(replacing: .appInfo) { ... }
-///     CommandGroup(replacing: .newItem) { ... }
-///     CommandMenu("Analysis") { ... }
-///     AnalysisProtocolCommands(state: state)   // <- add this line
-///     CommandGroup(after: .help) { ... }
-/// }
-/// ```
-/// Until then, `Views/Modals/AnalysisProtocolSheet.swift` and
-/// `Views/Results/GeoJSONExportPanel.swift` remain reachable as plain
-/// SwiftUI views (e.g. for manual testing / preview) even though no menu
-/// item or toolbar button opens them yet.
+/// Scene-attached protocol actions shared by menus and the shortcuts reference.
 struct AnalysisProtocolCommands: Commands {
     let state: AppState
+    var shortcutsPresented = false
 
     var body: some Commands {
         CommandMenu("Protocols") {
@@ -29,6 +11,7 @@ struct AnalysisProtocolCommands: Commands {
                 state.showAnalysisProtocols = true
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+            .disabled(shortcutsPresented || shortcutsPresented || KeyboardShortcutContext.hasOverlay(state) || KeyboardShortcutContext.hasNativeSheet)
 
             Divider()
 
@@ -43,7 +26,8 @@ struct AnalysisProtocolCommands: Commands {
                 }
             }
             .keyboardShortcut("g", modifiers: [.command, .shift])
-            .disabled(state.currentImage?.detection == nil)
+            .disabled(state.currentImage?.detection == nil || ![AppView.results, .batch].contains(state.view)
+                      || shortcutsPresented || KeyboardShortcutContext.hasOverlay(state) || KeyboardShortcutContext.hasNativeSheet)
         }
     }
 }

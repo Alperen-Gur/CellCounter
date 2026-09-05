@@ -27,6 +27,7 @@ struct ResultsView: View {
     // Pass-15 (A2): multi-selection set shared between EditableOverlay and the
     // Cell-Edit toolbar's "delete selected" override.
     @State private var selectedCellIds: Set<UUID> = []
+    @FocusedValue(\.reviewCanvasActive) private var canvasHasFocus: Bool?
 
     var body: some View {
         if state.currentBatch == nil {
@@ -60,6 +61,7 @@ struct ResultsView: View {
                     // BatchStrip click workflow this fixes is itself hidden there.
                     if !fullScreenEdit {
                         ImageHeaderBar(state: state)
+                        AnalysisStateStrip(state: state)
                     }
                     ViewerPanel(
                         state: state,
@@ -74,6 +76,9 @@ struct ResultsView: View {
                         fullScreenEdit: $fullScreenEdit,
                         selectedCellIds: $selectedCellIds
                     )
+                    .focusable()
+                    .focusEffectDisabled()
+                    .focusedValue(\.reviewCanvasActive, true)
                     // Pass-15: hide the batch strip in full-screen edit mode so
                     // the canvas can use the entire vertical extent of the window.
                     if !fullScreenEdit {
@@ -112,12 +117,14 @@ struct ResultsView: View {
                         .animation(Tokens.Motion.ease, value: state.exportToast?.message)
                 }
             }
+            .onChange(of: state.currentImage?.id) { selectedCellIds.removeAll() }
             .focusable()
             .focusEffectDisabled()
             // Space — master overlay toggle. Either both fills + outlines on,
             // or both off. When the user toggled them independently via X/Z,
             // Space brings them back into a consistent state.
-            .onKeyPress(.space) {
+            .onKeyPress(keys: [.space]) { press in
+                guard press.modifiers.isEmpty, canvasHasFocus == true, !textInputHasFocus else { return .ignored }
                 withAnimation(Tokens.Motion.easeFast) {
                     showOverlay.toggle()
                     if showOverlay {
@@ -131,7 +138,8 @@ struct ResultsView: View {
                 return .handled
             }
             // X — toggle filled masks only (F1's colored mask render).
-            .onKeyPress(.init("x")) {
+            .onKeyPress(keys: [.init("x")]) { press in
+                guard press.modifiers.isEmpty, canvasHasFocus == true, !textInputHasFocus else { return .ignored }
                 withAnimation(Tokens.Motion.easeFast) {
                     showMaskFills.toggle()
                     showOverlay = showMaskFills || showOutlines
@@ -139,66 +147,40 @@ struct ResultsView: View {
                 return .handled
             }
             // Z — toggle outline strokes only.
-            .onKeyPress(.init("z")) {
+            .onKeyPress(keys: [.init("z")]) { press in
+                guard press.modifiers.isEmpty, canvasHasFocus == true, !textInputHasFocus else { return .ignored }
                 withAnimation(Tokens.Motion.easeFast) {
                     showOutlines.toggle()
                     showOverlay = showMaskFills || showOutlines
                 }
                 return .handled
             }
-            // ⌘+ zoom in, ⌘- zoom out, ⌘0 fit
-            // Pass-15: upper bound raised to 4.0x to take advantage of the new
-            // ScrollView pan + magnification gesture in the viewer.
-            .onKeyPress(keys: [.init("+"), .init("=")]) { press in
-                guard press.modifiers.contains(.command) else { return .ignored }
-                zoom = min(4.0, zoom + 0.15)
-                return .handled
-            }
-            .onKeyPress(keys: [.init("-")]) { press in
-                guard press.modifiers.contains(.command) else { return .ignored }
-                zoom = max(0.4, zoom - 0.15)
-                return .handled
-            }
-            .onKeyPress(keys: [.init("0")]) { press in
-                guard press.modifiers.contains(.command) else { return .ignored }
-                // Fit-to-view: zoom = 1.0 means "image fits the visible viewport"
-                // because RealImageViewer multiplies the fit-scale by `zoom`.
-                withAnimation(Tokens.Motion.ease) { zoom = 1.0 }
-                return .handled
-            }
-            // ⌘1 box overlay, ⌘2 outline overlay
-            .onKeyPress(keys: [.init("1")]) { press in
-                guard press.modifiers.contains(.command) else { return .ignored }
-                overlayMode = .bbox
-                return .handled
-            }
-            .onKeyPress(keys: [.init("2")]) { press in
-                guard press.modifiers.contains(.command) else { return .ignored }
-                overlayMode = .outline
-                return .handled
-            }
             // Pass-15 (A2): Delete / Backspace — bulk-delete the current
             // multi-selection. EditableOverlay handles this when it has focus;
             // this fallback fires when focus is elsewhere in the Results pane.
             // Empty-selection is a no-op (never deletes random cells).
-            .onKeyPress(.delete) {
+            .onKeyPress(keys: [.delete]) { press in
+                guard press.modifiers.isEmpty, !textInputHasFocus else { return .ignored }
                 guard editorMode == .view, !selectedCellIds.isEmpty else { return .ignored }
                 deleteSelectedCells()
                 return .handled
             }
-            .onKeyPress(.deleteForward) {
+            .onKeyPress(keys: [.deleteForward]) { press in
+                guard press.modifiers.isEmpty, !textInputHasFocus else { return .ignored }
                 guard editorMode == .view, !selectedCellIds.isEmpty else { return .ignored }
                 deleteSelectedCells()
                 return .handled
             }
             // ← / → navigate images
-            .onKeyPress(.leftArrow) {
+            .onKeyPress(keys: [.leftArrow]) { press in
+                guard press.modifiers.isEmpty, !textInputHasFocus else { return .ignored }
                 guard !sortedImages.isEmpty else { return .ignored }
                 let newIdx = max(0, state.currentImageIdx - 1)
                 state.currentImageIdx = newIdx
                 return .handled
             }
-            .onKeyPress(.rightArrow) {
+            .onKeyPress(keys: [.rightArrow]) { press in
+                guard press.modifiers.isEmpty, !textInputHasFocus else { return .ignored }
                 guard !sortedImages.isEmpty else { return .ignored }
                 let newIdx = min(sortedImages.count - 1, state.currentImageIdx + 1)
                 state.currentImageIdx = newIdx
@@ -219,31 +201,48 @@ struct ResultsView: View {
                 }
                 return .ignored
             }
-            // Hidden buttons for ⌘E / ⌘⇧E / ⌘R / ⌘⇧F — fired via .keyboardShortcut
-            .overlay(
-                Group {
-                    Button("") { exportAnnotatedPNG() }
-                        .keyboardShortcut("e", modifiers: [.command])
-                        .hidden()
-                        .allowsHitTesting(false)
-                    Button("") { exportBoth() }
-                        .keyboardShortcut("e", modifiers: [.command, .shift])
-                        .hidden()
-                        .allowsHitTesting(false)
-                    Button("") { rerunDetection() }
-                        .keyboardShortcut("r", modifiers: [.command])
-                        .hidden()
-                        .allowsHitTesting(false)
-                    // Pass-15: ⌘⇧F toggles full-screen edit mode.
-                    Button("") {
-                        withAnimation(Tokens.Motion.ease) { fullScreenEdit.toggle() }
-                    }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
-                    .hidden()
-                    .allowsHitTesting(false)
-                }
-            )
+            .focusedSceneValue(\.cellCounterShortcuts, screenShortcuts)
+
         }
+    }
+
+    private var screenShortcuts: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        actions.find = {
+            fullScreenEdit = false
+            Task { @MainActor in
+                await Task.yield()
+                NotificationCenter.default.post(name: .ccFindResultsTools, object: nil)
+            }
+        }
+        if state.currentImage?.detection != nil {
+            actions.export = { exportAnnotatedPNG() }
+            actions.exportBundle = { exportBoth() }
+        }
+        if let image = state.currentImage, state.canRerunSavedImage(image) {
+            actions.run = { rerunDetection() }
+        }
+        if state.currentImageIdx > 0 {
+            actions.previous = { state.currentImageIdx -= 1 }
+        }
+        if state.currentImageIdx + 1 < sortedImages.count {
+            actions.next = { state.currentImageIdx += 1 }
+        }
+        actions.zoomIn = { zoom = min(4.0, zoom + 0.15) }
+        actions.zoomOut = { zoom = max(0.4, zoom - 0.15) }
+        actions.fit = { withAnimation(Tokens.Motion.ease) { zoom = 1.0 } }
+        actions.overlayBoxes = { overlayMode = .bbox; showOverlay = true }
+        actions.overlayOutlines = { overlayMode = .outline; showOverlay = true }
+        actions.toggleOverlay = {
+            showOverlay.toggle(); showMaskFills = showOverlay; showOutlines = showOverlay
+        }
+        actions.toggleFullScreen = { withAnimation(Tokens.Motion.ease) { fullScreenEdit.toggle() } }
+        return actions
+    }
+
+    private var textInputHasFocus: Bool {
+        NSApp.keyWindow?.firstResponder is NSTextView
+            || NSApp.keyWindow?.firstResponder is NSTextField
     }
 
     private var sortedImages: [ImageRecord] {
@@ -357,8 +356,8 @@ struct ResultsView: View {
         // ⌘R doesn't spawn a duplicate subprocess or land on a stuck Processing
         // screen when no detector is available.
         guard let image = state.currentImage else { return }
-        guard state.canRunDetection, !state.isRerunning(image) else { return }
-        state.reRunDetection(on: image)
+        guard state.canRerunSavedImage(image), !state.isRerunning(image) else { return }
+        state.reRunDetection(on: image, useSavedSettings: true)
     }
 
     /// Pass-15 (A2): delete every cell in `selectedCellIds` from the current
@@ -440,6 +439,7 @@ private struct ViewerPanel: View {
     /// Pass-15: cumulative reading from the in-flight pinch — used to derive
     /// a per-tick delta into the committed `zoom` Binding.
     @State private var pinchScale: CGFloat = 1.0
+    @State private var imageFrameInViewport: CGRect = .zero
 
     /// Pass-17 (Lane B): bumps on `.ccAnnotationsChanged` so the status pill
     /// re-reads `annotationCountForCurrentImage`.
@@ -467,7 +467,8 @@ private struct ViewerPanel: View {
     }
 
     var body: some View {
-        // B4-5: wrap in GeometryReader so maxW/maxH follow the actual viewer size
+        VStack(spacing: 0) {
+        viewerControls
         GeometryReader { geo in
             // Pass-15: when full-screen edit is on, let the canvas use the whole
             // window; otherwise keep the original cap so the image doesn't grow
@@ -488,42 +489,14 @@ private struct ViewerPanel: View {
                 // zoom <= 1 the content centers thanks to the minWidth/minHeight
                 // padding below.
                 ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                    content(maxW: maxW, maxH: maxH, zoom: zoom)
+                    content(maxW: maxW, maxH: maxH, zoom: zoom, viewportSize: geo.size)
                         .frame(minWidth: maxW, minHeight: maxH)
                 }
+                .coordinateSpace(name: "resultsImageViewport")
+                .onPreferenceChange(ReviewImageFramePreference.self) { imageFrameInViewport = $0 }
                 .scrollBounceBehavior(.basedOnSize)
                 .gesture(magnifyGesture)
                 .animation(Tokens.Motion.ease, value: zoom)
-
-                ViewerControlsLeft(overlayMode: $overlayMode, showOverlay: $showOverlay)
-                // C3 pass-6: QC metric badges — shown below the overlay-mode controls.
-                VStack {
-                    Color.clear.frame(height: 52) // vertically offset below ViewerControlsLeft pill
-                    QCBadges(stats: state.currentImage?.detection?.imageStats)
-                    Spacer()
-                }
-                .padding(.leading, 14)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                ViewerControlsRight(zoom: $zoom, state: state, fullScreenEdit: $fullScreenEdit)
-                ViewerControlsTopCenter(
-                    editorMode: $editorMode,
-                    roiMode: $roiMode,
-                    manualMarkerDiameter: $state.manualMarkerDiameter,
-                    onRemoveTapped: {
-                        // Pass-15 (A2): tapping Remove with an active multi-
-                        // selection deletes the selection in one go instead
-                        // of switching to .remove mode.
-                        if !selectedCellIds.isEmpty {
-                            state.removeCells(selectedCellIds)
-                            selectedCellIds.removeAll()
-                            return true
-                        }
-                        return false
-                    },
-                    // Pass-17 (Lane B): live "M of N marked" status pill.
-                    annotationsCount: annotationCountForCurrentImage,
-                    detectionsCount: state.currentImage?.detection?.summaryCellCount ?? 0
-                )
 
                 // Pass-8: when the image is loaded but detection didn't produce a result,
                 // surface the reason inline + give a one-click re-run.
@@ -535,12 +508,12 @@ private struct ViewerPanel: View {
                     // subprocess that the Cancel handler then SIGTERM's,
                     // producing duplicate "detection cancelled" lines.
                     DetectionFailedBanner(
-                        message: state.lastDetectionError
-                            ?? "Detection didn't produce any results for this image.",
-                        canRerun: state.canRunDetection && !state.isRerunning(image),
+                        message: state.jobStatus(for: image.id)
+                            ?? "Ready to preview. Confirm settings in Analysis setup before detection.",
+                        canRerun: state.canRerunSavedImage(image) && !state.isRerunning(image),
                         onRerun: {
                             guard !state.isRerunning(image) else { return }
-                            state.reRunDetection(on: image)
+                            state.reRunDetection(on: image, useSavedSettings: true)
                         })
                         .padding(20)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -572,10 +545,52 @@ private struct ViewerPanel: View {
                 }
             }
         }
+        }
+    }
+
+    private var viewerControls: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                ViewerControlsLeft(overlayMode: $overlayMode, showOverlay: $showOverlay)
+                Spacer(minLength: 4)
+                ViewerControlsRight(zoom: $zoom, state: state, fullScreenEdit: $fullScreenEdit)
+            }
+            ScrollView(.horizontal, showsIndicators: true) {
+                EditorModeToolbar(mode: $editorMode, manualMarkerDiameter: $state.manualMarkerDiameter,
+                                  onRemoveTapped: {
+                    guard !selectedCellIds.isEmpty else { return false }
+                    state.removeCells(selectedCellIds); selectedCellIds.removeAll()
+                    return true
+                }).fixedSize(horizontal: true, vertical: false)
+            }.frame(height: 38)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    ROIModePicker(mode: $roiMode)
+                    QCBadges(stats: state.currentImage?.detection?.imageStats).fixedSize()
+                    Spacer(minLength: 4)
+                    SplitTouchingButton(state: state)
+                }
+                VStack(spacing: 5) {
+                    HStack {
+                        ROIModePicker(mode: $roiMode)
+                        Spacer(minLength: 4)
+                        SplitTouchingButton(state: state)
+                    }
+                    QCBadges(stats: state.currentImage?.detection?.imageStats)
+                }
+            }
+            if editorMode == .annotate {
+                AnnotateStatusPill(annotated: annotationCountForCurrentImage,
+                                   detected: state.currentImage?.detection?.summaryCellCount ?? 0)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Tokens.bg)
+        .overlay(alignment: .bottom) { Divider().overlay(Tokens.divider) }
     }
 
     @ViewBuilder
-    private func content(maxW: CGFloat, maxH: CGFloat, zoom: Double) -> some View {
+    private func content(maxW: CGFloat, maxH: CGFloat, zoom: Double, viewportSize: CGSize) -> some View {
         // Parent has already guarded for nil/empty batch, so we only reach
         // here with at least one real image. A nil `currentImage` is a
         // transient state during image switch — show the checker background.
@@ -597,12 +612,33 @@ private struct ViewerPanel: View {
                             selectedCellIds: $selectedCellIds,
                             maxW: maxW,
                             maxH: maxH,
-                            zoom: zoom)
+                            zoom: zoom,
+                            visibleSourceRect: sourceViewport(image: image, viewportSize: viewportSize,
+                                                              maxW: maxW, maxH: maxH, zoom: zoom))
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: ReviewImageFramePreference.self,
+                                           value: geometry.frame(in: .named("resultsImageViewport")))
+                })
         } else {
             Color.clear
         }
     }
 
+    private func sourceViewport(image: ImageRecord, viewportSize: CGSize,
+                                maxW: CGFloat, maxH: CGFloat, zoom: Double) -> CGRect? {
+        guard imageFrameInViewport.width > 0 else { return nil }
+        let scale = max(0.0001, min(maxW / CGFloat(max(1, image.widthPx)),
+                                     maxH / CGFloat(max(1, image.heightPx))) * zoom)
+        let rect = CGRect(x: -imageFrameInViewport.minX / scale,
+                          y: -imageFrameInViewport.minY / scale,
+                          width: viewportSize.width / scale, height: viewportSize.height / scale)
+        return rect.intersection(CGRect(x: 0, y: 0, width: image.widthPx, height: image.heightPx))
+    }
+}
+
+private struct ReviewImageFramePreference: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 // MARK: — Real-image viewer
@@ -642,8 +678,11 @@ private struct RealImageViewer: View {
     /// When > 1 the content exceeds the wrapping ScrollView's viewport so the
     /// user can pan via two-finger scroll / drag; at 1.0 the image just fits.
     var zoom: Double = 1.0
+    var visibleSourceRect: CGRect? = nil
 
     @State private var liveCells: [DetectedCell] = []
+    @State private var liveCellsImageId: UUID?
+    @State private var overlayFilterCache = ReviewSummaryCache()
     @State private var liveCellsRevision: Int = 0
     /// Pass-17 (Lane B): in-memory mirror of the ground-truth annotations on
     /// this image. Synced from `state.repos.annotations(for:)` on appear / image
@@ -675,6 +714,19 @@ private struct RealImageViewer: View {
         DetectionCellsLoadKey(imageId: image.id,
                               detectionId: image.detection?.id,
                               revision: image.detection?.cellsRevision ?? 0)
+    }
+
+    private var visibleCellsForEditing: [DetectedCell] {
+        let key = ReviewDataKey(imageId: image.id, detectionId: image.detection?.id,
+                                revision: liveCellsRevision,
+                                confidence: state.effectiveConfidence(for: image),
+                                regions: image.rois.map(ReviewRegion.init), pxPerUm: batchPxPerUm)
+        return overlayFilterCache.value(for: key, cells: liveCellsImageId == image.id ? liveCells : []).cells
+    }
+
+    private var overlayRenderRevision: Int {
+        _ = visibleCellsForEditing
+        return overlayFilterCache.rebuildCount
     }
 
     var body: some View {
@@ -728,27 +780,12 @@ private struct RealImageViewer: View {
                     // EditableOverlay; this filter sits one layer above it.
                     let cutoff = state.effectiveConfidence(for: image)
                     let visibleBinding = Binding<[DetectedCell]>(
-                        get: { liveCells.filter { $0.confidence >= cutoff } },
+                        get: { visibleCellsForEditing },
                         set: { newVisible in
-                            let newById = Dictionary(uniqueKeysWithValues:
-                                newVisible.map { ($0.id, $0) })
-                            var merged: [DetectedCell] = []
-                            var seen = Set<UUID>()
-                            for c in liveCells {
-                                if c.confidence >= cutoff {
-                                    if let updated = newById[c.id] {
-                                        merged.append(updated)
-                                        seen.insert(c.id)
-                                    }
-                                    // else: visible cell removed by the user.
-                                } else {
-                                    merged.append(c)   // hidden — preserve
-                                }
-                            }
-                            for c in newVisible where !seen.contains(c.id) {
-                                merged.append(c)       // overlay-added
-                            }
-                            liveCells = merged
+                            // Read the current snapshot for every setter, including
+                            // multiple edits delivered before SwiftUI redraws.
+                            liveCells = MeasurementSelection.merging(visible: newVisible, into: liveCells,
+                                previouslyVisibleIds: Set(visibleCellsForEditing.map(\.id)))
                             liveCellsRevision &+= 1
                         }
                     )
@@ -759,9 +796,10 @@ private struct RealImageViewer: View {
                         overlayMode: overlayMode,
                         uncertaintyThreshold: cutoff,
                         palette: state.overlayPalette,
-                        renderRevision: liveCellsRevision,
+                        renderRevision: overlayRenderRevision,
                         viewScale: Double(scale),
                         viewOffset: .zero,
+                        visibleSourceRect: visibleSourceRect,
                         onEdit: { handleEdit($0) },
                         editorMode: $editorMode,
                         manualMarkerDiameter: state.manualMarkerDiameter,
@@ -775,6 +813,7 @@ private struct RealImageViewer: View {
                         onRemoveAnnotation: { a in removeAnnotation(a) },
                         onPrompt: { prompt in runPrompt(prompt) }
                     )
+                    .focusedValue(\.reviewCanvasActive, true)
                 }
 
                 if promptBusy || promptStatus != nil {
@@ -861,14 +900,15 @@ private struct RealImageViewer: View {
 
     private func syncFromDetection() async {
         guard let detection = image.detection else {
-            liveCells = []
+            liveCells = []; liveCellsImageId = image.id
             liveCellsRevision &+= 1
             return
         }
         let detectionId = detection.id
         let cells = await state.loadCells(for: detection)
-        guard !Task.isCancelled, image.detection?.id == detectionId else { return }
-        liveCells = cells
+        guard !Task.isCancelled, image.detection?.id == detectionId,
+              state.currentImage?.id == image.id else { return }
+        liveCells = cells; liveCellsImageId = image.id
         liveCellsRevision &+= 1
     }
 
@@ -1114,8 +1154,7 @@ private struct ViewerControlsLeft: View {
     @Binding var showOverlay: Bool
 
     var body: some View {
-        VStack {
-            HStack(spacing: 6) {
+        HStack(spacing: 6) {
                 SegmentedPicker(
                     value: $overlayMode,
                     options: [
@@ -1142,76 +1181,6 @@ private struct ViewerControlsLeft: View {
                     )
             )
             .shadow(color: .black.opacity(0.06), radius: 2, y: 1)
-            Spacer()
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-private struct ViewerControlsTopCenter: View {
-    @Binding var editorMode: EditableOverlay.EditorMode
-    @Binding var roiMode: ROIMode
-    @Binding var manualMarkerDiameter: Double
-    /// Pass-15 (A2): override fired by the toolbar's Remove button — returns
-    /// `true` if the tap was consumed (used to delete an active selection
-    /// instead of switching to .remove mode).
-    var onRemoveTapped: (() -> Bool)? = nil
-    /// Pass-17 (Lane B): annotated count + detected count for the status pill
-    /// that surfaces in `.annotate` mode. Nil-state hides the pill.
-    var annotationsCount: Int = 0
-    var detectionsCount: Int = 0
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            // Preferred: one row, exactly as before.
-            HStack(spacing: 8) {
-                editorToolbar
-                ROIModePicker(mode: $roiMode)
-                annotateStatus
-            }
-            // Fallback: two centred rows. The mode buttons keep their labels
-            // (they're the ones the user reads), and the ROI picker + status
-            // pill drop underneath.
-            VStack(spacing: 6) {
-                editorToolbar
-                HStack(spacing: 8) {
-                    ROIModePicker(mode: $roiMode)
-                    annotateStatus
-                }
-            }
-        }
-        .padding(.top, 14)
-        // The three viewer control clusters (Left / TopCenter / Right) are
-        // INDEPENDENT overlays in the same ZStack, each spanning the full
-        // width at its own alignment, so nothing stops them sharing pixels
-        // once their combined width exceeds the viewer.
-        //
-        // Reserving the side clusters' widths with horizontal padding was the
-        // obvious fix and the WRONG one: it shrank the space this row is laid
-        // out in, so the labels compressed to single characters ("V", "A",
-        // "D"…) instead of overlapping. Squeezing the row is not better than
-        // overlapping it.
-        //
-        // Instead the row keeps its natural width and `ViewThatFits` drops it
-        // to two centred lines when a single line genuinely doesn't fit, so
-        // the labels stay legible either way.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private var editorToolbar: some View {
-        EditorModeToolbar(mode: $editorMode,
-                          manualMarkerDiameter: $manualMarkerDiameter,
-                          onRemoveTapped: onRemoveTapped)
-    }
-
-    /// Pass-17 (Lane B): live "M of N marked" status when annotating.
-    @ViewBuilder
-    private var annotateStatus: some View {
-        if editorMode == .annotate {
-            AnnotateStatusPill(annotated: annotationsCount,
-                               detected: detectionsCount)
-        }
     }
 }
 
@@ -1265,21 +1234,10 @@ private struct ViewerControlsRight: View {
     @Binding var fullScreenEdit: Bool
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                zoomGroup
-                // Pass-15: full-screen edit toggle — pill next to zoom so it's
-                // discoverable and lines up visually with the existing controls.
-                fullScreenToggle
-            }
-            // Bug #3: SplitTouchingButton placed BELOW zoom controls in its own row
-            // so it never overlaps ViewerControlsLeft (shape segmented control) regardless
-            // of viewer width. Both clusters are strictly right-aligned in a VStack.
-            SplitTouchingButton(state: state)
-            Spacer()
+        HStack(spacing: 6) {
+            zoomGroup
+            fullScreenToggle
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     private var fullScreenToggle: some View {
@@ -1519,6 +1477,9 @@ private struct ResultsToolSelector: View {
             .frame(width: 340, height: 410)
             .background(Tokens.bg)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ccFindResultsTools)) { _ in
+            showingTools = true
+        }
     }
 }
 
@@ -1608,6 +1569,8 @@ private struct ResultsSidebar: View {
     /// prevents each sidebar panel from decoding the same detection JSON while
     /// SwiftUI evaluates its body.
     @State private var rawCellsSnapshot: [DetectedCell] = []
+    @State private var summary = ReviewSummary()
+    @State private var summaryKey: ReviewDataKey?
 
     private var workspace: ResultsWorkspace {
         get { ResultsWorkspace(rawValue: workspaceRaw) ?? .overview }
@@ -1620,7 +1583,8 @@ private struct ResultsSidebar: View {
     /// hasn't run yet, `cells` falls back to empty — the existing
     /// DetectionFailedBanner handles re-running.
     private var rawCells: [DetectedCell] {
-        rawCellsSnapshot
+        summaryKey?.imageId == state.currentImage?.id
+            && summaryKey?.detectionId == state.currentImage?.detection?.id ? rawCellsSnapshot : []
     }
 
     private var cellsLoadKey: DetectionCellsLoadKey? {
@@ -1636,17 +1600,19 @@ private struct ResultsSidebar: View {
     /// all read this computed property*. Underlying SwiftData rows are
     /// untouched, so the slider can be dragged back down freely. A2 and A4
     /// can layer their own filters on top without rewriting this body.
-    private var cells: [DetectedCell] {
-        guard let image = state.currentImage else { return rawCells }
-        _ = roiSignal  // make this dependent on the bump signal
-        let cutoff = state.effectiveConfidence(for: image)
-        let confidenceFiltered = rawCells.filter { $0.confidence >= cutoff }
-        let rois = state.repos.rois(for: image.id)
-        return ROIFilter.apply(cells: confidenceFiltered, rois: rois)
+    private var displaySummary: ReviewSummary {
+        summaryKey?.imageId == reviewKey.imageId && summaryKey?.detectionId == reviewKey.detectionId
+            ? summary : ReviewSummary()
     }
-    private var roiCount: Int {
-        guard let image = state.currentImage else { return 0 }
-        return state.repos.rois(for: image.id).count
+    private var cells: [DetectedCell] { displaySummary.cells }
+    private var regions: [ReviewRegion] { (state.currentImage?.rois ?? []).map(ReviewRegion.init) }
+    private var roiCount: Int { regions.count }
+    private var reviewKey: ReviewDataKey {
+        let image = state.currentImage
+        return ReviewDataKey(imageId: image?.id, detectionId: image?.detection?.id,
+                             revision: image?.detection?.cellsRevision ?? 0,
+                             confidence: image.map { state.effectiveConfidence(for: $0) } ?? state.confidence,
+                             regions: regions, pxPerUm: image?.batch?.pxPerUm ?? state.pxPerUm)
     }
 
     /// Channel names for the current detection, in source order — the only
@@ -1655,7 +1621,7 @@ private struct ResultsSidebar: View {
     /// genuinely multi-channel sources). Empty for a plain grayscale image.
     /// Feeds `ChannelStackPanel`; see its mount below.
     private var channelNames: [String] {
-        let sourceCell = rawCellsSnapshot.first { $0.channelIntensities?.isEmpty == false }
+        let sourceCell = rawCells.first { $0.channelIntensities?.isEmpty == false }
         guard let entries = sourceCell?.channelIntensities else { return [] }
         return entries.sorted { $0.channel < $1.channel }.map(\.displayName)
     }
@@ -1667,7 +1633,14 @@ private struct ResultsSidebar: View {
             Divider().overlay(Tokens.divider)
             ScrollView {
                 VStack(spacing: 0) {
-                    TotalBlock(cells: cells)
+                    TotalBlock(summary: displaySummary)
+                        .opacity(summaryKey == reviewKey ? 1 : 0.45)
+                    if summaryKey != reviewKey {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Updating measurements…").font(.system(size: 10))
+                        }.foregroundStyle(Tokens.textTertiary).padding(.bottom, 6)
+                    }
                     workspaceContent
                 }
             }
@@ -1679,8 +1652,8 @@ private struct ResultsSidebar: View {
                 .frame(width: 0.5)
                 .frame(maxHeight: .infinity)
         }
-        .onChange(of: roiCount) { roiSignal &+= 1 }
-        .task(id: cellsLoadKey) { await reloadCellsSnapshot() }
+        .onChange(of: regions) { roiSignal &+= 1 }
+        .task(id: reviewKey) { await reloadCellsSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
             guard note.object == nil || (note.object as? UUID) == state.currentImage?.id else { return }
             Task { await reloadCellsSnapshot() }
@@ -1688,17 +1661,21 @@ private struct ResultsSidebar: View {
     }
 
     private func reloadCellsSnapshot() async {
+        let key = reviewKey
+        guard summaryKey != key else { return }
         guard let image = state.currentImage, let detection = image.detection else {
-            rawCellsSnapshot = []
+            rawCellsSnapshot = []; summary = ReviewSummary(); summaryKey = key
             return
         }
-        let imageId = image.id
-        let detectionId = detection.id
         let cells = await state.loadCells(for: detection)
-        guard !Task.isCancelled,
-              state.currentImage?.id == imageId,
-              state.currentImage?.detection?.id == detectionId else { return }
+        guard !Task.isCancelled, reviewKey == key else { return }
+        let updated = await Task.detached(priority: .userInitiated) {
+            ReviewSummary.make(cells: cells, confidence: key.confidence, regions: key.regions)
+        }.value
+        guard !Task.isCancelled, reviewKey == key else { return }
         rawCellsSnapshot = cells
+        summary = updated; summaryKey = key
+        selectedCellIds = MeasurementSelection.reconciled(selectedCellIds, cells: updated.cells)
     }
 
     @ViewBuilder
@@ -1706,9 +1683,9 @@ private struct ResultsSidebar: View {
         switch workspace {
         case .overview:
             Divider().overlay(Tokens.divider)
-            SizeBinsPanel(state: state, cells: cells)
+            SizeBinsPanel(state: state, cells: cells, revision: summaryKey)
             Divider().overlay(Tokens.divider)
-            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
+            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds, revision: summaryKey)
             ColoniesPanel(state: state)
             Divider().overlay(Tokens.divider)
             ScalePanel(state: state)
@@ -1730,7 +1707,7 @@ private struct ResultsSidebar: View {
 
         case .workflows:
             AdvancedWorkflowsPanel(state: state,
-                                   cells: rawCellsSnapshot,
+                                   cells: rawCells,
                                    editorMode: $editorMode,
                                    selectedCellIds: $selectedCellIds)
 
@@ -1739,7 +1716,10 @@ private struct ResultsSidebar: View {
 
         case .measurements:
             Divider().overlay(Tokens.divider)
-            MeasurementsPanel(cells: cells)
+            LinkedMeasurementsPanel(cells: cells, revision: summaryKey, selectedCellIds: $selectedCellIds)
+                .id(state.currentImage?.id)
+                .disabled(summaryKey != reviewKey)
+            MeasurementsPanel(summary: displaySummary)
             IntensityAssaysPanel(cells: cells,
                                  imageStats: state.currentImage?.detection?.imageStats ?? [:])
 
@@ -1772,7 +1752,7 @@ private struct ResultsSidebar: View {
             RetrainAndAdvanceBanner(state: state, controller: retrainController)
                 .padding(.horizontal, 18).padding(.bottom, 8)
             Divider().overlay(Tokens.divider)
-            SizeBinsPanel(state: state, cells: cells)
+            SizeBinsPanel(state: state, cells: cells, revision: summaryKey)
             Divider().overlay(Tokens.divider)
             ExpectedDiameterPanel(state: state)
             channelControls
@@ -1780,19 +1760,22 @@ private struct ResultsSidebar: View {
             OverlayAppearancePanel(state: state)
             Divider().overlay(Tokens.divider)
             AdvancedWorkflowsPanel(state: state,
-                                   cells: rawCellsSnapshot,
+                                   cells: rawCells,
                                    editorMode: $editorMode,
                                    selectedCellIds: $selectedCellIds)
             Divider().overlay(Tokens.divider)
             QualityInsightsPanel(state: state)
             Divider().overlay(Tokens.divider)
-            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds)
+            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds, revision: summaryKey)
             ColoniesPanel(state: state)
             Divider().overlay(Tokens.divider)
             ScalePanel(state: state)
             Divider().overlay(Tokens.divider)
             ConfidencePanel(state: state)
-            MeasurementsPanel(cells: cells)
+            LinkedMeasurementsPanel(cells: cells, revision: summaryKey, selectedCellIds: $selectedCellIds)
+                .id(state.currentImage?.id)
+                .disabled(summaryKey != reviewKey)
+            MeasurementsPanel(summary: displaySummary)
             IntensityAssaysPanel(cells: cells,
                                  imageStats: state.currentImage?.detection?.imageStats ?? [:])
             AdditionalAssaysSection(state: state, cells: cells,
@@ -1913,19 +1896,10 @@ private struct AdditionalAssaysSection: View {
 // MARK: — Total block
 
 private struct TotalBlock: View {
-    let cells: [DetectedCell]
-
-    private var total: Int { cells.count }
-    private var diameters: [Double] { cells.map(\.diameter) }
-    private var mean: Double {
-        guard !diameters.isEmpty else { return 0 }
-        return diameters.reduce(0, +) / Double(diameters.count)
-    }
-    private var stdev: Double {
-        guard diameters.count > 1 else { return 0 }
-        let m = mean
-        return sqrt(diameters.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(diameters.count))
-    }
+    let summary: ReviewSummary
+    private var total: Int { summary.cells.count }
+    private var mean: Double { summary.meanDiameter }
+    private var stdev: Double { summary.diameterDeviation }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -1935,7 +1909,7 @@ private struct TotalBlock: View {
                 .kerning(-0.02 * 38)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("cells detected")
+                Text("included · \(summary.excludedCount) filtered out")
                     .font(.system(size: 13))
                     .foregroundStyle(Tokens.textSecondary)
                 HStack(spacing: 0) {
@@ -1976,6 +1950,9 @@ private struct TotalBlock: View {
 private struct SizeBinsPanel: View {
     @Bindable var state: AppState
     let cells: [DetectedCell]
+    let revision: ReviewDataKey?
+    @State private var cachedBinCounts: [Int] = []
+    private struct BinKey: Equatable { let revision: ReviewDataKey?; let thresholds: [Double] }
 
     /// One-level undo snapshot of the thresholds captured immediately BEFORE the
     /// most recent add / remove / edit. Non-nil while an "Undo" chip is offered.
@@ -2007,7 +1984,7 @@ private struct SizeBinsPanel: View {
     private var total: Int { cells.count }
 
     private func count(for index: Int) -> Int {
-        cells.filter { BinMath.binIndex(for: $0.diameter, thresholds: displayThresholds) == index }.count
+        cachedBinCounts.indices.contains(index) ? cachedBinCounts[index] : 0
     }
 
     var body: some View {
@@ -2106,6 +2083,14 @@ private struct SizeBinsPanel: View {
         .animation(Tokens.Motion.easeFast, value: undoSnapshot != nil)
         .padding(.horizontal, 18)
         .padding(.vertical, 18)
+        .task(id: BinKey(revision: revision, thresholds: displayThresholds)) {
+            var counts = Array(repeating: 0, count: displayThresholds.count + 1)
+            for cell in cells {
+                let index = BinMath.binIndex(for: cell.diameter, thresholds: displayThresholds)
+                if counts.indices.contains(index) { counts[index] += 1 }
+            }
+            cachedBinCounts = counts
+        }
     }
 }
 
@@ -2371,11 +2356,14 @@ private struct ExpectedDiameterPanel: View {
 private struct DistributionPanel: View {
     let cells: [DetectedCell]
     let thresholds: [Double]
+    let revision: ReviewDataKey?
+    @State private var cachedHistogram: [Int] = []
+    private struct HistogramKey: Equatable { let revision: ReviewDataKey?; let metric: HistogramMath.Metric }
 
     @State private var metric: HistogramMath.Metric = .diameter
 
     // Delegate bucket computation to the shared HistogramMath (defined in CompareView.swift).
-    private var histData: [Int] { HistogramMath.buckets(for: cells, metric: metric) }
+    private var histData: [Int] { cachedHistogram.count == metric.bucketCount ? cachedHistogram : Array(repeating: 0, count: metric.bucketCount) }
 
     var body: some View {
         let (lo, hi) = metric.range
@@ -2451,6 +2439,9 @@ private struct DistributionPanel: View {
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 18)
+        .task(id: HistogramKey(revision: revision, metric: metric)) {
+            cachedHistogram = HistogramMath.buckets(for: cells, metric: metric)
+        }
     }
 }
 
@@ -2501,7 +2492,7 @@ private struct ScalePanel: View {
 ///
 /// When a `currentImage` is loaded, edits write to that image's
 /// `confidenceOverride` so each slide can carry its own cutoff. The "Reset"
-/// button clears the override (back to the global default). When no image is
+/// button clears the override (back to its saved analysis cutoff, or the legacy default). When no image is
 /// loaded yet, edits fall back to writing the global `state.confidence`.
 private struct ConfidencePanel: View {
     @Bindable var state: AppState
@@ -2565,7 +2556,7 @@ private struct ConfidencePanel: View {
                         Text("0.00")
                         Spacer()
                         if hasOverride, let img = state.currentImage {
-                            Button("Reset to global") {
+                            Button(img.detection?.runSettings == nil ? "Reset to default cutoff" : "Reset to analysis cutoff") {
                                 state.setConfidenceOverride(nil, on: img)
                             }
                             .buttonStyle(.plain)
@@ -2592,27 +2583,17 @@ private struct ConfidencePanel: View {
 /// Hidden entirely when no cell carries measurement data (backward-compat with
 /// mock / legacy detections that don't populate the optional fields).
 private struct MeasurementsPanel: View {
-    let cells: [DetectedCell]
-
-    // Cells that actually carry measurement data.
-    private var measured: [DetectedCell] { cells.filter { $0.areaMicrons2 != nil } }
-
-    private func meanOf(_ kp: KeyPath<DetectedCell, Double?>) -> Double? {
-        let vals = measured.compactMap { $0[keyPath: kp] }
-        guard !vals.isEmpty else { return nil }
-        return vals.reduce(0, +) / Double(vals.count)
-    }
-
-    private var meanArea: Double?        { meanOf(\.areaMicrons2) }
-    private var meanPerimeter: Double?   { meanOf(\.perimeterMicrons) }
-    private var meanCircularity: Double? { meanOf(\.circularity) }
-    private var meanEccentricity: Double? { meanOf(\.eccentricity) }
-    private var meanAspectRatio: Double? { meanOf(\.aspectRatio) }
-    private var meanSolidity: Double?    { meanOf(\.solidity) }
+    let summary: ReviewSummary
+    private var meanArea: Double? { summary.means["area"] }
+    private var meanPerimeter: Double? { summary.means["perimeter"] }
+    private var meanCircularity: Double? { summary.means["circularity"] }
+    private var meanEccentricity: Double? { summary.means["eccentricity"] }
+    private var meanAspectRatio: Double? { summary.means["aspectRatio"] }
+    private var meanSolidity: Double? { summary.means["solidity"] }
 
     var body: some View {
         // Skip the panel entirely when no cell has measurement data.
-        if measured.isEmpty { return AnyView(EmptyView()) }
+        if summary.means.isEmpty { return AnyView(EmptyView()) }
 
         return AnyView(
             VStack(spacing: 0) {
@@ -3243,4 +3224,19 @@ private struct GroundTruthPanel: View {
                                                    to: csvURL)
         }
     }
+}
+
+private struct ReviewCanvasFocusKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+extension FocusedValues {
+    fileprivate var reviewCanvasActive: Bool? {
+        get { self[ReviewCanvasFocusKey.self] }
+        set { self[ReviewCanvasFocusKey.self] = newValue }
+    }
+}
+
+private extension Notification.Name {
+    static let ccFindResultsTools = Notification.Name("CellCounter.FindResultsTools")
 }

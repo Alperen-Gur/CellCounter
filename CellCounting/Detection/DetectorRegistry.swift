@@ -61,6 +61,25 @@ protocol ModelDownloader: Sendable {
 @MainActor
 final class DetectorRegistry: ObservableObject {
     private var downloaders: [ModelFamily: any ModelDownloader] = [:]
+    private var probeEpoch = 0
+    private var probeResults: [String: Bool] = [:]
+    private var probes: [String: Task<Bool, Never>] = [:]
+
+    /// These families share one package and fetch individual weights on first
+    /// inference. Families with per-model weight files keep independent checks.
+    static func probeKey(for model: DetectionModelInfo) -> String {
+        switch model.family {
+        case .cellpose, .cellpose4, .omnipose: return "runtime:" + model.family.rawValue
+        default: return "model:" + model.id
+        }
+    }
+
+    func invalidateProbes() {
+        probeEpoch &+= 1
+        probeResults.removeAll()
+        probes.removeAll()
+    }
+
     /// Live install progress objects, keyed by modelId.
     @Published var installs: [String: ModelInstallProgress] = [:]
     /// Optional cache hook — set by AppState so the registry can flip the cache
@@ -118,9 +137,18 @@ final class DetectorRegistry: ObservableObject {
         // jump off to do the deep probe.
         guard let info = models.first(where: { $0.id == modelId }),
               let dl = downloaders[info.family] else { return false }
-        // `probeInstalled` is intentionally non-isolated; the implementations
-        // hop to detached tasks for the actual subprocess work.
-        return await dl.probeInstalled(modelId: modelId)
+        let key = Self.probeKey(for: info)
+        if let result = probeResults[key] { return result }
+        if let task = probes[key] { return await task.value }
+        let revision = probeEpoch
+        let task = Task.detached(priority: .utility) { await dl.probeInstalled(modelId: modelId) }
+        probes[key] = task
+        let result = await task.value
+        if revision == probeEpoch {
+            probeResults[key] = result
+            probes[key] = nil
+        }
+        return result
     }
 
     /// Kicks off installation in the background; returns the progress object the UI
@@ -143,13 +171,17 @@ final class DetectorRegistry: ObservableObject {
                 if let self {
                     self.installStateCache?.refresh(modelId: modelId,
                                                     registry: self,
-                                                    models: models)
+                                                    models: models, force: true)
                 }
                 NotificationCenter.default.post(name: .ccModelStorageChanged, object: modelId)
             }
             do {
                 progress.stage = .checkingDependencies
-                try await dl.install(modelId: modelId, progress: progress)
+                // Import checks and filesystem preparation in installers also
+                // run off-main under nonisolated-nonsending concurrency.
+                try await Task.detached(priority: .userInitiated) {
+                    try await dl.install(modelId: modelId, progress: progress)
+                }.value
                 progress.stage = .ready
             } catch is CancellationError {
                 progress.stage = .failed("Cancelled")

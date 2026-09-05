@@ -35,6 +35,11 @@ final class AppState {
     @ObservationIgnored
     let workspaceSession = WorkspaceSession()
 
+    let jobScheduler = AnalysisJobScheduler(store: AnalysisJobStore(
+        url: FileStore.shared.root.appendingPathComponent("analysis-jobs.json")))
+    var analysisSetupJobId: UUID?
+    var isPreparingImport = false
+
     // Modals
     var showCalibration = false
     var showOnboarding = false
@@ -66,6 +71,7 @@ final class AppState {
     /// init-accessor can't yield through an existential).
     @ObservationIgnored
     private var defaultsObserver: NSObjectProtocol?
+    @ObservationIgnored private var trainingActivityObserver: NSObjectProtocol?
 
     // Analysis params (live UI state — persisted via @AppStorage where applicable)
     var thresholds: [Double] {
@@ -389,6 +395,7 @@ final class AppState {
     @ObservationIgnored private var decodedCellsTasks: [UUID: (revision: Int, task: Task<[DetectedCell], Never>)] = [:]
     @ObservationIgnored private var pendingCellEdits: [UUID: PendingCellEdit] = [:]
     @ObservationIgnored private var pendingCellEditTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var calibrationTask: Task<Void, Error>?
 
     var activeModelName: String {
         models.first(where: { $0.id == activeModelId })?.name ?? "Cellpose cyto3"
@@ -678,6 +685,29 @@ final class AppState {
                 self.lastStageUpdateAt = Date()
             }
         }
+        installStateCache.onStateChange = { [weak self] ids in
+            guard let self, ids.contains(self.activeModelId) else { return }
+            let next = self.installStateCache.get(self.activeModelId)
+            self.activeModelInstallState = next
+            switch next {
+            case .notInstalled, .broken: self.detector = nil
+            default: break
+            }
+            if next == .installed && self.detector == nil { self.refreshDetector() }
+        }
+        trainingActivityObserver = NotificationCenter.default.addObserver(
+            forName: TrainingService.activityChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.jobScheduler.modelExecutionBecameAvailable() }
+        }
+        jobScheduler.configure(prepare: { [weak self] item, settings, batchId in
+            guard let self else { throw CancellationError() }
+            return try await self.prepareJobImage(item, settings: settings, batchId: batchId)
+        }, analyze: { [weak self] imageId, settings in
+            guard let self else { throw CancellationError() }
+            try await self.analyzeJobImage(imageId, settings: settings)
+        })
+        Task { [weak self] in await self?.jobScheduler.restore() }
     }
 
     /// Cellpose emits tqdm progress bars on the same stderr stream as its
@@ -802,7 +832,11 @@ final class AppState {
            cached.count == count {
             return cached.images
         }
-        let ordered = batch.images.sorted(by: { $0.importedAt < $1.importedAt })
+        let ordered = batch.images.sorted {
+            let lhs = $0.sourceOrder ?? Int.max, rhs = $1.sourceOrder ?? Int.max
+            if lhs != rhs { return lhs < rhs }
+            return $0.importedAt < $1.importedAt
+        }
         orderedImagesCache = (batch.id, count, ordered)
         return ordered
     }
@@ -896,7 +930,7 @@ final class AppState {
     /// any code that decides whether a cell is "visible".
     func effectiveConfidence(for image: ImageRecord) -> Double {
         if let v = image.confidenceOverride { return v }
-        return confidence
+        return image.detection?.runSettings?.confidence ?? confidence
     }
 
     /// Writes an override for `image`. Pass nil to clear (i.e. fall back to
@@ -1015,63 +1049,9 @@ final class AppState {
     func refreshActiveModelInstallState() {
         let id = activeModelId
         let cached = installStateCache.get(id)
-        // Even if the cache says .installed, double-check the venv for
-        // cellpose-family ids — the cache may be stale after a Finder-side
-        // delete that hasn't been observed yet. The next async probe will
-        // overwrite if needed.
-        if let info = models.first(where: { $0.id == id }),
-           info.family == .cellpose,
-           case .installed = cached {
-            // Spot-check the venv directory synchronously. This is a cheap
-            // filesystem stat, not a subprocess.
-            let venv = FileStore.shared.pythonVenvDir
-            let sentinel = FileStore.shared.installIncompleteSentinel
-            if !FileManager.default.fileExists(atPath: venv.path) {
-                activeModelInstallState = .notInstalled
-                installStateCache.refresh(modelId: id,
-                                          registry: detectorRegistry,
-                                          models: models)
-                return
-            }
-        }
-        // Pass-16: same spot-check for `.cellpose4` against venv4.
-        if let info = models.first(where: { $0.id == id }),
-           info.family == .cellpose4,
-           case .installed = cached {
-            let venv4 = FileStore.shared.pythonVenv4Dir
-            if !FileManager.default.fileExists(atPath: venv4.path) {
-                activeModelInstallState = .notInstalled
-                installStateCache.refresh(modelId: id,
-                                          registry: detectorRegistry,
-                                          models: models)
-                return
-            }
-        }
-        if let info = models.first(where: { $0.id == id }),
-           info.family == .cellpose,
-           case .installed = cached {
-            let sentinel = FileStore.shared.installIncompleteSentinel
-            // Pass-13: a leftover install-incomplete sentinel beats whatever the
-            // cache says — the previous run crashed or was cancelled before
-            // cellpose finished installing. Mark broken here so views (Models
-            // banner, Toolbar pill) downgrade immediately, then kick the
-            // async probe to overwrite once the deep check finishes.
-            if FileManager.default.fileExists(atPath: sentinel.path) {
-                let reason = "Previous install was cancelled or crashed mid-flight."
-                activeModelInstallState = .broken(reason: reason)
-                installStateCache.markBroken(id, reason: reason)
-                installStateCache.refresh(modelId: id,
-                                          registry: detectorRegistry,
-                                          models: models)
-                return
-            }
-        }
         activeModelInstallState = cached
-        // If the cache hasn't resolved yet, ask it to. This is idempotent.
         if case .unknown = cached {
-            installStateCache.refresh(modelId: id,
-                                      registry: detectorRegistry,
-                                      models: models)
+            installStateCache.refresh(modelId: id, registry: detectorRegistry, models: models)
         }
     }
 
@@ -1131,430 +1111,261 @@ final class AppState {
     @discardableResult
     func importAndAnalyze(urls: [URL], condition: String? = nil) -> UUID? {
         let supported = urls.filter { ImageLoader.supported.contains($0.pathExtension.lowercased()) }
-        guard !supported.isEmpty else { return nil }
-
-        // Pass-8: resolve the detector up front. If nothing is installed for the
-        // active model id, surface a user-visible error and abort — no batch is
-        // created, no mock detection is run.
-        guard let svc = detectorRegistry.detector(for: activeModelId, models: models) else {
-            lastDetectionError = "No detector available for \(activeModelName). Install the model first."
-            showDetectionError = true
-            return nil
-        }
-
-        // Pass-17: compute hashes off-main, then check for duplicates on main.
-        // We do this before creating a batch so no phantom batch is created.
-        let reposRef = repos
+        guard !supported.isEmpty, !isPreparingImport else { return nil }
+        isPreparingImport = true
         Task { [weak self] in
             guard let self else { return }
-
-            // Hash all files off-main (detached so we don't block MainActor).
-            let hashPairs: [(URL, String?)] = await Task.detached(priority: .userInitiated) {
-                supported.map { url in (url, ImageLoader.sha256Hex(of: url)) }
+            defer { self.isPreparingImport = false }
+            await self.jobScheduler.restore()
+            let pairs = await Task.detached(priority: .userInitiated) {
+                supported.map { ($0, ImageLoader.sha256Hex(of: $0)) }
             }.value
-
-            // Back on main: one library fetch + O(1) lookups. The previous
-            // per-file `imageRecord(matchingHash:)` path issued N SwiftData
-            // queries before a large import even reached the processing UI.
-            let existingByIdentity = Dictionary(
-                reposRef.allImages().compactMap { image -> (String, ImageRecord)? in
-                    guard let hash = image.fileHash, !hash.isEmpty else { return nil }
-                    return (image.fileName + "\u{0}" + hash, image)
-                },
-                uniquingKeysWith: { first, _ in first })
-            let dupes: [DuplicateCandidate] = hashPairs.compactMap { (url, hash) in
-                guard let hash, !hash.isEmpty else { return nil }
-                guard let existing = existingByIdentity[url.lastPathComponent + "\u{0}" + hash] else {
-                    return nil
+            let existing = Dictionary(self.repos.allImages().compactMap { image -> (String, ImageRecord)? in
+                guard let hash = image.fileHash else { return nil }
+                return (hash, image)
+            }, uniquingKeysWith: { first, _ in first })
+            var hashes: [URL: String] = [:]
+            var seen: Set<String> = []
+            var unique: [URL] = []
+            var duplicates: [DuplicateCandidate] = []
+            for (url, hash) in pairs {
+                if let hash {
+                    hashes[url] = hash
+                    if let image = existing[hash] { duplicates.append(.init(url: url, hash: hash, existingRecord: image)) }
+                    if !seen.insert(hash).inserted { continue }
                 }
-                return DuplicateCandidate(url: url, hash: hash, existingRecord: existing)
+                unique.append(url)
             }
-
-            // Reuse the hashes we just computed so the import pipeline doesn't
-            // read + SHA-256 every file a second time (audit: double-hash-per-import).
-            var knownHashes: [URL: String] = [:]
-            for (url, hash) in hashPairs {
-                if let hash, !hash.isEmpty { knownHashes[url] = hash }
-            }
-
-            if !dupes.isEmpty {
-                // Present the sheet — block the import until user decides.
-                self.pendingDuplicateSession = DuplicateImportSession(
-                    allURLs: supported,
-                    condition: condition,
-                    duplicates: dupes,
-                    onProceed: { [weak self] urlsToImport in
-                        self?.proceedWithImport(urls: urlsToImport, condition: condition, svc: svc, knownHashes: knownHashes)
-                    }
-                )
-                self.showDuplicateImportSheet = true
+            if duplicates.isEmpty {
+                self.proceedWithImport(urls: unique, condition: condition, knownHashes: hashes)
             } else {
-                // No duplicates — proceed immediately.
-                self.proceedWithImport(urls: supported, condition: condition, svc: svc, knownHashes: knownHashes)
+                self.pendingDuplicateSession = DuplicateImportSession(allURLs: unique, condition: condition,
+                    duplicates: duplicates, onProceed: { [weak self] urls in
+                        self?.proceedWithImport(urls: urls, condition: condition, knownHashes: hashes)
+                    })
+                self.showDuplicateImportSheet = true
             }
         }
-
-        // Return nil here — the batch ID is not yet known; the caller should
-        // observe `currentBatchId` instead. The batch is created inside proceedWithImport.
         return nil
     }
 
-    /// Internal: actually creates the batch and runs the import/detect pipeline.
-    /// Called either directly (no duplicates) or from the duplicate sheet's confirm action.
-    func proceedWithImport(urls: [URL], condition: String?, svc: DetectionService, knownHashes: [URL: String] = [:]) {
+    /// Create a durable draft and import the representative image. Inference is
+    /// an explicit choice in AnalysisSetupSheet; native import needs no model.
+    func proceedWithImport(urls: [URL], condition: String?, svc: DetectionService? = nil,
+                           knownHashes: [URL: String] = [:]) {
         guard !urls.isEmpty else { return }
-
-        let displayName = urls.count == 1
-            ? urls[0].deletingPathExtension().lastPathComponent
-            : "Batch · \(urls.count) images · \(Self.shortDate())"
-        let batch = repos.createBatch(displayName: displayName,
-                                       modelId: activeModelId,
-                                       pxPerUm: pxPerUm,
-                                       thresholds: thresholds,
-                                       condition: condition)
-        libraryBatchCount += 1
-        currentBatchId = batch.id
-        currentImageIdx = 0
-        processingProgress = 0
-        processingStageLine = ""
-        processingDevice = ""
-        lastStageUpdateAt = Date()
-        view = .processing
-
-        // Pass-10: honour Settings → "Max parallel images". The loop ran one-at-a-time
-        // before. Now we process up to `parallelism` images concurrently using a
-        // TaskGroup, which respects the user's memory/perf preference.
-        let parallelism = max(1, maxParallel)
-
+        let parentNames = Set(urls.map { $0.deletingLastPathComponent().lastPathComponent })
+        let title = urls.count == 1 ? urls[0].deletingPathExtension().lastPathComponent
+            : (parentNames.count == 1 ? parentNames.first! : "Batch · \(urls.count) images · \(Self.shortDate())")
+        let settings = AnalysisRunSettings.capture(state: self)
+        let batch = repos.createBatch(displayName: title, modelId: settings.modelId,
+                                      pxPerUm: settings.pxPerUm, thresholds: settings.thresholds, condition: condition)
+        var job = AnalysisJob(batchId: batch.id, title: title, settings: settings,
+                              items: urls.map { AnalysisJobItem(url: $0, knownHash: knownHashes[$0]) })
+        job.settings.calibrationSource = "unconfirmed"
+        currentBatchId = batch.id; currentImageIdx = 0
+        refreshLibraryStats()
         Task { [weak self] in
             guard let self else { return }
-            var anyImported = false
-            var lastError: String? = nil
-            var finished = 0
-
-            // Pass-6 C1: derive size-class thresholds from the user's bin breakpoints.
-            let smallT = self.thresholds.first ?? 20
-            let largeT = self.thresholds.last ?? 30
-            // Snapshot scalar settings that the worker tasks need. Capturing
-            // `self.useGPU` etc. inside the group would force MainActor hops.
-            let pxPerUmSnap = self.pxPerUm
-            let confSnap = self.confidence
-            let channelsSnap = self.channels.asArray
-            let bgSnap = self.backgroundSubtract
-            let rollSnap = self.rollingBallRadius
-            let preprocessingSnap = self.preprocessingPreset
-            let wsSnap = self.watershedSplit
-            let wsdSnap = self.watershedMinDistanceUm
-            let modelIdSnap = self.activeModelId
-            let useGPUSnap = self.useGPU
-            let svcRef = svc
-            let knownHashesSnap = knownHashes
-            let activeFamilySnap = self.models.first(where: { $0.id == modelIdSnap })?.family
-            let vendorInterpretersSnap = PythonRuntime.vendorReaderInterpreters(
-                preferredFamily: activeFamilySnap)
-            let zProjectionSnap = ChannelStackSettings.zProjection.rawValue
-
-            // Cellpose-family and classical sidecars load the untouched vendor
-            // source through `_imageio`, preserving all raw channels for
-            // quantification. PIL-only or separately provisioned detectors use
-            // the prepared lossless PNG so vendor imports remain model-agnostic.
-            let detectorReadsVendorSourceDirectly = activeFamilySnap == .cellpose
-                || activeFamilySnap == .cellpose4
-                || activeFamilySnap == .classical
-
-            // Pass-17 Lane C: collect EXIF px/µm from each import result so we
-            // can auto-apply a batch-level calibration when all images agree.
-            var collectedExifPxPerUm: [Double] = []
-            var collectedExifSources: [String] = []
-
-            await withTaskGroup(of: (URL, Swift.Result<DetectionResult, Error>?, ImageRecord?, Double?, String?, Error?).self) { group in
-                var iterator = urls.makeIterator()
-                var inFlight = 0
-
-                func dispatch(url: URL) {
-                    group.addTask {
-                        do {
-                            let imported: ImportResult
-                            if ImageLoader.isVendorExtension(url.pathExtension) {
-                                imported = try await ImageLoader.importVendorFile(
-                                    url,
-                                    precomputedHash: knownHashesSnap[url],
-                                    interpreters: vendorInterpretersSnap,
-                                    zProjection: zProjectionSnap)
-                            } else {
-                                imported = try await Task.detached(priority: .utility) {
-                                    try ImageLoader.importFile(
-                                        url, precomputedHash: knownHashesSnap[url])
-                                }.value
-                            }
-                            let detectionURL = ImageLoader.isVendorExtension(url.pathExtension)
-                                && !detectorReadsVendorSourceDirectly
-                                ? imported.record.displayURL
-                                : imported.record.storedURL
-                            let input = DetectionInput(imageURL: detectionURL,
-                                                       modelId: modelIdSnap,
-                                                       pxPerUm: pxPerUmSnap,
-                                                       confidenceThreshold: confSnap,
-                                                       channels: channelsSnap,
-                                                       backgroundSubtract: bgSnap,
-                                                       rollingBallRadius: rollSnap,
-                                                       preprocessingPreset: preprocessingSnap,
-                                                       watershedSplit: wsSnap,
-                                                       watershedMinDistance: wsdSnap,
-                                                       smallThreshold: smallT,
-                                                       largeThreshold: largeT,
-                                                       useGPU: useGPUSnap)
-                            do {
-                                let r = try await svcRef.detect(input)
-                                return (url, .success(r), imported.record, imported.exifPxPerUm, imported.exifSource, nil)
-                            } catch {
-                                return (url, .failure(error), imported.record, imported.exifPxPerUm, imported.exifSource, nil)
-                            }
-                        } catch {
-                            return (url, nil, nil, nil, nil, error)
-                        }
+            do {
+                await self.jobScheduler.restore()
+                try await self.jobScheduler.add(job)
+                self.analysisSetupJobId = job.id
+                if let first = job.items.first {
+                    let imageId = try await self.jobScheduler.prepareSample(job.id, itemId: first.id)
+                    if let image = self.repos.image(id: imageId), let px = image.sourcePxPerUm {
+                        var calibrated = job.settings
+                        calibrated.pxPerUm = px
+                        calibrated.calibrationSource = image.sourceCalibrationSource ?? "metadata"
+                        try await self.jobScheduler.updateDraft(job.id, settings: calibrated, preset: .countCells)
+                        batch.pxPerUm = px; batch.pxPerUmSource = calibrated.calibrationSource
+                        try self.repos.context.save()
                     }
+                    if self.analysisSetupJobId == job.id { self.openImage(id: imageId) }
                 }
-
-                // Seed up to `parallelism` tasks
-                while inFlight < parallelism, let next = iterator.next() {
-                    dispatch(url: next)
-                    inFlight += 1
-                }
-
-                while let result = await group.next() {
-                    inFlight -= 1
-                    let (url, detResult, importedRecord, exifPx, exifSource, importError) = result
-                    if let importError {
-                        lastError = importError.localizedDescription
-                        NSLog("CellCounter import failed for %@: %@",
-                              url.lastPathComponent, importError.localizedDescription)
-                    } else if let imported = importedRecord {
-                        self.repos.attach(image: imported, to: batch, save: false)
-                        anyImported = true
-                        // Accumulate EXIF px/µm values.
-                        if let px = exifPx { collectedExifPxPerUm.append(px) }
-                        if let exifSource { collectedExifSources.append(exifSource) }
-                        switch detResult {
-                        case .success(let r):
-                            self.repos.saveDetection(r.cells,
-                                                     detectorId: "\(type(of: svcRef))/\(modelIdSnap)",
-                                                     for: imported,
-                                                     imageStats: r.imageStats,
-                                                     save: false)
-                        case .failure(let err):
-                            // Pass-13: don't surface user-initiated cancels as
-                            // failures. They produce exit code 15/9 which
-                            // CellposeDetectionService now translates to
-                            // DetectionError.cancelled.
-                            if case DetectionError.cancelled = err {
-                                NSLog("CellCounter detection cancelled for %@", url.lastPathComponent)
-                            } else {
-                                lastError = err.localizedDescription
-                                NSLog("CellCounter detection failed for %@: %@",
-                                      url.lastPathComponent, err.localizedDescription)
-                            }
-                        case .none:
-                            break
-                        }
-                        // Update scalar progress counters without re-fetching
-                        // Home summaries on every one of a 700-image import.
-                        self.libraryImageCount += 1
-                        self.reviewQueueCount += imported.detection?.reviewPendingCount ?? 0
-                    }
-                    finished += 1
-                    self.processingProgress = Double(finished) / Double(urls.count)
-                    // One transaction per small completed chunk instead of
-                    // attach + detection each committing independently. Large
-                    // imports drop from ~2N SQLite commits to ceil(N/8), while
-                    // yielding keeps progress and cancellation responsive.
-                    if finished.isMultiple(of: 8) {
-                        try? self.repos.context.save()
-                        await Task.yield()
-                    }
-
-                    if let next = iterator.next() {
-                        dispatch(url: next)
-                        inFlight += 1
-                    }
-                }
-            }
-            try? self.repos.context.save()
-
-            // Pass-17 Lane C: apply EXIF-derived calibration to this batch if:
-            //  • EVERY imported image reported EXIF calibration (no un-calibrated
-            //    image silently inheriting a scale it never carried), AND
-            //  • they all returned the SAME px/µm value (within 0.1%), AND
-            //  • that value differs from the user's current global by > 5%
-            if !collectedExifPxPerUm.isEmpty,
-               collectedExifPxPerUm.count == urls.count {
-                let allSame = collectedExifPxPerUm.allSatisfy {
-                    abs($0 - collectedExifPxPerUm[0]) / collectedExifPxPerUm[0] < 0.001
-                }
-                if allSame {
-                    let exifPx = collectedExifPxPerUm[0]
-                    let diffFraction = abs(exifPx - pxPerUmSnap) / max(pxPerUmSnap, 0.001)
-                    batch.pxPerUm = exifPx
-                    batch.pxPerUmSource = Set(collectedExifSources).count == 1
-                        ? collectedExifSources.first : "metadata-mixed"
-
-                    // Detection ran with the batch snapshot known before file
-                    // metadata was inspected. Re-derive physical measurements
-                    // from pixel-space values once, so applying metadata never
-                    // leaves the scale bar and cell diameters disagreeing.
-                    let linearRatio = pxPerUmSnap / exifPx
-                    for (offset, image) in self.orderedImages(in: batch).enumerated() {
-                        guard let detection = image.detection else { continue }
-                        var calibrated = detection.cells
-                        for index in calibrated.indices {
-                            calibrated[index].diameter = calibrated[index].diameterPx / exifPx
-                            calibrated[index].centroidUmX = calibrated[index].cx / exifPx
-                            calibrated[index].centroidUmY = calibrated[index].cy / exifPx
-                            if let area = calibrated[index].areaMicrons2 {
-                                calibrated[index].areaMicrons2 = area * linearRatio * linearRatio
-                            }
-                            if let perimeter = calibrated[index].perimeterMicrons {
-                                calibrated[index].perimeterMicrons = perimeter * linearRatio
-                            }
-                        }
-                        let storage = await Task.detached(priority: .utility) {
-                            DetectionRecord.makeStorageSnapshot(calibrated)
-                        }.value
-                        detection.applyStorageSnapshot(storage)
-                        if offset % 8 == 7 {
-                            try? self.repos.context.save()
-                            await Task.yield()
-                        }
-                    }
-                    try? self.repos.context.save()
-
-                    if diffFraction > 0.05 {
-                        NSLog("[EXIFCalibration] Applied %.4f px/µm to batch (was %.4f, diff %.1f%%)",
-                              exifPx, pxPerUmSnap, diffFraction * 100)
-
-                        // Build the objective label (mirrors ScalePanel.objectiveLabel).
-                        let objLabel = Self.objectiveLabel(for: exifPx)
-                        let noteText = String(format: "Calibrated from image metadata: %.2f px/µm (%@).",
-                                              exifPx, objLabel)
-                        self.lastCalibrationNote = noteText
-                        // Auto-dismiss after 5 s.
-                        Task { @MainActor [weak self] in
-                            try? await Task.sleep(nanoseconds: 5_000_000_000)
-                            guard let self else { return }
-                            if self.lastCalibrationNote == noteText {
-                                withAnimation { self.lastCalibrationNote = nil }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let lastError {
-                self.lastDetectionError = lastError
-                self.showDetectionError = true
-            }
-            self.refreshLibraryStats()
-            if anyImported {
-                self.processingDone()
-            } else {
-                self.view = .home
-            }
-
-            // Pass-12: don't leave an empty `BatchRecord` behind when every
-            // import failed (unsupported format, decode error, detector throw
-            // before any attach). Without this, the sidebar shows a phantom
-            // batch with 0 images, and Recents renders a "0 cells · 0 images"
-            // row that — pre-fix — routed into Results and rendered the
-            // procedural ghost strip.
-            if batch.images.isEmpty {
-                self.repos.deleteBatch(batch)
-                if self.currentBatchId == batch.id {
-                    self.currentBatchId = nil
-                }
-                NotificationCenter.default.post(
-                    name: .ccLibraryChanged, object: nil)
+            } catch {
+                self.lastDetectionError = error.localizedDescription; self.showDetectionError = true
             }
         }
     }
 
-    /// Pass-8: re-run detection for a single already-imported image. Used by the
-    /// "Re-run detection" button in ResultsView when the original run failed.
-    ///
-    /// Pass-13: also drives the ProcessingView so the user sees a progress
-    /// indicator instead of clicking the button and watching nothing happen.
-    /// The view flips back to .results when the detection lands (or fails).
-    func reRunDetection(on image: ImageRecord) {
-        // Pass-14: idempotent guard. The Re-run button + DetectionFailedBanner
-        // can both fire `onRerun` in the same tick (button double-tap, or a
-        // SwiftUI onChange storm during view transitions). Each extra call
-        // spawned a fresh cellpose subprocess; the Cancel button then SIGTERM'd
-        // every tracked process in a tight loop, producing three back-to-back
-        // "detection cancelled" log lines. One in-flight task per image only.
-        if inFlightRerunImageIds.contains(image.id) {
-            NSLog("[AppState] reRunDetection ignored — already running for image \(image.id)")
-            return
+    func openAnalysisSetup(for batch: BatchRecord) {
+        if let draft = jobScheduler.jobs.last(where: { $0.batchId == batch.id && $0.status == .draft }) {
+            analysisSetupJobId = draft.id; return
         }
-        guard let svc = detectorRegistry.detector(for: activeModelId, models: models) else {
-            lastDetectionError = "No detector available for \(activeModelName). Install the model first."
-            showDetectionError = true
-            return
+        if let active = jobScheduler.jobs.first(where: { $0.batchId == batch.id && [.running, .queued, .pausing].contains($0.status) }) {
+            flashExport("Pause \(active.title) before changing its analysis setup.", isError: false)
+            view = .queue; return
         }
-        inFlightRerunImageIds.insert(image.id)
-        // Decouple re-segmentation from live bin edits: source the Cellpose
-        // diameter prior (small/large threshold → expected diameter in the
-        // sidecar) from the image's OWN batch thresholds, frozen at analysis
-        // time, instead of the live global `thresholds`. Without this, editing
-        // the global size bins after the fact silently changes what a re-run
-        // produces for an already-analyzed image — a reproducibility hazard and
-        // the mechanism behind the "changing bins re-analyzed my batch" report.
-        let rerunThresholds = image.batch?.thresholds ?? self.thresholds
-        let smallT = rerunThresholds.first ?? 20
-        let largeT = rerunThresholds.last ?? 30
-        let input = DetectionInput(imageURL: image.storedURL,
-                                    modelId: activeModelId,
-                                    pxPerUm: image.batch?.pxPerUm ?? pxPerUm,
-                                    confidenceThreshold: confidence,
-                                    channels: channels.asArray,
-                                    backgroundSubtract: backgroundSubtract,
-                                    rollingBallRadius: rollingBallRadius,
-                                    preprocessingPreset: preprocessingPreset,
-                                    watershedSplit: watershedSplit,
-                                    watershedMinDistance: watershedMinDistanceUm,
-                                    smallThreshold: smallT,
-                                    largeThreshold: largeT,
-                                    useGPU: useGPU)
-        let returnView = self.view
-        processingProgress = 0
-        processingStageLine = ""
-        processingDevice = ""
-        lastStageUpdateAt = Date()
-        view = .processing
-        let rerunImageId = image.id
+        let sample = currentImage?.batch?.id == batch.id ? currentImage : orderedImages(in: batch).first
+        var settings = sample?.detection?.runSettings ?? AnalysisRunSettings.capture(state: self)
+        settings.pxPerUm = batch.pxPerUm; settings.calibrationSource = batch.pxPerUmSource ?? "manual"
+        settings.thresholds = batch.thresholds
+        let items = orderedImages(in: batch).map { image -> AnalysisJobItem in
+            var item = AnalysisJobItem(url: image.storedURL, imageId: image.id, knownHash: image.fileHash, displayName: image.fileName)
+            if image.detection?.runSettings?.hasSameInputs(as: settings) == true { item.status = .completed }
+            return item
+        }
+        let job = AnalysisJob(batchId: batch.id, title: batch.displayName, settings: settings, items: items)
         Task { [weak self] in
             guard let self else { return }
-            // Pass-14: clear the in-flight marker on every exit path. `defer`
-            // inside a Task is fine — the cleanup runs whether the detect()
-            // call returns normally, throws, or is cancelled.
-            defer { self.inFlightRerunImageIds.remove(rerunImageId) }
-            do {
-                let result = try await svc.detect(input)
-                self.repos.saveDetection(result.cells,
-                                          detectorId: "\(type(of: svc))/\(self.activeModelId)",
-                                          for: image,
-                                          imageStats: result.imageStats)
-                NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
-                self.processingProgress = 1
-                self.view = .results
-            } catch {
-                // Pass-13: swallow user-initiated cancels — no banner needed.
-                if case DetectionError.cancelled = error {
-                    self.view = returnView
-                } else {
-                    self.lastDetectionError = error.localizedDescription
-                    self.showDetectionError = true
-                    self.view = returnView
-                }
+            do { try await self.jobScheduler.add(job); self.analysisSetupJobId = job.id }
+            catch { self.flashExport(error.localizedDescription, isError: true) }
+        }
+    }
+
+    func commitAnalysisSetup(_ jobId: UUID) async throws {
+        guard let job = jobScheduler.job(jobId), let batch = repos.batch(id: job.batchId) else { return }
+        if let error = job.settings.validationError {
+            throw NSError(domain: "AnalysisJobs", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
+        }
+        try await recalibrateBatch(batch, pxPerUm: job.settings.pxPerUm, source: job.settings.calibrationSource)
+        batch.modelId = job.settings.modelId
+        batch.thresholds = job.settings.thresholds
+        batch.contentRevision &+= 1
+        try repos.context.save()
+        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+    }
+
+    func jobStatus(for imageId: UUID) -> String? {
+        for job in jobScheduler.jobs.reversed() {
+            if let item = job.items.first(where: { $0.imageId == imageId }) {
+                if jobScheduler.previewItemId == item.id { return "Running preview" }
+                if item.status == .completed { return job.importOnly ? "Imported · ready to analyze" : "Analysis complete" }
+                if item.status == .failed { return "Analysis failed · retry in Processing" }
+                if job.status == .draft { return "Ready for preview" }
+                return "\(job.status.title) · \(item.status.rawValue)"
             }
+        }
+        return nil
+    }
+
+    private func prepareJobImage(_ item: AnalysisJobItem, settings: AnalysisRunSettings,
+                                 batchId: UUID) async throws -> UUID {
+        guard let batch = repos.batch(id: batchId) else {
+            throw NSError(domain: "AnalysisJobs", code: 1, userInfo: [NSLocalizedDescriptionKey: "The batch was deleted. Remove this job from Processing."])
+        }
+        if let recovered = repos.image(jobItemId: item.id) { return recovered.id }
+        let url = try item.resolvedURL()
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let imported: ImportResult
+        if ImageLoader.isVendorExtension(url.pathExtension) {
+            let interpreters = PythonRuntime.vendorReaderInterpreters(preferredFamily: ModelFamily(rawValue: settings.modelFamily))
+            imported = try await ImageLoader.importVendorFile(url, precomputedHash: item.knownHash,
+                interpreters: interpreters, zProjection: settings.zProjection)
+        } else {
+            imported = try await Task.detached(priority: .utility) {
+                try ImageLoader.importFile(url, precomputedHash: item.knownHash)
+            }.value
+        }
+        let image = imported.record
+        // A queued source can be replaced between selection and preparation.
+        // Verify the owned copy before trusting the original dedup identity.
+        let copiedURL = image.storedURL
+        let actualHash = await Task.detached(priority: .utility) { ImageLoader.sha256Hex(of: copiedURL) }.value ?? ""
+        if actualHash.isEmpty || (item.knownHash != nil && item.knownHash != actualHash) {
+            try? FileManager.default.removeItem(at: image.storedURL)
+            try? FileManager.default.removeItem(at: image.thumbURL)
+            if image.displayURL != image.storedURL { try? FileManager.default.removeItem(at: image.displayURL) }
+            throw NSError(domain: "AnalysisJobs", code: 3, userInfo: [NSLocalizedDescriptionKey:
+                "The source changed after this job was created. Import it again to review the updated image."])
+        }
+        image.fileHash = actualHash
+        image.sourcePxPerUm = imported.exifPxPerUm
+        image.sourceCalibrationSource = imported.exifSource
+        image.jobItemId = item.id
+        image.sourceOrder = jobScheduler.jobs.first(where: { $0.batchId == batchId && $0.items.contains(where: { $0.id == item.id }) })?.items.firstIndex(where: { $0.id == item.id })
+        repos.attach(image: image, to: batch, save: false)
+        try repos.context.save()
+        refreshLibraryStats()
+        NotificationCenter.default.post(name: .ccLibraryChanged, object: nil)
+        return image.id
+    }
+
+    private func analyzeJobImage(_ imageId: UUID, settings: AnalysisRunSettings) async throws {
+        guard let image = repos.image(id: imageId) else { throw DetectionError.imageDecodeFailed }
+        let svc: DetectionService
+        if settings.modelId == EnsembleDownloader.modelId {
+            guard let aId = settings.ensemblePrimaryId, let bId = settings.ensembleSecondaryId,
+                  aId != bId, aId != settings.modelId, bId != settings.modelId,
+                  let a = detectorRegistry.detector(for: aId, models: models),
+                  let b = detectorRegistry.detector(for: bId, models: models) else {
+                throw DetectionError.modelNotInstalled(modelId: "saved ensemble members")
+            }
+            svc = EnsembleDetectionService(primary: a, secondary: b, primaryModelId: aId, secondaryModelId: bId)
+        } else {
+            guard let selected = detectorRegistry.detector(for: settings.modelId, models: models) else {
+                throw DetectionError.modelNotInstalled(modelId: settings.modelId)
+            }
+            svc = selected
+        }
+        if let sourcePx = image.sourcePxPerUm,
+           settings.calibrationSource != "manual", settings.calibrationSource != "unconfirmed",
+           abs(sourcePx - settings.pxPerUm) / settings.pxPerUm > 0.01 {
+            throw NSError(domain: "AnalysisJobs", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                "This image has a different pixel scale. Analyze it in a separate batch or explicitly confirm a manual scale."])
+        }
+        // Finish committed corrections before saving the previous mask variant.
+        if let pending = pendingCellEditTasks[image.detection?.id ?? UUID()] { await pending.value }
+        inFlightRerunImageIds.insert(imageId)
+        defer { inFlightRerunImageIds.remove(imageId) }
+        let source = settings.sourceURL(for: image)
+        processingStageLine = "Preparing \(image.fileName)"; lastStageUpdateAt = Date()
+        var recordedSettings = settings
+        if let family = ModelFamily(rawValue: settings.modelFamily) {
+            recordedSettings.detectorVersion = ProvenanceMetadata.detectorVersion(for: family)
+            recordedSettings.weightsSHA256 = ProvenanceMetadata.weightsHash(for: family, modelId: settings.modelId)
+        }
+        let result = try await svc.detect(settings.detectionInput(imageURL: source))
+        // Edits made while inference was running belong to the saved previous
+        // variant. Drain them before replacing its detection record.
+        while let detection = image.detection, let pending = pendingCellEditTasks[detection.id] {
+            await pending.value
+            try Task.checkCancellation()
+        }
+        try Task.checkCancellation()
+        var measuredCells = result.cells
+        if let scale = image.batch?.pxPerUm, scale > 0, scale != settings.pxPerUm {
+            let ratio = settings.pxPerUm / scale
+            for index in measuredCells.indices {
+                measuredCells[index].diameter = measuredCells[index].diameterPx / scale
+                measuredCells[index].centroidUmX = measuredCells[index].cx / scale
+                measuredCells[index].centroidUmY = measuredCells[index].cy / scale
+                if let area = measuredCells[index].areaMicrons2 { measuredCells[index].areaMicrons2 = area * ratio * ratio }
+                if let perimeter = measuredCells[index].perimeterMicrons { measuredCells[index].perimeterMicrons = perimeter * ratio }
+            }
+        }
+        // The model and run inputs are captured before awaiting inference.
+        repos.saveDetection(measuredCells, detectorId: "\(type(of: svc))/\(settings.modelId)",
+                            for: image, imageStats: result.imageStats, runSettings: recordedSettings, save: false)
+        try repos.context.save()
+        refreshLibraryStats()
+        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+    }
+
+    /// Reanalysis is a durable one-image background job; navigation stays usable.
+    func canRerunSavedImage(_ image: ImageRecord) -> Bool {
+        let modelId = image.detection?.runSettings?.modelId ?? activeModelId
+        return !isRerunning(image) && detectorRegistry.isInstalled(modelId, models: models)
+    }
+
+    func reRunDetection(on image: ImageRecord, useSavedSettings: Bool = false) {
+        guard !isRerunning(image), let batch = image.batch,
+              !jobScheduler.jobs.contains(where: { [.queued, .running, .pausing].contains($0.status) && $0.items.contains(where: { $0.imageId == image.id }) }) else { return }
+        var settings = useSavedSettings ? (image.detection?.runSettings ?? AnalysisRunSettings.capture(state: self))
+            : AnalysisRunSettings.capture(state: self)
+        settings.pxPerUm = batch.pxPerUm; settings.calibrationSource = batch.pxPerUmSource ?? "manual"
+        settings.thresholds = batch.thresholds
+        let job = AnalysisJob(batchId: batch.id, title: image.fileName, settings: settings,
+            items: [AnalysisJobItem(url: image.storedURL, imageId: image.id, knownHash: image.fileHash, displayName: image.fileName)])
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.jobScheduler.add(job)
+                self.jobScheduler.maxParallel = self.maxParallel
+                try await self.jobScheduler.enqueue(job.id)
+            } catch { self.flashExport(error.localizedDescription, isError: true) }
         }
     }
 
@@ -1913,50 +1724,76 @@ final class AppState {
     func applyCalibration(_ newPxPerUm: Double,
                           source: String,
                           updateCurrentBatch: Bool = true) {
-        guard newPxPerUm > 0 else { return }
+        guard newPxPerUm.isFinite, newPxPerUm > 0 else { return }
+        if updateCurrentBatch, let batch = currentBatch,
+           jobScheduler.jobs.contains(where: { $0.batchId == batch.id && [.queued, .running, .pausing].contains($0.status) }) {
+            flashExport("Pause this batch in Processing before changing its calibration.", isError: true)
+            return
+        }
         pxPerUm = newPxPerUm
         // Home owns the default for FUTURE imports. Reaching an old batch via
         // `currentBatchId` must not make a Home calibration silently rewrite
         // that analyzed batch's measurements or scale bar.
         guard updateCurrentBatch, let batch = currentBatch else { return }
-        let oldPxPerUm = max(batch.pxPerUm, 0.000_001)
-        batch.pxPerUm = newPxPerUm
-        batch.pxPerUmSource = source
-        batch.contentRevision &+= 1
-        let images = orderedImages(in: batch)
-
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let linearRatio = oldPxPerUm / newPxPerUm
-            for (offset, image) in images.enumerated() {
-                guard let detection = image.detection else { continue }
-                var recalibrated = detection.cells
-                for index in recalibrated.indices {
-                    recalibrated[index].diameter = recalibrated[index].diameterPx / newPxPerUm
-                    recalibrated[index].centroidUmX = recalibrated[index].cx / newPxPerUm
-                    recalibrated[index].centroidUmY = recalibrated[index].cy / newPxPerUm
-                    if let area = recalibrated[index].areaMicrons2 {
-                        recalibrated[index].areaMicrons2 = area * linearRatio * linearRatio
+            do {
+                try await self.recalibrateBatch(batch, pxPerUm: newPxPerUm, source: source)
+                self.lastCalibrationNote = String(format: "Calibration applied: %.5g px/µm (%@).", newPxPerUm, source)
+            } catch { self.flashExport(error.localizedDescription, isError: true) }
+        }
+    }
+
+    /// Serialize calibration requests and only apply a prepared snapshot if no
+    /// correction arrived while it was encoded. Memory is bounded to one image.
+    func recalibrateBatch(_ batch: BatchRecord, pxPerUm scale: Double, source: String) async throws {
+        let previous = calibrationTask
+        let task = Task { @MainActor in
+            _ = try? await previous?.value
+            guard scale.isFinite, scale > 0 else { return }
+            let oldScale = batch.pxPerUm
+            batch.pxPerUm = scale; batch.pxPerUmSource = source
+            if oldScale != scale {
+                for image in self.orderedImages(in: batch) {
+                    while let detection = image.detection {
+                        if let pending = self.pendingCellEditTasks[detection.id] { await pending.value; continue }
+                        let revision = detection.cellsRevision
+                        let cells = await self.loadCells(for: detection)
+                        let snapshot = await Task.detached(priority: .utility) {
+                            DetectionRecord.makeStorageSnapshot(Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: oldScale))
+                        }.value
+                        guard image.detection?.id == detection.id,
+                              detection.cellsRevision == revision,
+                              self.pendingCellEditTasks[detection.id] == nil else { continue }
+                        detection.applyStorageSnapshot(snapshot)
+                        break
                     }
-                    if let perimeter = recalibrated[index].perimeterMicrons {
-                        recalibrated[index].perimeterMicrons = perimeter * linearRatio
-                    }
-                }
-                let storage = await Task.detached(priority: .utility) {
-                    DetectionRecord.makeStorageSnapshot(recalibrated)
-                }.value
-                detection.applyStorageSnapshot(storage)
-                if offset % 8 == 7 {
-                    try? self.repos.context.save()
-                    await Task.yield()
                 }
             }
-            try? self.repos.context.save()
-            NotificationCenter.default.post(name: .ccCorrectionsChanged,
-                                            object: self.currentImage?.id,
-                                            userInfo: ["reviewDelta": 0])
-            let note = String(format: "Calibration applied: %.5g px/µm (%@).", newPxPerUm, source)
-            self.lastCalibrationNote = note
+            batch.contentRevision &+= 1
+            try self.repos.context.save()
+            NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+        }
+        calibrationTask = task
+        try await task.value
+    }
+
+    nonisolated static func calibratedCells(_ cells: [DetectedCell], pxPerUm scale: Double,
+                                           fallbackScale: Double) -> [DetectedCell] {
+        cells.map { original in
+            var cell = original
+            // A concurrent correction may already use the new batch scale.
+            // Infer each cell's stored scale from its paired pixel/µm diameter
+            // so repeated calibration cannot scale its area or perimeter twice.
+            let ownScale = original.diameter > 0 && original.diameterPx > 0
+                ? original.diameterPx / original.diameter : fallbackScale
+            let ratio = ownScale / scale
+            cell.diameter = original.diameterPx / scale
+            cell.centroidUmX = original.cx / scale
+            cell.centroidUmY = original.cy / scale
+            if let area = original.areaMicrons2 { cell.areaMicrons2 = area * ratio * ratio }
+            if let perimeter = original.perimeterMicrons { cell.perimeterMicrons = perimeter * ratio }
+            return cell
         }
     }
 }

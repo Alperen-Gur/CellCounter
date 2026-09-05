@@ -192,6 +192,11 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def load_label_map(path: str):
+    from _assay_worker import cached_file_load
+    return cached_file_load('intensity_assays.py:load_label_map', path, lambda: load_label_map_uncached(path))
+
+
+def load_label_map_uncached(path: str):
     """Load a label map from .npy or a single-channel image."""
     import numpy as np
 
@@ -540,7 +545,8 @@ def main() -> None:
 
     log(f"{LOG_PREFIX} loading planes: {args.image} (z_project={args.z_project})")
     try:
-        planes, meta = _imageio.load_planes(args.image, z_project=args.z_project)
+        from _assay_worker import load_raw_planes
+        planes, meta = load_raw_planes(args.image, z_project=args.z_project)
     except Exception as exc:  # noqa: BLE001
         log(f"{LOG_PREFIX} image load failed: {exc!r}")
         emit_error("image-open-failed", hint=str(exc), exit_code=3)

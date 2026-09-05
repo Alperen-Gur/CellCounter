@@ -37,202 +37,167 @@ extension Notification.Name {
     static let ccDetectionStage = Notification.Name("ccDetectionStage")
 }
 
-// MARK: — InstallStateCache
-//
-// One per AppState. Owns the per-model install-state map and orchestrates
-// off-main refreshes. The synchronous `get(_:)` answers the UI from the cached
-// snapshot — never spawns a subprocess on the caller. Refreshes run via
-// `Task.detached`, call the registry's async `probeInstalled(_:models:)`, and
-// publish results back on the MainActor.
-
+/// UI-facing snapshot. A bounded queue shares one probe for models using the
+/// same runtime. Probe results are facts, never environment-change events.
 @Observable
 @MainActor
 final class InstallStateCache {
-    /// Per-model last-known state. UI reads via `get(_:)` and never blocks.
     private var states: [String: InstallStateCachedValue] = [:]
-    /// True while at least one refresh task is in flight.
-    var isRefreshing: Bool = false
-    /// Bumped on every state mutation so callers can hang `.onChange` off it.
-    /// `@Observable` already triggers SwiftUI redraws on `states` mutations,
-    /// but the generation gives external observers an explicit hook.
-    var generation: Int = 0
+    private(set) var isRefreshing = false
+    private(set) var generation = 0
+    private(set) var cellposeBrokenReason: String?
+    @ObservationIgnored var onStateChange: (@MainActor (Set<String>) -> Void)?
 
-    /// Outstanding refresh tasks keyed by model id. Lets us dedupe and cancel.
-    @ObservationIgnored
-    private var inFlight: [String: Task<Void, Never>] = [:]
+    private struct Request {
+        let key: String
+        let ids: [String]
+        let epoch: Int
+        let registry: DetectorRegistry
+        let models: [DetectionModelInfo]
+    }
+    @ObservationIgnored private var queued: [Request] = []
+    @ObservationIgnored private var active: [UUID: Request] = [:]
+    @ObservationIgnored private var epoch = 0
+    @ObservationIgnored private weak var lastRegistry: DetectorRegistry?
+    @ObservationIgnored private var lastModels: [DetectionModelInfo] = []
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var bannerTask: Task<Void, Never>?
+    private let maximumConcurrentProbes = 2
 
-    /// Last (registry, models) seen by `refresh(for:registry:)`. Stashed so the
-    /// `ccVenvChanged` notification observer can re-probe without forcing
-    /// callers to wire up a separate notification handler. Weak on registry so
-    /// the cache doesn't extend its lifetime.
-    @ObservationIgnored
-    private weak var lastRegistry: DetectorRegistry? = nil
-    @ObservationIgnored
-    private var lastModels: [DetectionModelInfo] = []
-
-    /// Held so deinit can deregister. Process-lifetime in practice.
-    @ObservationIgnored
-    private var venvChangedObserver: NSObjectProtocol? = nil
-
-    init() {
-        // Pass-12 K1: re-probe every model when the venv is created or removed
-        // out-of-band. Both Settings → Reset and `CellposeInstaller.reinstall`
-        // post `ccVenvChanged` after they rm the directory. A Finder-side
-        // delete is caught by `ModelsView.onAppear` calling `refresh(for:)`
-        // directly — the observer handles the in-app paths.
-        self.venvChangedObserver = NotificationCenter.default.addObserver(
-            forName: .ccVenvChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let registry = self.lastRegistry,
-                      !self.lastModels.isEmpty else { return }
-                // Invalidate then re-probe. Don't preserve .broken/.installing
-                // here — the venv just moved, so prior partial states are
-                // meaningless.
-                self.states.removeAll()
-                self.generation &+= 1
-                self.refresh(for: self.lastModels, registry: registry)
-            }
+    init(observeEnvironmentChanges: Bool = true) {
+        guard observeEnvironmentChanges else { return }
+        for name in [Notification.Name.ccVenvChanged, .ccVenv4Changed] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.environmentChanged() }
+            })
         }
     }
 
-    // MARK: — Reads
+    func get(_ modelId: String) -> InstallStateCachedValue { states[modelId] ?? .unknown }
 
-    func get(_ modelId: String) -> InstallStateCachedValue {
-        states[modelId] ?? .unknown
-    }
-
-    // MARK: — Writes
-
-    /// Mark a model as currently installing so the UI can show the right chip.
-    /// Called by the registry when an install starts.
     func markInstalling(_ modelId: String) {
         states[modelId] = .installing
-        generation &+= 1
+        publish([modelId])
     }
 
-    /// Mark a model as broken with a reason string. Used by the CellposeInstaller
-    /// when it detects the venv didn't finish bootstrapping.
     func markBroken(_ modelId: String, reason: String) {
         states[modelId] = .broken(reason: reason)
-        generation &+= 1
+        publish([modelId])
     }
 
-    // MARK: — Refresh
-
-    /// Force a single-id refresh (typically used after an install completes).
-    func refresh(modelId: String, registry: DetectorRegistry, models: [DetectionModelInfo]) {
-        // Pass-12 K1: even single-id calls stash the registry context so the
-        // venv-change observer can fan out a full re-probe later.
-        self.lastRegistry = registry
-        self.lastModels = models
-        if let existing = inFlight[modelId] {
-            existing.cancel()
+    /// Repeated launch/navigation requests join the existing check. Install
+    /// completion explicitly supersedes older results with `force: true`.
+    func refresh(modelId: String, registry: DetectorRegistry,
+                 models: [DetectionModelInfo], force: Bool = false) {
+        lastRegistry = registry
+        lastModels = models
+        guard let model = models.first(where: { $0.id == modelId }) else { return }
+        if force {
+            invalidate(registry: registry)
+            states[modelId] = .unknown
+            refreshBanner()
+            for item in models { enqueue(model: item, registry: registry, models: models) }
         }
-        let task = Task.detached(priority: .userInitiated) { [weak self, weak registry] in
-            guard let registry else { return }
-            // `probeInstalled` is the async-off-main route. The registry hops
-            // into the downloader's detached probe; nothing fires on main.
-            let installed = await registry.probeInstalled(modelId, models: models)
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.inFlight[modelId] = nil
-                let prior = self.states[modelId] ?? .unknown
-                // Don't clobber an .installing state with .notInstalled if the
-                // probe raced an install start.
-                if case .installing = prior {
-                    // leave as-is
-                } else {
-                    self.states[modelId] = installed ? .installed : .notInstalled
-                }
-                self.generation &+= 1
-
-                // Pass-13: when a probe downgrades a model from .installed (or
-                // .unknown) to .notInstalled, the AppState mirror for the
-                // active model and `refreshDetector` need to re-run — otherwise
-                // a stale `detector != nil` lets the user start a detection
-                // against a venv we now know is broken. Reuse the venv-changed
-                // notification rather than wiring a new channel; AppState
-                // already does the right thing on that signal.
-                if !installed,
-                   case .installed = prior {
-                    NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
-                } else if !installed,
-                          case .unknown = prior {
-                    NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
-                }
-            }
-        }
-        inFlight[modelId] = task
+        enqueue(model: model, registry: registry, models: models)
+        startQueuedProbes()
     }
 
-    /// Refresh every model the registry knows about. Marks `isRefreshing` true
-    /// for the duration. Concurrent calls dedupe (the second is a no-op).
-    ///
-    /// Pass-16: each probe publishes its result independently the moment it
-    /// returns — earlier code collected ALL pairs first, so one slow probe
-    /// (notably cellpose 4 import on a cold venv4) left every other row stuck
-    /// at "Checking…" until the laggard finished. Each probe also has an 8 s
-    /// timeout so a wedged subprocess can't pin the cache state forever.
     func refresh(for models: [DetectionModelInfo], registry: DetectorRegistry) {
-        // Stash context for the `ccVenvChanged` observer in `init`.
-        self.lastRegistry = registry
-        self.lastModels = models
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        let ids = models.map { $0.id }
-        Task.detached(priority: .userInitiated) { [weak self, weak registry] in
-            guard let registry else { return }
-            await withTaskGroup(of: (String, Bool).self) { group in
-                for id in ids {
-                    group.addTask {
-                        // Race the probe against an 8 s timeout. If the probe
-                        // doesn't respond in time, treat as not-installed so
-                        // the row shows a "Get" button rather than an
-                        // indefinite spinner.
-                        //
-                        // Both branches must return non-nil for the first-to-
-                        // finish race to work — earlier code had the timeout
-                        // return nil, which the for-await simply skipped,
-                        // making the timeout a no-op.
-                        return await withTaskGroup(of: (String, Bool).self) { inner in
-                            inner.addTask {
-                                let ok = await registry.probeInstalled(id, models: models)
-                                return (id, ok)
-                            }
-                            inner.addTask {
-                                try? await Task.sleep(nanoseconds: 8_000_000_000)
-                                return (id, false)
-                            }
-                            // First result wins; cancel the other.
-                            if let result = await inner.next() {
-                                inner.cancelAll()
-                                return result
-                            }
-                            return (id, false)
-                        }
+        lastRegistry = registry
+        lastModels = models
+        // Re-opening the page or closing an install sheet must not duplicate
+        // a check already in progress.
+        guard !isRefreshing else {
+            for model in models where get(model.id) == .unknown {
+                enqueue(model: model, registry: registry, models: models)
+            }
+            startQueuedProbes()
+            return
+        }
+        invalidate(registry: registry)
+        refreshBanner()
+        for model in models { enqueue(model: model, registry: registry, models: models) }
+        startQueuedProbes()
+    }
+
+    private func environmentChanged() {
+        guard let registry = lastRegistry else { return }
+        invalidate(registry: registry)
+        // Preserve a live install, whose completion will trigger a fresh check.
+        states = states.filter { $0.value == .installing }
+        publish(Set(lastModels.map(\.id)))
+        refreshBanner()
+        for model in lastModels { enqueue(model: model, registry: registry, models: lastModels) }
+        startQueuedProbes()
+    }
+
+    private func invalidate(registry: DetectorRegistry) {
+        epoch &+= 1
+        queued.removeAll()
+        registry.invalidateProbes()
+        // Running work retains its slot until it exits. Superseding a request
+        // must not permit a second wave of imports to exceed the concurrency cap.
+    }
+
+    private func enqueue(model: DetectionModelInfo, registry: DetectorRegistry,
+                         models: [DetectionModelInfo]) {
+        let key = DetectorRegistry.probeKey(for: model)
+        guard !queued.contains(where: { $0.key == key && $0.epoch == epoch }),
+              !active.values.contains(where: { $0.key == key && $0.epoch == epoch }) else { return }
+        let ids = models.filter { DetectorRegistry.probeKey(for: $0) == key }.map(\.id)
+        queued.append(Request(key: key, ids: ids, epoch: epoch, registry: registry, models: models))
+    }
+
+    private func startQueuedProbes() {
+        while active.count < maximumConcurrentProbes,
+              let next = queued.firstIndex(where: { pending in
+                  !active.values.contains(where: { $0.key == pending.key })
+              }) {
+            let request = queued.remove(at: next)
+            guard let id = request.ids.first else { continue }
+            let token = UUID()
+            active[token] = request
+            Task { [weak self] in
+                let installed = await request.registry.probeInstalled(id, models: request.models)
+                guard let self else { return }
+                self.active[token] = nil
+                if request.epoch == self.epoch {
+                    var changed: Set<String> = []
+                    for id in request.ids where self.get(id) != .installing {
+                        let next: InstallStateCachedValue = installed ? .installed : .notInstalled
+                        if self.get(id) != next { self.states[id] = next; changed.insert(id) }
+                    }
+                    if !changed.isEmpty { self.publish(changed) }
+                    if request.key == "runtime:" + ModelFamily.cellpose.rawValue {
+                        self.refreshBanner()
                     }
                 }
-                // Publish each result the moment it returns — don't wait
-                // for the slowest probe.
-                for await (id, installed) in group {
-                    await MainActor.run { [weak self] in
-                        guard let self else { return }
-                        switch self.states[id] ?? .unknown {
-                        case .installing, .broken:
-                            break
-                        default:
-                            self.states[id] = installed ? .installed : .notInstalled
-                            self.generation &+= 1
-                        }
-                    }
-                }
-                await MainActor.run { [weak self] in self?.isRefreshing = false }
+                self.startQueuedProbes()
             }
         }
+        isRefreshing = !active.isEmpty || !queued.isEmpty
+    }
+
+    private func refreshBanner() {
+        bannerTask?.cancel()
+        let revision = epoch
+        let directory = FileStore.shared.pythonVenvDir
+        let sentinel = FileStore.shared.installIncompleteSentinel
+        let script = FileStore.shared.pythonDir.appendingPathComponent("cellpose_detect.py")
+        bannerTask = Task { [weak self] in
+            let reason = await Task.detached(priority: .utility) {
+                CellposeBrokenProbe.reason(directory: directory, sentinel: sentinel, script: script)
+            }.value
+            guard let self, !Task.isCancelled, revision == self.epoch else { return }
+            self.cellposeBrokenReason = reason
+        }
+    }
+
+    private func publish(_ ids: Set<String>) {
+        generation &+= 1
+        onStateChange?(ids)
     }
 }
 
@@ -247,15 +212,21 @@ final class InstallStateCache {
 struct CellposeBrokenProbe {
     /// Reason string when broken; nil when not broken.
     static func reason() -> String? {
+        reason(directory: FileStore.shared.pythonVenvDir,
+               sentinel: FileStore.shared.installIncompleteSentinel,
+               script: FileStore.shared.pythonDir.appendingPathComponent("cellpose_detect.py"))
+    }
+
+    nonisolated static func reason(directory: URL, sentinel: URL, script: URL) -> String? {
         let fm = FileManager.default
         // Pass-13: sentinel left behind by an interrupted install run trumps
         // every filesystem heuristic. CellposeInstaller drops it on start()
         // and only clears it on a clean exit-0; a cancelled mid-pip will
         // leave it sitting next to a venv that may look complete on disk.
-        if fm.fileExists(atPath: FileStore.shared.installIncompleteSentinel.path) {
+        if fm.fileExists(atPath: sentinel.path) {
             return "the previous install was cancelled or crashed mid-flight."
         }
-        let venvDir = FileStore.shared.pythonVenvDir
+        let venvDir = directory
         // Only meaningful if the venv directory exists at all.
         guard fm.fileExists(atPath: venvDir.path) else { return nil }
         let pip = venvDir.appendingPathComponent("bin/pip")
@@ -273,8 +244,7 @@ struct CellposeBrokenProbe {
            cached == false {
             return "the Cellpose package is not importable from the venv."
         }
-        // If `CellposeAvailability` reports the install as available, trust it.
-        if case .available = CellposeAvailability.detect() { return nil }
+        if fm.fileExists(atPath: script.path) { return nil }
         // Venv + pip + python all exist but availability isn't .available →
         // dependencies probably never finished installing.
         return "the Cellpose package is not importable from the venv."

@@ -207,6 +207,18 @@ final class Repositories {
     // MARK: — Images
 
     /// Returns all images across all batches, sorted by importedAt descending.
+    func image(id: UUID) -> ImageRecord? {
+        var query = FetchDescriptor<ImageRecord>(predicate: #Predicate { $0.id == id })
+        query.fetchLimit = 1
+        return try? context.fetch(query).first
+    }
+
+    func image(jobItemId: UUID) -> ImageRecord? {
+        var query = FetchDescriptor<ImageRecord>(predicate: #Predicate { $0.jobItemId == jobItemId })
+        query.fetchLimit = 1
+        return try? context.fetch(query).first
+    }
+
     func allImages() -> [ImageRecord] {
         let desc = FetchDescriptor<ImageRecord>(sortBy: [SortDescriptor(\.importedAt, order: .reverse)])
         return (try? context.fetch(desc)) ?? []
@@ -303,6 +315,7 @@ final class Repositories {
 
     func saveDetection(_ cells: [DetectedCell], detectorId: String, for image: ImageRecord,
                        imageStats: [String: Double]? = nil,
+                       runSettings: AnalysisRunSettings? = nil,
                        save: Bool = true) {
         // Reassigning the to-one relationship only nulls the old record's inverse;
         // it does not delete the orphan. Explicitly delete the superseded detection
@@ -320,6 +333,7 @@ final class Repositories {
         }
         let det = DetectionRecord(detectorId: detectorId, cells: cells,
                                   imageStats: imageStats ?? [:])
+        det.runSettings = runSettings
         det.image = image
         image.detection = det
         context.insert(det)
@@ -350,6 +364,10 @@ final class Repositories {
                                                 detectorId: detectorId,
                                                 label: label,
                                                 cells: cells)
+        variant.measurementPxPerUm = image.batch?.pxPerUm
+        variant.runSettingsData = image.detection?.runSettingsData
+        variant.imageStatsData = image.detection?.imageStatsData
+        variant.detectionRanAt = image.detection?.ranAt
         context.insert(variant)
         if save { try? context.save() }
         return variant
@@ -369,10 +387,23 @@ final class Repositories {
                                 save: false)
 
         let oldCount = detection.summaryCellCount
-        let cells = variant.cells
+        var cells = variant.cells
+        if let oldScale = variant.measurementPxPerUm, let newScale = image.batch?.pxPerUm,
+           oldScale > 0, newScale > 0, oldScale != newScale {
+            let ratio = oldScale / newScale
+            for index in cells.indices {
+                cells[index].diameter = cells[index].diameterPx / newScale
+                cells[index].centroidUmX = cells[index].cx / newScale
+                cells[index].centroidUmY = cells[index].cy / newScale
+                if let area = cells[index].areaMicrons2 { cells[index].areaMicrons2 = area * ratio * ratio }
+                if let perimeter = cells[index].perimeterMicrons { cells[index].perimeterMicrons = perimeter * ratio }
+            }
+        }
         detection.applyStorageSnapshot(DetectionRecord.makeStorageSnapshot(cells))
         detection.detectorId = variant.detectorId
-        detection.ranAt = Date()
+        detection.runSettingsData = variant.runSettingsData
+        detection.imageStatsData = variant.imageStatsData
+        detection.ranAt = variant.detectionRanAt ?? variant.createdAt
         deleteReviewCandidates(forDetectionId: detection.id)
         indexReviewCandidates(cells: cells, detection: detection, image: image)
         if let batch = image.batch {

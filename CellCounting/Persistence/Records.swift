@@ -69,6 +69,10 @@ final class BatchRecord {
 
 @Model
 final class ImageRecord {
+    var sourcePxPerUm: Double? = nil
+    var sourceCalibrationSource: String? = nil
+    var jobItemId: UUID? = nil
+    var sourceOrder: Int? = nil
     @Attribute(.unique) var id: UUID
     var fileName: String
     /// Original file path the user dropped (for the UI; we keep our own copy at FileStore.imageURL).
@@ -131,6 +135,11 @@ final class ImageRecord {
 
 @Model
 final class DetectionRecord {
+    var runSettingsData: Data? = nil
+    var runSettings: AnalysisRunSettings? {
+        get { runSettingsData.flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) } }
+        set { runSettingsData = newValue.flatMap { try? JSONEncoder().encode($0) } }
+    }
     @Attribute(.unique) var id: UUID
     var detectorId: String           // "cellpose-cp-cyto3", "yolo-yo-s", custom uuid — "mock" only in legacy records (pass-8 removed mock detection)
     var ranAt: Date
@@ -263,6 +272,14 @@ final class DetectionRecord {
 /// curator or chooses one, so large libraries pay no render-time cost.
 @Model
 final class SegmentationVariantRecord {
+    var measurementPxPerUm: Double? = nil
+    var runSettingsData: Data? = nil
+    var imageStatsData: Data? = nil
+    var detectionRanAt: Date? = nil
+    var runSettings: AnalysisRunSettings? {
+        get { runSettingsData.flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) } }
+        set { runSettingsData = newValue.flatMap { try? JSONEncoder().encode($0) } }
+    }
     @Attribute(.unique) var id: UUID
     var imageId: UUID
     var detectorId: String

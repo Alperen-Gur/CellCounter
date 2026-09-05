@@ -35,6 +35,7 @@ struct ReviewQueueView: View {
     @Environment(AppTheme.self) private var theme
 
     @State private var cursor: Int = 0
+    @FocusState private var reviewFocused: Bool
     @State private var editingDiameter: Double? = nil
     @State private var queue: [ReviewItem] = []
     @AppStorage("cc-review-layout-v1") private var layoutRaw = "card"
@@ -88,23 +89,12 @@ struct ReviewQueueView: View {
         // leaving the X button as the sole way out. Bounding the region to the
         // real content keeps the shortcuts working without swallowing clicks
         // meant for the sidebar.
-        .onKeyPress(.escape) { state.view = .home; return .handled }
-        // Cmd+Z — reverse the last Reject/Keep so a mistaken keystroke isn't
-        // permanent. No-op when there's nothing to undo.
-        .onKeyPress(keys: [.init("z")]) { press in
-            guard press.modifiers.contains(.command), lastAction != nil else { return .ignored }
-            undoLastAction()
-            return .handled
-        }
-        // → Next without action
-        .onKeyPress(.rightArrow) {
-            guard cursor < queue.count else { return .ignored }
-            withAnimation(Tokens.Motion.ease) { cursor += 1; editingDiameter = nil }
-            return .handled
-        }
+        .focusable().focused($reviewFocused)
+        .onKeyPress(keys: [.escape, .rightArrow, .return, .init("r"), .init("k"), .init("e")]) { handleReviewKey($0) }
+        .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bg)
-        .onAppear { rebuild() }
+        .onAppear { rebuild(); reviewFocused = true }
         // The queue cutoff is fixed at `reviewCutoff` (independent of
         // `state.confidence`), so changing the global confidence slider
         // intentionally does NOT rebuild — that would just reset cursor=0 and
@@ -125,6 +115,37 @@ struct ReviewQueueView: View {
             lastAction = nil
             rebuild(preservingCursor: true)
         }
+    }
+
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        guard !actionInFlight else { return actions }
+        actions.cancel = { cancelReviewAction() }
+        if cursor < queue.count { actions.next = { skipCell() } }
+        if editingDiameter != nil { actions.save = { commitEdit() } }
+        if canTriage {
+            actions.deleteSelection = { applyAction(.reject) }
+            actions.keep = { applyAction(.keep) }
+            actions.edit = { startEditing() }
+        }
+        if lastAction != nil { actions.undo = { undoLastAction() } }
+        return actions
+    }
+
+    private func handleReviewKey(_ press: KeyPress) -> KeyPress.Result {
+        guard press.modifiers.isEmpty, !KeyboardShortcutContext.isEditingText,
+              !KeyboardShortcutContext.hasNativeSheet, !KeyboardShortcutContext.hasOverlay(state),
+              !actionInFlight else { return .ignored }
+        switch press.key {
+        case .escape: cancelReviewAction()
+        case .rightArrow: guard cursor < queue.count else { return .ignored }; skipCell()
+        case .return: guard editingDiameter != nil else { return .ignored }; commitEdit()
+        case .init("r"): guard canTriage else { return .ignored }; applyAction(.reject)
+        case .init("k"): guard canTriage else { return .ignored }; applyAction(.keep)
+        case .init("e"): guard canTriage else { return .ignored }; startEditing()
+        default: return .ignored
+        }
+        return .handled
     }
 
     private var header: some View {
@@ -264,13 +285,11 @@ struct ReviewQueueView: View {
                 HStack(spacing: 6) { Icon("x", size: 12); Text("Reject") }
             }
             .appButton(.danger, size: .md)
-            .keyboardShortcut("r", modifiers: [])
 
             Button(action: { applyAction(.keep) }) {
                 HStack(spacing: 6) { Icon("check", size: 12); Text("Keep") }
             }
             .appButton(.standard, size: .md)
-            .keyboardShortcut("k", modifiers: [])
 
             Spacer()
 
@@ -279,8 +298,7 @@ struct ReviewQueueView: View {
                     HStack(spacing: 6) { Icon("ruler", size: 12); Text("Edit diameter") }
                 }
                 .appButton(.standard, size: .md)
-                .keyboardShortcut("e", modifiers: [])
-            } else {
+                } else {
                 Button(action: { editingDiameter = nil }) {
                     Text("Cancel")
                 }
@@ -290,8 +308,7 @@ struct ReviewQueueView: View {
                     HStack(spacing: 6) { Icon("check", size: 12); Text("Save edit") }
                 }
                 .appButton(.primary, size: .md)
-                .keyboardShortcut(.return, modifiers: [])
-            }
+                }
         }
     }
 
@@ -310,6 +327,16 @@ struct ReviewQueueView: View {
         let removedIndex: Int?
         /// Cursor position before the action, restored on undo.
         let cursorBefore: Int
+    }
+
+    private var canTriage: Bool { cursor < queue.count && !actionInFlight && editingDiameter == nil }
+    private func cancelReviewAction() {
+        if editingDiameter != nil { editingDiameter = nil }
+        else { state.view = .home }
+    }
+    private func skipCell() {
+        guard cursor < queue.count, !actionInFlight else { return }
+        withAnimation(Tokens.Motion.ease) { cursor += 1; editingDiameter = nil }
     }
 
     private func startEditing() {

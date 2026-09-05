@@ -32,6 +32,7 @@ struct RootView: View {
                         AppToolbar(state: state)
                     }
                     contentBody
+                        .disabled(showShortcuts || KeyboardShortcutContext.hasOverlay(state))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Tokens.bg)
                 }
@@ -107,6 +108,10 @@ struct RootView: View {
                 .transition(.opacity)
                 .zIndex(80)
             }
+        }
+        .sheet(isPresented: Binding(get: { state.analysisSetupJobId != nil },
+                                    set: { if !$0 { state.analysisSetupJobId = nil } })) {
+            if let id = state.analysisSetupJobId { AnalysisSetupSheet(state: state, jobId: id) }
         }
         .animation(.easeOut(duration: 0.24), value: state.showCalibration)
         .animation(.easeOut(duration: 0.24), value: state.showOnboarding)

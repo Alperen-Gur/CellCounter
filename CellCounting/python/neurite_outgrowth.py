@@ -90,6 +90,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_mask_image(path: str):
+    from _assay_worker import cached_file_load
+    return cached_file_load('neurite_outgrowth.py:_load_mask_image', path, lambda: _load_mask_image_uncached(path))
+
+
+def _load_mask_image_uncached(path: str):
     """Open an image file as an integer array. Labeled (multi-cell) masks are
     commonly saved as 16/32-bit single-channel TIFFs so >255 distinct cell
     ids survive round-tripping; anything else is coerced to 8-bit grayscale.

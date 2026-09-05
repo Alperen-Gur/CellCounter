@@ -37,7 +37,7 @@ struct OmniposeDownloader: ModelDownloader {
 
     /// Distinct from the 3.x / 4.x keys so the three probes never clobber
     /// each other.
-    static let importableCacheKey = "cc-omnipose-importable"
+    nonisolated static let importableCacheKey = "cc-omnipose-importable"
 
     // MARK: — Paths
 
@@ -84,8 +84,13 @@ struct OmniposeDownloader: ModelDownloader {
 
     func probeInstalled(modelId: String) async -> Bool {
         guard Self.isKnownModelId(modelId) else { return false }
-        guard let py = Self.interpreter() else { return false }
-        return await Task.detached(priority: .userInitiated) {
+        let directory = Self.venvDir
+        let sentinel = Self.installIncompleteSentinel
+        return await Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            guard !fm.fileExists(atPath: sentinel.path) else { return false }
+            let candidates = ["python3", "python"].map { directory.appendingPathComponent("bin/" + $0) }
+            guard let py = candidates.first(where: { fm.isExecutableFile(atPath: $0.path) }) else { return false }
             let ok = Self.runImportProbe(pythonURL: py)
             UserDefaults.standard.set(ok, forKey: Self.importableCacheKey)
             return ok
@@ -101,7 +106,9 @@ struct OmniposeDownloader: ModelDownloader {
         await MainActor.run { progress.stage = .checkingDependencies }
 
         // Fast path — already importable in a healthy venv.
-        if let py = Self.interpreter(), Self.runImportProbe(pythonURL: py) {
+        if let py = Self.interpreter(), await Task.detached(priority: .utility, operation: {
+            Self.runImportProbe(pythonURL: py)
+        }).value {
             UserDefaults.standard.set(true, forKey: Self.importableCacheKey)
             await MainActor.run {
                 progress.append("[omnipose] already installed; nothing to do")
@@ -168,7 +175,9 @@ struct OmniposeDownloader: ModelDownloader {
 
         // 3) Verify.
         await MainActor.run { progress.stage = .verifying }
-        let importable = Self.runImportProbe(pythonURL: python)
+        let importable = await Task.detached(priority: .utility) {
+            Self.runImportProbe(pythonURL: python)
+        }.value
         UserDefaults.standard.set(importable, forKey: Self.importableCacheKey)
         if !importable {
             throw OmniposeInstallError.notImportableAfterInstall
@@ -225,20 +234,8 @@ struct OmniposeDownloader: ModelDownloader {
     }
 
     /// `python -c "import cellpose_omni"`. Blocking — callers hop off-main.
-    private static func runImportProbe(pythonURL: URL) -> Bool {
-        guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else { return false }
-        let p = Process()
-        p.executableURL = pythonURL
-        p.arguments = ["-c", "import cellpose_omni, omnipose"]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do {
-            try p.run()
-            p.waitUntilExit()
-            return p.terminationStatus == 0
-        } catch {
-            return false
-        }
+    nonisolated private static func runImportProbe(pythonURL: URL) -> Bool {
+        ModelProbeRunner.run(pythonURL: pythonURL, code: "import cellpose_omni, omnipose")
     }
 
     private static func directorySize(at url: URL) -> Int64 {
@@ -357,7 +354,7 @@ enum OmniposeInstallError: LocalizedError {
 
 /// Bounded ring buffer of the most recent output lines, so a failure message
 /// can carry context without holding the whole log.
-private final class OmniposeTailBuffer: @unchecked Sendable {
+private nonisolated final class OmniposeTailBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String] = []
     private let capacity: Int
@@ -374,7 +371,7 @@ private final class OmniposeTailBuffer: @unchecked Sendable {
 }
 
 /// One-shot guard for the Process termination handler.
-private final class OmniposeResumeFlag: @unchecked Sendable {
+private nonisolated final class OmniposeResumeFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
     func markAndCheck() -> Bool {

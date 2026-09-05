@@ -15,7 +15,7 @@ struct CellposeDownloader: ModelDownloader {
     let family: ModelFamily = .cellpose
 
     /// UserDefaults key used to cache the import probe outcome for the session.
-    private static let importableCacheKey = "cc-cellpose-importable"
+    nonisolated private static let importableCacheKey = "cc-cellpose-importable"
 
     /// Optional, pure-Python **BSD-3-Clause** vendor microscope-format readers
     /// consumed by `python/_imageio.py`. Installed best-effort after the
@@ -55,12 +55,13 @@ struct CellposeDownloader: ModelDownloader {
     // MARK: - probeInstalled (deep, off-main)
 
     func probeInstalled(modelId: String) async -> Bool {
-        // Resolve the venv python on the MainActor (sharedPythonURL hits the
-        // FileManager + FileStore — cheap but main-safe-only by convention).
-        let python: URL? = await MainActor.run { Self.sharedPythonURL() }
-        guard let python else { return false }
-        // The actual `python -c "import cellpose"` fork runs detached.
-        return await Task.detached(priority: .userInitiated) {
+        // Snapshot immutable locations on the actor; all filesystem access and
+        // Python work happen in the detached closure below.
+        let directory = FileStore.shared.pythonVenvDir
+        let sentinel = FileStore.shared.installIncompleteSentinel
+        let script = FileStore.shared.pythonDir.appendingPathComponent("cellpose_detect.py")
+        return await Task.detached(priority: .utility) {
+            guard let python = Self.probePythonURL(directory: directory, sentinel: sentinel, script: script) else { return false }
             let ok = Self.runPythonImportCheck(pythonURL: python)
             UserDefaults.standard.set(ok, forKey: Self.importableCacheKey)
             return ok
@@ -79,7 +80,7 @@ struct CellposeDownloader: ModelDownloader {
         }
 
         // Fast path: already importable.
-        if Self.isCellposeImportable(pythonURL: python) {
+        if await Self.isCellposeImportable(pythonURL: python) {
             await MainActor.run {
                 progress.append("cellpose already importable; nothing to install")
                 progress.stage = .ready
@@ -124,7 +125,7 @@ struct CellposeDownloader: ModelDownloader {
 
         // Verify.
         await MainActor.run { progress.stage = .verifying }
-        let importable = Self.isCellposeImportable(pythonURL: python, useCache: false)
+        let importable = await Self.isCellposeImportable(pythonURL: python, useCache: false)
         if !importable {
             throw CellposeDownloaderError.pipFailed("cellpose still not importable after pip install")
         }
@@ -167,6 +168,18 @@ struct CellposeDownloader: ModelDownloader {
     // MARK: - Helpers
 
     /// Resolve the shared venv python interpreter via `CellposeAvailability`.
+    /// A deep refresh checks the interpreter even after a previous failed
+    /// import. The cached availability verdict must not prevent recovery.
+    nonisolated private static func probePythonURL(directory: URL, sentinel: URL, script: URL) -> URL? {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: sentinel.path), fm.fileExists(atPath: script.path) else { return nil }
+        for executable in ["python3", "python"] {
+            let url = directory.appendingPathComponent("bin/" + executable)
+            if fm.isExecutableFile(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
     private static func sharedPythonURL() -> URL? {
         if case let .available(py, _) = CellposeAvailability.detect() {
             return py
@@ -178,16 +191,18 @@ struct CellposeDownloader: ModelDownloader {
     /// The result is cached in UserDefaults under `cc-cellpose-importable` for
     /// the session so repeated `isInstalled(_:)` queries from the Models view
     /// don't fork a process every time.
-    private static func isCellposeImportable(pythonURL: URL, useCache: Bool = true) -> Bool {
+    nonisolated private static func isCellposeImportable(pythonURL: URL, useCache: Bool = true) async -> Bool {
         if useCache, let cached = UserDefaults.standard.object(forKey: importableCacheKey) as? Bool {
             return cached
         }
-        let ok = runPythonImportCheck(pythonURL: pythonURL)
+        let ok = await Task.detached(priority: .utility) {
+            runPythonImportCheck(pythonURL: pythonURL)
+        }.value
         UserDefaults.standard.set(ok, forKey: importableCacheKey)
         return ok
     }
 
-    private static func runPythonImportCheck(pythonURL: URL) -> Bool {
+    nonisolated private static func runPythonImportCheck(pythonURL: URL) -> Bool {
         // Pass-13: probe both importability AND version. A plain `import cellpose`
         // succeeds on 4.x venvs but our sidecar script targets the 3.x API; if
         // we say "installed" the user's next detection will silently download
@@ -209,19 +224,7 @@ struct CellposeDownloader: ModelDownloader {
         except Exception:
             sys.exit(1)
         """
-        let p = Process()
-        p.executableURL = pythonURL
-        p.arguments = ["-c", probe]
-        let null = Pipe()
-        p.standardOutput = null
-        p.standardError = null
-        do {
-            try p.run()
-            p.waitUntilExit()
-            return p.terminationStatus == 0
-        } catch {
-            return false
-        }
+        return ModelProbeRunner.run(pythonURL: pythonURL, code: probe)
     }
 
     /// Stream `python -m pip install ...` into `progress.lastLogLines` line by line.
@@ -342,7 +345,7 @@ enum CellposeDownloaderError: LocalizedError {
 
 // MARK: - Resume flag (one-shot continuation guard, file-private)
 
-private final class CellposePipResumeFlag: @unchecked Sendable {
+private nonisolated final class CellposePipResumeFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var fired = false
     func markAndCheck() -> Bool {

@@ -1,6 +1,6 @@
 # CellCounter feature reference
 
-This is the public feature inventory for the currently documented releases: macOS v1.0.10, Windows v1.0.8,
+This is the public feature inventory for the currently documented releases: macOS v1.0.11, Windows v1.0.8,
 and Web v0.1.0 preview. It describes user-facing behavior and deliberately omits private implementation details.
 
 Status meanings:
@@ -15,7 +15,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Privacy and storage
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Local image analysis with no image-upload path | **Available** | **Available** | **Available** |
 | Account-free use | **Available** | **Available** | **Available** |
@@ -26,7 +26,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Import and calibration
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | JPEG, PNG, BMP, TIFF, and OME-TIFF | **Available** | **Available** | **Available**, plus WebP |
 | Recursive folder and batch import | **Available** | **Available** | **Available** where the browser supports folder selection |
@@ -42,7 +42,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Segmentation models
 
-| Model or family | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Model or family | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Cellpose-SAM v2 | **Available** | **Available** | **Preview / build required:** production weights are not bundled |
 | Cellpose-SAM and Cellpose-DINO ViT-L / ViT-B | **Available** | **Not available** | **Not available** |
@@ -60,7 +60,7 @@ models in this table.
 
 ## Detection and refinement
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Single-image and batch detection with progress | **Available** | **Available** | **Preview / build required** until a production model is bundled |
 | Cancellation without discarding the previous result | **Available** | **Available** with Windows-native process handling | **Available** for worker tasks; learned inference remains build required |
@@ -74,7 +74,7 @@ models in this table.
 
 ## Measurements and assays
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Count and configurable size-bin summaries | **Available** | **Available** | **Available** |
 | Area, perimeter, equivalent diameter, circularity, aspect ratio, solidity, and eccentricity | **Available** | **Available** | **Available** |
@@ -96,7 +96,7 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Editing, validation, and review
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Mask fills, contours, boxes, labels, and selection markers | **Available** | **Available** | **Available** |
 | Add, remove, resize, merge, split, and freehand-trace corrections | **Available** | **Adapted / limited:** available except freehand tracing | **Adapted / limited:** available except freehand tracing |
@@ -113,14 +113,14 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Libraries, studies, and repeatable workflows
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Persistent image library and duplicate groups | **Available** | **Available** | **Available** |
 | Batches, conditions, and aggregate summaries | **Available** | **Available** | **Available** |
 | Two-condition comparison with Mann–Whitney U and effect size | **Available** | **Available** | **Available** |
 | Comparison and summary CSV | **Available** | **Available** | **Available** |
 | Versioned analysis protocols for model, calibration, bins, and preprocessing | **Available** | **Available** | **Available** |
-| Local fine-tuning | **Preview:** training and version history are present; guided labeling and evaluation contain illustrative preview elements | **Available:** Cellpose `cyto3` only | **Not available** |
+| Local fine-tuning | **Available:** reviewed instance masks, grouped train/validation/test splits, real Cellpose 3.x optimization and held-out evaluation | **Available:** Cellpose `cyto3` only | **Not available** |
 | Fine-tuned checkpoint version history and rollback or explicit activation | **Available** | **Available** for locally trained `cyto3` versions | **Not available** |
 | Searchable model catalog with installation and storage management | **Available** | **Available** for the three supported models | **Adapted / limited:** three-model catalog and local cache status, but artifacts are not bundled |
 | Keyboard shortcuts and accessible navigation | **Available** | **Available** with Windows-adapted shortcuts | **Available** |
@@ -133,7 +133,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## Export and interoperability
 
-| Capability | macOS v1.0.10 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.11 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Per-cell CSV | **Available** | **Available** | **Available** |
 | Per-image or batch summary CSV | **Available** | **Available** | **Available** |
@@ -151,7 +151,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## macOS microscopy workspace
 
-The following layer-based exploratory workspace is currently specific to macOS v1.0.10:
+The following layer-based exploratory workspace is currently specific to macOS v1.0.11:
 
 - Image, label, point, shape, surface, and track layers with visibility and opacity controls.
 - Multidimensional time, Z, and channel navigation.
@@ -174,6 +174,39 @@ The following layer-based exploratory workspace is currently specific to macOS v
 - Windows v1.0.8 provides the complete common analysis workflow with three validated models and a CPU-only
   inference path. macOS-only workspace, prompt/sequence correction, and broader model-catalog features are not
   presented as Windows functionality.
-- Fine-tuning availability is intentionally described per platform because the macOS guided labeling and
-  evaluation screens still contain clearly labeled preview elements, while Windows provides the validated
-  `cyto3` training workflow.
+- Fine-tuning remains specific to supported model families: macOS supports Cellpose 3.x cytoplasm/nuclei
+  bases and compatible custom checkpoints; Windows supports its `cyto3` workflow. Browser training is unavailable.
+
+## macOS v1.0.11 workflow
+
+The macOS v1.0.11 release includes these workflow, interface, and efficiency improvements. Windows and browser
+capabilities remain as listed for their separate releases above.
+
+| Workflow | Behavior |
+|---|---|
+| Models responsiveness | Cached status renders immediately; shared runtime checks use bounded background work, and missing-model results do not trigger another environment refresh. |
+| Keyboard navigation | Menus and Help → Keyboard Shortcuts share the actual action registry. Commands operate on the focused screen or canvas and remain disabled when unavailable; text editing and dialogs retain their expected keys. |
+| App icon | A microscopy mark is supplied at all ten native macOS icon resolutions, with transparent margins. Source artwork and generation prompts are in docs/branding. |
+| Analysis setup | Import without an installed detector, inspect a representative image, set calibration and supported source channels/projection, and run a whole-image preview. Matching previews are reused in the batch. |
+| Processing | Jobs and their immutable settings are saved locally before work starts. Pause finishes the current image; resume and retry retain completed work. After an interrupted launch jobs remain paused for explicit resume. Remaining time appears after warm timings exist. |
+| Task presets | Cell/nucleus counting opens the overview, positivity leads to measurements/intensity assays, and wound closure leads to area assays. Wound analysis can start with import only. |
+| Linked review | Stable cell IDs link image selection, a paged measurement table, and scatter selection. Plot rendering is bounded; brushing evaluates the complete included population. |
+| Variant comparison | Two masks share pan and zoom, with classifications for added, removed, and changed objects. Applying an alternative preserves the current mask and restores original run metadata while honoring current measurement calibration. |
+| Result context | Per-image job state, recorded model/parameters, current filters, and included/excluded counts distinguish original analysis from later review. Older records explicitly report unknown run settings. |
+| Training | Select actual library images, review/correct contours, confirm source planes, and assign specimen groups. Deterministic splits keep groups and duplicate source bytes from leaking across partitions. Validation selects the checkpoint; held-out images are evaluated only after training. |
+| Efficiency | Visible-mask culling and path caches reduce redraw work; revision/filter-keyed summaries avoid unrelated recomputation. Assay workers reuse bounded raw-image and mask data, recomputing parameter-dependent outputs. Preparation can overlap a single model execution when estimated memory fits. |
+
+Training currently supports Cellpose 3.x cytoplasm/nuclei bases and compatible custom Cellpose checkpoints.
+At least three independent specimen groups and six epochs are required; the default is 40 epochs. Training
+uses corrected instance masks and real optimizer progress, and checkpoint activation verifies the resulting
+report and file hash. A successful software run does not establish biological accuracy: evaluate performance
+on representative independent specimens before interpreting results.
+
+The setup preview covers an entire image. StarDist and SAM retain their existing display-plane input path;
+source channel/projection controls are offered only for supported model families. Vendor containers still
+require a compatible local Python reader, even when detection is deferred. Runtime/version or weight hashes
+that were not recorded at inference remain unknown in exports rather than being inferred from a later install.
+
+The local `scripts/verify-workflow-upgrade.sh` runs the native unit suites, including queue recovery,
+pause/resume/retry, preview reuse, source routing, provenance, linked selection, variant comparison, training
+validation, geometry indexing, and worker lifecycle tests. The two Python worker/training suites also run in CI.

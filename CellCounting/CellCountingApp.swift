@@ -46,60 +46,8 @@ struct CellCountingApp: App {
         .windowToolbarStyle(.unifiedCompact)
         .defaultSize(width: 1320, height: 860)
         .commands {
-            CommandGroup(replacing: .appInfo) {
-                Button("About CellCounter") { state.view = .settings }
-            }
-            CommandGroup(replacing: .newItem) {
-                Button("Open Images…") {
-                    presentOpenPanel(allowedExtensions: Array(ImageLoader.supported), allowFolders: false, allowMultiple: true) { urls in
-                        state.importAndAnalyze(urls: urls)
-                    }
-                }
-                .keyboardShortcut("o", modifiers: [.command])
-                Button("Open Folder…") {
-                    presentOpenPanel(allowedExtensions: Array(ImageLoader.supported), allowFolders: true, allowMultiple: false) { urls in
-                        guard let folder = urls.first else { return }
-                        let files = enumerateImages(in: folder)
-                        if !files.isEmpty { state.importAndAnalyze(urls: files) }
-                    }
-                }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-            }
-            CommandMenu("Analysis") {
-                // Calibration shortcut uses ⌘⇧K rather than ⌘K — bare ⌘K is
-                // reserved across macOS (Finder "Connect to Server", Mail "Mark",
-                // Terminal "Clear Buffer", browsers focus the address bar). Users
-                // hitting ⌘K expect one of those, not a modal sheet.
-                Button("Calibrate scale…") { state.showCalibration = true }
-                    .keyboardShortcut("k", modifiers: [.command, .shift])
-                Button("Settings") { state.view = .settings }
-                    .keyboardShortcut(",", modifiers: [.command])
-                Button("Microscopy Workspace") { state.view = .workspace }
-                    .keyboardShortcut("l", modifiers: [.command, .shift])
-                Button("Cancel") {
-                    state.showCalibration = false
-                    state.showInstallCellpose = false
-                    state.showAnalysisProtocols = false
-                }
-                .keyboardShortcut(".", modifiers: [.command])
-            }
-            // Save/apply a named analysis protocol, and export GeoJSON.
-            AnalysisProtocolCommands(state: state)
-            CommandGroup(after: .help) {
-                Button("Keyboard Shortcuts") { showShortcuts = true }
-                    .keyboardShortcut("/", modifiers: [.command])
-            }
+            AppKeyboardCommands(state: state, showShortcuts: $showShortcuts)
+            AnalysisProtocolCommands(state: state, shortcutsPresented: showShortcuts)
         }
     }
-}
-
-private func enumerateImages(in folder: URL) -> [URL] {
-    guard let it = FileManager.default.enumerator(at: folder,
-                                                  includingPropertiesForKeys: [.isRegularFileKey],
-                                                  options: [.skipsHiddenFiles]) else { return [] }
-    var out: [URL] = []
-    for case let url as URL in it {
-        if ImageLoader.supported.contains(url.pathExtension.lowercased()) { out.append(url) }
-    }
-    return out
 }

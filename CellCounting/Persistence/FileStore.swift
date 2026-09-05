@@ -10,7 +10,18 @@ struct FileStore {
     init() {
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        self.root = appSupport.appendingPathComponent("CellCounter", isDirectory: true)
+        let environment = ProcessInfo.processInfo.environment
+        let override = environment["CELLCOUNTER_DATA_ROOT"]
+            ?? environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"]
+        let isTest = environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+        if let override, override.hasPrefix("/") {
+            self.root = URL(fileURLWithPath: override, isDirectory: true)
+        } else if isTest {
+            self.root = fm.temporaryDirectory.appendingPathComponent("CellCounter-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        } else {
+            self.root = appSupport.appendingPathComponent("CellCounter", isDirectory: true)
+        }
 
         // Best-effort migration from a previous sandboxed install. We turned
         // off App Sandbox in pass 10; before that the data lived under
@@ -19,7 +30,7 @@ struct FileStore {
         // content, move it over so users don't lose their store.
         let legacyRoot = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Containers/alguer.CellCounting/Data/Library/Application Support/CellCounter", isDirectory: true)
-        if fm.fileExists(atPath: legacyRoot.path)
+        if override == nil && !isTest && fm.fileExists(atPath: legacyRoot.path)
             && !fm.fileExists(atPath: self.root.path) {
             // Try move first (cheap, atomic if on the same volume); fall back
             // to copy if move fails (e.g. cross-volume or permissions).
@@ -141,6 +152,11 @@ struct FileStore {
     ///
     /// MUST be called from `CellCountingApp.init` BEFORE building `Repositories`.
     static func runMigrationsIfNeeded() {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["CELLCOUNTER_DATA_ROOT"] == nil,
+              environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"] == nil,
+              environment["XCTestConfigurationFilePath"] == nil,
+              environment["XCTestBundlePath"] == nil else { return }
         let flagKey = "cc-wiped-pre-clean-v1"
         guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
 

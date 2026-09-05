@@ -198,6 +198,14 @@ struct BatchView: View {
     /// way to reach any other batch except by going back to Home. This backs
     /// the always-visible `BatchListSidebar` so every batch is one click away.
     @State private var allBatches: [BatchRecord] = []
+    @State private var search = ""
+    @FocusState private var searchFocused: Bool
+    private var visibleBatches: [BatchRecord] {
+        search.isEmpty ? allBatches : allBatches.filter {
+            (batchFolderLabel(for: $0) ?? $0.displayName).localizedCaseInsensitiveContains(search)
+                || ($0.condition ?? "").localizedCaseInsensitiveContains(search)
+        }
+    }
 
     private func recomputeRows() async {
         guard let batch = state.currentBatch else { rows = []; return }
@@ -239,7 +247,7 @@ struct BatchView: View {
     /// so table display order and Results resolution can't drift.
     private func openImage(_ imageId: UUID) {
         guard let batch = state.currentBatch else { return }
-        let sorted = batch.images.sorted { $0.importedAt < $1.importedAt }
+        let sorted = state.orderedImages(in: batch)
         if let idx = sorted.firstIndex(where: { $0.id == imageId }) {
             state.currentImageIdx = idx
         }
@@ -304,7 +312,8 @@ struct BatchView: View {
             // Fix (researcher #7b): persistent list of every batch, not just
             // the currently-open one — see `allBatches` above.
             BatchListSidebar(
-                batches: allBatches,
+                batches: visibleBatches,
+                search: $search, searchFocused: $searchFocused,
                 selectedId: state.currentBatchId,
                 onSelect: { batch in state.currentBatchId = batch.id }
             )
@@ -345,19 +354,6 @@ struct BatchView: View {
                     .frame(maxWidth: 1100)
                 }
                 .frame(maxWidth: .infinity)
-                // Delete — confirm-delete current batch
-                .overlay(
-                    Group {
-                        Button("") { deleteBatchShortcut() }
-                            .keyboardShortcut(.delete, modifiers: [])
-                            .hidden()
-                            .allowsHitTesting(false)
-                        Button("") { exportBatchShortcut() }
-                            .keyboardShortcut("e", modifiers: [.command])
-                            .hidden()
-                            .allowsHitTesting(false)
-                    }
-                )
                 .overlay(alignment: .bottom) {
                     if let toast = state.exportToast {
                         ExportFeedbackToast(message: toast.message, isError: toast.isError)
@@ -366,6 +362,7 @@ struct BatchView: View {
                 }
             }
         }
+        .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
         // Moved off the (conditionally-present) detail ScrollView and onto the
         // outer HStack so they stay live — and the sidebar keeps refreshing —
         // even while no batch is selected. Previously these lived only inside
@@ -384,6 +381,26 @@ struct BatchView: View {
         .task(id: "\(state.currentBatchId?.uuidString ?? "none"):\(refreshKey)") {
             await recomputeRows()
         }
+    }
+
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        actions.find = { searchFocused = true }
+        if state.currentBatch != nil { actions.deleteSelection = { deleteBatchShortcut() } }
+        if !rows.isEmpty { actions.openSelection = { if let id = rows.first?.imageId { openImage(id) } } }
+        if !doneRows.isEmpty { actions.export = { exportBatchShortcut() } }
+        if !visibleBatches.isEmpty {
+            actions.previous = { selectBatch(-1) }
+            actions.next = { selectBatch(1) }
+        }
+        return actions
+    }
+
+    private func selectBatch(_ delta: Int) {
+        guard !visibleBatches.isEmpty else { return }
+        let current = visibleBatches.firstIndex { $0.id == state.currentBatchId }
+        let index = max(0, min(visibleBatches.count - 1, (current ?? (delta > 0 ? -1 : visibleBatches.count)) + delta))
+        state.currentBatchId = visibleBatches[index].id
     }
 
     /// Keyboard shortcut wrappers — delegate to HeaderRow logic via AppState
@@ -437,6 +454,8 @@ struct BatchView: View {
 // browsing surface on its own, independent of Home.
 private struct BatchListSidebar: View {
     let batches: [BatchRecord]
+    @Binding var search: String
+    var searchFocused: FocusState<Bool>.Binding
     let selectedId: UUID?
     let onSelect: (BatchRecord) -> Void
 
@@ -450,6 +469,9 @@ private struct BatchListSidebar: View {
                 .padding(.horizontal, 14)
                 .padding(.top, 16)
                 .padding(.bottom, 8)
+
+            TextField("Find batches", text: $search).textFieldStyle(.roundedBorder)
+                .focused(searchFocused).padding(.horizontal, 12).padding(.bottom, 10)
 
             if batches.isEmpty {
                 Text("No batches yet.")

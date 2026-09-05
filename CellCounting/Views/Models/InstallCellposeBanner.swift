@@ -11,12 +11,11 @@ struct InstallCellposeBanner: View {
     @Bindable var state: AppState
     @Environment(AppTheme.self) private var theme
     @State private var dismissed: Bool = UserDefaults.standard.bool(forKey: "cc-install-banner-dismissed")
-    @State private var available: Bool = {
-        if case .available = CellposeAvailability.detect() { return true }
-        return false
-    }()
-
-    private var shouldShow: Bool { !dismissed && !available }
+    private var shouldShow: Bool {
+        !dismissed && state.models.contains {
+            $0.family == .cellpose && state.installStateCache.get($0.id) == .notInstalled
+        }
+    }
 
     var body: some View {
         Group {
@@ -26,7 +25,7 @@ struct InstallCellposeBanner: View {
                         .foregroundStyle(theme.accentColor)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Cellpose isn't installed yet — detection is disabled until you install it.")
+                        Text("Install Cellpose to use its cell segmentation models.")
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(Tokens.text)
                         Text("~2 GB, one-time setup. Takes about 4 minutes.")
@@ -59,11 +58,7 @@ struct InstallCellposeBanner: View {
                 )
             }
         }
-        .onChange(of: state.showInstallCellpose) { _, isShowing in
-            // When the install sheet closes, re-check availability so the banner
-            // disappears after a successful install without needing a navigation roundtrip.
-            if !isShowing { refreshAvailability() }
-        }
+
     }
 
     private func dismiss() {
@@ -71,9 +66,4 @@ struct InstallCellposeBanner: View {
         UserDefaults.standard.set(true, forKey: "cc-install-banner-dismissed")
     }
 
-    private func refreshAvailability() {
-        if case .available = CellposeAvailability.detect() {
-            available = true
-        }
-    }
 }

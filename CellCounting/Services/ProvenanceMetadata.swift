@@ -1,22 +1,26 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 /// Pass-18 (Lane R): single source of truth for "what produced this analysis."
 ///
 /// Every export carries a `ProvenanceMetadata` block — CSV header comments,
 /// PNG `tEXt`/`iTXt` chunks, JSON sibling key, and the PDF footer — so a
-/// collaborator can reproduce a result *exactly* by re-running the same model
-/// weights, the same detector library version, on the same calibrated input.
+/// collaborator can inspect recorded run settings and the current review filters.
+/// Missing historical runtime or weights metadata remains unknown.
 ///
 /// Cost rules:
-///  • Detector version probes (one subprocess per family) are cached for the
-///    lifetime of the process.
+///  • Detector versions are cached per family, refreshed in the background,
+///    and invalidated when an environment or model installation changes.
 ///  • Weights hashing is keyed by `(url, size, mtime)` so repeat exports of the
 ///    same model don't re-hash 1+ GB of weights. Hashing happens off the main
-///    actor.
+///    actor. A warm read checks only file metadata before returning a digest.
 ///  • Anything that can't be discovered cheaply returns nil — exports MUST
 ///    never block on missing provenance.
 struct ProvenanceMetadata: Codable, Sendable {
+    let originalRunSettings: AnalysisRunSettings?
+    let sourceSHA256: String?
+    let analysisSettingsSource: String
     let appVersion: String          // CFBundleShortVersionString
     let appBuild: String            // CFBundleVersion
     let appBuildSHA: String?        // git SHA from a build setting if present
@@ -45,10 +49,12 @@ struct ProvenanceMetadata: Codable, Sendable {
     /// probes do NOT block this call — they read from caches populated
     /// off-main; cold-miss returns nil.
     static func capture(for image: ImageRecord?, state: AppState) -> ProvenanceMetadata {
-        let info = state.models.first(where: { $0.id == state.activeModelId })
-        let family = info?.family ?? .custom
-        let modelName = info?.name ?? state.activeModelName
-        let modelId = state.currentBatch?.modelId ?? state.activeModelId
+        let run = image?.detection?.runSettings
+        let recordedId = image?.detection?.detectorId.split(separator: "/").last.map(String.init)
+        let modelId = run?.modelId ?? recordedId ?? image?.batch?.modelId ?? "unknown"
+        let info = state.models.first(where: { $0.id == modelId })
+        let family = run.flatMap { ModelFamily(rawValue: $0.modelFamily) } ?? info?.family ?? .custom
+        let modelName = run?.modelName ?? info?.name ?? modelId
 
         // pxPerUm — prefer the batch's value (per-batch calibration), fall
         // back to the global. pxPerUmSource lives on BatchRecord (see Records.swift).
@@ -57,6 +63,9 @@ struct ProvenanceMetadata: Codable, Sendable {
         let pxSource = batch?.pxPerUmSource ?? "default"
 
         return ProvenanceMetadata(
+            originalRunSettings: run,
+            sourceSHA256: image?.fileHash,
+            analysisSettingsSource: run == nil ? "legacy-unknown" : "saved-run",
             appVersion: Self.appVersion,
             appBuild: Self.appBuild,
             appBuildSHA: Self.appBuildSHA,
@@ -64,14 +73,14 @@ struct ProvenanceMetadata: Codable, Sendable {
             modelId: modelId,
             modelName: modelName,
             modelFamily: family.rawValue,
-            detectorVersion: Self.detectorVersion(for: family),
-            weightsHash: Self.weightsHash(for: family, modelId: modelId),
+            detectorVersion: run?.detectorVersion,
+            weightsHash: run?.weightsSHA256,
             pxPerUm: pxPerUm,
             pxPerUmSource: pxSource,
             thresholds: batch?.thresholds ?? state.thresholds,
             confidenceFloor: image.map { state.effectiveConfidence(for: $0) } ?? state.confidence,
-            backgroundSubtract: state.backgroundSubtract,
-            watershedSplit: state.watershedSplit,
+            backgroundSubtract: run?.backgroundSubtract ?? false,
+            watershedSplit: run?.watershedSplit ?? false,
             timestamp: Date(),
             imageId: image?.id.uuidString,
             detectionRanAt: image?.detection?.ranAt
@@ -87,6 +96,8 @@ struct ProvenanceMetadata: Codable, Sendable {
         var lines: [String] = []
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
+        lines.append("# analysis_settings_source: \(analysisSettingsSource)")
+        if let sourceSHA256 { lines.append("# source_sha256: \(sourceSHA256)") }
         lines.append("# app_version: \(appVersion) (\(appBuild))")
         if let sha = appBuildSHA { lines.append("# app_build_sha: \(sha)") }
         lines.append("# os_version: \(osVersion)")
@@ -176,8 +187,8 @@ struct ProvenanceMetadata: Codable, Sendable {
     /// Returns nil if the weights file can't be reliably located or if we
     /// haven't yet hashed it. Hashing fires off-main on first access; the
     /// result is cached, so a subsequent export gets the hash immediately.
-    /// Files larger than the inline-hash limit only hash once — repeated calls
-    /// short-circuit via the (url, size, mtime) key.
+    /// UI calls never hash file contents. A warm digest is returned only when
+    /// a cheap metadata check still matches the file that was hashed.
     static func weightsHash(for family: ModelFamily, modelId: String) -> String? {
         guard let url = weightsURL(for: family, modelId: modelId) else { return nil }
         return WeightsHashCache.shared.hashIfCheap(at: url)
@@ -194,11 +205,11 @@ struct ProvenanceMetadata: Codable, Sendable {
             // The active model id is e.g. "cp-cyto3" — strip the "cp-" prefix.
             let modelName = modelId.hasPrefix("cp-") ? String(modelId.dropFirst(3)) : modelId
             let url = home.appendingPathComponent(".cellpose/models/\(modelName)")
-            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+            return url
         case .cellpose4:
             // CPSAM ships a single big checkpoint "cpsam".
             let url = home.appendingPathComponent(".cellpose/models/cpsam")
-            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+            return url
         // Classical has no weights at all (that's the point), and the ensemble
         // composes other families rather than owning a checkpoint. Omnipose,
         // StarDist, SAM, and custom models each manage their own checkpoint
@@ -209,202 +220,270 @@ struct ProvenanceMetadata: Codable, Sendable {
     }
 }
 
-// MARK: — Detector version cache (one subprocess per family, process-lifetime)
+// MARK: — Detector version cache
 
-/// Caches detector library version strings, indexed by `ModelFamily`. Reading
-/// is sync: the first call schedules an off-main probe and returns nil; once
-/// the probe completes the cached string is returned on subsequent calls.
-/// This is intentional — exports must NEVER block on a Python subprocess.
-final class ProvenanceVersionCache: @unchecked Sendable {
+/// UI reads never stat a runtime or wait for Python. The cached snapshot is
+/// invalidated when an environment changes; a cold value remains unknown.
+nonisolated final class ProvenanceVersionCache: @unchecked Sendable {
     static let shared = ProvenanceVersionCache()
-
+    private struct Runtime: Sendable {
+        let interpreters: [URL]
+        let sentinel: URL?
+        let code: String
+    }
+    private struct Entry {
+        let value: String?
+        let checkedAt: Date
+    }
     private let lock = NSLock()
-    private var cache: [ModelFamily: String] = [:]
-    private var inFlight: Set<ModelFamily> = []
+    private var cache: [String: Entry] = [:]
+    private var inFlight: Set<String> = []
+    private var epoch = 0
+    private var observers: [NSObjectProtocol] = []
+    private let workQueue = DispatchQueue(label: "CellCounter.provenance.versions", qos: .utility)
 
-    /// Synchronous read. Returns a cached value when present, otherwise kicks
-    /// an async probe and returns nil this call. Idempotent on the in-flight
-    /// set so multiple exports during the cold path don't fork N subprocesses.
-    func versionSync(for family: ModelFamily) -> String? {
-        lock.lock()
-        if let v = cache[family] {
-            lock.unlock()
-            return v
+    init() {
+        for name in ["ccVenvChanged", "ccVenv4Changed", "ccModelStorageChanged"] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: Notification.Name(name), object: nil, queue: nil
+            ) { [weak self] _ in self?.invalidate() })
         }
-        let shouldProbe = !inFlight.contains(family)
-        if shouldProbe { inFlight.insert(family) }
-        lock.unlock()
+    }
+    deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
 
-        guard shouldProbe else { return nil }
-        Task.detached(priority: .utility) { [weak self] in
-            let v = ProvenanceVersionCache.probe(family: family)
-            guard let self else { return }
-            self.lock.lock()
-            if let v { self.cache[family] = v }
-            self.inFlight.remove(family)
-            self.lock.unlock()
+    @MainActor func versionSync(for family: ModelFamily) -> String? {
+        let key = family.rawValue
+        let claim = lookupAndClaim(key)
+        guard let revision = claim.revision else { return claim.value }
+        guard let runtime = Self.runtime(for: family) else {
+            publish(nil, key: key, revision: revision)
+            return nil
         }
-        return nil
+        workQueue.async { [weak self] in
+            let value = Self.probe(runtime: runtime)
+            self?.publish(value, key: key, revision: revision)
+        }
+        return claim.value
     }
 
-    /// Direct synchronous probe. Used by tests and the first detection-time
-    /// warm-up. Off the MainActor; safe to call from any thread.
-    static func probe(family: ModelFamily) -> String? {
+    /// Compatibility entry point. Like the other synchronous provenance API,
+    /// it returns the known snapshot and warms a cold value without blocking.
+    @MainActor static func probe(family: ModelFamily) -> String? { shared.versionSync(for: family) }
+
+    @MainActor private static func runtime(for family: ModelFamily) -> Runtime? {
+        // These are URL composition only, with no existence/import checks.
+        let store = FileStore.shared
         switch family {
         case .cellpose:
-            return probePython(interpreter: FileStore.shared.pythonInterpreterURL,
-                               importLine: "import cellpose; print(cellpose.version)")
+            return Runtime(interpreters: [store.pythonInterpreterURL], sentinel: store.installIncompleteSentinel,
+                           code: "import cellpose; print(cellpose.version)")
         case .cellpose4:
-            // CPSAM ships as cellpose v4.x — the same `cellpose.version` probe
-            // reads the right value out of the cp4 venv.
-            return probePython(interpreter: FileStore.shared.pythonInterpreter4URL,
-                               importLine: "import cellpose; print(cellpose.version)")
+            return Runtime(interpreters: [store.pythonInterpreter4URL], sentinel: store.cellpose4InstallIncompleteSentinel,
+                           code: "import cellpose; print(cellpose.version)")
         case .omnipose:
-            // Omnipose lives in its own venv_omni/ — report the version of the
-            // Cellpose fork it ships, which is what actually did the
-            // segmentation and therefore what provenance should record.
-            guard let interpreter = OmniposeDownloader.interpreter() else { return nil }
-            return probePython(interpreter: interpreter,
-                               importLine: "import omnipose; print(omnipose.__version__)")
+            let directory = store.pythonDir.appendingPathComponent("venv_omni/bin")
+            return Runtime(interpreters: ["python3", "python"].map { directory.appendingPathComponent($0) },
+                           sentinel: store.pythonDir.appendingPathComponent(".cc-install-incomplete-omni"),
+                           code: "import omnipose; print(omnipose.__version__)")
         case .classical:
-            // No model version to report — the pipeline is scikit-image's
-            // threshold + watershed, so that library's version IS the
-            // provenance-relevant number.
-            return probePython(interpreter: FileStore.shared.pythonInterpreterURL,
-                               importLine: "import skimage; print('scikit-image ' + skimage.__version__)")
-        case .stardist, .sam, .ensemble, .custom, .all:
-            // The ensemble has no version of its own; its members each report
-            // theirs through their own family.
-            return nil
+            return Runtime(interpreters: [store.pythonInterpreterURL], sentinel: nil,
+                           code: "import skimage; print('scikit-image ' + skimage.__version__)")
+        case .stardist, .sam, .ensemble, .custom, .all: return nil
         }
     }
 
-    /// One-shot `python -c <line>` probe. Returns trimmed stdout on exit 0;
-    /// nil on any failure (missing interpreter, import error, non-zero exit).
-    /// Hard 5-second wall clock cap so a misbehaving venv can't stall exports.
-    private static func probePython(interpreter: URL, importLine: String) -> String? {
-        guard FileManager.default.isExecutableFile(atPath: interpreter.path) else {
-            return nil
+    private func lookupAndClaim(_ key: String) -> (value: String?, revision: Int?) {
+        lock.lock(); defer { lock.unlock() }
+        let entry = cache[key]
+        if inFlight.contains(key) || entry.map({ Date().timeIntervalSince($0.checkedAt) < 30 }) == true {
+            return (entry?.value, nil)
         }
-        let proc = Process()
-        proc.executableURL = interpreter
-        proc.arguments = ["-c", importLine]
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-        } catch {
-            return nil
-        }
+        inFlight.insert(key)
+        return (entry?.value, epoch)
+    }
+    private func publish(_ value: String?, key: String, revision: Int) {
+        lock.lock(); defer { lock.unlock() }
+        inFlight.remove(key)
+        guard revision == epoch else { return }
+        cache[key] = Entry(value: value, checkedAt: Date())
+    }
+    private func invalidate() {
+        lock.lock(); defer { lock.unlock() }
+        epoch &+= 1
+        cache.removeAll()
+        // Keep old work claimed until it finishes, so repeated invalidations
+        // cannot grow the background queue without bound.
+    }
 
-        // Soft 5 s watchdog: kill the subprocess if it doesn't return quickly.
-        let watchdog = DispatchWorkItem { [weak proc] in
-            guard let proc, proc.isRunning else { return }
-            proc.terminate()
+    private static func probe(runtime: Runtime) -> String? {
+        guard !Thread.isMainThread else { return nil }
+        let fm = FileManager.default
+        if let sentinel = runtime.sentinel, fm.fileExists(atPath: sentinel.path) { return nil }
+        guard let interpreter = runtime.interpreters.first(where: { fm.isExecutableFile(atPath: $0.path) }) else { return nil }
+        let process = Process()
+        process.executableURL = interpreter
+        process.arguments = ["-c", runtime.code]
+        process.standardInput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        let fd = output.fileHandleForReading.fileDescriptor
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        let ended = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in ended.signal() }
+        do { try process.run() } catch { return nil }
+        try? output.fileHandleForWriting.close()
+        defer { try? output.fileHandleForReading.close() }
+        let registration = Task { @MainActor in
+            if process.isRunning { ChildProcessTracker.shared.register(process, kind: .other) }
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5.0, execute: watchdog)
-        proc.waitUntilExit()
-        watchdog.cancel()
-
-        guard proc.terminationStatus == 0 else { return nil }
-        let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
-        let raw = String(data: data, encoding: .utf8) ?? ""
-        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return v.isEmpty ? nil : v
+        defer {
+            Task { await registration.value; await ChildProcessTracker.shared.forget(process) }
+        }
+        var bytes = Data()
+        var overflow = false
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        func drain() {
+            // Bound each drain so a continuously noisy import cannot starve
+            // its deadline. Discard excess output while keeping the pipe clear.
+            for _ in 0..<32 {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+                guard count > 0 else { return }
+                let kept = min(count, max(0, 4096 - bytes.count))
+                bytes.append(contentsOf: buffer.prefix(kept))
+                if kept < count { overflow = true }
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ended.wait(timeout: .now() + .milliseconds(20)) == .timedOut {
+            drain()
+            if ContinuousClock.now >= deadline {
+                if process.isRunning { process.terminate() }
+                if ended.wait(timeout: .now() + .milliseconds(300)) == .timedOut, process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                    _ = ended.wait(timeout: .now() + 1)
+                }
+                return nil
+            }
+        }
+        drain()
+        guard process.terminationStatus == 0, !overflow,
+              let raw = String(data: bytes, encoding: .utf8) else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }
 
 // MARK: — Weights hash cache
 
-/// Caches `SHA-256(url)` keyed by `(url, size, mtime)`. Repeat exports of the
-/// same model — e.g. a user running 10 batches with cyto3 — hash the 26 MB
-/// checkpoint exactly once. The CPSAM checkpoint is ~1.15 GB; we apply the
-/// same caching but skip blocking hashing for files above 500 MB if the cache
-/// has not yet warmed.
-final class WeightsHashCache: @unchecked Sendable {
+/// UI reads validate a warm digest with file metadata; cold or changed files
+/// return unknown while streaming SHA-256 runs on a serial utility queue.
+/// Environment/storage notifications also invalidate retained snapshots.
+nonisolated final class WeightsHashCache: @unchecked Sendable {
     static let shared = WeightsHashCache()
-
-    /// Files larger than this won't block the caller on a cold hash — the
-    /// hash is computed off-main and returned on subsequent calls.
-    private let inlineHashByteLimit: Int = 500 * 1024 * 1024
-
     private struct Key: Hashable {
         let path: String
         let size: Int64
         let mtime: TimeInterval
+        let inode: UInt64
     }
-
+    private struct Entry {
+        let key: Key
+        let hash: String
+    }
     private let lock = NSLock()
-    private var cache: [Key: String] = [:]
-    private var inFlight: Set<Key> = []
+    private var cache: [String: Entry] = [:]
+    private var order: [String] = []
+    private var inFlight: Set<String> = []
+    private var epoch = 0
+    private var observers: [NSObjectProtocol] = []
+    private let workQueue = DispatchQueue(label: "CellCounter.provenance.weights", qos: .utility)
 
-    /// Returns the cached SHA-256 if present. For small files (< 500 MB) on a
-    /// cold cache, hashes inline (background-queue caller is expected). For
-    /// large files on a cold cache, schedules an async hash and returns nil
-    /// — subsequent exports get the result.
+    init() {
+        for name in ["ccVenvChanged", "ccVenv4Changed", "ccModelStorageChanged"] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: Notification.Name(name), object: nil, queue: nil
+            ) { [weak self] _ in self?.invalidate() })
+        }
+    }
+    deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
+
     func hashIfCheap(at url: URL) -> String? {
-        guard let key = makeKey(url: url) else { return nil }
-
-        lock.lock()
-        if let h = cache[key] {
-            lock.unlock()
-            return h
+        let path = url.standardizedFileURL.path
+        let claim = lookupAndClaim(path)
+        // Immutable run metadata must never receive the previous checkpoint's
+        // digest. A small stat on a warm read preserves that correctness; file
+        // content reads and hashing remain strictly off the main thread.
+        let verifiedHash: String? = claim.entry.flatMap { entry in
+            Self.makeKey(url: url) == entry.key ? entry.hash : nil
         }
-        let shouldHash = !inFlight.contains(key)
-        if shouldHash { inFlight.insert(key) }
-        lock.unlock()
-
-        guard shouldHash else { return nil }
-
-        if key.size <= Int64(inlineHashByteLimit) {
-            // Hash inline. ExportService writers run on a background queue,
-            // so a few-hundred-ms hash here is acceptable.
-            let h = Self.sha256Hex(at: url)
-            lock.lock()
-            if let h { cache[key] = h }
-            inFlight.remove(key)
-            lock.unlock()
-            return h
-        } else {
-            // Large file: schedule off-main so this export doesn't stall.
-            Task.detached(priority: .utility) { [weak self] in
-                let h = Self.sha256Hex(at: url)
-                guard let self else { return }
-                self.lock.lock()
-                if let h { self.cache[key] = h }
-                self.inFlight.remove(key)
-                self.lock.unlock()
-            }
-            return nil
+        guard let revision = claim.revision else { return verifiedHash }
+        // Preserve inline background callers for ordinary checkpoints; a UI
+        // caller always returns immediately, regardless of checkpoint size.
+        if !Thread.isMainThread, let key = Self.makeKey(url: url), key.size <= 500 * 1024 * 1024 {
+            let entry = prepare(url: url, cached: claim.entry)
+            publish(entry, path: path, revision: revision)
+            return entry?.hash
         }
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let entry = self.prepare(url: url, cached: claim.entry)
+            self.publish(entry, path: path, revision: revision)
+        }
+        return verifiedHash
     }
 
-    private func makeKey(url: URL) -> Key? {
-        let path = url.path
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
-            return nil
-        }
-        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
-        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
-        return Key(path: path, size: size, mtime: mtime)
+    private func lookupAndClaim(_ path: String) -> (entry: Entry?, revision: Int?) {
+        lock.lock(); defer { lock.unlock() }
+        let entry = cache[path]
+        guard !inFlight.contains(path), inFlight.count < 8 else { return (entry, nil) }
+        inFlight.insert(path)
+        return (entry, epoch)
+    }
+    private func prepare(url: URL, cached: Entry?) -> Entry? {
+        guard let key = Self.makeKey(url: url) else { return nil }
+        if let cached, cached.key == key { return cached }
+        guard let hash = Self.sha256Hex(at: url), Self.makeKey(url: url) == key else { return nil }
+        return Entry(key: key, hash: hash)
+    }
+    private func publish(_ entry: Entry?, path: String, revision: Int) {
+        lock.lock(); defer { lock.unlock() }
+        inFlight.remove(path)
+        guard revision == epoch else { return }
+        order.removeAll { $0 == path }
+        cache[path] = entry
+        if entry != nil { order.append(path) }
+        while order.count > 32 { cache[order.removeFirst()] = nil }
+    }
+    private func invalidate() {
+        lock.lock(); defer { lock.unlock() }
+        epoch &+= 1
+        cache.removeAll()
+        order.removeAll()
+        // Keep old work claimed until it finishes, so repeated invalidations
+        // cannot grow the background queue without bound.
+    }
+    private static func makeKey(url: URL) -> Key? {
+        let resolved = url.resolvingSymlinksInPath()
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: resolved.path),
+              attrs[.type] as? FileAttributeType == .typeRegular else { return nil }
+        return Key(path: resolved.path, size: (attrs[.size] as? NSNumber)?.int64Value ?? 0,
+                   mtime: (attrs[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0,
+                   inode: (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0)
     }
 
-    /// Streaming SHA-256 over the file; reads in 1 MB chunks so the 1.15 GB
-    /// CPSAM checkpoint doesn't balloon resident memory.
+    /// Pure streaming hash. A read error is unknown, never a digest of a prefix.
     static func sha256Hex(at url: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        guard !Thread.isMainThread, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         var hasher = SHA256()
-        let chunk = 1024 * 1024
-        while autoreleasepool(invoking: { () -> Bool in
-            let data = (try? handle.read(upToCount: chunk)) ?? Data()
-            if data.isEmpty { return false }
-            hasher.update(data: data)
-            return true
-        }) {}
-        let digest = hasher.finalize()
-        return digest.map { String(format: "%02x", $0) }.joined()
+        do {
+            while true {
+                let data = try autoreleasepool { try handle.read(upToCount: 1024 * 1024) ?? Data() }
+                if data.isEmpty { break }
+                hasher.update(data: data)
+            }
+        } catch { return nil }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
