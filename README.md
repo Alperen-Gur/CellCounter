@@ -8,7 +8,7 @@ Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
 [![macOS](https://img.shields.io/badge/macOS-v1.0.13-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13)
-[![Windows](https://img.shields.io/badge/Windows-v1.0.8-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
+[![Windows](https://img.shields.io/badge/Windows-v1.1.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0)
 [![Web](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -35,7 +35,7 @@ Image analysis is local by design. CellCounter does not require an account and d
 | Platform | Release | Availability |
 |---|---|---|
 | **macOS** | [v1.0.13](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13) | Native universal app for macOS 15 or later |
-| **Windows** | [v1.0.8](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
+| **Windows** | [v1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
 | **Web** | [v0.1.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) | Installable, fully client-side PWA for modern WebGPU browsers |
 
 > [!NOTE]
@@ -43,6 +43,10 @@ Image analysis is local by design. CellCounter does not require an account and d
 > learned segmentation models are not bundled yet. Use the macOS or Windows app when live model inference is
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
 > [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
+
+## New in Windows v1.1.0
+
+The first-analysis **“Sidecar scripts are not staged”** error is fixed. Import into a saved setup, preview before processing, pause/resume jobs, and inspect linked measurements or saved mask versions. Large Review Queues use bounded pages and support Undo across pages. See the [Windows release notes](docs/releases/windows-v1.1.0.md) for training requirements, unsigned installer guidance and remaining platform gaps.
 
 ## New in macOS v1.0.13
 
@@ -58,8 +62,8 @@ See the [hotfix release notes](docs/releases/v1.0.12.md).
 
 ## New in macOS v1.0.11
 
-macOS v1.0.11 adds an **inspect → preview → process → review** workflow. Windows and the web retain their
-current releases and platform-specific capabilities.
+macOS v1.0.11 introduced the native **inspect → preview → process → review** workflow.
+Windows and the web have separate releases with the differences listed in the feature reference.
 
 - The Models page shares background availability checks instead of repeating runtime imports on first navigation.
 - Screen-aware keyboard commands appear in the menus and in **Help → Keyboard Shortcuts** (`⌘/`), with standard
@@ -94,8 +98,8 @@ general-purpose tools do not provide directly:
 
 ### Segmentation
 
-The macOS app offers the full set of model families summarized below. Windows v1.0.8 focuses on three validated families:
-Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. The web preview exposes the same three-model catalog,
+The macOS app offers the full set of model families summarized below. Windows v1.1.0 focuses on three validated families:
+Cellpose-SAM (legacy `cpsam_v2` ID), Cellpose `cyto3`, and StarDist fluorescence. The web preview exposes the same three-model catalog,
 with learned inference clearly marked unavailable until validated browser weights are distributed.
 
 | Model | Best for |
@@ -117,7 +121,7 @@ are marked as unavailable in the application rather than presented as runnable.
 The native apps read JPEG, PNG, BMP, TIFF / OME-TIFF, and common microscope containers. macOS supports Zeiss
 `.czi`, Nikon `.nd2`, Leica `.lif`, and Olympus `.oif` `.oib` `.oir`; Windows supports `.czi`, `.nd2`, `.lif`,
 `.oir`, and `.vsi`. macOS offers max, sum, and mean **Z-stack** projections plus channel selection and naming;
-Windows prepares a maximum projection and exposes analysis-channel controls. The web preview supports JPEG, PNG,
+Windows analyzes a chosen channel with maximum, mean, sum or middle-plane projection; its setup viewer still shows the imported display preview. The web preview supports JPEG, PNG,
 WebP, BMP, TIFF, and OME-TIFF; proprietary microscope containers should be converted locally to OME-TIFF first.
 
 Calibration can be read from compatible OME, ImageJ, TIFF, and microscope metadata or entered manually from a
@@ -190,7 +194,7 @@ it does not download or execute third-party plugin code.
 
 ### Fine-tuning and model history
 
-Windows v1.0.8 supports local Cellpose `cyto3` fine-tuning with a held-out test split, progress and cancellation,
+Windows v1.1.0 supports local Cellpose `cyto3` fine-tuning with a held-out test split, progress and cancellation,
 versioned checkpoints, and explicit activation. macOS v1.0.12 trains compatible Cellpose 3.x models from reviewed
 library masks, keeps independent specimen groups in separate train/validation/test partitions, and evaluates
 the selected checkpoint on held-out images. Training requires at least three specimen groups and six epochs;
@@ -250,7 +254,7 @@ Then open it normally.
 
 ### Windows — current release
 
-[![Download](https://img.shields.io/badge/Download-Windows%20v1.0.8-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
+[![Download](https://img.shields.io/badge/Download-Windows%20v1.0.8-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0)
 
 Requires **64-bit Windows 10 or Windows 11**. Choose the `.exe` for a standard workstation installation or the
 `.msi` for managed deployment. Both contain the same native application.

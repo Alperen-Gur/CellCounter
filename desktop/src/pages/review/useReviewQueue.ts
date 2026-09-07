@@ -1,369 +1,81 @@
-/**
- * pages/review/useReviewQueue.ts — builds and drives the low-confidence Review
- * queue, entirely through the frozen `PersistencePort`.
- *
- * Direct port of the data logic in the Swift `ReviewQueueView` (`rebuild` +
- * `applyAction` + `commitEdit`).
- *
- * What qualifies as "needs review" (canonical, and INDEPENDENT of the global
- * `state.confidence` slider — the cutoff is fixed so the sidebar badge and the
- * queue can never drift apart):
- *   1. `cell.confidence < REVIEW_QUEUE_CONFIDENCE_CUTOFF` (0.65), the same
- *      constant `store.refreshLibraryStats` feeds to
- *      `PersistencePort.uncorrectedCellCount(below:)` for the badge, AND
- *   2. no correction row exists for that `cellId` yet (any kind). Triaging once
- *      is forever.
- *
- * No fileName dedup: the sidebar badge (`uncorrectedCellCount`, a SQL SUM over
- * every `detections` row's denormalised `uncorrected_count`) counts every
- * detection with no dedup, so the queue must walk the identical set — one
- * entry per (batch, imageId) — or a file imported more than once (each import
- * gets its own image row + detection) would undercount the queue relative to
- * the badge.
- *
- * What each action writes (mirrors `EditableOverlay → handleEdit`):
- *   - reject → atomically records `kind:"remove"` AND removes the cell from
- *     `detection.cells`. The cell stops counting toward Totals/bins everywhere
- *     downstream.
- *   - keep   → `recordCorrection(kind:"accept")` only (audit trail; the cell
- *     stays in `detection.cells`, unchanged).
- *   - editDiameter → atomically records `kind:"resize"` AND updates the cell's
- *     `diameterUm` + `diameterPx` in `detection.cells`, so it re-bins immediately.
- *   - skip → advances the cursor with no write; the cell reappears next time.
- *
- * Feature-owned by feat-review-queue. Uses ONLY kernel-persistence
- * (`getPort`), kernel-store (`useAppStore` + `REVIEW_QUEUE_CONFIDENCE_CUTOFF`),
- * and kernel-types.
- *
- * KERNEL GAP (worked around here, recorded in the task result): `PersistencePort`
- * exposes no reader for a detection's existing corrections — only the aggregate
- * `uncorrectedCellCount(below:)`. The Swift original read `detection.corrections`
- * directly to satisfy filter (2). To honour "triaged once is forever" for the
- * `keep` action (which leaves `cell` in `detection.cells` with its low
- * confidence) we track cell ids triaged *in this session* and exclude them from
- * the live queue and from `rebuild`. `reject`/`resize` already survive a full
- * rebuild because they mutate the persisted cell (removed, or lifted above the
- * cutoff if resized past it) — but the audit correction is what a future
- * cross-session filter would key on. A `corrections(detectionId)` port method
- * would let a fresh page mount re-derive prior `keep` decisions.
- */
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useAppStore } from "../../kernel/store/store";
+import { ReviewSession, type ReviewAction, type ReviewContext, type ReviewItem, type ReviewPage, type ReviewDecisionOutcome } from "./reviewSession";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+export type { ReviewItem } from "./reviewSession";
 
-import type { CellDTO, DetectionDTO, ImageDTO } from "../../kernel/types";
-import { getPort } from "../../kernel/persistence";
-import {
-  useAppStore,
-  REVIEW_QUEUE_CONFIDENCE_CUTOFF,
-} from "../../kernel/store/store";
-
-/** One card's worth of context: the cell plus where it lives. */
-export interface ReviewItem {
-  /** Stable queue key (the cell id is unique within a detection). */
-  key: string;
-  cell: CellDTO;
-  image: ImageDTO;
-  detection: DetectionDTO;
-  /** px/µm of the owning batch (for the fallback circle + diameter⇄px). */
-  pxPerUm: number;
-  batchName: string;
-}
-
-/** The kind string recorded for each triage action (matches CorrectionRecord). */
-type CorrectionKind = "remove" | "accept" | "resize";
-
-export interface ReviewQueue {
-  /** The full triage queue, ascending by confidence (least confident first). */
-  queue: ReviewItem[];
-  /** Cursor into `queue`; `>= queue.length` means "done". */
-  cursor: number;
-  /** The item under the cursor, or null when finished / empty. */
-  current: ReviewItem | null;
-  /** The next item (for the peek card), or null. */
-  next: ReviewItem | null;
-  loading: boolean;
-  /**
-   * The last triage write that failed, or null. Set when a reject/keep/resize
-   * persistence write throws; in that case the cursor does NOT advance, so the
-   * decision is not lost and the user can retry on the same card. Cleared when
-   * the next action starts and on rebuild. (Additive field — existing consumers
-   * that ignore it keep working.)
-   */
-  error: string | null;
-
-  /** Reject the current cell: records "remove" + drops it from the detection. */
-  reject(): Promise<void>;
-  /** Keep the current cell: records "accept" (no data change). */
-  keep(): Promise<void>;
-  /** Resize the current cell to `diameterUm`: records "resize" + updates it. */
-  editDiameter(diameterUm: number): Promise<void>;
-  /** Skip: advance the cursor with no write (the cell reappears later). */
-  skip(): void;
-}
-
-/**
- * Load every batch's images + detections and flatten to the ordered triage
- * queue. Best-effort per image (a decode/read failure just omits that image).
- */
-async function buildQueue(
-  sessionTriaged: ReadonlySet<string>,
-): Promise<ReviewItem[]> {
-  const port = getPort();
-  const cutoff = REVIEW_QUEUE_CONFIDENCE_CUTOFF;
-
-  const [batches, allImages] = await Promise.all([
-    port.allBatches(),
-    port.allImages(),
-  ]);
-  const imageById = new Map(allImages.map((im) => [im.id, im]));
-
-  // Every (batch, imageId) pair — no fileName dedup (see file header: the
-  // badge SUM doesn't dedup either, so the queue must walk the same set).
-  interface QueueImage {
-    image: ImageDTO;
-    pxPerUm: number;
-    batchName: string;
-  }
-  const queueImages: QueueImage[] = [];
-  for (const batch of batches) {
-    for (const imageId of batch.imageIds) {
-      const image = imageById.get(imageId);
-      if (!image) continue;
-      queueImages.push({
-        image,
-        pxPerUm: batch.pxPerUm,
-        batchName: batch.displayName,
-      });
-    }
-  }
-
-  // Bulk-load every eligible image's detection in ONE round-trip (the triage
-  // cards need full detections — id/cells/detectorId — so we fetch detections,
-  // not counts, but via get_detections rather than an N+1 getDetection). Only
-  // request images that carry cells; the rest can't contribute a review card.
-  const withCells = queueImages.filter((q) => q.image.cellCount > 0);
-  const detections = await port
-    .getDetections(withCells.map((q) => q.image.id))
-    .catch(() => [] as DetectionDTO[]);
-  const detByImage = new Map(detections.map((d) => [d.imageId, d]));
-
-  const perImage = queueImages.map((q) => {
-    const detection = detByImage.get(q.image.id) ?? null;
-    if (!detection) return [] as ReviewItem[];
-    const items: ReviewItem[] = [];
-    for (const cell of detection.cells) {
-      if (cell.confidence >= cutoff) continue;
-      if (sessionTriaged.has(cell.id)) continue;
-      items.push({
-        key: `${detection.id}:${cell.id}`,
-        cell,
-        image: q.image,
-        detection,
-        pxPerUm: q.pxPerUm,
-        batchName: q.batchName,
-      });
-    }
-    return items;
-  });
-
-  const items = perImage.flat();
-  items.sort((a, b) => a.cell.confidence - b.cell.confidence);
-  return items;
-}
-
-export function useReviewQueue(): ReviewQueue {
+export function useReviewQueue() {
   const refreshLibraryStats = useAppStore((s) => s.refreshLibraryStats);
-
-  const [queue, setQueue] = useState<ReviewItem[]>([]);
-  const [cursor, setCursor] = useState(0);
-  const [loading, setLoading] = useState(true);
-  // Surfaces a failed triage write so the correction isn't silently lost.
-  const [error, setError] = useState<string | null>(null);
-
-  // Cells triaged in this session (any action). Filter (2) equivalent for the
-  // `keep` path — see the KERNEL GAP note in the file header. A ref so the
-  // rebuild closure always sees the latest set without re-subscribing.
-  const triagedRef = useRef<Set<string>>(new Set());
-
-  // Guards against out-of-order async writes when rebuilds overlap.
-  const reqRef = useRef(0);
-
-  // Live per-detection working copy of `cells`, keyed by detection id. Two
-  // low-confidence cells can share one detection; each reject/resize must build
-  // its next cell list from the ALREADY-mutated copy, not the queue-build
-  // snapshot — otherwise the second write, derived from the stale snapshot,
-  // would clobber the first (resurrecting the earlier-triaged cell). The Swift
-  // view got this for free because `detection.cells` was one shared mutable
-  // reference; we reproduce that with this map. Seeded lazily from the item's
-  // snapshot on first mutation; cleared on every rebuild.
-  const workingCellsRef = useRef<Map<string, CellDTO[]>>(new Map());
-
-  const rebuild = useCallback(async () => {
-    const req = ++reqRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const items = await buildQueue(triagedRef.current);
-      if (req !== reqRef.current) return;
-      // Fresh snapshots come with this queue — drop any stale working copies.
-      workingCellsRef.current = new Map();
-      setQueue(items);
-      setCursor(0);
-    } finally {
-      if (req === reqRef.current) setLoading(false);
-    }
-  }, []);
-
-  /** The live cell list for an item's detection (seeded from its snapshot). */
-  const liveCells = useCallback((item: ReviewItem): CellDTO[] => {
-    const existing = workingCellsRef.current.get(item.detection.id);
-    if (existing) return existing;
-    const seeded = item.detection.cells.slice();
-    workingCellsRef.current.set(item.detection.id, seeded);
-    return seeded;
-  }, []);
-
-  // Build once on mount. The queue cutoff is fixed (independent of the global
-  // confidence slider), so — exactly like the Swift view — changing that slider
-  // must NOT rebuild (it would reset the cursor and bounce the user out of
-  // position for no logical reason).
-  useEffect(() => {
-    void rebuild();
-  }, [rebuild]);
-
-  const current =
-    cursor >= 0 && cursor < queue.length ? queue[cursor] : null;
-  const next =
-    cursor + 1 >= 0 && cursor + 1 < queue.length ? queue[cursor + 1] : null;
-
-  /** Advance the cursor past the current card (no persistence). */
-  const advance = useCallback(() => {
-    setCursor((c) => c + 1);
-  }, []);
-
-  /**
-   * Record a correction for `item.cell`, optionally replacing the detection's
-   * cell list (reject removes; resize updates).
-   *
-   * ORDERING (correctness fix): the persistence write is AWAITED first; only on
-   * success do we mark the cell triaged and advance the cursor. If the write
-   * throws we surface it via `error` and DON'T advance — so a Reject/Keep/resize
-   * can never be silently lost (the earlier code advanced + swallowed the error,
-   * dropping the decision). The user stays on the same card and can retry.
-   *
-   * RETRY SAFETY: `reject`/`editDiameter` pre-mutate the in-memory working copy
-   * (`workingCellsRef`) before calling here. On failure we leave that copy as-is
-   * — because we did not advance, `current` is unchanged and a retry re-derives
-   * `nextCells` from the working copy; both the remove-filter and the resize-map
-   * are keyed by `cell.id`, so re-applying them is idempotent.
-   */
-  const applyCorrection = useCallback(
-    async (
-      item: ReviewItem,
-      kind: CorrectionKind,
-      diameter: number,
-      nextCells: CellDTO[] | null,
-    ) => {
-      // Clear any prior failure at the start of a fresh attempt.
-      setError(null);
-
-      const port = getPort();
-      try {
-        const correction = {
-          kind,
-          cellId: item.cell.id,
-          cx: item.cell.cx,
-          cy: item.cell.cy,
-          diameter,
-        };
-        // Reject/resize mutate the mask and audit log as one transaction. Keep
-        // is audit-only, so it retains the lightweight correction command.
-        if (nextCells) {
-          await port.commitCellEdit(
-            item.detection.imageId,
-            item.detection.detectorId,
-            nextCells,
-            item.detection.imageStats,
-            [correction],
-          );
-        } else {
-          await port.recordCorrection(item.detection.id, correction);
-        }
-      } catch (err) {
-        // Surface the failure and stop: do NOT mark triaged, do NOT advance, so
-        // the decision survives and the user can retry on the same card.
-        setError(err instanceof Error ? err.message : String(err));
-        return;
-      }
-
-      // Write committed — now it's safe to triage this cell (so a rebuild via
-      // refreshLibraryStats' consumers won't resurface it) and move to the next.
-      triagedRef.current.add(item.cell.id);
-      advance();
-
-      // Keep the sidebar Review badge in sync (mirrors the Swift
-      // ccCorrectionsChanged → refreshLibraryStats round-trip). Best-effort: the
-      // triage write already succeeded, so a badge-refresh hiccup must not read
-      // as a lost correction.
-      await refreshLibraryStats().catch(() => {});
-    },
-    [advance, refreshLibraryStats],
-  );
-
-  const reject = useCallback(async () => {
-    if (!current) return;
-    // Remove the cell from the detection's LIVE list so it stops counting
-    // downstream, then persist that same list for later same-detection edits.
-    const nextCells = liveCells(current).filter((c) => c.id !== current.cell.id);
-    workingCellsRef.current.set(current.detection.id, nextCells);
-    await applyCorrection(current, "remove", current.cell.diameterUm, nextCells);
-  }, [current, liveCells, applyCorrection]);
-
-  const keep = useCallback(async () => {
-    if (!current) return;
-    // Audit only — the cell stays in the detection unchanged (no cell write).
-    await applyCorrection(current, "accept", current.cell.diameterUm, null);
-  }, [current, applyCorrection]);
-
-  const editDiameter = useCallback(
-    async (diameterUm: number) => {
-      if (!current) return;
-      const newDiamPx =
-        current.pxPerUm > 0
-          ? diameterUm * current.pxPerUm
-          : current.cell.diameterPx;
-      // Update BOTH diameterUm and diameterPx on the cell so it re-bins and its
-      // measurements/exports use the corrected size (Swift `commitEdit`). Derive
-      // from + write back to the live list so a sibling edit isn't clobbered.
-      const nextCells = liveCells(current).map((c) =>
-        c.id === current.cell.id
-          ? { ...c, diameterUm, diameterPx: newDiamPx }
-          : c,
-      );
-      workingCellsRef.current.set(current.detection.id, nextCells);
-      await applyCorrection(current, "resize", diameterUm, nextCells);
-    },
-    [current, liveCells, applyCorrection],
-  );
-
-  const skip = useCallback(() => {
-    if (!current) return;
-    advance();
-  }, [current, advance]);
-
-  return useMemo(
-    () => ({
-      queue,
-      cursor,
-      current,
-      next,
-      loading,
-      error,
-      reject,
-      keep,
-      editDiameter,
-      skip,
+  const session = useMemo(() => new ReviewSession({
+    page: (after) => invoke<ReviewPage>("review_page", { after, limit: 64 }),
+    decide: (item, action, diameterUm) => invoke<ReviewDecisionOutcome>("review_decision", {
+      detectionId: item.detectionId, cellId: item.cell.id, action, diameterUm: diameterUm ?? null,
     }),
-    [queue, cursor, current, next, loading, error, reject, keep, editDiameter, skip],
-  );
+    undo: (token) => invoke<void>("review_undo", { token }),
+  }), []);
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const [contexts, setContexts] = useState<Record<string, ReviewContext>>({});
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [contextAttempt, setContextAttempt] = useState(0);
+  const current = state.restored ?? state.items[state.index] ?? null;
+  const next = state.items[state.index + (state.restored ? 0 : 1)] ?? null;
+
+  useEffect(() => {
+    void session.start();
+    return () => session.dispose();
+  }, [session]);
+
+  // Geometry belongs only to the current/peek cards, never to the whole page.
+  // Cancelled effects cannot resurrect contours after navigation or unmount.
+  useEffect(() => {
+    let alive = true;
+    setContextError(null);
+    setContexts({});
+    const visible = [current, next].filter((item): item is ReviewItem => item !== null);
+    void Promise.all(visible.map(async (item) => {
+      const context = await invoke<ReviewContext | null>("review_context", {
+        detectionId: item.detectionId, cellId: item.cell.id,
+      });
+      return [item.key, context] as const;
+    })).then((entries) => {
+      if (alive) setContexts(Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<string, ReviewContext>);
+    }).catch((error: unknown) => {
+      if (alive) setContextError(String(error));
+    });
+    return () => { alive = false; };
+  }, [current, next, contextAttempt]);
+
+  const hydrated = (item: ReviewItem | null): ReviewItem | null => {
+    if (!item) return null;
+    const context = contexts[item.key];
+    return context ? { ...item, cell: context.cell, neighbors: context.neighbors, contextLimited: context.limited } : item;
+  };
+  const decide = useCallback(async (action: ReviewAction, diameterUm?: number) => {
+    if (await session.decide(action, diameterUm)) await refreshLibraryStats().catch(() => {});
+  }, [session, refreshLibraryStats]);
+  const undo = useCallback(async () => {
+    if (await session.undo()) await refreshLibraryStats().catch(() => {});
+  }, [session, refreshLibraryStats]);
+
+  return {
+    current: hydrated(current), next: hydrated(next),
+    cursor: state.visited,
+    totalPending: state.totalPending,
+    skipped: state.skipped,
+    loading: state.loading,
+    saving: state.saving,
+    error: state.error,
+    pageError: state.pageError,
+    notice: state.notice,
+    canUndo: state.undo !== null,
+    undo,
+    contextError,
+    retryContext: () => setContextAttempt((attempt) => attempt + 1),
+    retryPage: session.retryPage,
+    reject: () => decide("reject"),
+    keep: () => decide("keep"),
+    editDiameter: (diameterUm: number) => decide("resize", diameterUm),
+    skip: () => { void session.skip(); },
+  };
 }

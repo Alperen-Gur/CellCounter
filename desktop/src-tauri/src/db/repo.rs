@@ -76,6 +76,8 @@ impl Db {
             backfill_detection_counts(&conn)
                 .map_err(|e| format!("backfill detection counts failed: {e}"))?;
         }
+        super::review::migrate(&conn)
+            .map_err(|e| format!("prepare review queue failed: {e}"))?;
         schema::seed_defaults(&conn).map_err(|e| format!("seed defaults failed: {e}"))?;
         Ok(Db {
             conn: Mutex::new(conn),
@@ -246,7 +248,7 @@ fn backfill_detection_counts(conn: &Connection) -> rusqlite::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Map an `images` row to `ImageDto`, resolving stored/thumb paths via the store.
-fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<ImageDto> {
+pub(crate) fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<ImageDto> {
     let id: String = row.get("id")?;
     let file_name: String = row.get("file_name")?;
     // Vendor imports keep the original display name but store a projected PNG;
@@ -1513,13 +1515,8 @@ pub fn uncorrected_cell_count(db: State<'_, Db>, below_confidence: f64) -> Resul
 /// `wipeAllUserData`).
 #[tauri::command]
 pub fn wipe_all_user_data(db: State<'_, Db>) -> Result<(), String> {
-    let conn = db.lock()?;
-    conn.execute("DELETE FROM batches", [])
-        .map_err(|e| e.to_string())?;
-    // Images not attached to any batch would survive the cascade — remove them
-    // explicitly so a wipe is total (their cascade clears detections/rois/gt).
-    conn.execute("DELETE FROM images", [])
-        .map_err(|e| e.to_string())?;
+    let mut conn = db.lock()?;
+    super::workflow::wipe_library_rows(&mut conn)?;
 
     let images_dir = db.store.images_dir();
     let analysis_dir = db.store.analysis_dir();

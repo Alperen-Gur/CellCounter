@@ -3,6 +3,7 @@ import {
   assertIncludes,
   readRepositoryText,
   readText,
+  readJson,
   reportFailure,
 } from "./lib/verify-utils.mjs";
 
@@ -10,7 +11,7 @@ try {
   const guide = readRepositoryText("docs/WINDOWS.md");
   const lower = guide.toLowerCase();
   const requiredHeadings = [
-    "# cellcounter for windows 1.0.8",
+    `# cellcounter for windows ${readJson("package.json").version}`,
     "## system requirements",
     "## choose an installer",
     "## install",
@@ -58,7 +59,7 @@ try {
   const readme = readText("README.md");
   assertIncludes(readme, "Windows", "desktop README no longer identifies the Windows target");
   assertIncludes(readme, "../docs/WINDOWS.md", "desktop README does not link to the operator guide");
-  assertIncludes(readme, "1.0.8", "desktop README version identity is stale");
+  assertIncludes(readme, readJson("package.json").version, "desktop README version identity is stale");
 
   console.log("Windows documentation verification passed");
 } catch (error) {

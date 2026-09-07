@@ -74,6 +74,7 @@ pub async fn export_imagej_roi(
 ) -> Result<String, String> {
     let _ = (&db, &image_id);
     let store = FileStore::from_app(&app)?;
+    crate::env::uv::stage_python_project(&app, &store)?;
 
     // Resolve a helper venv python + the staged helper. This helper doesn't run
     // a model — it only needs roifile (which cellpose pulls in) — so route it to

@@ -70,8 +70,8 @@ fn validate_request(request: &TrainingRequest) -> Result<(), String> {
     if request.run_id.is_empty() || request.run_id.len() > 128 || request.run_id.contains('\0') {
         return Err("training run id is invalid".to_string());
     }
-    if !(1..=500).contains(&request.epochs) {
-        return Err("epochs must be between 1 and 500".to_string());
+    if !(6..=500).contains(&request.epochs) {
+        return Err("epochs must be between 6 and 500 so validation and warmup can run".to_string());
     }
     if !(request.learning_rate.is_finite()
         && request.learning_rate >= 1e-7
@@ -83,7 +83,7 @@ fn validate_request(request: &TrainingRequest) -> Result<(), String> {
         return Err("batch size must be between 1 and 128".to_string());
     }
     if request.mixed_precision {
-        return Err("Mixed precision is unavailable in the CPU-only Windows v1.0.8 runtime.".to_string());
+        return Err("Mixed precision is unavailable in the CPU-only Windows runtime.".to_string());
     }
     Ok(())
 }

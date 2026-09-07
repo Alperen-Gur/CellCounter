@@ -125,23 +125,6 @@ const STARDIST_PIP_PACKAGES: &[&str] = &[
     "scikit-image",
 ];
 
-/// Cheap "is the staged copy already current?" check: identical length and
-/// byte-for-byte contents. Reading both files is fine here — the sidecar scripts
-/// are small — and avoids re-copying (and thus locking/clobbering) a file the
-/// destination already holds verbatim.
-fn files_match(src: &std::path::Path, dest: &std::path::Path) -> bool {
-    let (Ok(a), Ok(b)) = (std::fs::metadata(src), std::fs::metadata(dest)) else {
-        return false;
-    };
-    if a.len() != b.len() {
-        return false;
-    }
-    match (std::fs::read(src), std::fs::read(dest)) {
-        (Ok(sa), Ok(sb)) => sa == sb,
-        _ => false,
-    }
-}
-
 /// Whether Windows long-path support is switched on, i.e.
 /// `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` = 1.
 ///
@@ -220,66 +203,12 @@ fn long_path_warning(venv_dir: &std::path::Path) -> Option<String> {
     }
 }
 
-/// Stage `desktop/python/` into the writable `<root>/python/` dir. In a packaged
-/// build the sidecar scripts + `pyproject.toml` ship as resources; here we copy
-/// them so `uv sync` and the sidecar run out of one writable location.
-///
-/// The source dir is resolved from the Tauri resource dir when packaged, else
-/// from the dev-repo `desktop/python`. Missing sources are skipped (the caller
-/// surfaces "scripts not staged" via availability).
-pub(crate) fn stage_python_project(app: &AppHandle, store: &FileStore) -> Result<(), String> {
-    use tauri::Manager;
-    let dest = store.python_dir();
-    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
-
-    // Candidate source dirs, in priority order.
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("python"));
-        candidates.push(resource_dir.join("_up_").join("python")); // tauri resource flattening
-    }
-    // Dev fallback: <cwd>/../python or the repo desktop/python.
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("python"));
-        candidates.push(cwd.join("..").join("python"));
-    }
-
-    let src = candidates.into_iter().find(|p| p.join("pyproject.toml").exists());
-    let Some(src) = src else {
-        // Nothing to stage from — leave dest as-is (may already be staged).
-        return Ok(());
-    };
-
-    // Copy all files (flat dir — the sidecar scripts + pyproject live at top level).
-    // Skip files whose contents already match the staged copy so a still-running
-    // orphan sidecar / antivirus lock on Windows can't fail the copy of a file
-    // that is already current.
-    //
-    // A file that DIFFERS from the staged copy (the source was updated) must be
-    // refreshed; if that copy fails we abort. Reporting success while leaving a
-    // stale `pyproject.toml`/sidecar on disk would let `env_install` "succeed"
-    // against an out-of-date environment — the existence-only gate in
-    // `env_install` can't catch it, so a failed refresh is fatal here.
-    for entry in std::fs::read_dir(&src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(name) = path.file_name() {
-                let target = dest.join(name);
-                if files_match(&path, &target) {
-                    continue; // already staged and identical — don't touch it
-                }
-                if let Err(e) = std::fs::copy(&path, &target) {
-                    return Err(format!(
-                        "could not update staged file {}: {e}. Close any running \
-                         detection and retry (a lock on the file blocks the update).",
-                        target.display()
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
+/// Stage this executable's complete Python project into the writable runtime.
+/// No resource-directory or current-working-directory lookup is needed; the
+/// build embeds all required scripts and dependency manifests. Every request
+/// waits for staging, and retry repairs missing or changed files.
+pub(crate) fn stage_python_project(_app: &AppHandle, store: &FileStore) -> Result<(), String> {
+    super::staging::stage(&store.python_dir())
 }
 
 // ===========================================================================
@@ -313,7 +242,7 @@ pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(),
 
     if !is_supported_model(&model_id) {
         return Err(format!(
-            "Unsupported model id `{model_id}`. Windows 1.0.8 supports cpsam_v2, cp-cyto3, and sd-fluo."
+            "Unsupported model id `{model_id}`. Windows supports cpsam_v2, cp-cyto3, and sd-fluo."
         ));
     }
 
@@ -779,9 +708,13 @@ pub async fn env_availability(
         return Ok(Availability {
             installed: false,
             reason: Some(format!(
-                "Unsupported model id `{model_id}`. Windows 1.0.8 supports cpsam_v2, cp-cyto3, and sd-fluo."
+                "Unsupported model id `{model_id}`. Windows supports cpsam_v2, cp-cyto3, and sd-fluo."
             )),
         });
+    }
+
+    if let Err(reason) = stage_python_project(&app, &store) {
+        return Ok(Availability { installed: false, reason: Some(reason) });
     }
 
     // Route to the model-appropriate venv + import probe. cpsam checks `.venv4`

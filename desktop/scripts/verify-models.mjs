@@ -48,7 +48,7 @@ try {
   const optionsBlock = settings.match(/const MODEL_OPTIONS[\s\S]*?\];/)?.[0] ?? "";
   const settingsIds = [...optionsBlock.matchAll(/value:\s*"([^"]+)"/g)].map((match) => match[1]);
   assertEqual(JSON.stringify(settingsIds), JSON.stringify(EXPECTED_IDS), "Settings exposes a different runnable model set");
-  assertIncludes(settings, "GPU unavailable in Windows v1.0.8", "Settings does not disclose the CPU-only runtime");
+  assertIncludes(settings, "GPU unavailable in Windows", "Settings does not disclose the CPU-only runtime");
 
   const store = readText("src/kernel/store/store.ts");
   assertIncludes(store, "useGpu: false", "Windows analysis defaults still request GPU");

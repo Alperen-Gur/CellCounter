@@ -81,66 +81,8 @@ from _cellpose_common import log, emit_error  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def install_tqdm_progress_bridge() -> None:
-    """Patch tqdm so the lazy CPSAM weight download reports to stderr.
-
-    cellpose 4's ``CellposeModel(pretrained_model="cpsam")`` fetches ~1.15 GB of
-    weights on first construction via ``download_url_to_file(url, dst,
-    progress=True)`` (urllib + tqdm), not torch.hub. We patch the class-level
-    tqdm methods so the *byte* progress bar streams to stderr in our
-    ``[cellpose_detect]`` format, which the ccDetectionStage UI parses and shows
-    as first-run install/download progress. Non-byte bars (e.g. segmentation
-    tiling) are left alone.
-    """
-    try:
-        import tqdm as _tqdm_mod
-    except ImportError:
-        log("[cellpose_detect] tqdm not importable; weight-download progress "
-            "will be silent")
-        return
-
-    _orig_init = _tqdm_mod.tqdm.__init__
-    _orig_update = _tqdm_mod.tqdm.update
-    _orig_close = _tqdm_mod.tqdm.close
-
-    def _is_byte_bar(self) -> bool:
-        # cellpose's download bar uses unit="B" / unit_scale=True. Filter on
-        # those so we don't spam stderr for unrelated tqdm bars (segmentation
-        # progress for example) — those are bounded and short.
-        return (getattr(self, "unit", "") == "B"
-                and bool(getattr(self, "unit_scale", False)))
-
-    def _patched_init(self, *args, **kwargs):
-        _orig_init(self, *args, **kwargs)
-        if _is_byte_bar(self):
-            total = self.total or 0
-            log(f"[cellpose_detect] downloading weights: 0 / "
-                f"{total / (1024 * 1024):.1f} MB (starting…)")
-            self._cc_last_log_pct = -1
-
-    def _patched_update(self, n=1):
-        ret = _orig_update(self, n)
-        if _is_byte_bar(self):
-            total = self.total or 0
-            done = self.n or 0
-            if total > 0:
-                pct = int(done * 100 / total)
-                if pct != getattr(self, "_cc_last_log_pct", -1) and pct % 5 == 0:
-                    log(f"[cellpose_detect] downloading weights: "
-                        f"{done / (1024 * 1024):.1f} / "
-                        f"{total / (1024 * 1024):.1f} MB ({pct}%)")
-                    self._cc_last_log_pct = pct
-        return ret
-
-    def _patched_close(self):
-        if _is_byte_bar(self) and (self.total or 0) > 0:
-            log(f"[cellpose_detect] downloading weights: done "
-                f"({(self.total or 0) / (1024 * 1024):.1f} MB)")
-        return _orig_close(self)
-
-    _tqdm_mod.tqdm.__init__ = _patched_init
-    _tqdm_mod.tqdm.update = _patched_update
-    _tqdm_mod.tqdm.close = _patched_close
-    log("[cellpose_detect] tqdm progress bridge installed for weight downloads")
+    """Use the idempotent shared bridge for complete and partial downloads."""
+    cc.install_tqdm_progress_bridge()
 
 
 def parse_args():
@@ -220,6 +162,7 @@ def _warn_if_not_v4() -> None:
         pass
 
 
+@cc.model_loading_progress()
 def build_model(cp_models, model_name: str, args, torch_mod):
     """Construct the Cellpose 4 (CPSAM) model ONCE and place it on the device.
 
@@ -434,6 +377,8 @@ class DetectionRunError(Exception):
 # keys its worker pool by them. Matches build_request_json() in the Rust host and
 # cellpose_detect.py's _PER_IMAGE_KEYS byte-for-byte.
 _PER_IMAGE_KEYS = (
+    "z_project",
+    "segment_channel",
     "image",
     "conf",
     "pxPerUm",
@@ -457,7 +402,7 @@ def _merge_request_args(base_args, request: dict):
     import argparse
     merged = argparse.Namespace(**vars(base_args))
     for key in _PER_IMAGE_KEYS:
-        if key in request and request[key] is not None:
+        if key in request and (request[key] is not None or key == "segment_channel"):
             setattr(merged, key, request[key])
     return merged
 
@@ -538,6 +483,9 @@ def serve(base_args, channels: list[int]) -> None:
 
     try:
         model, _override_device = build_model(cp_models, model_name, base_args, _torch)
+    except cc.ModelDownloadError as exc:
+        emit_error("model-download-failed", hint=str(exc), exit_code=4)
+        return
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] model load failed: {exc!r}")
         emit_error("model-load-failed", hint=str(exc), exit_code=4)
@@ -660,6 +608,9 @@ def main() -> None:
 
     try:
         model, _override_device = build_model(cp_models, model_name, args, _torch)
+    except cc.ModelDownloadError as exc:
+        emit_error("model-download-failed", hint=str(exc), exit_code=4)
+        return
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] model load failed: {exc!r}")
         emit_error("model-load-failed", hint=str(exc), exit_code=4)

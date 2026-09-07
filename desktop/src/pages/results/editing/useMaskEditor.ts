@@ -37,6 +37,8 @@ import {
 } from "../../../kernel/overlay/MaskEditEngine";
 import { getPort } from "../../../kernel/persistence";
 import { useAppStore } from "../../../kernel/store/store";
+import { assertReviewImageWritable, isReviewImageBusy } from "../reviewWriteGuard";
+import { DETECTION_UPDATED_EVENT } from "../events";
 
 // ---------------------------------------------------------------------------
 // Correction-kind mapping (port of ResultsView.handleEdit, §3.8 kinds)
@@ -145,6 +147,7 @@ function correctionsFor(event: EditEvent, manualMode: boolean): CorrectionRow[] 
 export interface UseMaskEditorArgs {
   /** The image being edited. Cells load from its detection; annotations from it. */
   imageId?: string;
+  readOnly?: boolean;
   /** Source-pixel image size — only used for defaults/guards, not required. */
   sourceWidth?: number;
   sourceHeight?: number;
@@ -163,6 +166,11 @@ export interface MaskEditorApi {
   canUndo: boolean;
   canRedo: boolean;
   loading: boolean;
+  saving: boolean;
+  saveError: string | null;
+  loadError: string | null;
+  flush(): Promise<void>;
+  reload(): void;
 
   // mutations (all go through the engine; each persists + records corrections)
   addAt(pt: Pt): void;
@@ -190,11 +198,25 @@ export interface MaskEditorApi {
  */
 export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
   const { imageId } = args;
+  const readOnlyRef = useRef(args.readOnly);
+  readOnlyRef.current = args.readOnly;
+  const commitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveErrorRef = useRef<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadRevision, setLoadRevision] = useState(0);
+  const reload = useCallback(() => setLoadRevision(value => value + 1), []);
+  const flush = useCallback(async () => {
+    await commitQueueRef.current;
+    if (saveErrorRef.current) throw new Error(saveErrorRef.current);
+  }, []);
 
   const pxPerUm = useAppStore((s) => s.pxPerUm);
   const manualMarkerDiameterUm = useAppStore((s) => s.manualMarkerDiameterUm);
   const editorMode = useAppStore((s) => s.editorMode);
 
+  const [loadedImageId, setLoadedImageId] = useState<string | undefined>(undefined);
   const [engine, setEngine] = useState<MaskEditEngine | null>(null);
   const [detectionId, setDetectionId] = useState<string | null>(null);
   const [cells, setCells] = useState<CellDTO[]>([]);
@@ -205,11 +227,8 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
 
   // The detector id to stamp on the persisted detection blob. We reuse the one
   // already on the loaded detection so an edit never rebrands the detector;
-  // for a from-scratch manual session with no prior detection, fall back to
-  // whichever model is currently active rather than hardcoding cyto3.
-  const detectorIdRef = useRef<string>(
-    `cellpose/${useAppStore.getState().activeModelId}`,
-  );
+  // A from-scratch manual session has no model provenance.
+  const detectorIdRef = useRef<string>("manual");
   // Latest imageStats loaded with the detection, so re-saving edits preserves
   // the QC / colony numbers the sidecar produced.
   const imageStatsRef = useRef<Record<string, number> | undefined>(undefined);
@@ -235,6 +254,12 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
     }
     const port = getPort();
     setLoading(true);
+    setEngine(null);
+    setCells([]);
+    setSaving(false);
+    setLoadError(null);
+    setSaveError(null);
+    saveErrorRef.current = null;
     void (async () => {
       try {
         const [det, anns] = await Promise.all([
@@ -245,9 +270,9 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
         const ctx: EditContext = { pxPerUm, manualMarkerDiameterUm };
         const initialCells = det?.cells ?? [];
         const eng = new MaskEditEngine(initialCells, ctx);
-        detectorIdRef.current =
-          det?.detectorId ?? `cellpose/${useAppStore.getState().activeModelId}`;
+        detectorIdRef.current = det?.detectorId ?? "manual";
         imageStatsRef.current = det?.imageStats;
+        setLoadedImageId(imageId);
         setEngine(eng);
         setDetectionId(det?.id ?? null);
         setCells(eng.cells);
@@ -261,6 +286,8 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
           setDetectionId(null);
           setCells([]);
           setAnnotations([]);
+          setLoadedImageId(imageId);
+          setLoadError(err instanceof Error ? err.message : String(err));
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -272,7 +299,15 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
     // Rebuild only when the image changes. Calibration/marker changes are pushed
     // via engine.setContext below without discarding the undo history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageId]);
+  }, [imageId, loadRevision]);
+
+  useEffect(() => {
+    const updated = (event: Event) => {
+      if ((event as CustomEvent<{ imageId?: string }>).detail?.imageId === imageId) reload();
+    };
+    window.addEventListener(DETECTION_UPDATED_EVENT, updated);
+    return () => window.removeEventListener(DETECTION_UPDATED_EVENT, updated);
+  }, [imageId, reload]);
 
   // Push calibration / marker-size changes into the live engine without a rebuild.
   useEffect(() => {
@@ -287,7 +322,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
     // prior IPC finishes. Serialize those snapshots so an older write can never
     // land after a newer one. A rejected item is caught on the chain so later
     // edits can still repair persistence with their complete final snapshot.
-    let commitQueue: Promise<void> = Promise.resolve();
+    let pending = 0;
     let carriedCorrections: CorrectionRow[] = [];
     const unsub = engine.onCommit((event, nextCells) => {
       // Mirror engine state into React so the overlay re-renders immediately.
@@ -303,8 +338,11 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
       const detectorId = detectorIdRef.current;
       const imageStats = imageStatsRef.current;
       const rows = correctionsFor(event, modeRef.current === "manualCount");
-      commitQueue = commitQueue
+      pending += 1;
+      setSaving(true);
+      commitQueueRef.current = commitQueueRef.current
         .then(async () => {
+          assertReviewImageWritable(imgId);
           const corrections = [...carriedCorrections, ...rows];
           const savedId = await port.commitCellEdit(
             imgId,
@@ -314,6 +352,10 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
             corrections,
           );
           carriedCorrections = [];
+          if (activeImageIdRef.current === imgId) {
+            saveErrorRef.current = null;
+            setSaveError(null);
+          }
           // Don't let an old image's delayed commit overwrite the id shown for
           // a newly-selected image. The persistence write itself remains valid.
           if (activeImageIdRef.current === imgId) setDetectionId(savedId);
@@ -322,34 +364,42 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
           // Preserve audit rows across a recoverable local IPC/SQLite failure.
           // The next complete snapshot retries them in the same atomic commit.
           carriedCorrections = [...carriedCorrections, ...rows];
+          if (activeImageIdRef.current === imgId) {
+            saveErrorRef.current = err instanceof Error ? err.message : String(err);
+            setSaveError(saveErrorRef.current);
+          }
           console.warn("[useMaskEditor] persist failed:", err);
+        }).finally(() => {
+          pending -= 1;
+          if (activeImageIdRef.current === imgId && pending === 0) setSaving(false);
         });
     });
     return unsub;
   }, [engine, imageId]);
 
   // ── mutations (thin wrappers — the engine.onCommit subscription persists) ──
+  const canWrite = useCallback(() => !!imageId && loadedImageId === imageId && !readOnlyRef.current && !isReviewImageBusy(imageId), [imageId, loadedImageId]);
 
-  const addAt = useCallback((pt: Pt) => engine?.addAt(pt), [engine]);
+  const addAt = useCallback((pt: Pt) => { if (canWrite()) engine?.addAt(pt); }, [engine, canWrite]);
   const addFromContour = useCallback(
-    (path: Pt[]) => engine?.addFromContour(path),
-    [engine],
+    (path: Pt[]) => { if (canWrite()) engine?.addFromContour(path); },
+    [engine, canWrite],
   );
-  const remove = useCallback((ids: string[]) => engine?.remove(ids), [engine]);
+  const remove = useCallback((ids: string[]) => { if (canWrite()) engine?.remove(ids); }, [engine, canWrite]);
   const merge = useCallback(
-    (aId: string, bId: string) => engine?.merge(aId, bId),
-    [engine],
+    (aId: string, bId: string) => { if (canWrite()) engine?.merge(aId, bId); },
+    [engine, canWrite],
   );
   const split = useCallback(
-    (id: string, stroke: Pt[]) => engine?.split(id, stroke),
-    [engine],
+    (id: string, stroke: Pt[]) => { if (canWrite()) engine?.split(id, stroke); },
+    [engine, canWrite],
   );
   const resize = useCallback(
-    (id: string, newDiameterPx: number) => engine?.resize(id, newDiameterPx),
-    [engine],
+    (id: string, newDiameterPx: number) => { if (canWrite()) engine?.resize(id, newDiameterPx); },
+    [engine, canWrite],
   );
-  const undo = useCallback(() => engine?.undo(), [engine]);
-  const redo = useCallback(() => engine?.redo(), [engine]);
+  const undo = useCallback(() => { if (canWrite()) engine?.undo(); }, [engine, canWrite]);
+  const redo = useCallback(() => { if (canWrite()) engine?.redo(); }, [engine, canWrite]);
 
   // ── queries (delegate to the engine; safe no-op fallbacks) ──
 
@@ -370,7 +420,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
 
   const addAnnotation = useCallback(
     (pt: Pt) => {
-      if (!imageId) return;
+      if (!imageId || !canWrite()) return;
       const ann: GroundTruthDTO = {
         id:
           typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -388,26 +438,28 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
         .addAnnotation(ann)
         .catch((err) => console.warn("[useMaskEditor] addAnnotation failed:", err));
     },
-    [imageId],
+    [imageId, canWrite],
   );
 
   const removeAnnotation = useCallback((id: string) => {
+    if (!canWrite()) return;
     const port = getPort();
     setAnnotations((prev) => prev.filter((a) => a.id !== id));
     void port
       .deleteAnnotation(id)
       .catch((err) => console.warn("[useMaskEditor] deleteAnnotation failed:", err));
-  }, []);
+  }, [canWrite]);
 
   return useMemo<MaskEditorApi>(
     () => ({
-      cells,
-      annotations,
-      engine,
-      detectionId,
-      canUndo,
-      canRedo,
-      loading,
+      cells: loadedImageId === imageId ? cells : [],
+      annotations: loadedImageId === imageId ? annotations : [],
+      engine: loadedImageId === imageId ? engine : null,
+      detectionId: loadedImageId === imageId ? detectionId : null,
+      canUndo: loadedImageId === imageId && canUndo,
+      canRedo: loadedImageId === imageId && canRedo,
+      loading: loading || !!imageId && loadedImageId !== imageId,
+      saving, saveError, loadError, flush, reload,
       addAt,
       addFromContour,
       remove,
@@ -423,6 +475,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
       removeAnnotation,
     }),
     [
+      loadedImageId, imageId,
       cells,
       annotations,
       engine,
@@ -430,6 +483,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
       canUndo,
       canRedo,
       loading,
+      saving, saveError, loadError, flush, reload,
       addAt,
       addFromContour,
       remove,

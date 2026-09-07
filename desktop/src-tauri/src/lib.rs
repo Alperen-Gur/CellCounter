@@ -34,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(SidecarManager::new())
+        .manage(db::review::ReviewUndoState::default())
         .manage(analysis::runner::AssayManager::default())
         .manage(analysis::training::TrainingManager::default())
         .setup(|app| {
@@ -44,6 +45,15 @@ pub fn run() {
             if let Err(e) = db::repo::open_and_manage(&handle) {
                 eprintln!("[startup] failed to open store.sqlite: {e}");
                 return Err(e.into());
+            }
+
+            // Complete staging before the UI can request its first analysis.
+            // A recoverable disk/lock problem must leave the library usable;
+            // availability and every Python command retry and expose the error.
+            if let Ok(store) = paths::FileStore::from_app(&handle) {
+                if let Err(error) = env::uv::stage_python_project(&handle, &store) {
+                    eprintln!("[startup] {error}");
+                }
             }
 
             // Reap orphaned sidecar processes from a previous crashed session,
@@ -110,10 +120,18 @@ pub fn run() {
             db::repo::delete_calibration_preset,
             db::repo::bin_presets,
             db::repo::model_versions,
+            // ── durable workflow state ──
+            db::workflow::load_workflow_document,
+            db::workflow::save_workflow_document,
+            db::workflow::delete_workflow_document,
             // ── persistence: counts / review / wipe ──
             db::repo::total_image_count,
             db::repo::total_batch_count,
             db::repo::uncorrected_cell_count,
+            db::review::review_page,
+            db::review::review_context,
+            db::review::review_decision,
+            db::review::review_undo,
             db::repo::wipe_all_user_data,
             // ── image import ──
             images::importer::import_image,

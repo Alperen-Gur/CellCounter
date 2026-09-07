@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--pxPerUm", type=float, required=True)
     parser.add_argument("--conf", type=float, default=0.5)
+    parser.add_argument("--z-project", default="max", choices=("max", "sum", "mean", "none"))
+    parser.add_argument("--segment-channel", type=int, default=None)
     parser.add_argument("--bg-subtract", action="store_true")
     parser.add_argument("--rolling-ball-radius", type=int, default=50)
     parser.add_argument("--watershed", action="store_true")
@@ -45,20 +47,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_image(path: str):
+def load_image(path: str, z_project="max", segment_channel=None):
     import numpy as np
-    from PIL import Image
+    import _imageio
 
-    with Image.open(path) as source:
-        source.load()
-        size = source.size
-        if source.mode in ("L", "I", "F"):
-            image = np.asarray(source, dtype=np.float32)
-        else:
-            image = np.asarray(source.convert("RGB"), dtype=np.float32).mean(axis=2)
+    stack, meta = _imageio.load_planes(path, z_project=z_project, channel=None)
+    channels = int(stack.shape[2])
+    if segment_channel is not None:
+        if segment_channel < 0 or segment_channel >= channels:
+            raise ValueError(f"Source channel {segment_channel} is unavailable; this image has {channels} channels")
+        image = stack[..., segment_channel]
+    elif bool(meta.get("is_rgb")) and channels >= 3:
+        image = stack[..., :3].mean(axis=2)
+    else:
+        image = stack[..., 0]
+    image = np.asarray(image, dtype=np.float32)
     if image.size == 0:
         raise ValueError("image has no pixels")
-    return image, size
+    return image, (int(image.shape[1]), int(image.shape[0]))
 
 
 def qc_stats(image) -> dict[str, float]:
@@ -180,7 +186,7 @@ def main() -> None:
         fail("stardist-not-installed", repr(exc))
 
     try:
-        image, (width, height) = load_image(args.image)
+        image, (width, height) = load_image(args.image, args.z_project, args.segment_channel)
     except Exception as exc:
         fail("image-open-failed", str(exc), 3)
 

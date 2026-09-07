@@ -1,0 +1,27 @@
+# Files staged from the executable. Keep all local Python imports in this list.
+pyproject.toml
+uv.lock
+microscopy-requirements.txt
+cellpose_detect.py
+cellpose4_detect.py
+stardist_detect.py
+cellpose_train.py
+image_prepare.py
+area_assays_detect.py
+intensity_assays.py
+puncta_detect.py
+neurite_outgrowth.py
+track_cells.py
+_assays_area.py
+_assays_intensity.py
+_assays_puncta.py
+_cellpose_common.py
+_colony.py
+_export_imagej_roi.py
+_imageio.py
+_neurite.py
+_preprocessing.py
+_seg_npy_io.py
+_tracking.py
+_training_pairs.py
+_watershed.py

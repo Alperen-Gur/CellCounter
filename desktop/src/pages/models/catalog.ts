@@ -50,7 +50,7 @@ export interface ModelCatalogEntry {
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     id: "cpsam_v2",
-    name: "Cellpose-SAM v2",
+    name: "Cellpose-SAM",
     description:
       "The strongest general-purpose detector for difficult, irregular, and crowded cells. Runs locally in its own Cellpose 4 environment.",
     glyph: "layers",

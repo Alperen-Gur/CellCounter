@@ -3,3 +3,4 @@
 //! See [`uv`] for the `env_install` (streaming) and `env_availability` commands.
 
 pub mod uv;
+pub(crate) mod staging;

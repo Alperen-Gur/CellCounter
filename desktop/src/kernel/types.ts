@@ -24,8 +24,10 @@
 // ---------------------------------------------------------------------------
 
 export interface DetectionParams {
-  /** Windows 1.0.8 allowlist: cpsam_v2 | cp-cyto3 | sd-fluo (enforced by Rust). */
+  /** Windows 1.1.0 allowlist: cpsam_v2 | cp-cyto3 | sd-fluo (enforced by Rust). */
   modelId: string;
+  segmentChannel?: number | null; // zero-based source channel; omitted/null retains automatic behavior
+  zProjection?: "max" | "mean" | "sum" | "none"; // default max
   pxPerUm: number;
   confidenceThreshold: number; // analysis filter; cells below are hidden, never deleted
   channels: [number, number]; // [cyto, nuclei]; 0=gray,1=r,2=g,3=b. default [0,0]

@@ -149,6 +149,7 @@ pub async fn seg_npy_import(
     large_threshold_um: Option<f64>,
 ) -> Result<DetectionResultDto, String> {
     let store = FileStore::from_app(&app)?;
+    crate::env::uv::stage_python_project(&app, &store)?;
     let (python, script) = resolve_helper(&store)?;
 
     let small_t = small_threshold_um.unwrap_or(20.0);
@@ -220,6 +221,7 @@ pub async fn seg_npy_export(
     out_path: String,
 ) -> Result<String, String> {
     let store = FileStore::from_app(&app)?;
+    crate::env::uv::stage_python_project(&app, &store)?;
     let (python, script) = resolve_helper(&store)?;
 
     // Build the helper's input JSON: {width,height,cells:[…]} with source-px

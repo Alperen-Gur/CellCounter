@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const directory = dirname(fileURLToPath(import.meta.url));
 const checks = [
   "verify-windows-bundle.mjs",
+  "verify-staging.mjs",
+  "verify-review.mjs",
   "verify-windows-ci.mjs",
   "verify-windows-docs.mjs",
   "verify-models.mjs",

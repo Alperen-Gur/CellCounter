@@ -21,6 +21,7 @@
  * StrictMode's double-effect doesn't run it twice.
  */
 
+import { analysisQueue } from "../kernel/workflow/desktopQueue";
 import { useAppStore } from "../kernel/store/store";
 
 /** Result of the launch-time environment probe (mirrors Rust `Availability`). */
@@ -62,6 +63,11 @@ export async function initAppData(): Promise<EnvAvailability | null> {
     await useAppStore.getState().refreshLibraryStats();
   } catch (err) {
     console.warn("[appInit] refreshLibraryStats failed:", err);
+  }
+
+  if (isTauri()) {
+    try { await analysisQueue.initialize(); }
+    catch (error) { useAppStore.getState().setDetectionError(String(error)); }
   }
 
   // 2) Environment init: probe cyto3 availability for the launch state.

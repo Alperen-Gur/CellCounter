@@ -57,6 +57,7 @@ two prefixes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -85,6 +86,129 @@ def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
 
 
 # ---------------------------------------------------------------------------
+# First-use model loading — visible, bounded network operations.
+# ---------------------------------------------------------------------------
+
+class ModelDownloadError(RuntimeError):
+    """The weights are unavailable; image loading/inference is not the failure."""
+
+
+def install_tqdm_progress_bridge() -> None:
+    """Translate byte bars into newline stages the native UI does not filter.
+
+    Patch the class once per worker so model reuse cannot stack wrappers. A
+    partial bar closing on cancellation or error must never announce success.
+    """
+    try:
+        import tqdm
+    except ImportError:
+        return
+    bar_type = tqdm.tqdm
+    if getattr(bar_type, "_cc_download_bridge", False):
+        return
+    original_init = bar_type.__init__
+    original_update = bar_type.update
+    original_close = bar_type.close
+
+    def is_bytes(bar):
+        return getattr(bar, "unit", "") == "B" and bool(getattr(bar, "unit_scale", False))
+
+    def progress(bar, final=False):
+        import time
+        total = float(getattr(bar, "total", 0) or 0)
+        done = float(getattr(bar, "n", 0) or 0)
+        now = time.monotonic()
+        previous = getattr(bar, "_cc_last_bytes", 0)
+        bucket = int(done * 20 / total) if total > 0 else 0
+        changed = bucket > getattr(bar, "_cc_last_bucket", -1) if total > 0 else done - previous >= 1024 * 1024
+        if not final and not changed and now - getattr(bar, "_cc_last_time", now) < 2:
+            return
+        if final and getattr(bar, "_cc_closed", False):
+            return
+        if final:
+            bar._cc_closed = True
+        bar._cc_last_time = now
+        bar._cc_last_bytes = done
+        bar._cc_last_bucket = bucket
+        amount = f"{done / (1024 * 1024):.1f} MB"
+        if total > 0:
+            amount = f"{done / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB ({min(100, int(done * 100 / total))}%)"
+        # Only a complete known-size bar is independently evidence of success.
+        # The download wrapper below confirms unknown-size downloads on return.
+        status = "downloaded weights" if final and total > 0 and done >= total else "downloading weights"
+        log(f"[cellpose_detect] {status}: {amount}", flush=True)
+
+    def patched_init(bar, *args, **kwargs):
+        original_init(bar, *args, **kwargs)
+        if is_bytes(bar):
+            bar._cc_last_bucket = -1
+            bar._cc_last_time = 0
+            bar._cc_closed = False
+            progress(bar)
+
+    def patched_update(bar, n=1):
+        result = original_update(bar, n)
+        if is_bytes(bar):
+            progress(bar)
+        return result
+
+    def patched_close(bar):
+        if is_bytes(bar):
+            progress(bar, final=True)
+        return original_close(bar)
+
+    bar_type.__init__ = patched_init
+    bar_type.update = patched_update
+    bar_type.close = patched_close
+    bar_type._cc_download_bridge = True
+
+
+@contextlib.contextmanager
+def model_loading_progress():
+    """Bound Cellpose's lazy weight-download I/O and distinguish its failures.
+
+    This worker processes one request at a time. Restore the library hooks on
+    exit so cached-model evaluations and subsequent requests retain its API.
+    No download happens here unless Cellpose itself requests missing weights.
+    """
+    from cellpose import utils
+    original_download = getattr(utils, "download_url_to_file", None)
+    original_open = getattr(utils, "urlopen", None)
+    if original_download is None:
+        yield
+        return
+
+    def open_with_timeout(*args, **kwargs):
+        # Covers connection and each socket read. A slow but progressing large
+        # checkpoint is allowed to finish; a silent stalled socket is bounded.
+        kwargs.setdefault("timeout", 30)
+        return original_open(*args, **kwargs)
+
+    def download(url, destination, *args, **kwargs):
+        name = os.path.basename(os.fspath(destination))
+        log(f"[cellpose_detect] downloading weights for {name} — one-time model setup", flush=True)
+        try:
+            value = original_download(url, destination, *args, **kwargs)
+        except Exception as exc:
+            message = (f"Could not download the {name} model weights. "
+                       f"Check your internet connection and retry. {exc}")
+            log(f"[cellpose_detect] {message}", flush=True)
+            raise ModelDownloadError(message) from exc
+        log(f"[cellpose_detect] weights ready: {name}", flush=True)
+        return value
+
+    utils.download_url_to_file = download
+    if original_open is not None:
+        utils.urlopen = open_with_timeout
+    try:
+        yield
+    finally:
+        utils.download_url_to_file = original_download
+        if original_open is not None:
+            utils.urlopen = original_open
+
+
+# ---------------------------------------------------------------------------
 # Argument parser — the shared shape.
 # ---------------------------------------------------------------------------
 
@@ -107,6 +231,10 @@ def build_arg_parser(description: str, default_model: str) -> argparse.ArgumentP
     p.add_argument("--channels", default="0,0",
                    help="Two comma-separated ints: cyto channel, nuclei channel. "
                         "0=grayscale/none, 1=red, 2=green, 3=blue. Default 0,0.")
+    p.add_argument("--z-project", dest="z_project", default="max",
+                   choices=["max", "sum", "mean", "none"])
+    p.add_argument("--segment-channel", dest="segment_channel", type=int, default=None,
+                   help="Zero-based source channel. Omitted preserves automatic grayscale/RGB handling.")
     p.add_argument("--bg-subtract", dest="bg_subtract", action="store_true",
                    help="Apply rolling-ball background subtraction before detection.")
     p.add_argument("--rolling-ball-radius", dest="rolling_ball_radius", type=int,
@@ -165,41 +293,114 @@ def load_image_array(pil_image):
     return np.array(rgb, dtype=np.uint8)
 
 
-def open_image_for_detection(path: str, channels: list[int], args):
-    """Open the image file, pick gray vs RGB based on channels, apply preprocessing.
-
-    Returns the numpy array (uint8). On failure, calls emit_error() and exits.
-    """
-    import numpy as np
-    from PIL import Image
-
-    # These are trusted, user-chosen local microscopy files — a whole-slide or
-    # large-sensor scan legitimately exceeds PIL's default ~178 MP DecompressionBomb
-    # guard. Raise the ceiling to a sane sanity cap (2 GP) so valid large scans open
-    # instead of false-failing, while still rejecting an absurdly large header.
-    Image.MAX_IMAGE_PIXELS = 2_000_000_000
-
-    log(f"[cellpose_detect] loading image: {path}")
-    try:
-        pil = Image.open(path)
-        pil.load()
-    except Image.DecompressionBombError as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] image too large: {exc!r}")
-        emit_error("image-too-large", hint=str(exc), exit_code=3)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] could not open image: {exc!r}")
-        emit_error("image-open-failed", hint=str(exc), exit_code=3)
-
-    is_grayscale_mode = (channels[0] == 0 and channels[1] == 0)
-    if is_grayscale_mode:
-        img = np.array(pil.convert("L"), dtype=np.uint8)
-    else:
-        img = load_image_array(pil)
-
-    # Make sure _preprocessing is importable from this module's directory.
+def _ensure_sidecar_path() -> None:
+    """Make sibling sidecar modules (_imageio, _preprocessing, …) importable."""
     _here = os.path.dirname(os.path.abspath(__file__))
     if _here not in sys.path:
         sys.path.insert(0, _here)
+
+
+def open_image_for_detection(path: str, channels: list[int], args):
+    """Open the image file, pick gray vs RGB based on channels, apply preprocessing.
+
+    Returns the numpy array (uint8) — HxW in grayscale mode, HxWx3 when the
+    caller asked for a cellpose channel pair. That return contract is
+    UNCHANGED; what changed underneath is that loading now goes through
+    `_imageio.load_planes()`, which understands vendor microscope formats,
+    Z-stacks and N-channel fluorescence.
+
+    Side effect (deliberate, so callers need no signature change): the full
+    float32 (H, W, C) stack in RAW source units is attached to ``args`` as
+    ``_cc_channel_stack``, its names as ``_cc_channel_names`` and the loader
+    metadata as ``_cc_image_meta``. ``measure_cells`` picks those up to emit
+    per-cell per-channel intensities.
+
+    On failure, calls emit_error() and exits.
+    """
+    import numpy as np
+
+    _ensure_sidecar_path()
+    import _imageio  # noqa: E402
+
+    z_project = str(getattr(args, "z_project", "max") or "max")
+    log(f"[cellpose_detect] loading image: {path} (z_project={z_project})")
+
+    try:
+        stack, meta = _imageio.load_planes(path, z_project=z_project,
+                                           channel=None)
+    except _imageio.ImageIOError as exc:
+        log(f"[cellpose_detect] could not open image: {exc.message} "
+            f"({exc.hint})")
+        emit_error(exc.code, hint=exc.hint or exc.message, exit_code=3)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log(f"[cellpose_detect] could not open image: {exc!r}")
+        emit_error("image-open-failed", hint=str(exc), exit_code=3)
+        return None
+
+    channel_count = int(stack.shape[2])
+    channel_names = list(meta.get("channel_names") or [])
+    is_rgb = bool(meta.get("is_rgb", False))
+
+    # Stash the full stack for the per-channel measurement pass.
+    setattr(args, "_cc_channel_stack", stack)
+    setattr(args, "_cc_channel_names", channel_names)
+    setattr(args, "_cc_image_meta", meta)
+
+    selected_channel = getattr(args, "segment_channel", None)
+    seg_channel = 0 if selected_channel is None else int(selected_channel)
+    if seg_channel < 0 or seg_channel >= channel_count:
+        emit_error("source-channel-missing", hint=f"Source channel {seg_channel} is unavailable; this image has {channel_count} channels.", exit_code=3)
+        return None
+    is_grayscale_mode = (channels[0] == 0 and channels[1] == 0)
+
+    if is_grayscale_mode:
+        if channel_count == 1:
+            plane = stack[..., 0]
+        elif is_rgb and selected_channel is None and channel_count >= 3:
+            # Preserve the legacy `PIL.Image.convert("L")` result bit-for-bit
+            # for ordinary RGB photographs.
+            plane = _imageio.rgb_luminance(stack)
+        else:
+            idx = max(0, min(channel_count - 1, seg_channel))
+            name = channel_names[idx] if idx < len(channel_names) else f"Ch{idx}"
+            log(f"[cellpose_detect] segmenting on channel {idx} ({name}) "
+                f"of {channel_count}")
+            plane = stack[..., idx]
+        img = _imageio.to_uint8(plane, meta)
+    else:
+        # Cellpose's channels=[cyto, nuclei] index 1=R, 2=G, 3=B into an
+        # HxWx3 array. Map source channel k onto RGB slot k so an ordinary RGB
+        # photo is an identity and a 2-channel fluorescence stack lands as
+        # (ch0 -> "red", ch1 -> "green") — which is what channels=[1,2] means.
+        #
+        # `--segment-channel` used to be honoured ONLY in grayscale mode and
+        # ignored here, so for every caller that sends both flags (all five
+        # services do) the channel picker silently did nothing. It now selects
+        # which source channel lands in RGB slot 0 — i.e. cellpose channel 1,
+        # "red" — with the remaining channels following in their original order.
+        # seg_channel 0 is the identity mapping, so the default path is
+        # bit-for-bit unchanged.
+        height, width = int(stack.shape[0]), int(stack.shape[1])
+        rgb = np.zeros((height, width, 3), dtype=np.float32)
+        take = min(3, channel_count)
+        order = list(range(channel_count))
+        seg_idx = max(0, min(channel_count - 1, seg_channel))
+        if seg_idx != 0:
+            order = [seg_idx] + [c for c in order if c != seg_idx]
+            seg_name = (channel_names[seg_idx] if seg_idx < len(channel_names)
+                        else f"Ch{seg_idx}")
+            log(f"[cellpose_detect] --segment-channel {seg_idx} ({seg_name}) "
+                f"mapped onto cellpose channel 1 (red); channel order is now "
+                f"{order[:take]}")
+        for slot in range(take):
+            rgb[..., slot] = stack[..., order[slot]]
+        if channel_count > 3:
+            log(f"[cellpose_detect] {channel_count} channels present; cellpose "
+                "channel mode uses the first 3 (intensities are still measured "
+                "in all of them)")
+        img = _imageio.to_uint8(rgb, meta)
+
     import _preprocessing  # noqa: E402
     img = _preprocessing.apply(img, args)
     return img

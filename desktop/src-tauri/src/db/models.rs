@@ -427,6 +427,10 @@ pub fn cells_to_json(cells: &[CellDto]) -> Result<String, serde_json::Error> {
     serde_json::to_string(&payload)
 }
 
+pub(crate) fn cell_from_json_checked(json: &str) -> Result<CellDto, serde_json::Error> {
+    serde_json::from_str::<CellPayload>(json).map(CellDto::from)
+}
+
 /// Decode a `cells_json` storage blob back into DTOs (unflattened contours).
 ///
 /// A missing/corrupt blob yields an empty vec (matches Swift's `?? []`), but a

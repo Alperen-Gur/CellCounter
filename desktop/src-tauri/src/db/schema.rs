@@ -21,6 +21,13 @@ use rusqlite::Connection;
 /// Full schema DDL. Executed once inside a transaction at DB open.
 /// `IF NOT EXISTS` everywhere so re-opening an existing store is a no-op.
 pub const SCHEMA_SQL: &str = r#"
+-- Durable job queue, per-image run settings and explicitly loaded mask variants.
+-- Limit bytes (not Unicode characters) in the database as well as at IPC.
+CREATE TABLE IF NOT EXISTS workflow_documents (
+  key            TEXT PRIMARY KEY,
+  document_json  TEXT NOT NULL CHECK(length(CAST(document_json AS BLOB)) <= 16777216)
+);
+
 -- ── batches ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS batches (
   id                TEXT PRIMARY KEY,

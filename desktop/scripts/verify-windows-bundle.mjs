@@ -9,7 +9,7 @@ import {
   reportFailure,
 } from "./lib/verify-utils.mjs";
 
-const RELEASE_VERSION = "1.0.8";
+const RELEASE_VERSION = readJson("package.json").version;
 const WINDOWS_TARGETS = ["msi", "nsis"];
 const UPGRADE_CODE = "9d098d8e-800d-416c-a340-9b6754ea88d0";
 
@@ -21,12 +21,12 @@ function validateBundle(config, packageJson, packageLock, cargoToml, cargoLock) 
 
   check(config.productName === "CellCounter", "productName must be CellCounter");
   check(config.identifier === "com.alperengur.cellcounter", "bundle identifier changed");
-  check(config.version === RELEASE_VERSION, "Tauri version is not 1.0.8");
-  check(packageJson.version === RELEASE_VERSION, "npm version is not 1.0.8");
-  check(packageLock.version === RELEASE_VERSION, "npm lock version is not 1.0.8");
-  check(packageLock.packages?.[""]?.version === RELEASE_VERSION, "npm root lock version is not 1.0.8");
-  check(new RegExp(`^version = "${RELEASE_VERSION.replaceAll(".", "\\.")}"$`, "m").test(cargoToml), "Cargo version is not 1.0.8");
-  check(new RegExp(`name = "desktop"\\r?\\nversion = "${RELEASE_VERSION.replaceAll(".", "\\.")}"`).test(cargoLock), "Cargo lock root version is not 1.0.8");
+  check(config.version === RELEASE_VERSION, "Tauri version does not match the release version");
+  check(packageJson.version === RELEASE_VERSION, "npm version does not match the release version");
+  check(packageLock.version === RELEASE_VERSION, "npm lock version does not match the release version");
+  check(packageLock.packages?.[""]?.version === RELEASE_VERSION, "npm root lock version does not match the release version");
+  check(new RegExp(`^version = "${RELEASE_VERSION.replaceAll(".", "\\.")}"$`, "m").test(cargoToml), "Cargo version does not match the release version");
+  check(new RegExp(`name = "desktop"\\r?\\nversion = "${RELEASE_VERSION.replaceAll(".", "\\.")}"`).test(cargoLock), "Cargo lock root version does not match the release version");
 
   const targets = config.bundle?.targets;
   check(Array.isArray(targets), "bundle targets must be an explicit array");

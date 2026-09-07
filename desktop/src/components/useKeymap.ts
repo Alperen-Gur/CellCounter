@@ -40,7 +40,7 @@ export interface UseKeymapOptions {
   enabled?: boolean;
   /** Call `preventDefault()` on a handled event. Default true. */
   preventDefault?: boolean;
-  /** React even when a text field is focused. Default false. */
+  /** Allow modified application commands in text fields; typing stays native. */
   allowInInputs?: boolean;
   /** Listen in the capture phase (wins over bubbling listeners). Default false. */
   capture?: boolean;
@@ -91,8 +91,9 @@ export function useKeymap(
 
     const onKeyDown = (e: KeyboardEvent) => {
       const map = handlersRef.current;
-      if (!map) return;
-      if (!allowInInputs && isEditableTarget(e.target)) return;
+      if (!map || e.defaultPrevented || e.isComposing || e.getModifierState("AltGraph")) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (isEditableTarget(e.target) && (!allowInInputs || (!e.metaKey && !e.ctrlKey))) return;
 
       const action = matchAction(scope, e, Object.keys(map));
       if (!action) return;

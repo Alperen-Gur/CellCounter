@@ -87,6 +87,42 @@ export const keymap = {
       { action: "showShortcuts", keys: ["mod+/", "?"], description: "Show keyboard shortcuts", display: "⌘/" },
     ],
   },
+  application: {
+    id: "application", title: "Application",
+    bindings: [
+      { action: "openImages", keys: ["mod+o"], description: "Open images" },
+      { action: "openFolder", keys: ["mod+shift+o"], description: "Open a folder" },
+      { action: "settings", keys: ["mod+,"], description: "Open Settings" },
+      { action: "home", keys: ["mod+alt+1"], description: "Home" },
+      { action: "processing", keys: ["mod+alt+2"], description: "Processing" },
+      { action: "review", keys: ["mod+alt+3"], description: "Review queue" },
+      { action: "library", keys: ["mod+alt+4"], description: "Image library" },
+      { action: "batch", keys: ["mod+alt+5"], description: "Batches" },
+      { action: "compare", keys: ["mod+alt+6"], description: "Compare conditions" },
+      { action: "models", keys: ["mod+alt+7"], description: "Models" },
+      { action: "finetune", keys: ["mod+alt+8"], description: "Fine-tune" },
+      { action: "support", keys: ["mod+alt+9"], description: "Support" },
+    ],
+  },
+  results: {
+    id: "results", title: "Results",
+    bindings: [
+      { action: "selectAll", keys: ["mod+a"], description: "Select all visible cells" },
+      { action: "clearSelection", keys: ["mod+shift+a"], description: "Clear cell selection" },
+      { action: "export", keys: ["mod+e"], description: "Export the current image" },
+      { action: "measurements", keys: ["mod+shift+m"], description: "Show linked measurements" },
+      { action: "variants", keys: ["mod+shift+v"], description: "Compare saved mask variants" },
+    ],
+  },
+  processing: {
+    id: "processing", title: "Analysis setup and processing",
+    bindings: [
+      { action: "preview", keys: ["mod+shift+Enter"], description: "Preview the selected image" },
+      { action: "process", keys: ["mod+Enter"], description: "Process, resume or retry the batch" },
+      { action: "pause", keys: ["mod+."], description: "Pause after the current image" },
+      { action: "inspect", keys: ["mod+i"], description: "Inspect the selected image" },
+    ],
+  },
   navigation: {
     id: "navigation",
     title: "Navigation",
@@ -103,9 +139,8 @@ export const keymap = {
       { action: "modeAdd", keys: ["a"], description: "Add mode", display: "A" },
       { action: "modeRemove", keys: ["r"], description: "Remove mode", display: "R" },
       { action: "modeMerge", keys: ["m"], description: "Merge mode", display: "M" },
-      // Split has no dedicated key in the Swift scheme (it was a button-driven
-      // watershed action). Left unbound; the mode is still reachable via UI.
-      { action: "modeSplit", keys: [], description: "Split mode", display: "" },
+      // The desktop editor exposes a direct split mode as well as its button.
+      { action: "modeSplit", keys: ["s"], description: "Split mode", display: "S" },
       { action: "modeManualCount", keys: ["c"], description: "Manual-count mode", display: "C" },
       { action: "modeAnnotate", keys: ["g"], description: "Annotate (ground truth) mode", display: "G" },
       { action: "delete", keys: ["Delete", "Backspace"], description: "Delete selection", display: "Delete" },
@@ -148,7 +183,7 @@ export type KeymapScopeId = keyof typeof keymap;
 
 /**
  * Look up the chord synonyms bound to `(scope, action)`. Returns `[]` when the
- * action isn't bound (e.g. `modeSplit`) — callers treat an empty list as "no
+ * action isn't bound — callers treat an empty list as "no
  * shortcut".
  */
 export function actionKeys(scope: KeymapScopeId, action: string): string[] {

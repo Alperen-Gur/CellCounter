@@ -73,7 +73,7 @@ export interface NavSection {
 
 /** Main grouped rail (top). */
 export const NAV_SECTIONS: NavSection[] = [
-  { title: "", routeIds: ["home", "review"] },
+  { title: "", routeIds: ["home", "processing", "review"] },
   { title: "Library", routeIds: ["library", "batch", "compare"] },
   { title: "System", routeIds: ["models", "finetune"] },
 ];

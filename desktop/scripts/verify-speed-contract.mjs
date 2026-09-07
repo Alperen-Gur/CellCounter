@@ -7,7 +7,11 @@ import {
 
 try {
   const editor = readText("src/pages/results/editing/useMaskEditor.ts");
-  assertIncludes(editor, "let commitQueue: Promise<void>", "mask edits must be ordered");
+  assert(/const\s+commitQueueRef\s*=\s*useRef<Promise<void>>\(Promise\.resolve\(\)\)/.test(editor), "mask edit ordering must survive effect changes");
+  const orderedCommit = /commitQueueRef\.current\s*=\s*commitQueueRef\.current\s*\.then\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*?await\s+port\.commitCellEdit\(/;
+  assert(orderedCommit.test(editor), "every atomic mask edit must await the prior edit");
+  assert(!orderedCommit.test(editor.replace(/await\s+port\.commitCellEdit\(/g,"port.commitCellEdit(")), "ordering check must reject an unawaited commit");
+  assert(/const\s+flush\s*=\s*useCallback\(\s*async\s*\(\)\s*=>\s*\{\s*await\s+commitQueueRef\.current/.test(editor), "flush must await the same edit queue");
   assertIncludes(editor, "port.commitCellEdit(", "mask edits must use the atomic command");
   assert(!editor.includes("port.saveDetection("), "mask edits must not separately save detections");
   assert(!editor.includes("port.recordCorrection("), "mask edits must not issue per-row correction IPC");

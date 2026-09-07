@@ -94,6 +94,7 @@ def parse_args():
     return parser.parse_args()
 
 
+@cc.model_loading_progress()
 def build_model(cp_models, model_type: str, args, torch_mod):
     """Construct the CellposeModel ONCE and move it to the resolved device.
 
@@ -328,6 +329,8 @@ class DetectionRunError(Exception):
 # channels) are intentionally NOT here — they are fixed at model-build time and
 # the host keys its worker pool by them.
 _PER_IMAGE_KEYS = (
+    "z_project",
+    "segment_channel",
     "image",
     "conf",
     "pxPerUm",
@@ -351,7 +354,7 @@ def _merge_request_args(base_args, request: dict):
     import argparse
     merged = argparse.Namespace(**vars(base_args))
     for key in _PER_IMAGE_KEYS:
-        if key in request and request[key] is not None:
+        if key in request and (request[key] is not None or key == "segment_channel"):
             setattr(merged, key, request[key])
     return merged
 
@@ -429,6 +432,9 @@ def serve(base_args, channels: list[int]) -> None:
 
     try:
         model, _override_device = build_model(cp_models, model_type, base_args, _torch)
+    except cc.ModelDownloadError as exc:
+        emit_error("model-download-failed", hint=str(exc), exit_code=4)
+        return
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] model load failed: {exc!r}")
         emit_error("model-load-failed", hint=str(exc), exit_code=4)
@@ -515,6 +521,8 @@ def main() -> None:
     args = parse_args()
     channels = cc.parse_channels(args.channels)
 
+    cc.install_tqdm_progress_bridge()
+
     # Persistent-worker mode: hand off to the serve loop, which builds the model
     # once and services NDJSON requests. The one-shot path below is untouched
     # and remains the host's fallback.
@@ -542,6 +550,9 @@ def main() -> None:
 
     try:
         model, _override_device = build_model(cp_models, model_type, args, _torch)
+    except cc.ModelDownloadError as exc:
+        emit_error("model-download-failed", hint=str(exc), exit_code=4)
+        return
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] model load failed: {exc!r}")
         emit_error("model-load-failed", hint=str(exc), exit_code=4)

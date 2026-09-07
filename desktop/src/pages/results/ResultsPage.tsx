@@ -1,24 +1,4 @@
-/**
- * pages/results/ResultsPage.tsx — the Results screen (feat-results-viewer).
- *
- * Composes the core analysis screen from the frozen kernel:
- *   - `Viewport` (pan/zoom, source-px transform) + read-only `MaskOverlay`
- *     (contours/bbox/markers/annotations, opacity, uncertain-dashed)
- *   - the floating overlay/zoom controls (OverlayControls) + Space/X/Z + opacity
- *   - a directory nav strip (←/→ through the batch's images)
- *   - the right analysis sidebar (AnalysisSidebar): count, size bins, intensity +
- *     size histograms, QC badges, colonies, notes, ROI include/exclude, F1 vs
- *     ground truth — all via calibration/stats + PersistencePort
- *   - the editing toolbar mount (feat-mask-editing) and _seg.npy mount
- *     (feat-seg-npy-io) as entry points only — this task does NOT implement them.
- *
- * This task owns pages/results/ EXCLUDING pages/results/editing/ and
- * pages/results/segnpy/. Reads/writes go through the frozen store + ports; no
- * detection is dispatched here (Home/Processing own that).
- *
- * Coordinate space: all cell/annotation geometry stays SOURCE-PIXEL; the
- * Viewport supplies the view transform to MaskOverlay via context.
- */
+/** Results uses one source-coordinate selection for overlays, measurements and plots. */
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -37,6 +17,11 @@ import { applyRoiFilter } from "./roiFilter";
 import { AnalysisSidebar } from "./AnalysisSidebar";
 import { OverlayControls } from "./OverlayControls";
 import { QCBadges } from "./QCBadges";
+import { LinkedMeasurements } from "./LinkedMeasurements";
+import { MaskVersionsPanel } from "./MaskVersionsPanel";
+import { RunProvenance } from "./RunProvenance";
+import { useSavedRun } from "./useSavedRun";
+import { assertReviewImageWritable, isReviewImageBusy, useReviewImageBusy } from "./reviewWriteGuard";
 
 // Mask-editing (feat-mask-editing): one shared editor drives the toolbar, the
 // live overlay cells, and the in-Viewport gesture surface.
@@ -47,8 +32,7 @@ import { EditingSurface } from "./editing/EditingSurface";
 
 import "./results.css";
 
-// _seg.npy round-trip lives in a physically-disjoint directory owned by
-// feat-seg-npy-io; lazy-mounted as an entry point only.
+// Load the desktop mask file picker only when Results is open.
 const SegNpyPanel = lazy(() => import("./segnpy/SegNpyPanel"));
 
 export default function ResultsPage() {
@@ -61,9 +45,11 @@ export default function ResultsPage() {
     detection,
     annotations,
     cells,
+    allCells,
     confidenceCutoff,
     thresholds,
     loading,
+    error: loadError,
     reloadImageData,
     reloadRois,
     reloadAnnotations,
@@ -84,22 +70,18 @@ export default function ResultsPage() {
   const selectedCellIds = useAppStore((s) => s.selectedCellIds);
   const editorMode = useAppStore((s) => s.editorMode);
   const setCurrentImageIdx = useAppStore((s) => s.setCurrentImageIdx);
-  const nextImage = useAppStore((s) => s.nextImage);
-  const prevImage = useAppStore((s) => s.prevImage);
+  const pxPerUm = useAppStore((s) => s.pxPerUm);
+  const setSelectedCellIds = useAppStore((s) => s.setSelectedCellIds);
   const currentBatchId = useAppStore((s) => s.currentBatchId);
 
   // Export sheet (per-image export of the open image) + re-run detection.
   const [exportOpen, setExportOpen] = useState(false);
 
-  const onRerun = useCallback(() => {
-    if (!currentImage || !batch || isImporting()) return;
-    void rerunDetection(
-      currentImage,
-      batch,
-      { navigate: (id) => shellNavigate(id), onDuplicates: async () => null },
-      { getState: () => useAppStore.getState() },
-    );
-  }, [currentImage, batch]);
+  const [panel, setPanel] = useState<"measurements" | "variants" | null>(null);
+  const [operationBusy, setOperationBusy] = useState(false);
+  const imageBusy = useReviewImageBusy(currentImage?.id);
+  const savedRun = useSavedRun(currentImage?.id, detection);
+  const readOnly = imageBusy || operationBusy || exportOpen;
 
   // ---- shared mask-editing engine (feat-mask-editing) ----
   // One editor instance for the current image drives the toolbar, the live
@@ -107,14 +89,46 @@ export default function ResultsPage() {
   // corrections. Until it loads we render the read-only detection cells.
   const editor = useMaskEditor({
     imageId: currentImage?.id,
+    readOnly,
     sourceWidth: currentImage?.widthPx,
     sourceHeight: currentImage?.heightPx,
   });
-  useEditingKeymap({ editor, enabled: !!currentImage });
+  useEditingKeymap({ editor, enabled: !!currentImage && !readOnly && !editor.loading && !loading });
   // OVERLAY cells: the full live list (engine cells while editing, else the
   // detection cells). The overlay must render hidden/low-confidence cells too
   // (dashed), so it is intentionally UNfiltered.
-  const displayCells = editor.engine ? editor.cells : cells;
+  const displayCells = editor.engine ? editor.cells : allCells;
+  const displayAnnotations = editor.engine ? editor.annotations : annotations;
+  const reportError = (error: unknown) => useAppStore.getState().setDetectionError(error instanceof Error ? error.message : String(error));
+  const openExport = async () => {
+    if (!currentImage || readOnly || editor.loading) return;
+    setOperationBusy(true);
+    try { await editor.flush(); assertReviewImageWritable(currentImage.id); setExportOpen(true); }
+    catch (error) { reportError(error); }
+    finally { setOperationBusy(false); }
+  };
+  const onRerun = async () => {
+    if (!currentImage || !batch || isImporting() || readOnly) return;
+    setOperationBusy(true);
+    try {
+      assertReviewImageWritable(currentImage.id);
+      await editor.flush();
+      assertReviewImageWritable(currentImage.id);
+      await rerunDetection(currentImage, batch, { navigate: id => shellNavigate(id), onDuplicates: async () => null }, { getState: () => useAppStore.getState() });
+    } catch (error) { reportError(error); }
+    finally { setOperationBusy(false); }
+  };
+  const goToImage = async (index: number) => {
+    if (operationBusy || exportOpen || index < 0 || index >= images.length) return;
+    setOperationBusy(true);
+    try { await editor.flush(); setCurrentImageIdx(index); }
+    catch (error) { reportError(error); }
+    finally { setOperationBusy(false); }
+  };
+  const onRestored = async () => {
+    editor.reload();
+    await reloadImageData();
+  };
 
   // SIDEBAR cells: when the editor is live it owns the cell list, but the
   // sidebar must still count only the confidence-passing, ROI-included cells —
@@ -146,8 +160,10 @@ export default function ResultsPage() {
     if (id !== lastImageId.current) {
       lastImageId.current = id;
       setPan({ x: 0, y: 0 });
+      setSelectedCellIds(new Set());
+      setExportOpen(false);
     }
-  }, [currentImage, setPan]);
+  }, [currentImage, setPan, setSelectedCellIds]);
 
   // ---- fit-to-view (⌘0 handled inside Viewport; button + reset here) ----
   const onFit = useCallback(() => {
@@ -169,15 +185,24 @@ export default function ResultsPage() {
     },
     toggleMaskFills: () => setShowMaskFills(!showMaskFills),
     toggleOutlines: () => setShowOutlines(!showOutlines),
+    cycleOverlayMode: () => useAppStore.getState().setOverlayMode(overlayMode === "outline" ? "bbox" : "outline"),
   });
   useKeymap(
     "navigation",
     {
-      nextImage: () => nextImage(),
-      prevImage: () => prevImage(),
+      nextImage: () => void goToImage(imageIdx + 1),
+      prevImage: () => void goToImage(imageIdx - 1),
     },
-    { enabled: images.length > 0 },
+    { enabled: images.length > 0 && !operationBusy && !exportOpen },
   );
+
+  useKeymap("results", {
+    selectAll: () => setSelectedCellIds(new Set(sidebarCells.map(cell => cell.id))),
+    clearSelection: () => setSelectedCellIds(new Set()),
+    export: () => void openExport(),
+    measurements: () => setPanel(value => value === "measurements" ? null : "measurements"),
+    variants: () => setPanel(value => value === "variants" ? null : "variants"),
+  }, { enabled: !!currentImage && !operationBusy && !exportOpen });
 
   // ---- empty / loading states ----
   if (!batch && !loading) {
@@ -215,23 +240,35 @@ export default function ResultsPage() {
             cell list + edit context so the gestures can drive the engine and
             persist corrections; this task only provides the mount + props. */}
         <div className="rv-toolbar-mount">
-          {currentImage && <EditingToolbar editor={editor} />}
+          {currentImage && <fieldset className="rv-edit-lock" disabled={readOnly || editor.loading || loading || !editor.engine}><EditingToolbar editor={editor} /></fieldset>}
           <Suspense fallback={null}>
-            <SegNpyPanel />
+            <SegNpyPanel image={currentImage} batch={batch} disabled={readOnly || editor.loading || loading} beforeWrite={editor.flush} onBusyChange={setOperationBusy} />
           </Suspense>
           {currentImage && (
             <button
               type="button"
               className="rv-export-btn"
-              onClick={() => setExportOpen(true)}
+              onClick={() => void openExport()}
+              disabled={readOnly || editor.loading || loading}
               title="Export this image (CSV, ImageJ ROIs, provenance, PDF)"
             >
               <Icon name="download" size={16} />
               <span>Export</span>
             </button>
           )}
+          {currentImage && <>
+            <button className="rv-export-btn" disabled={operationBusy || exportOpen} onClick={() => setPanel(value => value === "measurements" ? null : "measurements")} aria-pressed={panel === "measurements"}>Measurements</button>
+            <button className="rv-export-btn" disabled={operationBusy || exportOpen} onClick={() => setPanel(value => value === "variants" ? null : "variants")} aria-pressed={panel === "variants"}>Mask versions</button>
+            <button className="rv-export-btn" disabled={readOnly || editor.loading || loading} onClick={() => void onRerun()}>Analyze again</button>
+          </>}
         </div>
-
+        {currentImage && <RunProvenance detection={detection} run={savedRun.run} loading={savedRun.loading} error={savedRun.error} reviewPxPerUm={pxPerUm} confidence={confidenceCutoff} />}
+        {imageBusy && <div className="rv-review-notice" role="status">This image is in the active processing job. Open a completed image below to review its result.
+          <button onClick={() => { const index = images.findIndex(image => image.id !== currentImage?.id && image.cellCount > 0 && !isReviewImageBusy(image.id)); if (index >= 0) void goToImage(index); }} disabled={!images.some(image => image.id !== currentImage?.id && image.cellCount > 0 && !isReviewImageBusy(image.id))}>View a completed image</button>
+        </div>}
+        {editor.saving && <p className="rv-review-notice" role="status">Saving mask edits…</p>}
+        {(editor.loadError || loadError) && <p className="rv-review-error" role="alert">This result could not be loaded: {editor.loadError || loadError} <button onClick={() => { editor.reload(); void reloadImageData().catch(reportError); }}>Try again</button></p>}
+        {editor.saveError && <p className="rv-review-error" role="alert">Mask edits have not saved: {editor.saveError} Keep this image open; the next edit retries its unsaved corrections.</p>}
         <div className="rv-canvas">
           {imageSrc && currentImage ? (
             <Viewport
@@ -247,7 +284,7 @@ export default function ResultsPage() {
               {(showMaskFills || showOutlines) && (
                 <MaskOverlay
                   cells={displayCells}
-                  annotations={annotations}
+                  annotations={displayAnnotations}
                   thresholds={thresholds}
                   overlayMode={overlayMode}
                   confidenceCutoff={confidenceCutoff}
@@ -259,7 +296,7 @@ export default function ResultsPage() {
               )}
               {/* Gesture layer — shares the editor with the toolbar; must live
                   INSIDE Viewport to read the source-px transform via context. */}
-              <EditingSurface editor={editor} />
+              {!readOnly && !editor.loading && !loading && <EditingSurface editor={editor} />}
             </Viewport>
           ) : (
             <div className="rv-canvas__placeholder">Loading image…</div>
@@ -271,7 +308,7 @@ export default function ResultsPage() {
             <QCBadges stats={detection?.imageStats} />
           </div>
 
-          {currentImage && detection == null && !loading && (
+          {currentImage && detection == null && !loading && !loadError && (
             <div className="rv-detbanner">
               <span className="rv-detbanner__icon" aria-hidden="true">
                 <Icon name="alert" size={18} />
@@ -280,14 +317,15 @@ export default function ResultsPage() {
                 <strong>No detection for this image</strong>
                 <span>
                   Detection hasn't run (or produced no result). Re-run it below
-                  with the batch's saved parameters.
+                  by opening analysis setup, previewing, and processing it.
                 </span>
               </div>
               {batch && (
                 <button
                   type="button"
                   className="rv-detbanner__action"
-                  onClick={onRerun}
+                  onClick={() => void onRerun()}
+                  disabled={readOnly || editor.loading}
                   title="Re-run detection on this image"
                 >
                   <Icon name="refresh" size={16} />
@@ -298,14 +336,17 @@ export default function ResultsPage() {
           )}
         </div>
 
+        {currentImage && panel && <div className="rv-review-dock">
+          {panel === "measurements" ? <LinkedMeasurements key={currentImage.id} cells={sidebarCells} /> : imageSrc && <MaskVersionsPanel key={currentImage.id} image={currentImage} imageSrc={imageSrc} detection={detection} cells={displayCells} run={savedRun.run} reviewPxPerUm={pxPerUm} thresholds={thresholds} disabled={readOnly || loading || editor.loading || !editor.engine || !!loadError || savedRun.loading} flush={editor.flush} onRestored={onRestored} onBusyChange={setOperationBusy} />}
+        </div>}
         {/* Directory nav strip — ←/→ through the batch's images. */}
         {images.length > 0 && (
           <nav className="rv-nav" aria-label="Batch images">
             <button
               type="button"
               className="rv-nav__arrow"
-              disabled={imageIdx <= 0}
-              onClick={() => prevImage()}
+              disabled={imageIdx <= 0 || operationBusy || exportOpen}
+              onClick={() => void goToImage(imageIdx - 1)}
               title="Previous image (←)"
               aria-label="Previous image"
             >
@@ -317,7 +358,8 @@ export default function ResultsPage() {
                   type="button"
                   key={im.id}
                   className={`rv-nav__thumb${i === imageIdx ? " rv-nav__thumb--on" : ""}`}
-                  onClick={() => setCurrentImageIdx(i)}
+                  onClick={() => void goToImage(i)}
+                  disabled={operationBusy || exportOpen}
                   title={im.fileName}
                 >
                   <img src={convertFileSrc(im.thumbPath)} alt="" draggable={false} />
@@ -328,8 +370,8 @@ export default function ResultsPage() {
             <button
               type="button"
               className="rv-nav__arrow"
-              disabled={imageIdx >= images.length - 1}
-              onClick={() => nextImage()}
+              disabled={imageIdx >= images.length - 1 || operationBusy || exportOpen}
+              onClick={() => void goToImage(imageIdx + 1)}
               title="Next image (→)"
               aria-label="Next image"
             >
@@ -349,7 +391,7 @@ export default function ResultsPage() {
         image={currentImage}
         imageSrc={imageSrc}
         cells={sidebarCells}
-        annotations={annotations}
+        annotations={displayAnnotations}
         rois={rois}
         imageStats={detection?.imageStats}
         thresholds={thresholds}
@@ -366,6 +408,7 @@ export default function ResultsPage() {
         <div
           className="rv-export-overlay"
           role="dialog"
+          aria-modal="true"
           aria-label="Export"
           onClick={(e) => {
             if (e.target === e.currentTarget) setExportOpen(false);

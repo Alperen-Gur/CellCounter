@@ -130,8 +130,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Prepare a microscope image for CellCounter's native UI")
     parser.add_argument("--image", required=True)
-    parser.add_argument("--display-output", required=True)
-    parser.add_argument("--thumbnail-output", required=True)
+    parser.add_argument("--display-output")
+    parser.add_argument("--thumbnail-output")
+    parser.add_argument("--analysis-only", action="store_true")
     parser.add_argument("--analysis-output", required=True)
     parser.add_argument("--z-project", default="max",
                         choices=("max", "sum", "mean", "none"))
@@ -141,10 +142,18 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     try:
-        payload = prepare_image(
-            args.image, args.display_output, args.thumbnail_output,
-            args.analysis_output,
-            z_project=args.z_project)
+        if args.analysis_only:
+            import _imageio
+            stack, meta = _imageio.load_planes(args.image, z_project=args.z_project, channel=None)
+            _write_analysis_tiff(stack, meta, args.analysis_output)
+            payload = {"width": int(stack.shape[1]), "height": int(stack.shape[0])}
+        else:
+            if not args.display_output or not args.thumbnail_output:
+                raise ValueError("Display and thumbnail outputs are required when importing an image")
+            payload = prepare_image(
+                args.image, args.display_output, args.thumbnail_output,
+                args.analysis_output,
+                z_project=args.z_project)
     except Exception as exc:  # noqa: BLE001 - return an actionable wire error.
         code = getattr(exc, "code", "image-prepare-failed")
         hint = getattr(exc, "hint", "") or str(exc)

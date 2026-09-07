@@ -353,7 +353,13 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
         p.px_per_um.to_string(),
         "--conf".into(),
         p.confidence_threshold.to_string(),
+        "--z-project".into(),
+        p.z_projection.clone(),
     ];
+    if let Some(channel) = p.segment_channel {
+        args.push("--segment-channel".into());
+        args.push(channel.to_string());
+    }
     if let Some(checkpoint) = p.checkpoint_path.as_deref() {
         args.push("--checkpoint".into());
         args.push(checkpoint.to_string());
@@ -437,6 +443,8 @@ fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String 
     let mut map = serde_json::Map::new();
     map.insert("id".into(), serde_json::json!(id));
     map.insert("image".into(), serde_json::json!(image_path));
+    map.insert("z_project".into(), serde_json::json!(p.z_projection));
+    map.insert("segment_channel".into(), serde_json::json!(p.segment_channel));
     map.insert("conf".into(), serde_json::json!(p.confidence_threshold));
     map.insert("pxPerUm".into(), serde_json::json!(p.px_per_um));
     map.insert(
@@ -560,6 +568,15 @@ pub async fn run_detection(
     run_id: String,
 ) -> Result<DetectionResultDto, DetectionErrorDto> {
     let store = FileStore::from_app(&app).map_err(|_| DetectionErrorDto::ImageDecodeFailed)?;
+    if !["max", "mean", "sum", "none"].contains(&params.z_projection.as_str()) {
+        return Err(DetectionErrorDto::SidecarFailed {
+            exit_code: 2,
+            stderr: "Invalid Z projection. Choose max, mean, sum, or none.".to_string(),
+        });
+    }
+    crate::env::uv::stage_python_project(&app, &store).map_err(|stderr| {
+        DetectionErrorDto::SidecarFailed { exit_code: -1, stderr }
+    })?;
     let requested_model_id = params.model_id.clone();
     // `checkpointPath` is an internal trust-boundary field. Never honor a value
     // deserialized from IPC; only the canonical DB lineage lookup below may set it.
@@ -577,6 +594,25 @@ pub async fn run_detection(
             model_id: params.model_id.clone(),
         }
     })?;
+
+    // Source projection can be slow for a vendor stack. Register cancellation
+    // before opening its reader, and retain its temporary TIFF until inference
+    // finishes; concurrent runs never replace one another's selected plane.
+    let preparation_cancelled = Arc::new(AtomicBool::new(false));
+    let preparation_notify = Arc::new(Notify::new());
+    app.state::<SidecarManager>().running.lock().await.insert(run_id.clone(), RunHandle {
+        cancel_flag: preparation_cancelled.clone(),
+        kill: KillHandle::OneShot(preparation_notify.clone()),
+    });
+    let source = crate::images::projection::prepare(
+        &db, &store, &image_path, &params.z_projection, &preparation_notify,
+    ).await.map_err(|stderr| DetectionErrorDto::SidecarFailed { exit_code: 3, stderr });
+    deregister_run(&app, &run_id).await;
+    if preparation_cancelled.load(Ordering::SeqCst) {
+        return Err(DetectionErrorDto::Cancelled);
+    }
+    let source = source?;
+    let image_path = source.path.clone();
 
     // StarDist's public API is one-shot only. Do not attempt the Cellpose
     // `--serve` handshake (and do not hide a failed handshake behind a retry):
@@ -703,6 +739,10 @@ async fn run_via_worker(
         Err(SpawnOutcome::Failed(reason)) => {
             deregister_run(app, run_id).await;
             return Err(WorkerAttempt::Fallback(reason));
+        }
+        Err(SpawnOutcome::SidecarError(error)) => {
+            deregister_run(app, run_id).await;
+            return Err(WorkerAttempt::SidecarError(error));
         }
     };
 
@@ -972,6 +1012,7 @@ async fn converse(
 /// to one-shot) or a cancel that arrived during the cold-start window.
 enum SpawnOutcome {
     Failed(String),
+    SidecarError(DetectionErrorDto),
     Cancelled,
 }
 
@@ -1126,6 +1167,15 @@ async fn spawn_worker(
         return Err(SpawnOutcome::Cancelled);
     }
     let trimmed = ready_line.trim();
+    // A structured model/download failure is already conclusive. Do not hide
+    // it behind a second one-shot download; expose its recovery hint at once.
+    if let Ok(error) = serde_json::from_str::<SidecarError>(trimmed) {
+        return Err(SpawnOutcome::SidecarError(DetectionErrorDto::SidecarFailed {
+            exit_code: 4,
+            stderr: error.hint.map(|hint| format!("{}: {hint}", error.error))
+                .unwrap_or(error.error),
+        }));
+    }
     let ok = serde_json::from_str::<serde_json::Value>(trimmed)
         .ok()
         .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|s| s == "ready"))
@@ -1525,9 +1575,13 @@ pub async fn detection_availability(
         return Ok(Availability {
             installed: false,
             reason: Some(format!(
-                "Unsupported model id `{model_id}`. Windows 1.0.8 supports cpsam_v2, cp-cyto3, and sd-fluo."
+                "Unsupported model id `{model_id}`. Windows supports cpsam_v2, cp-cyto3, and sd-fluo."
             )),
         });
+    }
+
+    if let Err(reason) = crate::env::uv::stage_python_project(&app, &store) {
+        return Ok(Availability { installed: false, reason: Some(reason) });
     }
 
     // Route to the model-appropriate venv python, staged detect script, and
@@ -1555,7 +1609,7 @@ pub async fn detection_availability(
     if !script.exists() {
         return Ok(Availability {
             installed: false,
-            reason: Some("Sidecar scripts are not staged.".into()),
+            reason: Some("The local analysis script could not be prepared. Restart CellCounter and retry.".into()),
         });
     }
     if !python.exists() {
@@ -1730,6 +1784,8 @@ mod tests {
             px_per_um: 2.6,
             confidence_threshold: 0.55,
             channels: [2, 1],
+            segment_channel: None,
+            z_projection: "max".to_string(),
             background_subtract: true,
             rolling_ball_radius: 42,
             watershed_split: true,
@@ -1746,6 +1802,25 @@ mod tests {
             .position(|v| v == flag)
             .and_then(|i| args.get(i + 1))
             .map(String::as_str)
+    }
+
+    #[test]
+    fn source_plane_settings_reach_one_shot_and_warm_requests() {
+        let mut request = params("cp-cyto3");
+        request.segment_channel = Some(3);
+        request.z_projection = "sum".to_string();
+        for model in WINDOWS_MODEL_IDS {
+            request.model_id = model.to_string();
+            let args = build_argv(std::path::Path::new("detect.py"), "stack.tiff", &request);
+            assert_eq!(value_after(&args, "--segment-channel"), Some("3"));
+            assert_eq!(value_after(&args, "--z-project"), Some("sum"));
+        }
+        let frame: serde_json::Value = serde_json::from_str(&build_request_json(1, "stack.tiff", &request)).unwrap();
+        assert_eq!(frame["segment_channel"], 3);
+        assert_eq!(frame["z_project"], "sum");
+        request.segment_channel = None;
+        let frame: serde_json::Value = serde_json::from_str(&build_request_json(2, "stack.tiff", &request)).unwrap();
+        assert!(frame["segment_channel"].is_null());
     }
 
     #[test]

@@ -33,7 +33,7 @@ import { applyRoiFilter } from "./roiFilter";
 // The seg-npy panel broadcasts this after it replaces an image's detection.
 // Import the canonical constant (rather than re-declaring the string) so the
 // listener below can never drift from the dispatcher.
-import { DETECTION_UPDATED_EVENT } from "./segnpy/SegNpyPanel";
+import { DETECTION_UPDATED_EVENT } from "./events";
 
 export interface ResultsData {
   /** The open batch, or null while none is selected / still loading. */
@@ -59,6 +59,7 @@ export interface ResultsData {
   /** Thresholds for binning: the batch's persisted set, else the live global. */
   thresholds: number[];
   loading: boolean;
+  error: string | null;
   /** Re-read detection + annotations + rois for the current image. */
   reloadImageData: () => Promise<void>;
   /** Re-read just the ROI list (after an ROI edit). */
@@ -75,10 +76,12 @@ export function useResultsData(): ResultsData {
 
   const [batch, setBatch] = useState<BatchDTO | null>(null);
   const [images, setImages] = useState<ImageDTO[]>([]);
+  const [loadedImageId, setLoadedImageId] = useState<string | undefined>(undefined);
   const [detection, setDetection] = useState<DetectionDTO | null>(null);
   const [annotations, setAnnotations] = useState<GroundTruthDTO[]>([]);
   const [rois, setRois] = useState<RoiDTO[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Guards against out-of-order async writes when the user switches fast.
   const batchReqRef = useRef(0);
@@ -94,6 +97,9 @@ export function useResultsData(): ResultsData {
       return;
     }
     setLoading(true);
+    setBatch(null);
+    setImages([]);
+    setError(null);
     const port = getPort();
     void (async () => {
       const b = await port.batch(currentBatchId);
@@ -118,7 +124,13 @@ export function useResultsData(): ResultsData {
         .filter((im): im is ImageDTO => im !== undefined);
       setImages(ordered);
       setLoading(false);
-    })();
+    })().catch(error => {
+      if (req !== batchReqRef.current) return;
+      setLoading(false);
+      setError(error instanceof Error ? error.message : String(error));
+      useAppStore.getState().setDetectionError(String(error));
+    });
+    return () => { batchReqRef.current++; };
   }, [currentBatchId]);
 
   const imageIdx = useMemo(() => {
@@ -126,32 +138,46 @@ export function useResultsData(): ResultsData {
     return Math.min(Math.max(0, currentImageIdx), images.length - 1);
   }, [images.length, currentImageIdx]);
 
-  const currentImage = images.length > 0 ? images[imageIdx] : null;
+  const currentImage = batch?.id === currentBatchId && images.length > 0 ? images[imageIdx] : null;
   const currentImageId = currentImage?.id;
 
   // ---- load detection + annotations + rois for the current image ----
   const loadForImage = useCallback(async (imageId: string | undefined) => {
     const req = ++imageReqRef.current;
     if (!imageId) {
+      setLoadedImageId(undefined);
       setDetection(null);
       setAnnotations([]);
       setRois([]);
       return;
     }
     const port = getPort();
-    const [det, anns, roiList] = await Promise.all([
-      port.getDetection(imageId),
-      port.annotations(imageId),
-      port.rois(imageId),
-    ]);
-    if (req !== imageReqRef.current) return;
-    setDetection(det);
-    setAnnotations(anns);
-    setRois(roiList);
+    setError(null);
+    try {
+      const [det, anns, roiList] = await Promise.all([
+        port.getDetection(imageId),
+        port.annotations(imageId),
+        port.rois(imageId),
+      ]);
+      if (req !== imageReqRef.current) return;
+      setLoadedImageId(imageId);
+      setDetection(det);
+      setAnnotations(anns);
+      setRois(roiList);
+    } catch (error) {
+      if (req !== imageReqRef.current) return;
+      setLoadedImageId(imageId);
+      setDetection(null);
+      setAnnotations([]);
+      setRois([]);
+      setError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }, []);
 
   useEffect(() => {
-    void loadForImage(currentImageId);
+    void loadForImage(currentImageId).catch(() => {});
+    return () => { imageReqRef.current++; };
   }, [currentImageId, loadForImage]);
 
   const reloadImageData = useCallback(
@@ -178,7 +204,7 @@ export function useResultsData(): ResultsData {
       const detail = (event as CustomEvent<{ imageId?: string }>).detail;
       const targetId = detail?.imageId;
       if (targetId && targetId !== currentImageId) return;
-      void loadForImage(currentImageId);
+      void loadForImage(currentImageId).catch(() => {});
     };
     window.addEventListener(DETECTION_UPDATED_EVENT, handler);
     return () => window.removeEventListener(DETECTION_UPDATED_EVENT, handler);
@@ -187,19 +213,22 @@ export function useResultsData(): ResultsData {
   const reloadRois = useCallback(async () => {
     if (!currentImageId) return;
     const port = getPort();
+    const request = imageReqRef.current;
     const roiList = await port.rois(currentImageId);
-    setRois(roiList);
+    if (request === imageReqRef.current) setRois(roiList);
   }, [currentImageId]);
 
   const reloadAnnotations = useCallback(async () => {
     if (!currentImageId) return;
     const port = getPort();
+    const request = imageReqRef.current;
     const anns = await port.annotations(currentImageId);
-    setAnnotations(anns);
+    if (request === imageReqRef.current) setAnnotations(anns);
   }, [currentImageId]);
 
   // ---- derived cell lists (confidence filter → ROI filter) ----
-  const allCells = useMemo(() => detection?.cells ?? [], [detection]);
+  const shownDetection = loadedImageId === currentImageId ? detection : null;
+  const allCells = useMemo(() => shownDetection?.cells ?? [], [shownDetection]);
 
   const confidenceCutoff = useMemo(() => {
     if (!currentImage) return globalConfidence;
@@ -225,14 +254,15 @@ export function useResultsData(): ResultsData {
     images,
     imageIdx,
     currentImage,
-    detection,
-    annotations,
-    rois,
+    detection: shownDetection,
+    annotations: loadedImageId === currentImageId ? annotations : [],
+    rois: loadedImageId === currentImageId ? rois : [],
     allCells,
     cells,
     confidenceCutoff,
     thresholds,
-    loading,
+    loading: loading || !!currentImageId && loadedImageId !== currentImageId,
+    error,
     reloadImageData,
     reloadRois,
     reloadAnnotations,

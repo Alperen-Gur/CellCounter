@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "1.0.8"
+version = "1.1.0"
 description = "CellCounter: a desktop app for counting and size-classifying cells in microscopy images."
 authors = ["Alperen Gur <alguer@ethz.ch>"]
 license = "MIT"

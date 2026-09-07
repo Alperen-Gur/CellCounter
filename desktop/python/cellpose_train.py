@@ -19,10 +19,10 @@ Key upgrades vs. pass-3:
   apply random rotate (0–360), h/v flip, brightness 0.7–1.3, contrast 0.7–1.3,
   Gaussian noise σ=0.005, and elastic transform on top of the dataset BEFORE
   handing it to cellpose.
-* Stratified hash-bucket split (train 70 / val 20 / test 10) with patient-aware
-  grouping: if a filename starts with `<prefix>-` where the prefix matches the
-  pattern `[A-Z][A-Z]-\\d+` (e.g. `OM-04-...`), the prefix is used for the
-  bucket key, so all images from the same patient land in the same split.
+* Deterministic specimen-group split (target train 70 / val 20 / test 10).
+  groups.json maps relative image filenames to specimen IDs; recognized patient
+  prefixes such as OM-04 are supported. At least three groups are required,
+  duplicate source content is rejected, and whole groups stay together.
 * Cosine annealing schedule with linear warmup (`warmup_epochs = max(2,
   int(0.05 * epochs))`). Cellpose's own training loop does its own LR
   management, so we ALSO emit an LR per epoch on the EPOCH line for the UI to
@@ -100,23 +100,6 @@ def _err(line: str) -> None:
     print(line, file=sys.stderr, flush=True)
 
 
-_PATIENT_RE = re.compile(r"^([A-Z]{2,4}-\d+)", re.IGNORECASE)
-
-
-def _patient_key(name: str) -> str:
-    """Return the patient prefix (e.g. 'OM-04') if name matches, else the stem."""
-    stem = Path(name).stem
-    m = _PATIENT_RE.match(stem)
-    return m.group(1).upper() if m else stem
-
-
-def _bucket(name: str) -> int:
-    """Hash name (or patient prefix) to [0, 100)."""
-    key = _patient_key(name)
-    h = hashlib.md5(key.encode("utf-8")).hexdigest()
-    return int(h, 16) % 100
-
-
 def _collect_pairs(image_dir: Path) -> list[tuple[Path, Path]]:
     """Walks image_dir, returning list of (image_path, mask_path) pairs."""
     exts = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
@@ -137,25 +120,9 @@ def _collect_pairs(image_dir: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def _stratified_split(pairs: list[tuple[Path, Path]]
-                      ) -> tuple[list, list, list]:
-    """Returns (train, val, test) lists of (image_path, mask_path) tuples.
-    Bucketing: train if <70, val if <90, else test. Patient prefixes group."""
-    train, val, test = [], [], []
-    for ip, mp in pairs:
-        b = _bucket(ip.name)
-        if b < 70:
-            train.append((ip, mp))
-        elif b < 90:
-            val.append((ip, mp))
-        else:
-            test.append((ip, mp))
-    # Safety: if any split is empty but we have data, shift from train.
-    if not val and train:
-        val.append(train.pop())
-    if not test and train:
-        test.append(train.pop())
-    return train, val, test
+def _stratified_split(pairs, image_dir):
+    from _training_pairs import group_split
+    return group_split(pairs, image_dir)
 
 
 def _load_pair(ip: Path, mp: Path) -> tuple[object, object] | None:
@@ -428,7 +395,11 @@ def main() -> int:
         return 2
 
     # --- stratified split ------------------------------------------------- #
-    train_pairs, val_pairs, test_pairs = _stratified_split(pairs)
+    try:
+        train_pairs, val_pairs, test_pairs = _stratified_split(pairs, image_dir)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(json.dumps({"error": "invalid-training-groups", "hint": str(exc)}), flush=True)
+        return 2
     _err(f"[cellpose_train] split: {len(train_pairs)} train / "
          f"{len(val_pairs)} val / {len(test_pairs)} test")
 
@@ -437,15 +408,19 @@ def main() -> int:
         for ip, mp in p_list:
             r = _load_pair(ip, mp)
             if r is None:
-                continue
+                raise ValueError(f"Invalid or unreadable image/mask pair: {ip.name}")
             imgs.append(r[0])
             msks.append(r[1])
             paths.append(ip)
         return imgs, msks, paths
 
-    train_images, train_masks, _ = _load_split(train_pairs)
-    val_images, val_masks, _ = _load_split(val_pairs)
-    test_images, test_masks, _ = _load_split(test_pairs)
+    try:
+        train_images, train_masks, _ = _load_split(train_pairs)
+        val_images, val_masks, _ = _load_split(val_pairs)
+        test_images, test_masks, _ = _load_split(test_pairs)
+    except ValueError as exc:
+        print(json.dumps({"error": "invalid-training-pair", "hint": str(exc)}), flush=True)
+        return 2
 
     if not train_images or not val_images or not test_images:
         print(json.dumps({"error": "unloadable-or-incomplete-split",

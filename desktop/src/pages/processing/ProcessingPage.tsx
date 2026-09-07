@@ -1,317 +1,119 @@
-/**
- * pages/processing/ProcessingPage.tsx — the Processing screen
- * (feature task `feat-processing`, ARCHITECTURE.md §4 `/processing`).
- *
- * A determinate progress view for an in-flight detection batch. It is purely a
- * *visualiser + Cancel*: Home (`feat-home-import`) and Results
- * (`feat-results-viewer`) dispatch detection and push progress into the store's
- * `ProcessingSlice`; this screen reads that slice and offers Cancel.
- *
- * What it shows (per the task `output`):
- *   • overall batch progress     ← store.progress (0..1)
- *   • the live cellpose stderr    ← store.stageLine
- *     stage line
- *   • the resolved device         ← store.device  ("MPS" | "CPU" | "CUDA:0")
- *   • a Cancel action             → cancelActiveProcessingRun() → prior view
- *
- * Watchdog: a run has no hard timeout (§3.1) — CPU cellpose can sit on one
- * stage for a long time. We treat *active stderr* as progress: `lastStageUpdateAt`
- * is compared against a live clock, so the "live" indicator keeps pulsing while
- * stderr flows and only downgrades to "still working…" (never "dead") once the
- * stream goes quiet. Before the first numeric progress arrives, the bar shows an
- * indeterminate sweep rather than a stuck 0%.
- *
- * Boundaries: this task owns only `pages/processing/`. It never calls
- * `transport.detect` (the dispatchers do). Cancel reaches the in-flight run
- * through `processingController` (which holds the runId + optional
- * AbortController) because the FROZEN `ProcessingSlice` carries no runId.
- */
-
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { analysisQueue } from "../../kernel/workflow/desktopQueue";
+import { settingsKey, type AnalysisJob, type AnalysisTask } from "../../kernel/workflow/AnalysisQueue";
 import { useAppStore } from "../../kernel/store/store";
+import { getPort } from "../../kernel/persistence";
 import { navigate } from "../../components/useHashRoute";
-import { Icon } from "../../components/Icon";
-import {
-  cancelActiveProcessingRun,
-  getActiveProcessingRun,
-  subscribeProcessingRun,
-  type ActiveProcessingRun,
-} from "./processingController";
-// Cross-page cancel primitive for Home-dispatched imports. Home's importFlow
-// drives detection with its own AbortController and exposes abortActiveImport()
-// as the documented Phase-3 cancel seam (it does NOT register with
-// processingController, since the transport generates the per-image runId
-// internally). Calling both here makes Cancel work for BOTH dispatch paths:
-// Results-registered runs (processingController) and Home imports (importFlow).
-import { abortActiveImport } from "../home/importFlow";
-
-import "./processing.css";
-
-/**
- * How long (ms) after the last stderr line we still call the run "live" before
- * downgrading the indicator to "still working…". Generous, because a single
- * cellpose stage (e.g. flow/dynamics on CPU) can be quiet for many seconds.
- */
-const STALL_AFTER_MS = 12_000;
-
-/** Subscribe the component to the active-run registry via useSyncExternalStore. */
-function useActiveProcessingRun(): ActiveProcessingRun | null {
-  return useSyncExternalStore(subscribeProcessingRun, getActiveProcessingRun);
-}
-
-/**
- * A slow ticking clock (returns `Date.now()`), so the watchdog re-evaluates
- * "seconds since last stderr" without needing the store to push an event. Only
- * ticks while `enabled`, to avoid a background timer on an idle screen.
- */
-function useNowClock(enabled: boolean, intervalMs = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
-    return () => window.clearInterval(id);
-  }, [enabled, intervalMs]);
-  return now;
-}
+import { useKeymap } from "../../components/useKeymap";
+import { MODEL_CATALOG } from "../models/catalog";
+import { Viewport } from "../../kernel/viewport/Viewport";
+import { MaskOverlay } from "../../kernel/overlay/MaskOverlay";
+import type { CellDTO, ImageDTO } from "../../kernel/types";
+import "./workflow.css";
 
 export default function ProcessingPage() {
-  // ---- reactive reads of the FROZEN ProcessingSlice ----
-  const progress = useAppStore((s) => s.progress);
-  const stageLine = useAppStore((s) => s.stageLine);
-  const device = useAppStore((s) => s.device);
-  const lastStageUpdateAt = useAppStore((s) => s.lastStageUpdateAt);
-
-  // ---- the run this screen is showing / can cancel ----
-  const activeRun = useActiveProcessingRun();
-  const hasActiveRun = activeRun !== null;
-
-  // A run is "in flight" from this screen's POV if either the controller has a
-  // run registered, or the store still reports sub-100% progress with a stage
-  // line (covers the brief window before a dispatcher registers, or a preview
-  // where the controller isn't wired but the store is being driven).
-  const inFlight = hasActiveRun || (progress < 1 && stageLine.length > 0);
-
-  // Live clock only while something is in flight.
-  const now = useNowClock(inFlight);
-
-  // ---- watchdog: is stderr actively flowing? ----
-  // The run counts as "live" when stderr flowed recently (§3.1: active stderr IS
-  // progress). A freshly-registered run that hasn't emitted a line yet is also
-  // treated as live during a warmup grace window — the model is loading, not
-  // stalled — so we don't flash "Still working…" at t=0.
-  const msSinceStage = lastStageUpdateAt > 0 ? now - lastStageUpdateAt : Infinity;
-  const runAgeMs = activeRun ? now - activeRun.startedAt : Infinity;
-  const inWarmup = msSinceStage === Infinity && runAgeMs < STALL_AFTER_MS;
-  const stderrActive = inFlight && (msSinceStage < STALL_AFTER_MS || inWarmup);
-  const stalled = inFlight && !stderrActive;
-
-  // ---- progress math ----
-  const pct = clampPct(progress);
-  // Show an indeterminate sweep while a run is live but no numeric progress has
-  // arrived yet (model download / first-image warmup). Determinate otherwise.
-  const indeterminate = inFlight && progress <= 0;
-
-  // ---- where to go on cancel / finish ----
-  const returnToPriorView = useReturnToPriorView();
-
-  // ---- cancel handling ----
-  const [cancelling, setCancelling] = useState(false);
-
-  const handleCancel = async () => {
-    if (cancelling) return;
-    setCancelling(true);
-    try {
-      // Abort a Home-dispatched import first (its detect() loop stops enqueuing
-      // and each in-flight detect rejects with {kind:"cancelled"}), then cancel
-      // any run registered on the processing controller (Results path). Both are
-      // idempotent no-ops when their respective dispatcher isn't the source.
-      abortActiveImport();
-      await cancelActiveProcessingRun();
-    } finally {
-      // Clear any lingering processing state so the next visit starts clean.
-      useAppStore.getState().resetProcessing();
-      returnToPriorView();
-    }
-  };
-
-  // If we arrive with nothing in flight (e.g. deep-linked to #/processing while
-  // idle), don't strand the user on an empty screen — offer a way back.
-  const idle = !inFlight;
-
-  const deviceLabel = device.trim();
-
-  return (
-    <div className="cc-processing">
-      <div className="cc-processing__card" role="status" aria-live="polite">
-        <div className="cc-processing__head">
-          <span className="cc-processing__head-icon" aria-hidden="true">
-            <Icon name={idle ? "check" : "scope"} size={20} />
-          </span>
-          <span className="cc-processing__titles">
-            <span className="cc-processing__title">
-              {idle ? "Nothing processing" : "Detecting cells…"}
-            </span>
-            {activeRun?.label ? (
-              <span className="cc-processing__label" title={activeRun.label}>
-                {activeRun.label}
-              </span>
-            ) : null}
-          </span>
-        </div>
-
-        {idle ? (
-          <IdleBody onBack={returnToPriorView} />
-        ) : (
-          <>
-            {/* ---- progress bar ---- */}
-            <div className="cc-processing__progress">
-              <div
-                className={
-                  "cc-processing__bar" +
-                  (indeterminate ? " cc-processing__bar--indeterminate" : "")
-                }
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={indeterminate ? undefined : pct}
-                aria-label="Batch detection progress"
-              >
-                <div
-                  className="cc-processing__bar-fill"
-                  style={indeterminate ? undefined : { width: `${pct}%` }}
-                />
-              </div>
-
-              <div className="cc-processing__meta">
-                <span className="cc-processing__percent">
-                  {indeterminate ? "Starting…" : `${pct}%`}
-                </span>
-                <span className="cc-processing__meta-spacer" />
-                {deviceLabel ? (
-                  <span
-                    className="cc-processing__device"
-                    title={`Compute device: ${deviceLabel}`}
-                  >
-                    <span
-                      className="cc-processing__device-dot"
-                      aria-hidden="true"
-                    />
-                    {deviceLabel}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-
-            {/* ---- live stderr stage line ---- */}
-            <div className="cc-processing__stage">
-              <div className="cc-processing__stage-label">
-                {stderrActive ? (
-                  <span className="cc-processing__live">
-                    <span
-                      className="cc-processing__live-dot"
-                      aria-hidden="true"
-                    />
-                    Live
-                  </span>
-                ) : stalled ? (
-                  <span className="cc-processing__live cc-processing__live--stalled">
-                    <Icon name="clock" size={12} />
-                    Still working…
-                  </span>
-                ) : (
-                  <span className="cc-processing__stage-heading">Stage</span>
-                )}
-              </div>
-              <div
-                className={
-                  "cc-processing__stage-line" +
-                  (stageLine ? "" : " cc-processing__stage-line--idle")
-                }
-              >
-                {stageLine || "Waiting for the model…"}
-              </div>
-            </div>
-
-            {/* ---- actions ---- */}
-            <div className="cc-processing__actions">
-              <span className="cc-processing__actions-spacer" />
-              <button
-                type="button"
-                className="cc-btn cc-processing__cancel"
-                onClick={handleCancel}
-                disabled={cancelling}
-              >
-                <Icon name="close" size={16} />
-                {cancelling ? "Cancelling…" : "Cancel"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
+  const jobs = useSyncExternalStore(analysisQueue.subscribe, analysisQueue.getSnapshot);
+  const [selected, setSelected] = useState<string>();
+  const [error, setError] = useState<string>();
+  const job = jobs.find(row => row.id === selected) ?? jobs[0];
+  useEffect(() => { void analysisQueue.initialize().catch(error => setError(String(error))); }, []);
+  return <div className="workflow-page">
+    <header><h1>Processing</h1><p>Inspect a sample, preview the masks, then process the batch. Your jobs and settings are saved.</p></header>
+    {error && <p role="alert">{error}</p>}
+    {!jobs.length ? <section><h2>No processing jobs</h2><p>Open images from Home to set up an analysis.</p><button className="cc-btn" onClick={() => navigate("home")}>Open Home</button></section> :
+      <div className="workflow-columns"><nav aria-label="Saved processing jobs">{jobs.map(row => <button key={row.id} aria-current={row.id === job?.id ? "true" : undefined} onClick={() => setSelected(row.id)}>
+        <strong>{row.name}</strong><span>{row.items.filter(item => item.status === "completed").length} / {row.items.length} · {row.status}</span>
+      </button>)}</nav>{job && <JobSetup key={job.id} job={job} />}</div>}
+  </div>;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Clamp a 0..1 fraction to an integer 0..100 for display + the bar width. */
-function clampPct(fraction: number): number {
-  if (!Number.isFinite(fraction)) return 0;
-  const p = Math.round(fraction * 100);
-  if (p < 0) return 0;
-  if (p > 100) return 100;
-  return p;
-}
-
-/** The idle state body: no run in flight, just a way back. */
-function IdleBody({ onBack }: { onBack: () => void }) {
-  return (
-    <div className="cc-processing__idle">
-      <span className="cc-processing__idle-note">
-        No detection is currently running.
-      </span>
-      <button type="button" className="cc-btn" onClick={onBack}>
-        <Icon name="arrowLeft" size={16} />
-        Back
-      </button>
-    </div>
-  );
-}
-
-/**
- * Returns a stable callback that navigates back to the view the user came from.
- *
- * The shell uses a hash router (`useHashRoute`) with no history abstraction of
- * its own, but `history.back()` works with hash navigation. We remember the
- * referring hash captured at mount; if it looks like an in-app route we go back,
- * otherwise we fall back to Home. Cancelling from Processing should feel like
- * "return to the prior view", per the task `output`.
- */
-function useReturnToPriorView(): () => void {
-  // Capture the hash that was current *before* the user landed on #/processing.
-  // `document.referrer` is unreliable for SPA hash nav, so we snapshot the
-  // history length + a hint at mount and prefer history.back().
-  const cameFromInApp = useRef(false);
-
+function JobSetup({ job }: { job: AnalysisJob }) {
+  const [params, setParams] = useState(job.params);
+  const [task, setTask] = useState<AnalysisTask>(job.task);
+  const [scaleSource, setScaleSource] = useState(job.calibrationSource);
+  const [imageId, setImageId] = useState(job.items[0]?.imageId ?? "");
+  const [images, setImages] = useState<ImageDTO[]>([]);
+  const [cells, setCells] = useState<CellDTO[]>([]);
+  const [message, setMessage] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const stage = useAppStore(store => store.stageLine);
+  const running = job.status === "running";
+  const selectedItem = job.items.find(item => item.imageId === imageId) ?? job.items[0];
+  const image = images.find(image => image.id === selectedItem?.imageId);
+  const completed = job.items.filter(item => item.status === "completed").length;
+  const dirty = settingsKey(job.params) !== settingsKey(params) || task !== job.task || scaleSource !== job.calibrationSource;
   useEffect(() => {
-    // If there is prior in-app history, history.back() will return to it.
-    // `history.length > 1` is a good-enough signal inside the Tauri webview.
-    cameFromInApp.current = window.history.length > 1;
-  }, []);
-
-  return useMemo(
-    () => () => {
-      if (cameFromInApp.current) {
-        // Return to whatever route dispatched detection (Home or Results).
-        window.history.back();
-      } else {
-        navigate("home");
-      }
-    },
-    [],
-  );
+    let alive = true;
+    void getPort().imagesForBatch(job.batchId).then(images => { if (alive) setImages(images); }).catch(error => { if (alive) setMessage(String(error)); });
+    return () => { alive = false; };
+  }, [job.batchId]);
+  useEffect(() => {
+    let alive = true; setCells([]);
+    if (selectedItem?.status === "completed" && selectedItem.settingsKey === settingsKey(params)) {
+      void getPort().getDetection(selectedItem.imageId).then(detection => { if (alive) setCells(detection?.cells ?? []); }).catch(error => { if (alive) setMessage(String(error)); });
+    }
+    return () => { alive = false; };
+  }, [selectedItem?.imageId, selectedItem?.status, selectedItem?.detectionId, selectedItem?.settingsKey, params]);
+  const save = () => dirty ? analysisQueue.update(job.id, params, task, scaleSource) : Promise.resolve();
+  const action = async (preview: boolean) => {
+    if (busy || analysisQueue.isActive()) return;
+    setBusy(true); setMessage(undefined);
+    try { await save(); await analysisQueue.run(job.id, preview ? selectedItem?.imageId : undefined); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  };
+  const inspect = async (targetId = selectedItem?.imageId) => {
+    try {
+      await save();
+      const batch = await getPort().batch(job.batchId);
+      if (!batch || !targetId || !batch.imageIds.includes(targetId)) throw new Error("This image is no longer in the library.");
+      const store = useAppStore.getState(); store.openBatch(job.batchId); store.setCurrentImageIdx(batch.imageIds.indexOf(targetId)); navigate("results");
+    } catch (error) { setMessage(String(error)); }
+  };
+  useKeymap("processing", {
+    preview: () => { if (!running && !busy) void action(true); },
+    process: () => { if (!running && !busy) void action(false); },
+    pause: () => { if (running) analysisQueue.pause(job.id); },
+    inspect: () => { void inspect(); },
+  }, { allowInInputs: true });
+  return <section className="workflow-detail" aria-label="Analysis setup">
+    <header><h2>{job.name}</h2><p>{completed} of {job.items.length} completed · {job.status}</p></header>
+    <div className="workflow-setup">
+      <div><label>Representative image<select value={selectedItem?.imageId ?? ""} onChange={event => { setImageId(event.target.value); setZoom(1); setPan({ x: 0, y: 0 }); }}>
+        {!job.items.length && <option value="">No images</option>}{job.items.map(item => <option key={item.imageId} value={item.imageId}>{item.fileName}</option>)}
+      </select></label>
+        <div className="workflow-preview">{image ? <Viewport imageSrc={convertFileSrc(image.storedPath)} sourceWidth={image.widthPx} sourceHeight={image.heightPx} zoom={zoom} pan={pan} onZoomChange={setZoom} onPanChange={setPan} onFit={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>
+          <MaskOverlay cells={cells} thresholds={[params.smallThresholdUm, params.largeThresholdUm]} overlayMode="outline" confidenceCutoff={params.confidenceThreshold} showMaskFills showOutlines maskOpacity={0.2} selectedCellIds={new Set()} />
+        </Viewport> : <p>Loading image…</p>}</div><p>{image?.widthPx} × {image?.heightPx} pixels · {cells.length} masks</p>
+      </div>
+      <fieldset disabled={running || busy}><legend>Saved analysis settings</legend>
+        <label>Task<select value={task} onChange={event => setTask(event.target.value as AnalysisTask)}><option value="countCells">Cell counts and sizes</option><option value="nuclei">Nuclei</option><option value="markerPositive">Marker positivity</option><option value="woundClosure">Wound closure</option></select></label>
+        {task !== "countCells" && <p className="workflow-note">Choose a model and channels appropriate to this task. Marker and wound measurements run in Results → Advanced assays after segmentation.</p>}
+        <label>Model<select value={params.modelId} onChange={event => setParams({ ...params, modelId: event.target.value })}>{MODEL_CATALOG.filter(model => model.available).map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+        <label>Pixels per µm<input type="number" min="0.000001" step="any" value={params.pxPerUm} onChange={event => { setScaleSource("manual"); setParams({ ...params, pxPerUm: Number(event.target.value) }); }} /></label>
+        <p className="workflow-note">Scale source: {scaleSource}. A screenshot needs a known scale for calibrated measurements.</p>
+        <label>Confidence<input type="number" min="0" max="1" step="0.05" value={params.confidenceThreshold} onChange={event => setParams({ ...params, confidenceThreshold: Number(event.target.value) })} /></label>
+        <label>Expected diameter (µm; 0 = automatic)<input type="number" min="0" step="1" value={params.expectedDiameterUm} onChange={event => setParams({ ...params, expectedDiameterUm: Number(event.target.value) })} /></label>
+        {([0, 1] as const).map(index => <label key={index}>{index ? "Nuclear channel" : "Cell channel"}<select value={params.channels[index]} onChange={event => { const channels: [number, number] = [...params.channels]; channels[index] = Number(event.target.value); setParams({ ...params, channels }); }}><option value="0">Grayscale</option><option value="1">Red</option><option value="2">Green</option><option value="3">Blue</option></select></label>)}
+        <label>Source channel (blank = automatic; zero-based)<input type="number" min="0" step="1" placeholder="Automatic" value={params.segmentChannel ?? ""} onChange={event => setParams({ ...params, segmentChannel: event.target.value === "" ? null : Number(event.target.value) })} /></label>
+        <label>Z projection<select value={params.zProjection ?? "max"} onChange={event => setParams({ ...params, zProjection: event.target.value as NonNullable<typeof params.zProjection> })}><option value="max">Maximum</option><option value="mean">Mean</option><option value="sum">Sum</option><option value="none">Middle plane (no projection)</option></select></label>
+        <label><input type="checkbox" checked={params.backgroundSubtract} onChange={event => setParams({ ...params, backgroundSubtract: event.target.checked })} /> Subtract background</label>
+        <label><input type="checkbox" checked={params.watershedSplit} onChange={event => setParams({ ...params, watershedSplit: event.target.checked })} /> Split touching cells</label>
+      </fieldset>
+    </div>
+    {(message || job.error || selectedItem?.error) && <p role="alert">{message ?? job.error ?? selectedItem?.error}</p>}
+    {running && <p role="status">{stage || "Starting analysis…"}</p>}
+    <div className="workflow-actions">
+      <button className="cc-btn" disabled={busy && !running} onClick={() => void inspect()}>Import and inspect</button>
+      <button className="cc-btn" onClick={() => navigate("models")}>Models</button>
+      {running ? <><button className="cc-btn" onClick={() => analysisQueue.pause(job.id)}>{analysisQueue.isPausing(job.id) ? "Pausing after this image…" : "Pause after this image"}</button><button className="cc-btn" onClick={() => analysisQueue.cancel(job.id)}>Stop now</button></> : <>
+        <button className="cc-btn" disabled={busy || analysisQueue.isActive() || !selectedItem} onClick={() => void action(true)}>Preview this image</button>
+        <button className="cc-btn cc-btn--primary" disabled={busy || analysisQueue.isActive()} onClick={() => void action(false)}>{job.status === "failed" ? "Retry failed images" : job.status === "paused" ? "Resume batch" : "Process batch"}</button>
+      </>}
+    </div>
+    <details><summary>Images and results ({job.items.length})</summary><div className="workflow-items">{job.items.map(item => <div key={item.imageId}><button className="cc-btn" onClick={() => void inspect(item.imageId)}>{item.fileName}</button><span>{item.status}</span>{item.error && <p role="alert">{item.error}</p>}</div>)}</div></details>
+  </section>;
 }

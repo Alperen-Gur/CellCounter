@@ -166,6 +166,11 @@ pub struct DetectionParams {
     pub confidence_threshold: f64,
     /// [cyto, nuclei]; 0=gray,1=r,2=g,3=b. Default [0,0] ⇒ `--channels` omitted.
     pub channels: [i32; 2],
+    /// A zero-based raw source channel; null preserves automatic RGB handling.
+    #[serde(default)]
+    pub segment_channel: Option<u32>,
+    #[serde(default = "default_z_projection")]
+    pub z_projection: String,
     pub background_subtract: bool,
     pub rolling_ball_radius: i64,
     pub watershed_split: bool,
@@ -178,6 +183,10 @@ pub struct DetectionParams {
     pub expected_diameter_um: f64,
     /// false ⇒ `--no-gpu`.
     pub use_gpu: bool,
+}
+
+fn default_z_projection() -> String {
+    "max".to_string()
 }
 
 /// Detection result returned to the UI (= TS `DetectionResultDTO`).

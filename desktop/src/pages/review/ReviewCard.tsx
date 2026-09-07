@@ -178,7 +178,7 @@ export function ReviewCard({
     const targetId = item.cell.id;
 
     // 2) neighbours first (under the target ring), de-emphasised.
-    for (const c of item.detection.cells) {
+    for (const c of item.neighbors ?? []) {
       if (c.id === targetId) continue;
       if (!cellIntersectsCrop(c, crop)) continue;
       const col = binColor(reviewBinIndex(c.diameterUm, thresholds));

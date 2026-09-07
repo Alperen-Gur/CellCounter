@@ -1,4 +1,4 @@
-# CellCounter for Windows 1.0.8
+# CellCounter for Windows 1.1.0
 
 CellCounter for Windows is the React interface packaged as a native Tauri 2
 application. The Windows build is local-first: imported microscopy images,
@@ -6,9 +6,11 @@ measurements, corrections, and inference stay on the PC. The live **Support →
 Platform parity** screen is the source of truth for features that are ready,
 Windows-adapted, or not yet available.
 
+Version 1.1.0 fixes the first-analysis **“Sidecar scripts are not staged”** error and adds saved analysis setup, representative previews, resumable processing, linked measurements, and reversible mask versions. Model IDs remain the same three supported families. The expanded capability inventory now also lists native workflows that have not been ported; this release does not claim full macOS parity.
+
 ## System requirements
 
-- 64-bit Windows 10 or Windows 11. The 1.0.8 workflow and bundled `uv` helper
+- 64-bit Windows 10 or Windows 11. The 1.1.0 workflow and bundled `uv` helper
   target `x86_64-pc-windows-msvc`; Windows on ARM is not an initial release
   target.
 - Microsoft Edge WebView2 Runtime. The installer embeds Microsoft's small
@@ -19,7 +21,7 @@ Windows-adapted, or not yet available.
 - Enough free disk space for the application, copied source images, thumbnails,
   exports, and three separate Python/model environments. These can use several
   gigabytes; keep additional working space available during installation.
-- The Windows v1.0.8 model runtimes are intentionally CPU-only. A GPU driver is
+- The Windows v1.1.0 model runtimes are intentionally CPU-only. A GPU driver is
   not required, and the app does not present an acceleration control it cannot
   honor. A separately validated CUDA runtime may be added in a later release.
 
@@ -47,7 +49,7 @@ CellCounter release or GitHub Actions run and its SHA-256 matches
 `SHA256SUMS.txt`. In PowerShell:
 
 ```powershell
-Get-FileHash .\CellCounter_1.0.8_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CellCounter_1.1.0_x64-setup.exe -Algorithm SHA256
 ```
 
 Compare the printed hash with the matching `nsis/...` or `msi/...` entry in the
@@ -94,11 +96,11 @@ backup.
 
 ## Install the three models
 
-The runnable 1.0.8 catalog contains exactly three explicit model IDs:
+The runnable 1.1.0 catalog contains exactly three explicit model IDs:
 
 | App model ID | Pipeline | Local environment |
 | --- | --- | --- |
-| `cpsam_v2` | Cellpose-SAM v2 using the exact `cpsam` checkpoint | `py\.venv4` |
+| `cpsam_v2` | Cellpose-SAM using the exact `cpsam` checkpoint; the app ID is a legacy alias, not a newer checkpoint claim | `py\.venv4` |
 | `cp-cyto3` | Cellpose 3 using the exact `cyto3` checkpoint | `py\.venv` |
 | `sd-fluo` | StarDist using the exact `2D_versatile_fluo` checkpoint | `py\.venvsd` plus app-scoped weights |
 
@@ -112,6 +114,18 @@ family, and model weights from their upstream package/model providers. Imported
 images are not sent with those requests.
 
 ## Microscopy formats and advanced workflows
+
+### Inspect, preview and process
+
+Import creates a saved analysis setup and opens **Processing**. You can inspect the imported image before installing a model. Choose the source channel, Z projection, calibration and analysis parameters, then preview a representative image before processing the whole batch. Detection uses the selected source settings; the setup viewer currently shows the imported display preview rather than every selected source plane.
+
+Jobs run one image at a time. **Pause** finishes and saves the current image; **Stop** cancels the current operation and leaves the remaining work paused. Reopening the application restores interrupted jobs as paused. Resume skips completed results that still match the saved settings; changed settings or replaced results invalidate reuse. Failed images can be retried without discarding successful work.
+
+Results provide a linked measurement table/scatter plot and saved mask comparisons with synchronized viewing. Restoring an older mask preserves the current one first. Recorded analysis settings remain distinct from current review settings, and unknown provenance is shown as unknown. Images queued for processing cannot be edited concurrently.
+
+Review uses bounded pages for large batches. **Keep**, **Reject**, **Edit diameter** and **Skip** are wired to their displayed shortcuts. **Undo / Ctrl+Z** reverses the last decision during this app session, including across page changes. It refuses to overwrite a result changed elsewhere.
+
+### Formats, assays and training
 
 PNG, JPEG, BMP, TIFF/OME-TIFF, ND2, CZI, LIF, OIR, and VSI inputs remain local.
 For proprietary containers, CellCounter keeps the untouched original and makes
@@ -129,8 +143,10 @@ Fine-tuning is limited to the `cp-cyto3` family. Choose image/mask pairs in
 **Fine-tune**, train and evaluate locally, then explicitly activate the saved
 version. A derived version is recorded as `cp-cyto3@<version-id>` and does not
 become a fourth built-in model. Checkpoints must remain regular files inside the
-app-owned `Models` directory. Windows v1.0.8 trains on CPU and does not offer a
+app-owned `Models` directory. Windows v1.1.0 trains on CPU and does not offer a
 mixed-precision control.
+
+Training now requires at least three specimen groups and six epochs. Use a `groups.json` mapping from relative image filename to specimen ID, or supported patient-prefix filenames such as `OM-04-…`. Groups stay together across train/validation/test splits, duplicate source images are rejected, and malformed pairs fail explicitly. This pair-folder workflow is different from macOS’s immutable reviewed-library dataset builder.
 
 ## Local data and privacy
 
@@ -138,7 +154,7 @@ CellCounter stores its Windows data below these identifier-scoped directories:
 
 - `%APPDATA%\com.alperengur.cellcounter\CellCounter`
   - `store.sqlite` — batches, measurements, corrections, ROIs, presets, and
-    provenance
+    provenance, saved analysis jobs and mask versions
   - `Images` — application-owned copies of imported source images
   - `Originals` — untouched proprietary microscope containers
   - `Analysis` — lossless projected TIFFs used by detection and assays
@@ -155,7 +171,7 @@ CellCounter stores its Windows data below these identifier-scoped directories:
 
 Microscopy images never upload or leave this PC as part of detection. The app
 does make outbound downloads when WebView2 or a selected model runtime is not
-already present. There is no server inference path in the Windows 1.0.8 build.
+already present. There is no server inference path in the Windows 1.1.0 build.
 
 ## Backup and restore
 
@@ -180,12 +196,20 @@ and corrections after a confirmation. It preserves conditions,
 calibration/bin presets, settings, downloaded models, and local Python
 environments. This operation cannot be undone.
 
+Saved analysis jobs, run documents and mask versions are also removed. Reset is unavailable while a saved job is processing.
+
 To perform a complete manual factory reset, first uninstall CellCounter, make
 any required backup, and then delete
 `%APPDATA%\com.alperengur.cellcounter`. Manual deletion removes model downloads
 as well as microscopy data; do it only while the app is closed.
 
 ## Troubleshooting
+
+### First analysis says “Sidecar scripts are not staged”
+
+Install version 1.1.0 and reopen CellCounter. The application now carries its required analysis scripts inside the executable and prepares them before model checks or analysis. Missing or damaged staged scripts are repaired automatically. Existing images and model environments are retained; a library reset is not needed.
+
+If preparation still fails, keep the specific error and check free disk space and write access to `%APPDATA%\com.alperengur.cellcounter\py`. A file-lock or disk error is reported with recovery guidance. Reinstall the application from the official release if its executable itself is missing or damaged; reinstalling models alone does not repair an older application’s first-run staging bug.
 
 ### The installer is blocked by SmartScreen
 
@@ -209,10 +233,13 @@ the app will not fall back to a different checkpoint.
 
 ### Detection is slow
 
-Windows v1.0.8 uses the validated CPU path for all three models. Initial
+Windows v1.1.0 uses the validated CPU path for all three models. Initial
 inference can be slower while a runtime warms its model; later images with the
-same Cellpose configuration reuse warm workers. Reduce parallel jobs if the PC
-is memory-constrained. GPU acceleration is not advertised by this release.
+same Cellpose configuration reuse warm workers. Saved jobs process one image at a time to bound concurrent work. GPU acceleration is not advertised by this release.
+
+### Capabilities differ from macOS
+
+The Windows build does not yet provide the native OME-Zarr/layer workspace, registration/stitching, workspace animation/replay/lineage, pixel-class painting, prompt refinement, mask propagation/drift correction, bulk grid curation, advanced optimizer, additional model variants, or reviewed-library training snapshots. Source-plane display also remains limited as described above. Use **Support → Platform parity** for the explicit inventory; an existing related assay or protocol does not imply those separate workflows are present.
 
 ### Imported images or models appear missing after restore
 

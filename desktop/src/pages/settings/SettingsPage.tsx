@@ -1,3 +1,4 @@
+import { analysisQueue } from "../../kernel/workflow/desktopQueue";
 /**
  * pages/settings/SettingsPage.tsx — the Settings screen (feature task
  * `feat-settings`, route `/settings`).
@@ -106,17 +107,12 @@ const CHANNEL_OPTIONS: { value: number; label: string }[] = [
 // Mirrors the runnable entries in pages/models/catalog.ts (activeModelId) —
 // only installable/activatable models are offered as a default here.
 const MODEL_OPTIONS: { value: string; label: string }[] = [
-  { value: "cpsam_v2", label: "Cellpose-SAM v2" },
+  { value: "cpsam_v2", label: "Cellpose-SAM" },
   { value: "cp-cyto3", label: "Cellpose cyto3" },
   { value: "sd-fluo", label: "StarDist fluorescence" },
 ];
 
-const PARALLEL_OPTIONS: { value: number; label: string }[] = [
-  { value: 1, label: "1" },
-  { value: 2, label: "2" },
-  { value: 4, label: "4" },
-  { value: 8, label: "8" },
-];
+
 
 // ---------------------------------------------------------------------------
 // Root
@@ -180,7 +176,6 @@ function GeneralSection() {
   // analysis-params fields, so unrelated store churn (processing/session)
   // doesn't re-render this section. Setters are stable references.
   const activeModelId = useAppStore((st) => st.activeModelId);
-  const maxParallel = useAppStore((st) => st.maxParallel);
   const confidence = useAppStore((st) => st.confidence);
   const expectedDiameterUm = useAppStore((st) => st.expectedDiameterUm);
   const channels = useAppStore((st) => st.channels);
@@ -191,7 +186,6 @@ function GeneralSection() {
   const manualMarkerDiameterUm = useAppStore((st) => st.manualMarkerDiameterUm);
 
   const setActiveModelId = useAppStore((st) => st.setActiveModelId);
-  const setMaxParallel = useAppStore((st) => st.setMaxParallel);
   const setConfidence = useAppStore((st) => st.setConfidence);
   const setExpectedDiameterUm = useAppStore((st) => st.setExpectedDiameterUm);
   const setChannels = useAppStore((st) => st.setChannels);
@@ -225,16 +219,8 @@ function GeneralSection() {
         />
       </SetRow>
 
-      <SetRow
-        label="Max parallel images"
-        desc="Higher uses more memory and finishes batches faster (CPU cellpose is CPU-bound)."
-      >
-        <Select
-          value={maxParallel}
-          options={PARALLEL_OPTIONS}
-          onChange={setMaxParallel}
-          ariaLabel="Max parallel images"
-        />
+      <SetRow label="Processing" desc="Saved jobs run one image at a time to bound model memory. Browse completed images while a batch runs.">
+        <span>One active image</span>
       </SetRow>
 
       <SetRow
@@ -352,9 +338,9 @@ function GeneralSection() {
 
       <SetRow
         label="GPU acceleration"
-        desc="Unavailable in Windows v1.0.8. The three validated runtimes are CPU-only, so detection always uses the honest CPU path."
+        desc="Unavailable in Windows v1.1.0. The three validated runtimes are CPU-only, so detection always uses the honest CPU path."
       >
-        <Toggle on={false} onChange={setUseGpu} label="GPU unavailable in Windows v1.0.8" disabled />
+        <Toggle on={false} onChange={setUseGpu} label="GPU unavailable in Windows v1.1.0" disabled />
       </SetRow>
     </section>
   );
@@ -724,7 +710,9 @@ function DataSection() {
     setConfirm(null);
     setWipe({ kind: "working" });
     try {
+      if (analysisQueue.isActive()) throw new Error("Stop processing before resetting your library.");
       await getPort().wipeAllUserData();
+      await analysisQueue.clear();
       // Clear the in-memory session pointer that now references a deleted batch,
       // then re-read the (now-empty) library counts so sidebar badges update.
       // openBatch("") also resets currentImageIdx + selectedCellIds atomically;

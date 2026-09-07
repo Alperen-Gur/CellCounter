@@ -39,6 +39,7 @@ import {
 import { useRecents, relativeDate, type RecentRow } from "./useRecents";
 import { DuplicatePrompt } from "./DuplicatePrompt";
 
+import { takeImageImportRequest } from "./importRequest";
 import "./home.css";
 
 // A pending duplicate prompt: the session + the promise resolver the flow waits
@@ -117,6 +118,8 @@ export default function HomePage() {
     setBusy(true);
     try {
       await importAndAnalyze(paths, hooksRef.current, useAppStore);
+    } catch (error) {
+      useAppStore.getState().setDetectionError(error instanceof Error ? error.message : String(error));
     } finally {
       inFlightRef.current = false;
       setBusy(false);
@@ -162,6 +165,16 @@ export default function HomePage() {
     }
     await runImport(paths);
   }, [runImport]);
+
+  useEffect(() => {
+    const handle = () => {
+      const request = takeImageImportRequest();
+      if (request === "images") void onChooseImages();
+      if (request === "folder") void onChooseFolder();
+    };
+    window.addEventListener("cc:request-import", handle); handle();
+    return () => window.removeEventListener("cc:request-import", handle);
+  }, [onChooseImages, onChooseFolder]);
 
   const openRecent = useCallback((row: RecentRow) => {
     if (row.imageCount === 0) return;

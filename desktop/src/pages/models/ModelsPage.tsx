@@ -39,7 +39,7 @@ export default function ModelsPage() {
         <h1 className="cc-models__title">Models</h1>
         <p className="cc-models__subtitle">
           Three carefully selected detectors cover the initial Windows release:
-          <strong> Cellpose-SAM v2</strong> for difficult fields,
+          <strong> Cellpose-SAM</strong> for difficult fields,
           <strong> cyto3</strong> for fast general segmentation, and
           <strong> StarDist fluorescence</strong> for nuclei. Install once; all
           inference stays on this computer.

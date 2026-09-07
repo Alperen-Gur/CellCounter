@@ -1,43 +1,13 @@
 /**
- * pages/home/importFlow.ts — the import + detect orchestration (feat-home-import).
- *
- * Direct port of `Shared/AppState.swift` → `importAndAnalyze` / `proceedWithImport`
- * (the real drop flow of the macOS app). Pure orchestration over the two frozen
- * ports + the store — no React, so it stays testable and the HomePage component
- * only wires gestures to it.
- *
- * The pipeline for a drop / pick of N files:
- *   1. filter to supported extensions
- *   2. availability gate — if the active model isn't runnable, surface the error
- *      and abort (no batch is created)
- *   3. import each file via `import_image` (Rust: decode + whole-file SHA-256 +
- *      thumbnail + EXIF probe). Import is what produces `fileHash`.
- *   4. dedup check — for each freshly-imported image, ask the store whether an
- *      *earlier* record shares its hash (`imageMatchingHash(hash, name,
- *      excludingId=newId)`). Any hit becomes a DuplicateCandidate; the caller
- *      decides Skip / Import-anyway before the batch is finalized.
- *   5. create the batch (`createBatch`), attach the kept images, run `detect()`
- *      per image with progress into the ProcessingSlice, and `saveDetection`.
- *   6. navigate to /results (or back to / if nothing imported), cleaning up an
- *      empty batch.
- *
- * Coordinate space is irrelevant here — this module never touches geometry; it
- * only shuttles DTOs between the ports.
- *
- * Boundaries:
- *   - owns pages/home/ only; routes by the store + the shell's `navigate`.
- *   - does NOT render the Processing screen (feat-processing) — it only drives
- *     ProcessingSlice (progress / stageLine / device) that Processing reads.
+ * Import source images, resolve duplicates, and create a saved analysis setup.
+ * Model readiness is checked when the user previews or processes the job.
+ * Import and inspection do not start inference or overwrite prior detections.
  */
 
 import { getPort } from "../../kernel/persistence";
 import type { ImportResult } from "../../kernel/persistence";
-import { getTransport } from "../../kernel/transport";
-import {
-  isDetectionError,
-  type DetectionParams,
-  type DetectionProgress,
-} from "../../kernel/transport";
+import { analysisQueue } from "../../kernel/workflow/desktopQueue";
+import type { DetectionParams } from "../../kernel/transport";
 import type { AppStore } from "../../kernel/store/store";
 import type { ImageDTO, BatchDTO, CalibrationDTO } from "../../kernel/types";
 
@@ -174,11 +144,10 @@ export function detectionParamsFromStore(store: AppStore): DetectionParams {
 
 /**
  * The persisted `detectorId` for a run (DTO comment: "cellpose/cp-cyto3").
- * Mirrors `"\(type(of: svc))/\(modelId)"` in Swift — our single desktop
- * transport is the cellpose sidecar.
+ * The family prefix identifies the actual selected model family.
  */
 export function detectorIdFor(modelId: string): string {
-  return `cellpose/${modelId}`;
+  return `${modelId.startsWith("sd-") ? "stardist" : "cellpose"}/${modelId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +241,7 @@ export function batchCalibrationFrom(
 // The active run — a shared cancel handle for the Processing screen's seam.
 // ---------------------------------------------------------------------------
 
-let activeController: AbortController | null = null;
+
 
 /**
  * Abort the in-flight import/detect run, if any. The Processing screen's Cancel
@@ -282,12 +251,13 @@ let activeController: AbortController | null = null;
  * swallows exactly like the Swift host.
  */
 export function abortActiveImport(): void {
-  activeController?.abort();
+  const active = analysisQueue.getSnapshot().find(job => job.status === "running");
+  if (active) analysisQueue.cancel(active.id);
 }
 
 /** Is an import/detect run currently in flight? */
 export function isImporting(): boolean {
-  return activeController !== null;
+  return false; // Import and inspection remain available while a saved job runs.
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +279,7 @@ export interface StoreAccess {
 
 /**
  * The real drop flow. Returns the created batch id, or null if nothing was
- * imported / the run was aborted / the model was unavailable.
+ * imported / duplicate review was cancelled.
  *
  * Mirrors `AppState.importAndAnalyze` + `proceedWithImport`, adapted to the port
  * boundary: because `import_image` (Rust) is what computes the SHA-256, we
@@ -323,33 +293,14 @@ export async function importAndAnalyze(
   condition?: string,
 ): Promise<string | null> {
   const port = getPort();
-  const transport = getTransport();
 
   const supported = filterSupportedPaths(paths);
   if (supported.length === 0) return null;
 
   const s0 = storeAccess.getState();
 
-  // --- availability gate (mirror the detectorRegistry.detector guard) --------
-  try {
-    const avail = await transport.availability(s0.activeModelId);
-    if (!avail.installed) {
-      s0.setDetectionError(
-        avail.reason ??
-          `The model "${s0.activeModelId}" isn't installed. Open Models to install it.`,
-      );
-      return null;
-    }
-  } catch (err) {
-    // If the probe itself fails, treat as not-runnable rather than silently
-    // stranding the user in an empty Results screen.
-    s0.setDetectionError(
-      err instanceof Error
-        ? err.message
-        : "Couldn't check whether the model is installed.",
-    );
-    return null;
-  }
+  // Images can be inspected before installing a detector. Model readiness is
+  // checked only when the saved job is actually previewed or processed.
 
   // --- import every file (this is what produces fileHash) --------------------
   const prepared: PreparedImage[] = [];
@@ -442,9 +393,8 @@ export async function importAndAnalyze(
 }
 
 /**
- * Create the batch, attach the kept images, run detection per image with
- * progress into the store, save each detection, then navigate. Mirrors the
- * second half of `proceedWithImport`.
+ * Create the batch, attach the kept images and save a draft analysis job.
+ * The Processing screen lets the user inspect and preview before inference.
  */
 async function runDetection(
   keep: PreparedImage[],
@@ -454,7 +404,6 @@ async function runDetection(
   storeAccess: StoreAccess,
 ): Promise<string | null> {
   const port = getPort();
-  const transport = getTransport();
   const store = storeAccess.getState();
 
   const names = keep.map((p) => p.image.fileName);
@@ -472,162 +421,28 @@ async function runDetection(
     condition,
   });
 
-  // Enter the processing view with a clean slate.
+  const params: DetectionParams = { ...detectionParamsFromStore(store), pxPerUm: batchPxPerUm };
+  for (const prepared of keep) await port.attachImageToBatch(prepared.image.id, batch.id);
+  await analysisQueue.create({
+    batchId: batch.id, name: batch.displayName, task: "countCells",
+    calibrationSource: batchCalibration?.source ?? "manual", params,
+    items: keep.map(prepared => ({ imageId: prepared.image.id, fileName: prepared.image.fileName,
+      path: prepared.image.analysisPath ?? prepared.image.storedPath, status: "pending" as const })),
+  });
   store.openBatch(batch.id);
-  store.resetProcessing();
   store.setDetectionError(undefined);
-  if (batchCalibration) {
-    store.setCalibrationNote(
-      `Calibrated from image metadata: ${batchCalibration.pxPerUm.toFixed(2)} px/µm.`,
-    );
-  }
+  await store.refreshLibraryStats();
   hooks.navigate("processing");
-
-  // Detection params snapshot — matches the batch's calibration, not
-  // necessarily the live global (so a mid-run slider change can't skew it).
-  const params: DetectionParams = {
-    ...detectionParamsFromStore(store),
-    pxPerUm: batchPxPerUm,
-  };
-  const detectorId = detectorIdFor(store.activeModelId);
-
-  const controller = new AbortController();
-  activeController = controller;
-
-  const total = keep.length;
-  let finished = 0;
-  let anyImported = false;
-  let lastError: string | undefined;
-  let cancelled = false;
-
-  const onProgress = (p: DetectionProgress) => {
-    const st = storeAccess.getState();
-    switch (p.kind) {
-      case "stage":
-        st.setStageLine(p.line);
-        break;
-      case "device":
-        st.setDevice(p.device);
-        break;
-      case "weights":
-        // Surfaced as a stage line so the Processing screen shows download
-        // progress for the future SAM weights without a new slice field.
-        st.setStageLine(
-          `Downloading weights… ${Math.round(p.doneMB)}/${Math.round(p.totalMB)} MB`,
-        );
-        break;
-    }
-  };
-
-  // Concurrency mirrors Settings → maxParallel. Default is hardware-aware —
-  // half the logical cores, clamped to 1..4 (see defaultMaxParallel() in the
-  // store) — since cellpose is CPU-bound. A tiny worker pool over the kept images.
-  const parallelism = Math.max(1, store.maxParallel);
-
-  const queue = [...keep];
-  const runOne = async (prep: PreparedImage): Promise<void> => {
-    // Attach happens regardless of detection outcome (Swift attaches on import
-    // success, then records the detection result separately).
-    try {
-      await port.attachImageToBatch(prep.image.id, batch.id);
-      anyImported = true;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-    }
-
-    try {
-      const result = await transport.detect(
-        prep.image.analysisPath ?? prep.image.storedPath,
-        params,
-        onProgress,
-        controller.signal,
-      );
-      await port.saveDetection(
-        prep.image.id,
-        detectorId,
-        result.cells,
-        result.imageStats,
-      );
-    } catch (err) {
-      // User-initiated cancels are swallowed (Swift Pass-13). Everything else
-      // is remembered and surfaced after the batch settles.
-      if (isDetectionError(err) && err.detail.kind === "cancelled") {
-        cancelled = true;
-      } else {
-        lastError = isDetectionError(err) ? err.message : String(err);
-      }
-    }
-
-    finished += 1;
-    storeAccess.getState().setProgress(finished / total);
-    // Live-refresh sidebar counts / recents / review badge as each finishes.
-    void storeAccess.getState().refreshLibraryStats();
-  };
-
-  const worker = async (): Promise<void> => {
-    for (;;) {
-      if (controller.signal.aborted) return;
-      const next = queue.shift();
-      if (!next) return;
-      await runOne(next);
-    }
-  };
-
-  const workers = Array.from({ length: Math.min(parallelism, total) }, () =>
-    worker(),
-  );
-  await Promise.all(workers);
-
-  activeController = null;
-
-  if (lastError) {
-    storeAccess.getState().setDetectionError(lastError);
-  }
-
-  // Route: to Results when at least one image imported, else back Home.
-  if (anyImported && !(cancelled && finished === 0)) {
-    hooks.navigate("results");
-  } else {
-    hooks.navigate("home");
-  }
-
-  // Never leave an empty batch behind (every import failed / all cancelled
-  // before attach). Mirrors the Swift empty-batch cleanup. NOTE: the frozen
-  // store exposes no nil-setter for `currentBatchId` (openBatch always sets a
-  // value), so a deleted batch id may briefly remain the "current" one — but
-  // we always navigate Home in this branch, so Results never renders it. See
-  // kernelGaps: a `clearBatch()`/nullable openBatch would tidy this.
-  try {
-    const fresh = await port.batch(batch.id);
-    if (!fresh || fresh.imageIds.length === 0) {
-      await port.deleteBatch(batch.id);
-    }
-  } catch {
-    /* cleanup is best-effort */
-  }
-  await storeAccess.getState().refreshLibraryStats();
-
-  return anyImported ? batch.id : null;
+  return batch.id;
 }
 
 // ---------------------------------------------------------------------------
 // Re-run detection on a single, already-imported image
 // ---------------------------------------------------------------------------
 
-/**
- * Re-run detection on one image that already lives in a batch (Results "Re-run
- * detection"). Reuses the same transport + ProcessingSlice plumbing as the
- * import flow, but skips import/dedup entirely: the image row and its batch
- * already exist, so we only re-detect and overwrite the saved detection.
- *
- * Params snapshot the batch's own calibration (px/µm) so a re-run reproduces the
- * scale the batch was analysed under, falling back to the live global; every
- * other analysis param comes from the live store (a re-run is exactly the way a
- * user tries new parameters). Drives the Processing screen via `hooks.navigate`
- * and the store's progress/stage/device/error setters, then returns to Results.
- *
- * Cancellation shares the module `activeController`, so the Processing screen's
- * Cancel (`abortActiveImport`) aborts a re-run just like an import.
+/** Create a fresh saved setup for an existing image, preserving its previous
+ * result until the user explicitly processes the new job. Batch calibration is
+ * retained; other initial parameters come from the current application setup.
  */
 export async function rerunDetection(
   image: ImageDTO,
@@ -635,77 +450,13 @@ export async function rerunDetection(
   hooks: ImportFlowHooks,
   storeAccess: StoreAccess,
 ): Promise<void> {
-  const port = getPort();
-  const transport = getTransport();
   const store = storeAccess.getState();
-
-  // Enter the Processing view with a clean slate (mirrors runDetection).
-  store.resetProcessing();
-  store.setDetectionError(undefined);
+  await analysisQueue.create({ batchId: batch.id, name: image.fileName, task: "countCells",
+    calibrationSource: batch.pxPerUmSource ?? "manual",
+    params: { ...detectionParamsFromStore(store), pxPerUm: batch.pxPerUm },
+    items: [{ imageId: image.id, fileName: image.fileName, path: image.analysisPath ?? image.storedPath, status: "pending" }],
+  });
   hooks.navigate("processing");
-
-  // Reproduce the batch's calibration; other params come from the live store.
-  const params: DetectionParams = {
-    ...detectionParamsFromStore(store),
-    pxPerUm: batch.pxPerUm,
-  };
-  const detectorId = detectorIdFor(store.activeModelId);
-
-  const controller = new AbortController();
-  activeController = controller;
-
-  let cancelled = false;
-  let error: string | undefined;
-
-  const onProgress = (p: DetectionProgress) => {
-    const st = storeAccess.getState();
-    switch (p.kind) {
-      case "stage":
-        st.setStageLine(p.line);
-        break;
-      case "device":
-        st.setDevice(p.device);
-        break;
-      case "weights":
-        st.setStageLine(
-          `Downloading weights… ${Math.round(p.doneMB)}/${Math.round(p.totalMB)} MB`,
-        );
-        break;
-    }
-  };
-
-  try {
-    const result = await transport.detect(
-      image.analysisPath ?? image.storedPath,
-      params,
-      onProgress,
-      controller.signal,
-    );
-    await port.saveDetection(
-      image.id,
-      detectorId,
-      result.cells,
-      result.imageStats,
-    );
-    storeAccess.getState().setProgress(1);
-  } catch (err) {
-    if (isDetectionError(err) && err.detail.kind === "cancelled") {
-      cancelled = true;
-    } else {
-      error = isDetectionError(err) ? err.message : String(err);
-    }
-  }
-
-  activeController = null;
-
-  if (error) storeAccess.getState().setDetectionError(error);
-
-  // Return to Results unless the user cancelled before any result landed
-  // (Cancel already routes back to the prior view via history.back(), so only
-  // navigate here for the completed/errored path to avoid double navigation).
-  if (!cancelled) hooks.navigate("results");
-
-  await storeAccess.getState().refreshLibraryStats();
 }
 
 // ---------------------------------------------------------------------------

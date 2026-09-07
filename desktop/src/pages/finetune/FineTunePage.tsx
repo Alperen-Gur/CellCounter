@@ -130,7 +130,7 @@ export default function FineTunePage() {
         <div className="ft-card__number">1</div>
         <div className="ft-card__body">
           <h2 id="dataset-title">Training data</h2>
-          <p>Choose a folder with at least three images. Each image needs a sibling mask named <code>image_masks.png</code>, <code>.tif</code>, or <code>.npy</code>.</p>
+          <p>Choose reviewed image/mask pairs from at least three independent specimen groups. Each image needs a sibling mask named <code>image_masks.png</code>, <code>.tif</code>, or <code>.npy</code>.</p>
           <div className="ft-picker">
             <button type="button" onClick={() => void chooseDataset()} disabled={run.kind === "running"}>
               <Icon name="folder" size={16} /> Choose folder…
@@ -140,12 +140,13 @@ export default function FineTunePage() {
         </div>
       </section>
 
+      <p className="ft-note">Add a <code>groups.json</code> file mapping each image filename to its specimen ID, for example <code>{'{"field1.png":"specimen-A","field2.png":"specimen-B","field3.png":"specimen-C"}'}</code>. Recognized patient filename prefixes can supply groups too. Related fields stay together; duplicate source images are rejected.</p>
       <section className="ft-card" aria-labelledby="config-title">
         <div className="ft-card__number">2</div>
         <div className="ft-card__body">
           <h2 id="config-title">Configuration</h2>
           <div className="ft-grid">
-            <label>Epochs<input type="number" min="1" max="500" value={epochs} onChange={(event) => setEpochs(Number(event.target.value))} /></label>
+            <label>Epochs<input type="number" min="6" max="500" value={epochs} onChange={(event) => setEpochs(Number(event.target.value))} /></label>
             <label>Learning rate<input type="number" min="0.0000001" max="0.1" step="0.0001" value={learningRate} onChange={(event) => setLearningRate(Number(event.target.value))} /></label>
             <label>Batch size<input type="number" min="1" max="128" value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} /></label>
             <label>Resume from<select value={resumeVersionId} onChange={(event) => setResumeVersionId(event.target.value)}><option value="">Base cyto3</option>{versions.map((version) => <option key={version.id} value={version.id}>Version {version.version}</option>)}</select></label>

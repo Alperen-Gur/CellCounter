@@ -18,6 +18,8 @@ import { Sidebar } from "./components/Sidebar";
 import { Icon } from "./components/Icon";
 import { KeyboardShortcutsSheet } from "./components/KeyboardShortcutsSheet";
 import { useHashRoute } from "./components/useHashRoute";
+import { useKeymap } from "./components/useKeymap";
+import { requestImageImport } from "./pages/home/importRequest";
 import { initAppData } from "./components/appInit";
 import { OnboardingRoot } from "./pages/onboarding/OnboardingRoot";
 import { modelLabel } from "./pages/models/catalog";
@@ -36,23 +38,16 @@ function App() {
     void initAppData();
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const typing =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (!typing && e.key === "?") {
-        e.preventDefault();
-        setShortcutsOpen((v) => !v);
-      }
-      if (e.key === "Escape") setShortcutsOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useKeymap("global", { showShortcuts: () => setShortcutsOpen(true) }, { allowInInputs: true });
+  useKeymap("application", {
+    openImages: () => { requestImageImport("images"); navigate("home"); },
+    openFolder: () => { requestImageImport("folder"); navigate("home"); },
+    settings: () => navigate("settings"), home: () => navigate("home"),
+    processing: () => navigate("processing"), review: () => navigate("review"),
+    library: () => navigate("library"), batch: () => navigate("batch"),
+    compare: () => navigate("compare"), models: () => navigate("models"),
+    finetune: () => navigate("finetune"), support: () => navigate("support"),
+  }, { allowInInputs: true });
 
   const PageComponent = route.component;
 
