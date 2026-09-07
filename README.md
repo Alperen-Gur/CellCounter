@@ -15,6 +15,8 @@ Segmentation, per-cell measurements, assays, correction, and export on macOS, Wi
 
 [Platforms](#platforms) · [What it does](#what-it-does) · [Complete feature list](docs/FEATURES.md) · [Quick start](#quick-start) · [Limitations](#statistical-notes-and-limitations) · [Citing](#citing)
 
+For interface work, see the [design library](docs/design/README.md): a reusable design reference, expanded resource catalogue, sourced critique, Astra guidance, and the CellCounter application brief.
+
 </div>
 
 ---
