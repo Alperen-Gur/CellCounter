@@ -20,7 +20,9 @@ nonisolated struct WorkspaceWorkflowProgress: Sendable, Equatable {
     }
 }
 
-private nonisolated func runWorkflowImageKernel<Value: Sendable>(
+// Internal so a controlled kernel can verify the bounded asynchronous bridge
+// without depending on how quickly the scheduler consumes a real image job.
+nonisolated func runWorkflowImageKernel<Value: Sendable>(
     operation: @escaping @Sendable (@escaping ImageRegistrationService.ProgressHandler) throws -> Value,
     progress: @escaping @Sendable (WorkspaceImageProcessingProgress) async -> Void
 ) async throws -> Value {

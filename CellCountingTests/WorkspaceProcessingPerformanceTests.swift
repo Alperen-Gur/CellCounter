@@ -157,8 +157,35 @@ struct WorkspaceProcessingPerformanceTests {
             }
 
         let updates = await recorder.values
-        #expect(updates.contains { $0.stepFraction > 0 && $0.stepFraction < 1 })
+        // The bridge keeps only the latest update. A fast real kernel may
+        // finish before its consumer runs, so only its final phase is required.
+        // The controlled test below proves in-flight forwarding separately.
+        #expect(updates.contains { $0.title == "Registering" && $0.stepFraction == 1 })
         #expect(updates.last?.fraction == 1)
+    }
+
+    @Test func workflowKernelForwardsInFlightProgressBeforeTheWorkerCanFinish() async throws {
+        let acknowledgement = DispatchSemaphore(value: 0)
+        let progress = ProgressProbe()
+        let halfway = WorkspaceImageProcessingProgress(phase: "Controlled kernel",
+                                                       completedUnits: 1, totalUnits: 2)
+        let finished = WorkspaceImageProcessingProgress(phase: "Controlled kernel",
+                                                        completedUnits: 2, totalUnits: 2)
+        let forwardedBeforeCompletion = try await runWorkflowImageKernel(operation: { update in
+            update(halfway)
+            // Finite failure guard: dropping or failing to forward the update
+            // cannot leave this test blocked forever. This is a handshake,
+            // not a race against the speed of image registration.
+            let delivered = acknowledgement.wait(timeout: .now() + 5) == .success
+            update(finished)
+            return delivered
+        }, progress: { update in
+            progress.record(update)
+            if update == halfway { acknowledgement.signal() }
+        })
+
+        #expect(forwardedBeforeCompletion)
+        #expect(progress.updates == [halfway, finished])
     }
 }
 

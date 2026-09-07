@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import CellCounting
 
@@ -70,15 +71,19 @@ struct ModelCatalogResponsivenessTests {
         let control = BlockingImportProbe()
         let cache = PythonModuleImportCache(module: "fixture", probe: { _ in control.run() })
         let python = URL(fileURLWithPath: "/fixture/python")
-        let first = Task.detached { cache.isImportable(pythonURL: python) }
+        // These fixtures deliberately block until the test releases them.
+        // Keep that blocking off Swift's cooperative executor: two blocked
+        // callers can otherwise starve unrelated async tests on a two-core CI VM.
+        let first = Task { await catalogBlockingWork { cache.isImportable(pythonURL: python) } }
+        defer { control.releaseFirst.signal() }
         try await waitFor { control.count == 1 }
-        let joined = Task.detached { cache.isImportable(pythonURL: python) }
+        let joined = Task { await catalogBlockingWork { cache.isImportable(pythonURL: python) } }
         // Cached reads return immediately while import is blocked.
         #expect(cache.cachedAnswer(pythonURL: python) == nil)
         try await Task.sleep(for: .milliseconds(30))
         #expect(control.count == 1)
         cache.invalidate(pythonURL: python)
-        let second = Task.detached { cache.isImportable(pythonURL: python) }
+        let second = Task { await catalogBlockingWork { cache.isImportable(pythonURL: python) } }
         try await waitFor { control.count == 2 }
         #expect(await second.value == false)
         control.releaseFirst.signal()
@@ -95,20 +100,37 @@ struct ModelCatalogResponsivenessTests {
         // budget before this test reaches either behavior it intends to test.
         let executable = URL(fileURLWithPath: "/bin/sh")
         #expect(FileManager.default.isExecutableFile(atPath: executable.path))
-        let noisy = await Task.detached {
+        let noisy = await catalogBlockingWork {
             ModelProbeRunner.run(pythonURL: executable,
                 code: "printf '%02000000d' 0; printf '%02000000d' 0 >&2", timeout: 5)
-        }.value
+        }
         #expect(noisy)
-        let start = ContinuousClock.now
-        let hung = await Task.detached {
-            ModelProbeRunner.run(pythonURL: executable,
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cc-probe-pid-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("pid")
+        let quotedMarker = "'" + marker.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let (hung, elapsed) = await catalogBlockingWork {
+            // Measure the runner itself, not the scheduling delay before the
+            // detached work starts or before this @MainActor test resumes.
+            let start = ContinuousClock.now
+            let result = ModelProbeRunner.run(pythonURL: executable,
                 // No child sleep process survives the parent being killed.
-                code: "trap '' TERM; while :; do :; done",
+                code: "trap '' TERM; echo $$ > \(quotedMarker); while :; do :; done",
                 timeout: 0.15)
-        }.value
+            return (result, start.duration(to: .now))
+        }
         #expect(!hung)
-        #expect(start.duration(to: .now) < .seconds(3))
+        #expect(elapsed < .seconds(3))
+        let pidText = try String(contentsOf: marker, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try #require(pid_t(pidText))
+        let stillRunning = kill(pid, 0) == 0
+        // Clean up only this test's own child if the runner regresses.
+        if stillRunning { kill(pid, SIGKILL) }
+        #expect(!stillRunning, "The SIGTERM-ignoring probe must actually exit, not just return a timeout")
     }
 
     private func waitFor(_ condition: @escaping @Sendable () async -> Bool) async throws {
@@ -118,6 +140,16 @@ struct ModelCatalogResponsivenessTests {
                 throw CatalogProbeTestError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+private nonisolated func catalogBlockingWork<Value: Sendable>(
+    _ operation: @escaping @Sendable () -> Value
+) async -> Value {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            continuation.resume(returning: operation())
         }
     }
 }
