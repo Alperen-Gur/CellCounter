@@ -159,12 +159,6 @@ final class DetectionRecord {
     var cellsRevision: Int = 0
     var reviewPendingCount: Int = -1
     var reviewIndexVersion: Int = 0
-    /// Process-local decoded snapshot. SwiftData persists the compact JSON,
-    /// while every consumer in the current process shares this copy until
-    /// `cellsRevision` changes. This turns repeated sidebar/export/stat reads
-    /// from O(payload bytes) JSON work into O(1) copy-on-write array access.
-    @Transient private var decodedCellsCache: [DetectedCell]? = nil
-    @Transient private var decodedCellsCacheRevision: Int = -1
     /// Per-image statistics as a JSON blob (C2/C3 pass-6).
     /// Keys: "focus_score" (Double, 0–1), "illumination_residual" (Double, ≥ 0),
     /// plus any C2 colony keys. Nil for legacy detections.
@@ -185,8 +179,7 @@ final class DetectionRecord {
         self.reviewPendingCount = cells.filter { $0.confidence < 0.65 }.count
         self.reviewIndexVersion = 0
         self.imageStatsData = imageStats.isEmpty ? nil : (try? JSONEncoder().encode(imageStats))
-        self.decodedCellsCache = cells
-        self.decodedCellsCacheRevision = 0
+        DecodedCellCache.shared.insert(cells, for: id, revision: 0)
     }
 
     /// Decoded view of `imageStatsData`. Returns an empty dict when the blob is
@@ -199,13 +192,9 @@ final class DetectionRecord {
 
     var cells: [DetectedCell] {
         get {
-            if decodedCellsCacheRevision == cellsRevision,
-               let decodedCellsCache {
-                return decodedCellsCache
-            }
+            if let cached = cachedCells { return cached }
             let decoded = Self.decodeCellsData(cellsData)
-            decodedCellsCache = decoded
-            decodedCellsCacheRevision = cellsRevision
+            cacheDecodedCells(decoded, revision: cellsRevision)
             return decoded
         }
         set {
@@ -214,8 +203,7 @@ final class DetectionRecord {
             minConfidence = newValue.map { $0.confidence }.min() ?? 1.0
             cellCountSummary = newValue.count
             cellsRevision &+= 1
-            decodedCellsCache = newValue
-            decodedCellsCacheRevision = cellsRevision
+            cacheDecodedCells(newValue, revision: cellsRevision)
         }
     }
 
@@ -251,8 +239,11 @@ final class DetectionRecord {
     /// Results has already populated AppState's bounded cache.
     func cacheDecodedCells(_ cells: [DetectedCell], revision: Int) {
         guard revision == cellsRevision else { return }
-        decodedCellsCache = cells
-        decodedCellsCacheRevision = revision
+        DecodedCellCache.shared.insert(cells, for: id, revision: revision)
+    }
+
+    var cachedCells: [DetectedCell]? {
+        DecodedCellCache.shared.cells(for: id, revision: cellsRevision)
     }
 
     func applyStorageSnapshot(_ snapshot: CellsStorageSnapshot) {
@@ -260,8 +251,7 @@ final class DetectionRecord {
         minConfidence = snapshot.minimumConfidence
         cellCountSummary = snapshot.count
         cellsRevision &+= 1
-        decodedCellsCache = nil
-        decodedCellsCacheRevision = -1
+        DecodedCellCache.shared.remove(id)
     }
 }
 
@@ -319,6 +309,9 @@ final class SegmentationVariantRecord {
 final class ReviewCandidateRecord {
     @Attribute(.unique) var id: UUID
     var cellId: UUID
+    /// Stable tie-breaker for keyset paging when confidence scores are equal.
+    /// Empty only for pre-upgrade rows; backfilled without decoding cells.
+    var sortKey: String = ""
     var detectionId: UUID
     var imageId: UUID
     var confidence: Double
@@ -334,6 +327,7 @@ final class ReviewCandidateRecord {
     init(cell: DetectedCell, detection: DetectionRecord, image: ImageRecord) {
         self.id = UUID()
         self.cellId = cell.id
+        self.sortKey = ""
         self.detectionId = detection.id
         self.imageId = image.id
         self.confidence = cell.confidence
@@ -345,6 +339,7 @@ final class ReviewCandidateRecord {
         self.createdAt = detection.ranAt
         self.detection = detection
         self.image = image
+        self.sortKey = self.id.uuidString
     }
 
     var fallbackCell: DetectedCell {

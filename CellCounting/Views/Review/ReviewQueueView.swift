@@ -34,43 +34,38 @@ struct ReviewQueueView: View {
     @Bindable var state: AppState
     @Environment(AppTheme.self) private var theme
 
-    @State private var cursor: Int = 0
+    @State private var session = ReviewQueueSession()
+    private var cursor: Int { session.cursor }
+    private var queue: [ReviewItem] { session.items }
     @FocusState private var reviewFocused: Bool
     @State private var editingDiameter: Double? = nil
-    @State private var queue: [ReviewItem] = []
     @AppStorage("cc-review-layout-v1") private var layoutRaw = "card"
     /// True while we're emitting our own correction (so the
     /// `ccCorrectionsChanged` listener below skips re-rebuilding the queue —
-    /// `advance()` already moved the cursor and a rebuild would clobber it).
+    /// the session removes the item itself and a rebuild would clobber it).
     @State private var suppressNextRebuild: Bool = false
     @State private var actionInFlight: Bool = false
+    @State private var reviewMessage: String?
 
     /// The most recent Reject/Keep, retained so a single mistaken keystroke is
     /// reversible (Cmd+Z or the on-screen "Undo"). Cleared once undone, or when
     /// the queue is rebuilt from a foreign correction.
     @State private var lastAction: UndoableAction? = nil
 
-    /// Canonical Review-queue cutoff. Mirrors `AppState.reviewQueueConfidenceCutoff`
-    /// (private there) so this view doesn't need a getter on AppState. If you
-    /// change one, change the other — both feed the sidebar badge and the
-    /// queue contents.
-    private static let reviewCutoff: Double = 0.65
-
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(Tokens.divider).frame(height: 0.5)
 
-            if queue.isEmpty {
+            if state.isReviewIndexing {
+                ProgressView("Preparing review queue…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if queue.isEmpty {
                 EmptyStateView(
                     title: "Done — nothing to review",
-                    subtitle: "All low-confidence detections have been triaged. Drop in another batch to keep training the model.",
-                    symbol: "checkmark.seal"
-                )
-            } else if cursor >= queue.count {
-                EmptyStateView(
-                    title: "Done — nothing to review",
-                    subtitle: "You triaged \(queue.count) cell\(queue.count == 1 ? "" : "s"). Improvements will show up after the next fine-tune.",
+                    subtitle: session.skippedCount > 0
+                        ? "Skipped cells remain in the queue for your next visit."
+                        : "All low-confidence detections have been triaged. Drop in another batch to keep training the model.",
                     symbol: "checkmark.seal"
                 )
             } else if layoutRaw == "grid" {
@@ -94,14 +89,25 @@ struct ReviewQueueView: View {
         .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bg)
+        .safeAreaInset(edge: .bottom) {
+            if queue.isEmpty, lastAction != nil {
+                Button("Undo last action (⌘Z)", action: undoLastAction)
+                    .appButton(.standard, size: .sm).padding(14)
+                    .disabled(actionInFlight)
+            }
+        }
         .onAppear { rebuild(); reviewFocused = true }
-        // The queue cutoff is fixed at `reviewCutoff` (independent of
-        // `state.confidence`), so changing the global confidence slider
-        // intentionally does NOT rebuild — that would just reset cursor=0 and
-        // bounce the user out of position for no logical reason.
+        .alert("Review not saved", isPresented: Binding(
+            get: { reviewMessage != nil },
+            set: { if !$0 { reviewMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { reviewMessage = nil }
+        } message: {
+            Text(reviewMessage ?? "")
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
             // We post this notification ourselves on every Reject/Keep/Edit,
-            // and `advance()` has already moved the cursor for those cases —
+            // and the session handles navigation for those cases —
             // rebuilding here would clobber the cursor and re-add cells we
             // just triaged at a confusing index. The `suppressNextRebuild`
             // flag covers exactly that local round-trip.
@@ -110,10 +116,25 @@ struct ReviewQueueView: View {
                 return
             }
             // Mid-edit? Keep the user's slider state and let them finish.
-            if editingDiameter != nil { return }
+            if editingDiameter != nil || actionInFlight { return }
             // A correction from a different surface invalidates our undo target.
             lastAction = nil
             rebuild(preservingCursor: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in
+            guard editingDiameter == nil, !actionInFlight else { return }
+            lastAction = nil
+            rebuild(preservingCursor: true)
+        }
+        .onChange(of: state.isReviewIndexing) { _, indexing in
+            if !indexing { rebuild() }
+        }
+        .onChange(of: state.reviewQueueCount) { _, _ in
+            // Legacy index backfill can finish while an empty Review screen
+            // is already open. Populate it without interrupting skipped pages.
+            if queue.isEmpty, session.skippedCount == 0, !actionInFlight {
+                rebuild(preservingCursor: true)
+            }
         }
     }
 
@@ -200,6 +221,7 @@ struct ReviewQueueView: View {
                     ReviewCardView(state: state, item: queue[cursor + 1], thresholds: state.thresholds,
                                    palette: state.overlayPalette,
                                    editingDiameter: .constant(nil))
+                        .id(queue[cursor + 1].id)
                         .scaleEffect(0.96)
                         .offset(y: 14)
                         .opacity(0.4)
@@ -232,6 +254,7 @@ struct ReviewQueueView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 2)
+                .disabled(actionInFlight)
             }
 
             // Always-visible escape hatch — user should never feel trapped in the queue
@@ -275,6 +298,7 @@ struct ReviewQueueView: View {
                 }
                 .appButton(.standard, size: .sm)
                 .padding(14)
+                .disabled(actionInFlight)
             }
         }
     }
@@ -325,8 +349,6 @@ struct ReviewQueueView: View {
         let removedCell: DetectedCell?
         /// Its original index in `detection.cells`, so undo restores order.
         let removedIndex: Int?
-        /// Cursor position before the action, restored on undo.
-        let cursorBefore: Int
     }
 
     private var canTriage: Bool { cursor < queue.count && !actionInFlight && editingDiameter == nil }
@@ -336,7 +358,7 @@ struct ReviewQueueView: View {
     }
     private func skipCell() {
         guard cursor < queue.count, !actionInFlight else { return }
-        withAnimation(Tokens.Motion.ease) { cursor += 1; editingDiameter = nil }
+        withAnimation(Tokens.Motion.ease) { session.skip(using: state.repos); editingDiameter = nil }
     }
 
     private func startEditing() {
@@ -351,14 +373,21 @@ struct ReviewQueueView: View {
         Task { @MainActor in
             defer { actionInFlight = false }
             var cells = await state.loadCells(for: item.detection)
-            if let i = cells.firstIndex(where: { $0.id == item.cell.id }) {
-                let newDiamPx = item.pxPerUm > 0 ? d * item.pxPerUm : cells[i].diameterPx
-                cells[i].diameter = d
-                cells[i].diameterPx = newDiamPx
+            let revision = item.detection.cellsRevision
+            guard let i = cells.firstIndex(where: { $0.id == item.cell.id }) else {
+                reviewMessage = "This cell was removed from the image. Close this edit to refresh the queue."
+                return
             }
+            let newDiamPx = item.pxPerUm > 0 ? d * item.pxPerUm : cells[i].diameterPx
+            cells[i].diameter = d
+            cells[i].diameterPx = newDiamPx
             let storage = await Task.detached(priority: .userInitiated) {
                 DetectionRecord.makeStorageSnapshot(cells)
             }.value
+            guard item.detection.cellsRevision == revision, !item.candidate.triaged else {
+                reviewMessage = "This image changed while saving. Your diameter is still here; please try again."
+                return
+            }
             let result = state.repos.commitCellEdit(
                 storage: storage,
                 corrections: [CorrectionSpec(kind: "resize", cellId: item.cell.id,
@@ -372,7 +401,7 @@ struct ReviewQueueView: View {
                                             object: item.image.id,
                                             userInfo: ["reviewDelta": result.reviewCountDelta])
             editingDiameter = nil
-            advance()
+            session.remove(item.id, using: state.repos)
         }
     }
 
@@ -400,8 +429,10 @@ struct ReviewQueueView: View {
             var removedIndex: Int? = nil
             var removedCell: DetectedCell? = nil
             var storage: DetectionRecord.CellsStorageSnapshot? = nil
+            var revision = item.detection.cellsRevision
             if action == .reject {
                 var cells = await state.loadCells(for: item.detection)
+                revision = item.detection.cellsRevision
                 if let i = cells.firstIndex(where: { $0.id == item.cell.id }) {
                     removedCell = cells[i]
                     cells.remove(at: i)
@@ -410,6 +441,13 @@ struct ReviewQueueView: View {
                         DetectionRecord.makeStorageSnapshot(cells)
                     }.value
                 }
+            }
+
+            guard item.detection.cellsRevision == revision, !item.candidate.triaged,
+                  action != .reject || removedCell != nil else {
+                reviewMessage = "This image changed while saving. Please review the refreshed cell and try again."
+                rebuild(preservingCursor: true)
+                return
             }
 
             let result = state.repos.commitCellEdit(
@@ -424,22 +462,16 @@ struct ReviewQueueView: View {
                                         candidate: item.candidate,
                                         detection: item.detection,
                                         removedCell: action == .reject ? removedCell : nil,
-                                        removedIndex: removedIndex,
-                                        cursorBefore: actionIndex)
+                                        removedIndex: removedIndex)
 
             suppressNextRebuild = true
             NotificationCenter.default.post(name: .ccCorrectionsChanged,
                                             object: item.image.id,
                                             userInfo: ["reviewDelta": result.reviewCountDelta])
-            if requestedIndex != nil {
-                if let latestIndex = queue.firstIndex(where: { $0.id == item.id }) {
-                    _ = withAnimation(Tokens.Motion.easeFast) { queue.remove(at: latestIndex) }
-                }
-                cursor = min(cursor, max(0, queue.count - 1))
-                if queue.isEmpty { rebuild() }
-            } else {
-                advance()
+            withAnimation(Tokens.Motion.easeFast) {
+                session.remove(item.id, using: state.repos)
             }
+            editingDiameter = nil
         }
     }
 
@@ -447,7 +479,7 @@ struct ReviewQueueView: View {
     /// re-insert a rejected cell at its original index, and return the cursor to
     /// where it was so the card reappears for re-triage.
     private func undoLastAction() {
-        guard let undo = lastAction else { return }
+        guard !actionInFlight, editingDiameter == nil, let undo = lastAction else { return }
         // Restore a rejected cell into detection.cells at its original slot.
         var restoredCells: [DetectedCell]? = nil
         if undo.action == .reject, let cell = undo.removedCell {
@@ -469,102 +501,19 @@ struct ReviewQueueView: View {
 
         // Rebuild so the restored cell reappears, then land the cursor on it so
         // the user sees exactly what they just un-rejected (the queue is sorted
-        // by confidence, so its index isn't necessarily cursorBefore).
+        // by confidence, so it may belong to an earlier page).
         // suppressNextRebuild guards the notification round-trip.
         suppressNextRebuild = true
         NotificationCenter.default.post(name: .ccCorrectionsChanged,
                                         object: image.id,
                                         userInfo: ["reviewDelta": delta])
-        rebuild(preservingCursor: false)
-        if let cell = undo.removedCell, let idx = queue.firstIndex(where: { $0.cell.id == cell.id }) {
-            cursor = idx
-        } else {
-            cursor = min(undo.cursorBefore, max(queue.count - 1, 0))
-        }
+        session.restore(undo.candidate, using: state.repos)
     }
 
-    private func advance() {
-        if cursor + 1 >= queue.count {
-            // Fetch the next small page. Already-triaged rows disappear from
-            // the predicate, so no offset bookkeeping or duplicate cards.
-            rebuild()
-        } else {
-            withAnimation(Tokens.Motion.ease) { cursor += 1 }
-        }
-        editingDiameter = nil
-    }
-
-    /// Full rebuild from the store. `preservingCursor` keeps the user near
-    /// their current position when the queue changes underneath them
-    /// (e.g. a correction landed from a different surface). When false,
-    /// resets to the head of the queue.
     private func rebuild(preservingCursor: Bool = false) {
-        let cutoff = Self.reviewCutoff
-        // Try to stay anchored to whatever cell the user is currently looking
-        // at when we're preserving the cursor. If that cell has been triaged
-        // (vanished from the new queue), fall back to the same index clamped.
-        let anchorId: UUID? = preservingCursor && queue.indices.contains(cursor)
-            ? queue[cursor].cell.id
-            : nil
-        let previousIndex = cursor
-
-        // Fix (researcher #3) — badge/queue count mismatch:
-        //
-        // The sidebar badge (AppState.reviewQueueCount ←
-        // Repositories.uncorrectedCellCount) counts the uncorrected
-        // low-confidence cells of EVERY stored detection. This rebuild used to
-        // dedupe by `image.fileName` (Pass-16), keeping only the most recent
-        // import per file. So when the same file was imported more than once
-        // (the "11 ImageRecord rows share an MD5" case), the badge counted all
-        // copies while the queue showed only one — the badge could read
-        // "hundreds" while the tab showed "nothing to review" if that single
-        // most-recent copy happened to be fully triaged.
-        //
-        // Iterate the exact same set the badge counts (all detections, no
-        // fileName dedupe) so the count in the sidebar and the number of cards
-        // in the queue can never drift apart — the invariant this file's header
-        // documents. (Deduping BOTH the badge and the queue is the nicer long-
-        // term behavior but must also change Repositories.uncorrectedCellCount;
-        // see the audit's recommendations.)
-        _ = cutoff // membership is materialized at the canonical 0.65 cutoff
-        var items: [ReviewItem] = []
-        for candidate in state.repos.pendingReviewCandidates(limit: 96) {
-            guard let detection = candidate.detection,
-                  let image = candidate.image,
-                  let batch = image.batch else { continue }
-            items.append(ReviewItem(
-                candidate: candidate,
-                cell: candidate.fallbackCell,
-                image: image,
-                detection: detection,
-                pxPerUm: batch.pxPerUm,
-                batchName: batch.displayName
-            ))
-        }
-        queue = items
-
-        if preservingCursor {
-            if let id = anchorId, let newIdx = items.firstIndex(where: { $0.cell.id == id }) {
-                cursor = newIdx
-            } else {
-                cursor = min(previousIndex, items.count)
-            }
-        } else {
-            cursor = 0
-        }
+        guard !state.isReviewIndexing else { return }
+        session.reload(using: state.repos, preservingCurrent: preservingCursor)
     }
-}
-
-// MARK: — Item model
-
-private struct ReviewItem: Identifiable {
-    var id: UUID { candidate.id }
-    let candidate: ReviewCandidateRecord
-    let cell: DetectedCell
-    let image: ImageRecord
-    let detection: DetectionRecord
-    let pxPerUm: Double
-    let batchName: String
 }
 
 // MARK: — Tiled curator
@@ -578,7 +527,6 @@ private struct ReviewGridTile: View {
     let onKeep: () -> Void
 
     @State private var loaded: NSImage? = nil
-    @State private var loadTask: Task<Void, Never>? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -618,8 +566,8 @@ private struct ReviewGridTile: View {
         .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md))
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.md)
             .strokeBorder(Tokens.border, lineWidth: 0.5))
-        .onAppear(perform: load)
-        .onDisappear { loadTask?.cancel() }
+        .task(id: item.id) { await load() }
+        .onDisappear { loaded = nil }
     }
 
     private func crop(_ image: NSImage) -> some View {
@@ -631,15 +579,11 @@ private struct ReviewGridTile: View {
             let scale = max(geometry.size.width / rect.width,
                             geometry.size.height / rect.height)
             ZStack {
-                Image(nsImage: image)
-                    .resizable().interpolation(.medium)
-                    .frame(width: CGFloat(item.image.widthPx) * scale,
-                           height: CGFloat(item.image.heightPx) * scale)
-                    .offset(x: -rect.minX * scale, y: -rect.minY * scale)
-                    .frame(width: geometry.size.width, height: geometry.size.height,
-                           alignment: .topLeading)
-                    .clipped()
                 Canvas { context, _ in
+                    context.draw(Image(nsImage: image), in: CGRect(
+                        x: -rect.minX * scale, y: -rect.minY * scale,
+                        width: CGFloat(item.image.widthPx) * scale,
+                        height: CGFloat(item.image.heightPx) * scale))
                     let index = BinMath.binIndex(for: item.cell.diameter,
                                                  thresholds: thresholds)
                     let color = palette.overlayColor(forBin: index)
@@ -670,19 +614,15 @@ private struct ReviewGridTile: View {
         }
     }
 
-    private func load() {
-        guard loaded == nil else { return }
+    private func load() async {
+        loaded = nil
         let url = item.image.thumbURL
-        loadTask = Task {
-            // Grid tiles deliberately use the import-time 256 px thumbnail.
-            // Loading 96 separate 1800 px Review previews caused avoidable
-            // decode and memory pressure while scrolling the curator.
-            let image = await Task.detached(priority: .utility) {
-                ImageLoader.cachedThumbnail(at: url)
-            }.value
-            guard !Task.isCancelled else { return }
-            loaded = image
-        }
+        let image = await Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return NSImage?.none }
+            return ImageLoader.cachedThumbnail(at: url)
+        }.value
+        guard !Task.isCancelled else { return }
+        loaded = image
     }
 }
 
@@ -698,8 +638,6 @@ private struct ReviewCardView: View {
     @Environment(AppTheme.self) private var theme
     @State private var loaded: NSImage? = nil
     @State private var detectionCells: [DetectedCell] = []
-    // B1-6: store task reference so we can cancel on disappear
-    @State private var loadTask: Task<Void, Never>? = nil
 
     private var binIdx: Int {
         let d = editingDiameter ?? item.cell.diameter
@@ -755,8 +693,8 @@ private struct ReviewCardView: View {
                 .strokeBorder(Tokens.border, lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.05), radius: 8, y: 2)
-        .onAppear(perform: load)
-        .onDisappear { loadTask?.cancel() }
+        .task(id: item.id) { await load() }
+        .onDisappear { loaded = nil; detectionCells = [] }
     }
 
     private var confidenceBar: some View {
@@ -819,18 +757,14 @@ private struct ReviewCardView: View {
             let renderedH = cropRect.height * scale
 
             ZStack {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: CGFloat(item.image.widthPx) * scale,
-                            height: CGFloat(item.image.heightPx) * scale)
-                    .offset(x: -cropRect.minX * scale, y: -cropRect.minY * scale)
-                    .frame(width: renderedW, height: renderedH, alignment: .topLeading)
-                    .clipped()
-
-                // Contour / circle overlay: bin-colored fill for the target cell
-                // and de-emphasized strokes for neighbors caught in the crop.
+                // The drawing surface stays card-sized even for a tiny crop
+                // in a huge source image. A scaled SwiftUI Image frame could
+                // otherwise request a many-thousand-pixel compositing layer.
                 Canvas { ctx, _ in
+                    ctx.draw(Image(nsImage: nsImage), in: CGRect(
+                        x: -cropRect.minX * scale, y: -cropRect.minY * scale,
+                        width: CGFloat(item.image.widthPx) * scale,
+                        height: CGFloat(item.image.heightPx) * scale))
                     let thresholds = self.thresholds
                     let targetId = item.cell.id
                     let targetCell = detectionCells.first(where: { $0.id == targetId }) ?? item.cell
@@ -978,23 +912,20 @@ private struct ReviewCardView: View {
         return bb.intersects(cropRect)
     }
 
-    private func load() {
-        guard loaded == nil else { return }
-        let record = item.image
-        let url = record.storedURL
+    private func load() async {
+        loaded = nil
+        detectionCells = []
+        let url = item.image.displayURL
         let detection = item.detection
-        // Decode only the visible card's source image/cells. Opening Review no
-        // longer materializes every blob in the 96-item page.
-        loadTask = Task {
-            async let cells = state.loadCells(for: detection)
-            let ns = await Task.detached(priority: .userInitiated) {
-                ImageLoader.cachedReviewPreview(at: url)
-            }.value
-            let decoded = await cells
-            guard !Task.isCancelled else { return }
-            self.loaded = ns
-            self.detectionCells = decoded
-        }
+        async let cells = state.loadCells(for: detection)
+        let ns = await Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return NSImage?.none }
+            return ImageLoader.cachedReviewPreview(at: url)
+        }.value
+        let decoded = await cells
+        guard !Task.isCancelled else { return }
+        loaded = ns
+        detectionCells = decoded
     }
 
     private func formatDiameter(_ d: Double) -> String {
@@ -1033,8 +964,8 @@ private func computeCropRect(widthPx: Int, heightPx: Int, cell: DetectedCell, ca
         h = shortPx / canvasAspect
     }
     // Don't ask for a window larger than the source image.
-    w = min(w, Double(widthPx))
-    h = min(h, Double(heightPx))
+    w = min(w, Double(max(1, widthPx)))
+    h = min(h, Double(max(1, heightPx)))
 
     // Center on the cell; then slide so the rect stays inside the image.
     var x = cell.cx - w / 2

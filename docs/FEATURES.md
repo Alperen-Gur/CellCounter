@@ -1,6 +1,6 @@
 # CellCounter feature reference
 
-This is the public feature inventory for the currently documented releases: macOS v1.0.12, Windows v1.0.8,
+This is the public feature inventory for the currently documented releases: macOS v1.0.13, Windows v1.0.8,
 and Web v0.1.0 preview. It describes user-facing behavior and deliberately omits private implementation details.
 
 Status meanings:
@@ -15,7 +15,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Privacy and storage
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Local image analysis with no image-upload path | **Available** | **Available** | **Available** |
 | Account-free use | **Available** | **Available** | **Available** |
@@ -26,7 +26,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Import and calibration
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | JPEG, PNG, BMP, TIFF, and OME-TIFF | **Available** | **Available** | **Available**, plus WebP |
 | Recursive folder and batch import | **Available** | **Available** | **Available** where the browser supports folder selection |
@@ -42,7 +42,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Segmentation models
 
-| Model or family | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Model or family | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Cellpose-SAM v2 | **Available** | **Available** | **Preview / build required:** production weights are not bundled |
 | Cellpose-SAM and Cellpose-DINO ViT-L / ViT-B | **Available** | **Not available** | **Not available** |
@@ -60,7 +60,7 @@ models in this table.
 
 ## Detection and refinement
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Single-image and batch detection with progress | **Available** | **Available** | **Preview / build required** until a production model is bundled |
 | Cancellation without discarding the previous result | **Available** | **Available** with Windows-native process handling | **Available** for worker tasks; learned inference remains build required |
@@ -74,7 +74,7 @@ models in this table.
 
 ## Measurements and assays
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Count and configurable size-bin summaries | **Available** | **Available** | **Available** |
 | Area, perimeter, equivalent diameter, circularity, aspect ratio, solidity, and eccentricity | **Available** | **Available** | **Available** |
@@ -96,7 +96,7 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Editing, validation, and review
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Mask fills, contours, boxes, labels, and selection markers | **Available** | **Available** | **Available** |
 | Add, remove, resize, merge, split, and freehand-trace corrections | **Available** | **Adapted / limited:** available except freehand tracing | **Adapted / limited:** available except freehand tracing |
@@ -113,7 +113,7 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Libraries, studies, and repeatable workflows
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Persistent image library and duplicate groups | **Available** | **Available** | **Available** |
 | Batches, conditions, and aggregate summaries | **Available** | **Available** | **Available** |
@@ -133,7 +133,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## Export and interoperability
 
-| Capability | macOS v1.0.12 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
 |---|---|---|---|
 | Per-cell CSV | **Available** | **Available** | **Available** |
 | Per-image or batch summary CSV | **Available** | **Available** | **Available** |
@@ -151,7 +151,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## macOS microscopy workspace
 
-The following layer-based exploratory workspace is currently specific to macOS v1.0.12:
+The following layer-based exploratory workspace is currently specific to macOS v1.0.13:
 
 - Image, label, point, shape, surface, and track layers with visibility and opacity controls.
 - Multidimensional time, Z, and channel navigation.
@@ -220,3 +220,12 @@ validation, geometry indexing, and worker lifecycle tests. The Python worker, tr
 - Images without pixel-size metadata remain usable; calibrated measurements require a known scale.
 
 See the [v1.0.12 release notes](releases/v1.0.12.md) for focused validation and scope.
+
+## macOS v1.0.13 large Review Queues
+
+- Review candidates use stable pages of at most 96 rows, with Skip and undo across page boundaries.
+- Decoded cell contours share a cache bounded to six snapshots and an estimated 64 MiB budget.
+- Card previews follow their image identity, and overlays render at card size.
+- Legacy review-key migration finishes before opening the queue, and older background saves cannot replace a newer correction.
+
+See the [v1.0.13 release notes](releases/v1.0.13.md) for the issue context, focused validation and download checksum.

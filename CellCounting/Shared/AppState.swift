@@ -17,12 +17,6 @@ private struct PendingCellEdit {
     var revision: Int
 }
 
-@MainActor
-private struct DecodedCellsCacheEntry {
-    let revision: Int
-    let cells: [DetectedCell]
-}
-
 @Observable
 @MainActor
 final class AppState {
@@ -247,6 +241,7 @@ final class AppState {
     private(set) var libraryBatchCount: Int = 0
     private(set) var recentBatchSummaries: [BatchSummary] = []
     private(set) var reviewQueueCount: Int = 0
+    private(set) var isReviewIndexing = true
 
     /// Confidence cutoff used for the Review queue badge count. Kept here so the
     /// notification listener and the on-launch refresh agree on the threshold.
@@ -390,8 +385,6 @@ final class AppState {
     @ObservationIgnored private var orderedImagesCache: (batchId: UUID, count: Int, images: [ImageRecord])?
     /// Small shared LRU for decoded detection payloads. The viewer, sidebar,
     /// and Review card previously decoded the same JSON independently.
-    @ObservationIgnored private var decodedCellsCache: [UUID: DecodedCellsCacheEntry] = [:]
-    @ObservationIgnored private var decodedCellsOrder: [UUID] = []
     @ObservationIgnored private var decodedCellsTasks: [UUID: (revision: Int, task: Task<[DetectedCell], Never>)] = [:]
     @ObservationIgnored private var pendingCellEdits: [UUID: PendingCellEdit] = [:]
     @ObservationIgnored private var pendingCellEditTasks: [UUID: Task<Void, Never>] = [:]
@@ -583,6 +576,7 @@ final class AppState {
                 self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
                 self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
             }
+            self.isReviewIndexing = false
         }
 
         // Pass-12 K1: keep `activeModelInstallState` (and `detector`) coherent
@@ -844,10 +838,7 @@ final class AppState {
     /// Returns an already-decoded cell snapshot without touching the JSON
     /// payload. Useful on interaction paths that must remain synchronous.
     func cachedCells(for detection: DetectionRecord) -> [DetectedCell]? {
-        guard let entry = decodedCellsCache[detection.id],
-              entry.revision == detection.cellsRevision else { return nil }
-        touchDecodedCellsCache(detection.id)
-        return entry.cells
+        detection.cachedCells
     }
 
     /// Decode a detection once off the MainActor and share the result between
@@ -859,7 +850,13 @@ final class AppState {
         let id = detection.id
         let revision = detection.cellsRevision
         if let inFlight = decodedCellsTasks[id], inFlight.revision == revision {
-            return await inFlight.task.value
+            let cells = await inFlight.task.value
+            // Coalesced callers must validate the revision too: a correction
+            // can land while they are suspended on another caller's decode.
+            guard detection.cellsRevision == revision else {
+                return await loadCells(for: detection)
+            }
+            return cells
         }
 
         decodedCellsTasks[id]?.task.cancel()
@@ -874,23 +871,11 @@ final class AppState {
         if decodedCellsTasks[id]?.revision == revision {
             decodedCellsTasks[id] = nil
         }
-        if Task.isCancelled { return cells }
         guard detection.cellsRevision == revision else {
             return await loadCells(for: detection)
         }
         detection.cacheDecodedCells(cells, revision: revision)
-        decodedCellsCache[id] = DecodedCellsCacheEntry(revision: revision, cells: cells)
-        touchDecodedCellsCache(id)
-        while decodedCellsOrder.count > 6 {
-            let evicted = decodedCellsOrder.removeFirst()
-            decodedCellsCache[evicted] = nil
-        }
         return cells
-    }
-
-    private func touchDecodedCellsCache(_ id: UUID) {
-        decodedCellsOrder.removeAll(where: { $0 == id })
-        decodedCellsOrder.append(id)
     }
 
     var currentImage: ImageRecord? {

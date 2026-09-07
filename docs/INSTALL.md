@@ -1,6 +1,6 @@
 # Installing CellCounter
 
-## macOS v1.0.12
+## macOS v1.0.13
 
 CellCounter requires **macOS 15 or later**. The macOS download is a **universal build for Intel and Apple Silicon Macs**. Python environments and model dependencies are installed separately for your Mac when needed.
 
@@ -8,7 +8,7 @@ The application is **ad-hoc signed and not notarized**. macOS may block its firs
 
 ### Install and open
 
-1. Download `CellCounter-v1.0.12.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
+1. Download `CellCounter-v1.0.13.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
 2. Unzip the download and drag **CellCounting.app** into **Applications**. The application is called CellCounter; its bundle on disk is named `CellCounting.app`. Quit an older copy before replacing it. Replacing the application is separate from resetting its saved library.
 3. Open the application. If macOS blocks it, dismiss the message without moving the app to Trash.
 4. Open **System Settings → Privacy & Security** and find the message about CellCounter being blocked. Choose **Open Anyway**, then confirm **Open** when prompted. Depending on your Mac's security policy, administrator approval may be required.
@@ -44,6 +44,10 @@ Some Cellpose checkpoints download on the first analysis even after the Python e
 **No calibration metadata found** is expected for many screenshots and ordinary photographs. It does not mean segmentation failed. Enter a known pixels-per-micrometre scale for calibrated measurements; a screenshot alone does not establish that scale.
 
 See the [v1.0.12 hotfix notes](releases/v1.0.12.md).
+
+### Large Review Queues
+
+macOS v1.0.13 bounds decoded contour memory and pages review candidates, including queues with more than 1,000 items. Update normally and reopen Review Queue; a data reset is unnecessary. Libraries with older review metadata may briefly prepare their review index on first use.
 
 ### Find keyboard shortcuts
 

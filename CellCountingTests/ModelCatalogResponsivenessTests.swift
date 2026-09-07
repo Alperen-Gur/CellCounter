@@ -88,18 +88,23 @@ struct ModelCatalogResponsivenessTests {
         #expect(cache.isImportable(pythonURL: python) == false)
     }
 
-    @Test func realProbeDrainsNoisyOutputAndKillsAHungImport() async throws {
-        let python = URL(fileURLWithPath: "/usr/bin/python3")
-        #expect(FileManager.default.isExecutableFile(atPath: python.path))
+    @Test func probeDiscardsNoisyOutputAndKillsAStubbornProcess() async throws {
+        // Exercise the actual process runner with deterministic shell builtins.
+        // /usr/bin/python3 is an Xcode launcher on macOS: cold interpreter
+        // startup under a loaded CI runner can consume the whole five-second
+        // budget before this test reaches either behavior it intends to test.
+        let executable = URL(fileURLWithPath: "/bin/sh")
+        #expect(FileManager.default.isExecutableFile(atPath: executable.path))
         let noisy = await Task.detached {
-            ModelProbeRunner.run(pythonURL: python,
-                code: "import os; os.write(1, b'x' * 2000000); os.write(2, b'y' * 2000000)", timeout: 5)
+            ModelProbeRunner.run(pythonURL: executable,
+                code: "printf '%02000000d' 0; printf '%02000000d' 0 >&2", timeout: 5)
         }.value
         #expect(noisy)
         let start = ContinuousClock.now
         let hung = await Task.detached {
-            ModelProbeRunner.run(pythonURL: python,
-                code: "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ModelProbeRunner.run(pythonURL: executable,
+                // No child sleep process survives the parent being killed.
+                code: "trap '' TERM; while :; do :; done",
                 timeout: 0.15)
         }.value
         #expect(!hung)

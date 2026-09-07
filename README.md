@@ -7,7 +7,7 @@
 Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
-[![macOS](https://img.shields.io/badge/macOS-v1.0.12-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.12)
+[![macOS](https://img.shields.io/badge/macOS-v1.0.13-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13)
 [![Windows](https://img.shields.io/badge/Windows-v1.0.8-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8)
 [![Web](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
@@ -32,7 +32,7 @@ Image analysis is local by design. CellCounter does not require an account and d
 
 | Platform | Release | Availability |
 |---|---|---|
-| **macOS** | [v1.0.12](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.12) | Native universal app for macOS 15 or later |
+| **macOS** | [v1.0.13](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13) | Native universal app for macOS 15 or later |
 | **Windows** | [v1.0.8](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.0.8) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
 | **Web** | [v0.1.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) | Installable, fully client-side PWA for modern WebGPU browsers |
 
@@ -41,6 +41,10 @@ Image analysis is local by design. CellCounter does not require an account and d
 > learned segmentation models are not bundled yet. Use the macOS or Windows app when live model inference is
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
 > [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
+
+## New in macOS v1.0.13
+
+Large Review Queues use bounded contour caches and stable pages. Skip reaches every candidate, previews follow the current card, and saved edits plus undo remain reliable across pages. This addresses [issue #9](https://github.com/Alperen-Gur/CellCounter/issues/9), reported after processing hundreds of images. See the [release notes](docs/releases/v1.0.13.md).
 
 ## New in macOS v1.0.12
 
@@ -217,11 +221,11 @@ edition, including platform adaptations, preview features, and intentional limit
 
 ### macOS — current release
 
-[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.12-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.12)
+[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.13-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13)
 
 Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 
-1. Download `CellCounter-v1.0.12.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.12).
+1. Download `CellCounter-v1.0.13.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13).
 2. Unzip and move **`CellCounting.app`** into Applications.
    *(The application is called CellCounter; the bundle on disk is still named `CellCounting.app`.)*
 3. The app is not notarized, so the first launch is blocked. Open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough: [docs/INSTALL.md](docs/INSTALL.md).
@@ -267,7 +271,7 @@ this preview. See the [web guide](docs/WEB.md) for supported formats, browser re
 
 ## Quick start
 
-For macOS v1.0.12:
+For macOS v1.0.13:
 
 1. Open images with **⌘O**, or a folder with **⌘⇧O**. Choose a representative image in **Analysis setup**.
 2. Choose a task and model; confirm the pixel size and source channels. Install the model from **Models** if needed.

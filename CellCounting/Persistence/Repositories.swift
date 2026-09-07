@@ -487,11 +487,26 @@ final class Repositories {
         return changed
     }
 
-    func pendingReviewCandidates(limit: Int = 96) -> [ReviewCandidateRecord] {
+    func pendingReviewCandidates(limit: Int = 96,
+                                 after position: ReviewQueuePosition? = nil,
+                                 includingBoundary: Bool = false) -> [ReviewCandidateRecord] {
+        guard limit > 0 else { return [] }
         var desc = FetchDescriptor<ReviewCandidateRecord>(
             predicate: #Predicate { !$0.triaged },
-            sortBy: [SortDescriptor(\.confidence), SortDescriptor(\.createdAt)])
-        desc.fetchLimit = max(1, limit)
+            // Foundation defaults String sorting to localized/numeric order,
+            // while the cursor predicate uses lexical comparison. They must
+            // agree, otherwise tied scores can repeat or disappear at a page.
+            sortBy: [SortDescriptor(\.confidence), SortDescriptor(\.sortKey, comparator: .lexical)])
+        if let position {
+            let confidence = position.confidence
+            let key = position.sortKey
+            desc.predicate = #Predicate {
+                !$0.triaged && ($0.confidence > confidence ||
+                    ($0.confidence == confidence && ($0.sortKey > key ||
+                        (includingBoundary && $0.sortKey == key))))
+            }
+        }
+        desc.fetchLimit = min(96, limit)
         return (try? context.fetch(desc)) ?? []
     }
 
@@ -506,22 +521,44 @@ final class Repositories {
     /// use queryable integer/index rows. A save/yield every eight images keeps
     /// launch and navigation responsive even for 700-image stores.
     func rebuildPerformanceIndexes(onChunk: (() -> Void)? = nil) async {
-        let desc = FetchDescriptor<DetectionRecord>(
+        var desc = FetchDescriptor<DetectionRecord>(
             predicate: #Predicate { $0.reviewIndexVersion < 1 })
-        let detections = (try? context.fetch(desc)) ?? []
-        for (offset, detection) in detections.enumerated() {
-            guard let image = detection.image else {
-                detection.reviewIndexVersion = 1
-                continue
+        desc.fetchLimit = 8
+        while !Task.isCancelled {
+            let detections = (try? context.fetch(desc)) ?? []
+            guard !detections.isEmpty else { break }
+            for detection in detections {
+                guard let image = detection.image else {
+                    detection.reviewIndexVersion = 1
+                    continue
+                }
+                deleteReviewCandidates(forDetectionId: detection.id)
+                let revision = detection.cellsRevision
+                let data = detection.cellsData
+                let cells = await Task.detached(priority: .utility) {
+                    DetectionRecord.decodeCellsData(data)
+                }.value
+                guard detection.cellsRevision == revision,
+                      image.detection?.id == detection.id else { continue }
+                indexReviewCandidates(cells: cells, detection: detection, image: image)
             }
-            deleteReviewCandidates(forDetectionId: detection.id)
-            let cells = detection.cells
-            indexReviewCandidates(cells: cells, detection: detection, image: image)
-            if offset % 8 == 7 {
-                try? context.save()
-                onChunk?()
-                await Task.yield()
-            }
+            try? context.save()
+            onChunk?()
+            await Task.yield()
+        }
+
+        // Older normalized rows need only a small string backfill, preserving
+        // their triage state and avoiding a second whole-library JSON decode.
+        var legacy = FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { $0.sortKey == "" })
+        legacy.fetchLimit = 96
+        while !Task.isCancelled {
+            let rows = (try? context.fetch(legacy)) ?? []
+            guard !rows.isEmpty else { break }
+            for row in rows { row.sortKey = row.id.uuidString }
+            try? context.save()
+            onChunk?()
+            await Task.yield()
         }
 
         // Batch summaries are rebuilt after detection summaries, so this pass

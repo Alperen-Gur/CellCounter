@@ -63,8 +63,8 @@ enum ImageLoader {
         init() {
             thumbnails.countLimit = 384
             thumbnails.totalCostLimit = 80 * 1024 * 1024
-            reviewPreviews.countLimit = 24
-            reviewPreviews.totalCostLimit = 220 * 1024 * 1024
+            reviewPreviews.countLimit = 8
+            reviewPreviews.totalCostLimit = 64 * 1024 * 1024
             displayImages.countLimit = 4
             displayImages.totalCostLimit = 600 * 1024 * 1024
         }
