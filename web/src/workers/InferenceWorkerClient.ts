@@ -47,7 +47,19 @@ export class InferenceWorkerClient {
 
   constructor(private readonly worker: WorkerPort) {
     worker.addEventListener("message", this.onMessage);
+    const native = worker as WorkerPort & { onerror?: ((event: ErrorEvent) => void) | null; onmessageerror?: ((event: MessageEvent) => void) | null };
+    if ("onerror" in native) native.onerror = (event) => this.failAll(new Error(event.message || "The analysis worker stopped unexpectedly. Resume or retry the saved job."));
+    if ("onmessageerror" in native) native.onmessageerror = () => this.failAll(new Error("The analysis worker returned an unreadable message."));
   }
+
+  private failAll(error: Error): void {
+    for (const pending of this.pending.values()) { pending.removeAbortListener(); pending.reject(error); }
+    this.pending.clear();
+    this.disposed = true;
+    this.worker.terminate?.();
+  }
+
+  get isDisposed(): boolean { return this.disposed; }
 
   analyze(request: InferenceWorkerAnalyzeRequest): Promise<DetectionResultDTO> {
     if (this.disposed) return Promise.reject(new Error("Inference worker client has been disposed"));

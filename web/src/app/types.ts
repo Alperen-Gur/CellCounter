@@ -1,6 +1,6 @@
 import type { CalibrationSource, ImageAnalysis } from "../domain/types";
 
-export type RouteId = "workspace" | "library" | "review" | "lab" | "compare" | "models" | "capabilities" | "settings";
+export type RouteId = "workspace" | "processing" | "help" | "library" | "review" | "lab" | "compare" | "models" | "capabilities" | "settings";
 export type EditTool = "inspect" | "add" | "remove" | "resize" | "merge" | "split" | "ground-truth" | "roi-include" | "roi-exclude";
 export type RunState = "idle" | "preparing" | "running" | "complete" | "error";
 
@@ -13,6 +13,7 @@ export interface WorkspaceCell {
   areaUm2?: number;
   confidence: number;
   isManual?: boolean;
+  reviewed?: boolean;
   contourPx?: Array<[number, number]>;
 }
 

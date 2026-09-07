@@ -10,12 +10,12 @@ const tools: Array<{ id: EditTool; label: string; key: number; icon: typeof Cros
   { id: "split", label: "Split", key: 6, icon: Scissors },
 ];
 
-export function EditDock({ active, onChange, canUndo, onUndo, canRedo, onRedo }: { active: EditTool; onChange: (tool: EditTool) => void; canUndo: boolean; onUndo: () => void; canRedo: boolean; onRedo: () => void }) {
+export function EditDock({ active, onChange, canUndo, onUndo, canRedo, onRedo, readOnly = false }: { active: EditTool; onChange: (tool: EditTool) => void; canUndo: boolean; onUndo: () => void; canRedo: boolean; onRedo: () => void; readOnly?: boolean }) {
   return (
     <div className="edit-dock" aria-label="Correction tools">
       {tools.map(({ id, label, key, icon: Icon }) => (
-        <button key={id} className={active === id ? "active" : ""} onClick={() => onChange(id)} aria-pressed={active === id} title={`${label} · ${key}`}>
-          <Icon size={17} /><span>{label}</span><kbd>{key}</kbd>
+        <button key={id} className={active === id ? "active" : ""} onClick={() => onChange(id)} disabled={readOnly && id !== "inspect"} aria-pressed={active === id} title={`${label} · ${key}`}>
+          <Icon size={17} /><span>{label}</span>
         </button>
       ))}
       <span className="dock-divider" />

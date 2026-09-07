@@ -1,6 +1,7 @@
 export const ANALYSIS_SCHEMA_VERSION = 1 as const;
 
-export type ModelId = "cpsam_v2" | "cp-cyto3" | "sd-fluo";
+export type LearnedModelId = "cpsam_v2" | "cp-cyto3" | "sd-fluo";
+export type ModelId = LearnedModelId | "classical";
 
 export interface SourcePointPx {
   readonly x: number;
@@ -57,6 +58,12 @@ export interface AnalysisParameters {
   readonly confidenceThreshold: number;
   readonly expectedDiameterUm: number | null;
   readonly channels: readonly [number, number];
+  readonly sourceChannel?: number;
+  readonly projection?: "first" | "max" | "mean" | "sum";
+  readonly thresholdMethod?: "otsu" | "triangle" | "adaptive" | "manual";
+  readonly manualThreshold?: number;
+  readonly invert?: boolean;
+  readonly minimumAreaPx?: number;
   readonly backgroundSubtract: boolean;
   readonly rollingBallRadiusPx: number;
   readonly watershedSplit: boolean;
@@ -70,6 +77,7 @@ export interface CellGeometry {
   readonly contourPx: SourcePolygonPx;
   readonly confidence: number;
   readonly origin: "model" | "manual";
+  readonly reviewed?: boolean;
 }
 
 export interface CellMeasurement extends CellGeometry {
@@ -94,7 +102,7 @@ export interface ModelProvenance {
   readonly displayName: string;
   readonly manifestVersion: string;
   readonly artifactSha256: string;
-  readonly runtime: "onnxruntime-web/webgpu";
+  readonly runtime: "onnxruntime-web/webgpu" | "browser/classical";
   readonly runtimeVersion: string;
 }
 
@@ -120,12 +128,15 @@ export interface ImageAnalysis {
   readonly cells: readonly CellMeasurement[];
   readonly correctionLog: readonly CorrectionRecord[];
   readonly imageStats: Readonly<Record<string, number>>;
+  readonly workflow?: { readonly jobId?: string; readonly previewKey?: string; readonly reusedPreview?: boolean; readonly runCalibration?: Calibration };
+  /** Local display of the exact channel/projection used; excluded from JSON exports. */
+  readonly displayPlane?: Blob;
   readonly originalSource?: {
     readonly fileName: string;
     readonly mediaType: string;
     readonly byteLength: number;
     readonly sha256: string;
-    readonly analysisTransform: "identity" | "tiff-first-plane-rgb8-preview";
+    readonly analysisTransform: "identity" | "tiff-first-plane-rgb8-preview" | "source-channel-projection";
     readonly planeCount: number;
     readonly bitsPerSample: number;
     readonly samplesPerPixel: number;
@@ -174,6 +185,7 @@ export interface ComparisonResult {
 export type CellDTO = CellMeasurement;
 export type DetectionParams = AnalysisParameters;
 export interface DetectionResultDTO {
+  readonly displayPlane?: Blob;
   readonly imageWidth: number;
   readonly imageHeight: number;
   readonly cells: readonly CellDTO[];

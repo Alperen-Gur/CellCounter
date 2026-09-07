@@ -12,8 +12,8 @@ export default defineConfig({
         name: "CellCounter Web",
         short_name: "CellCounter",
         description: "Private, browser-native cell segmentation and measurement.",
-        theme_color: "#f4f3ee",
-        background_color: "#f4f3ee",
+        theme_color: "#f5f6f8",
+        background_color: "#f5f6f8",
         display: "standalone",
         start_url: "/",
         scope: "/",
@@ -29,9 +29,9 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,woff2}"],
-        // Inference is an explicit, model-gated action. Keep ORT and the inference
-        // worker out of install-time downloads and cache them only after first use.
-        globIgnores: ["**/ort*", "**/inference.worker-*", "models/**"],
+        // The small shared worker includes the ready classical detector and is
+        // required offline. Learned ORT runtimes and weights remain on demand.
+        globIgnores: ["**/ort*", "**/particleField-*", "models/**"],
         maximumFileSizeToCacheInBytes: 2 * 1024 * 1024,
         navigateFallback: "/index.html",
         // ORT uses the browser's ordinary same-origin HTTP cache on demand;

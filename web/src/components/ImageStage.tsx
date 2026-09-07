@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ImagePlus, LockKeyhole, Maximize2, Minus, Plus } from "lucide-react";
+import { ImagePlus, Maximize2, Minus, Plus } from "lucide-react";
 import type { EditTool, WorkspaceCell, WorkspaceImage } from "../app/types";
-import { EditDock } from "./EditDock";
 
 interface StageTransform { scale: number; x: number; y: number; }
 
@@ -9,13 +8,9 @@ interface ImageStageProps {
   image?: WorkspaceImage;
   tool: EditTool;
   selectedCellId?: string;
-  onTool: (tool: EditTool) => void;
+  alternativeCells?: readonly WorkspaceCell[];
   onCellPointer: (x: number, y: number) => void;
   onImport: () => void;
-  canUndo: boolean;
-  onUndo: () => void;
-  canRedo: boolean;
-  onRedo: () => void;
   onRoi: (start: { x: number; y: number }, end: { x: number; y: number }, kind: "include" | "exclude") => void;
 }
 
@@ -25,7 +20,7 @@ function fitTransform(width: number, height: number, sourceWidth: number, source
   return { scale, x: (width - sourceWidth * scale) / 2, y: (height - sourceHeight * scale) / 2 };
 }
 
-function drawCell(ctx: CanvasRenderingContext2D, cell: WorkspaceCell, transform: StageTransform, selected: boolean) {
+function drawCell(ctx: CanvasRenderingContext2D, cell: WorkspaceCell, transform: StageTransform, selected: boolean, alternate = false) {
   const x = transform.x + cell.cx * transform.scale;
   const y = transform.y + cell.cy * transform.scale;
   const radius = Math.max(3, cell.diameterPx * transform.scale / 2);
@@ -38,15 +33,15 @@ function drawCell(ctx: CanvasRenderingContext2D, cell: WorkspaceCell, transform:
     });
     ctx.closePath();
   } else ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.strokeStyle = selected ? "#f5c868" : cell.isManual ? "#ffffff" : "#68ead3";
+  ctx.strokeStyle = alternate ? "#fb9b49" : selected ? "#f5c868" : cell.isManual ? "#ffffff" : "#68ead3";
   ctx.lineWidth = selected ? 2.5 : 1.4;
-  ctx.shadowColor = "rgba(4, 32, 29, .48)";
-  ctx.shadowBlur = selected ? 7 : 2;
+  ctx.shadowColor = "#000";
+  ctx.shadowBlur = selected ? 2 : 0;
   ctx.stroke();
   ctx.shadowBlur = 0;
 }
 
-export function ImageStage({ image, tool, selectedCellId, onTool, onCellPointer, onImport, canUndo, onUndo, canRedo, onRedo, onRoi }: ImageStageProps) {
+export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCellPointer, onImport, onRoi }: ImageStageProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -78,8 +73,6 @@ export function ImageStage({ image, tool, selectedCellId, onTool, onCellPointer,
     const transform = manualViewRef.current ? transformRef.current : fitTransform(rect.width, rect.height, image.width, image.height);
     transformRef.current = transform;
     ctx.drawImage(imageRef.current, transform.x, transform.y, image.width * transform.scale, image.height * transform.scale);
-    ctx.fillStyle = "rgba(8, 26, 25, .07)";
-    ctx.fillRect(transform.x, transform.y, image.width * transform.scale, image.height * transform.scale);
     image.cells.forEach((cell) => {
       const radius = Math.max(3, cell.diameterPx * transform.scale / 2);
       const x = transform.x + cell.cx * transform.scale;
@@ -87,6 +80,7 @@ export function ImageStage({ image, tool, selectedCellId, onTool, onCellPointer,
       if (x + radius < 0 || y + radius < 0 || x - radius > rect.width || y - radius > rect.height) return;
       drawCell(ctx, cell, transform, cell.id === selectedCellId);
     });
+    for (const cell of alternativeCells ?? []) drawCell(ctx, cell, transform, false, true);
     for (const roi of image.rois) {
       ctx.save();
       ctx.setLineDash([7, 5]);
@@ -103,7 +97,7 @@ export function ImageStage({ image, tool, selectedCellId, onTool, onCellPointer,
       ctx.strokeStyle = "#f5c868"; ctx.lineWidth = 1.7; ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x - 4, y); ctx.lineTo(x + 4, y); ctx.moveTo(x, y - 4); ctx.lineTo(x, y + 4); ctx.stroke();
     }
-  }, [image?.objectUrl, image?.width, image?.height, image?.cells, image?.rois, image?.groundTruth, ready, selectedCellId]);
+  }, [image?.objectUrl, image?.width, image?.height, image?.cells, image?.rois, image?.groundTruth, ready, selectedCellId, alternativeCells]);
 
   const schedulePaint = useCallback(() => {
     if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
@@ -196,21 +190,17 @@ export function ImageStage({ image, tool, selectedCellId, onTool, onCellPointer,
 
   return (
     <section ref={hostRef} className={`image-stage tool-${tool}`}>
-      <div className="canvas-grid" />
       {image ? (
         <canvas ref={canvasRef} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onWheel={wheel} onDoubleClick={fit} aria-label={`${image.fileName} with ${image.cells.length} segmented objects`} />
       ) : (
         <button className="empty-study" onClick={onImport}>
-          <span className="specimen-field" aria-hidden="true"><i /><i /><i /><i /><i /></span>
           <span className="empty-icon"><ImagePlus size={22} /></span>
-          <strong>Bring a field of view into focus</strong>
-          <span>Drop microscopy images here or choose files</span>
+          <strong>Import microscopy images</strong>
+          <span>Drop files here or choose images.</span>
           <em>PNG · JPEG · WebP · BMP · TIFF · OME-TIFF</em>
         </button>
       )}
-      <div className="stage-privacy"><LockKeyhole size={13} /> Image remains on this device</div>
       {image && <div className="stage-zoom" aria-label="Image zoom controls"><button onClick={() => zoomAtCenter(1 / 1.25)} aria-label="Zoom out"><Minus size={14} /></button><button onClick={fit} aria-label="Fit image"><Maximize2 size={13} /></button><button onClick={() => zoomAtCenter(1.25)} aria-label="Zoom in"><Plus size={14} /></button></div>}
-      {image && <EditDock active={tool} onChange={onTool} canUndo={canUndo} onUndo={onUndo} canRedo={canRedo} onRedo={onRedo} />}
     </section>
   );
 }

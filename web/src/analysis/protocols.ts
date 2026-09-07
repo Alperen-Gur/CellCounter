@@ -1,7 +1,16 @@
 export const ANALYSIS_PROTOCOL_KIND = "com.cellcounter.analysis-protocol";
 export const ANALYSIS_PROTOCOL_SCHEMA_VERSION = 1;
 
+export interface BrowserPlaneSettings {
+  readonly sourceChannel: number;
+  readonly projection: "first" | "max" | "mean" | "sum";
+  readonly thresholdMethod: "otsu" | "triangle" | "adaptive" | "manual";
+  readonly manualThreshold: number;
+  readonly invert: boolean;
+  readonly minimumAreaPx: number;
+}
 export interface AnalysisProtocolV1 {
+  readonly browser?: BrowserPlaneSettings;
   readonly schemaVersion: 1;
   readonly kind: typeof ANALYSIS_PROTOCOL_KIND;
   readonly id: string;
@@ -47,6 +56,10 @@ export function validateAnalysisProtocol(value: unknown, supportedModelIds?: rea
   const preprocessing = value.preprocessing;
   if (!record(preprocessing) || typeof preprocessing.backgroundSubtract !== "boolean" || !Number.isInteger(preprocessing.rollingBallRadiusPx) || (preprocessing.rollingBallRadiusPx as number) < 0 || typeof preprocessing.watershedSplit !== "boolean" || !finite(preprocessing.watershedMinDistanceUm) || preprocessing.watershedMinDistanceUm < 0) issues.push("preprocessing settings are invalid");
   if (!finite(value.manualMarkerDiameterUm) || value.manualMarkerDiameterUm <= 0) issues.push("manualMarkerDiameterUm must be greater than zero");
+  if (value.browser !== undefined) {
+    const browser = value.browser;
+    if (!record(browser) || !Number.isInteger(browser.sourceChannel) || (browser.sourceChannel as number) < -1 || !["first", "max", "mean", "sum"].includes(String(browser.projection)) || !["otsu", "triangle", "adaptive", "manual"].includes(String(browser.thresholdMethod)) || !finite(browser.manualThreshold) || browser.manualThreshold < 0 || browser.manualThreshold > 1 || typeof browser.invert !== "boolean" || !finite(browser.minimumAreaPx) || browser.minimumAreaPx < 1) issues.push("browser source/projection/threshold settings are invalid");
+  }
   if (issues.length) throw new AnalysisProtocolValidationError(issues);
   return value as unknown as AnalysisProtocolV1;
 }
@@ -68,7 +81,7 @@ export function serializeAnalysisProtocol(protocol: AnalysisProtocolV1): string 
   return `${JSON.stringify(sorted(validateAnalysisProtocol(protocol)), null, 2)}\n`;
 }
 
-export interface AppliedAnalysisSettings {
+export interface AppliedAnalysisSettings extends Partial<BrowserPlaneSettings> {
   readonly modelId: string;
   readonly expectedDiameterUm: number;
   readonly channels: readonly [number, number];
@@ -86,6 +99,7 @@ export interface AppliedAnalysisSettings {
 export function applyAnalysisProtocol(protocol: AnalysisProtocolV1, supportedModelIds?: readonly string[]): AppliedAnalysisSettings {
   const valid = validateAnalysisProtocol(protocol, supportedModelIds);
   return {
+    ...valid.browser,
     modelId: valid.model.id,
     expectedDiameterUm: valid.detection.expectedDiameterUm,
     channels: [valid.detection.channelsCyto, valid.detection.channelsNuclei],

@@ -1,7 +1,7 @@
 # CellCounter feature reference
 
-This is the public feature inventory for the currently documented releases: macOS v1.0.13, Windows v1.0.8,
-and Web v0.1.0 preview. It describes user-facing behavior and deliberately omits private implementation details.
+This is the public feature inventory for the currently documented releases: macOS v1.0.13, Windows v1.1.0,
+and Web v0.2.0 preview. It describes user-facing behavior and deliberately omits private implementation details.
 
 Status meanings:
 
@@ -15,7 +15,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Privacy and storage
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
 | Local image analysis with no image-upload path | **Available** | **Available** | **Available** |
 | Account-free use | **Available** | **Available** | **Available** |
@@ -26,12 +26,12 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Import and calibration
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
 | JPEG, PNG, BMP, TIFF, and OME-TIFF | **Available** | **Available** | **Available**, plus WebP |
 | Recursive folder and batch import | **Available** | **Available** | **Available** where the browser supports folder selection |
 | Proprietary microscope containers | **Available:** CZI, ND2, LIF, OIF, OIB, OIR | **Available:** CZI, ND2, LIF, OIR, VSI | **Not available**; convert to OME-TIFF locally |
-| Z-stack projection | **Available:** max, sum, mean | **Adapted / limited:** maximum projection during image preparation | **Adapted / limited:** first-plane or maximum projection for browser-native analysis |
+| Z-stack projection | **Available:** max, sum, mean | **Adapted / limited:** max, mean, sum or middle-plane analysis; setup display remains the imported preview | **Adapted / limited:** first, max, mean or sum projection for classical analysis |
 | Multi-channel inspection, naming, and analysis-channel selection | **Available** | **Adapted / limited:** analysis-channel controls without the macOS naming workspace | **Available** for browser-native assays; learned-model preprocessing is build required |
 | OME-Zarr / OME-NGFF multiscale arrays and plates | **Available** in the microscopy workspace | **Not available** | **Not available** |
 | Exact duplicate detection and review | **Available** | **Available** | **Available** |
@@ -42,16 +42,16 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 ## Segmentation models
 
-| Model or family | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Model or family | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
-| Cellpose-SAM v2 | **Available** | **Available** | **Preview / build required:** production weights are not bundled |
-| Cellpose-SAM and Cellpose-DINO ViT-L / ViT-B | **Available** | **Not available** | **Not available** |
+| Cellpose-SAM v2 | **Available** | **Not available** as a distinct checkpoint; legacy `cpsam_v2` runs Cellpose-SAM | **Preview / build required:** production weights are not bundled |
+| Cellpose-SAM and Cellpose-DINO ViT-L / ViT-B | **Available** | **Adapted / limited:** Cellpose-SAM only | **Preview / build required:** Cellpose-SAM only |
 | Cellpose `cyto3` | **Available** | **Available** | **Preview / build required:** production weights are not bundled |
 | Cellpose `cyto3 + restore`, `cyto2`, and `nuclei` | **Available** | **Not available** | **Not available** |
 | StarDist versatile fluorescence | **Available** | **Available** | **Preview / build required:** production weights are not bundled |
 | StarDist H&E and DSB2018 | **Available** | **Not available** | **Not available** |
 | Omnipose bacteria phase, bacteria fluorescence, and `cyto2` | **Available** | **Not available** | **Not available** |
-| Classical threshold and watershed: Otsu, triangle, adaptive, manual | **Available** | **Not available** | **Not available** |
+| Classical threshold and watershed: Otsu, triangle, adaptive, manual | **Available** | **Not available** | **Available** in a local CPU Worker |
 | Bring-your-own Cellpose checkpoint or StarDist model | **Available** | **Not available** beyond fine-tuned `cyto3` versions | **Not available** |
 | Second-opinion model pairing and disagreement review | **Available** | **Not available** | **Not available** |
 
@@ -60,21 +60,21 @@ models in this table.
 
 ## Detection and refinement
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
-| Single-image and batch detection with progress | **Available** | **Available** | **Preview / build required** until a production model is bundled |
+| Single-image and batch detection with progress | **Available** | **Available** | **Available** for classical segmentation; learned models remain build required |
 | Cancellation without discarding the previous result | **Available** | **Available** with Windows-native process handling | **Available** for worker tasks; learned inference remains build required |
 | Expected-diameter and confidence controls | **Available** | **Available** | **Available** for persisted analysis settings |
-| Background subtraction and preprocessing presets | **Available** | **Available** | **Preview / build required** for learned-model parity |
-| Z projection and segmentation-channel selection | **Available** | **Available** | **Preview / build required** for learned inference |
-| Touching-cell watershed split | **Available** | **Available** | **Preview / build required** for model-coupled postprocessing |
-| Rerun detection while preserving source images | **Available** | **Available** | **Preview / build required** |
+| Background subtraction and preprocessing presets | **Available** | **Available** | **Adapted / limited:** classical background subtraction; learned-model parity remains build required |
+| Z projection and segmentation-channel selection | **Available** | **Available** for analysis; display remains adapted | **Available** for classical analysis; learned inference remains build required |
+| Touching-cell watershed split | **Available** | **Available** | **Available** for classical segmentation; model-coupled parity remains build required |
+| Rerun detection while preserving source images | **Available** | **Available** | **Available** for classical segmentation |
 | Exact model identity and explicit failure reporting | **Available** | **Available** | **Available** |
-| Hardware acceleration control | **Available** where supported | **Adapted / limited:** validated CPU path | **Adapted / limited:** WebGPU only, with no CPU or server fallback |
+| Hardware acceleration control | **Available** where supported | **Adapted / limited:** validated CPU path | **Adapted / limited:** classical CPU Worker; learned WebGPU adapter without fallback |
 
 ## Measurements and assays
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
 | Count and configurable size-bin summaries | **Available** | **Available** | **Available** |
 | Area, perimeter, equivalent diameter, circularity, aspect ratio, solidity, and eccentricity | **Available** | **Available** | **Available** |
@@ -96,7 +96,7 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Editing, validation, and review
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
 | Mask fills, contours, boxes, labels, and selection markers | **Available** | **Available** | **Available** |
 | Add, remove, resize, merge, split, and freehand-trace corrections | **Available** | **Adapted / limited:** available except freehand tracing | **Adapted / limited:** available except freehand tracing |
@@ -107,13 +107,25 @@ population structure are absent; the application does not fabricate a quantitati
 | Propagation, interpolation, and drift-aware sequence correction | **Available** | **Not available** | **Not available** |
 | Low-confidence review queue | **Available** | **Available** | **Available** |
 | Card and tiled-grid curation | **Available** | **Adapted / limited:** card-based review | **Adapted / limited:** card-based review |
-| Reversible mask variants and risk-ranked fields | **Available** | **Not available** | **Not available** |
+| Reversible mask variants | **Available** | **Available:** up to eight saved versions per image | **Available** |
+| Risk-ranked fields | **Available** | **Not available** as the native ranking workflow | **Not available** as the native ranking workflow |
 | Per-image notes and review-confidence labels | **Available** | **Available** | **Available** |
 | Confidence, diameter, drift, agreement, and quality-insight summaries | **Available** | **Adapted / limited:** quality indicators without the complete macOS insight panel | **Adapted / limited:** browser-native quality indicators |
 
+## Inspect, process and linked review
+
+| Workflow | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
+|---|---|---|---|
+| Saved setup, representative preview and matching-preview reuse | **Available** | **Available** | **Available** for classical segmentation |
+| Persistent processing, pause/resume, interruption recovery and failed-image retry | **Available** | **Available** | **Available** |
+| Linked image, paged table and scatter selection | **Available** | **Available** | **Available** |
+| Original run settings distinct from current review settings | **Available** | **Available**; unknown older records remain unknown | **Available** |
+| Explicit task presets and result routing | **Available** | **Adapted / limited:** saved task choice | **Not available** as native task routing |
+| Reviewed-library training dataset snapshots | **Available** | **Not available**; grouped pair-folder training is separate | **Not available** |
+
 ## Libraries, studies, and repeatable workflows
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
 | Persistent image library and duplicate groups | **Available** | **Available** | **Available** |
 | Batches, conditions, and aggregate summaries | **Available** | **Available** | **Available** |
@@ -122,7 +134,7 @@ population structure are absent; the application does not fabricate a quantitati
 | Versioned analysis protocols for model, calibration, bins, and preprocessing | **Available** | **Available** | **Available** |
 | Local fine-tuning | **Available:** reviewed instance masks, grouped train/validation/test splits, real Cellpose 3.x optimization and held-out evaluation | **Available:** Cellpose `cyto3` only | **Not available** |
 | Fine-tuned checkpoint version history and rollback or explicit activation | **Available** | **Available** for locally trained `cyto3` versions | **Not available** |
-| Searchable model catalog with installation and storage management | **Available** | **Available** for the three supported models | **Adapted / limited:** three-model catalog and local cache status, but artifacts are not bundled |
+| Searchable model catalog with installation and storage management | **Available** | **Available** for the three supported models | **Adapted / limited:** classical method plus three learned-model entries; learned artifacts are not bundled |
 | Keyboard shortcuts and accessible navigation | **Available** | **Available** with Windows-adapted shortcuts | **Available** |
 | Light and dark presentation | **Available** | **Adapted / limited:** intentionally light-only | **Available** |
 | In-app support and platform-capability disclosure | **Available** | **Available** | **Available** |
@@ -133,7 +145,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## Export and interoperability
 
-| Capability | macOS v1.0.13 | Windows v1.0.8 | Web v0.1.0 |
+| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.0 |
 |---|---|---|---|
 | Per-cell CSV | **Available** | **Available** | **Available** |
 | Per-image or batch summary CSV | **Available** | **Available** | **Available** |
@@ -167,12 +179,12 @@ The following layer-based exploratory workspace is currently specific to macOS v
 
 ## Deliberate release boundaries
 
-- Web v0.1.0 does not include production model weights. Learned detection is therefore visibly unavailable even
-  though the WebGPU interface and three-model catalog are present.
-- Web v0.1.0 does not claim proprietary microscope-container import, OME-Zarr, live model training, 3D learned
+- Web v0.2.0 does not include production model weights. Learned detection is therefore visibly unavailable even
+  though the WebGPU interface and three-model catalog are present. Classical threshold/watershed analysis is usable locally.
+- Web v0.2.0 does not claim proprietary microscope-container import, OME-Zarr, live model training, 3D learned
   inference, or full Cellpose GUI session round-tripping.
-- Windows v1.0.8 provides the complete common analysis workflow with three validated models and a CPU-only
-  inference path. macOS-only workspace, prompt/sequence correction, and broader model-catalog features are not
+- Windows v1.1.0 provides saved analysis and review workflows with three supported models and a CPU-only
+  inference path. Its expanded inventory records 15 native capabilities still unavailable. macOS-only workspace, prompt/sequence correction, and broader model-catalog features are not
   presented as Windows functionality.
 - Fine-tuning remains specific to supported model families: macOS supports Cellpose 3.x cytoplasm/nuclei
   bases and compatible custom checkpoints; Windows supports its `cyto3` workflow. Browser training is unavailable.

@@ -6,7 +6,7 @@ import type { AnalysisSettings } from "../components/Inspector";
 import { ANALYSIS_PROTOCOL_KIND, applyAnalysisProtocol, parseAnalysisProtocol, serializeAnalysisProtocol, type AnalysisProtocolV1 } from "../analysis";
 import { runAssay, type AssayKind } from "../workers/AssayWorkerClient";
 
-const modelNames = { cpsam_v2: "Cellpose-SAM v2", "cp-cyto3": "Cellpose cyto3", "sd-fluo": "StarDist fluorescence" } as const;
+const modelNames = { classical: "Classical threshold + watershed", cpsam_v2: "Cellpose-SAM v2", "cp-cyto3": "Cellpose cyto3", "sd-fluo": "StarDist fluorescence" } as const;
 const assays: readonly { id: AssayKind; name: string; detail: string; source: boolean }[] = [
   { id: "qc", name: "Focus & illumination", detail: "Laplacian sharpness and block illumination residual", source: true },
   { id: "intensity", name: "Intensity suite", detail: "Positivity, transfection, viability, colocalization, N:C and cell cycle", source: true },
@@ -91,8 +91,9 @@ export function AnalysisLabView({ image, images, settings, onSettings, onWorkspa
 
   const currentProtocol = (): AnalysisProtocolV1 => ({
     schemaVersion: 1, kind: ANALYSIS_PROTOCOL_KIND, id: crypto.randomUUID(), name: `${image?.condition ?? "Local"} analysis`, notes: image?.note ?? "",
-    createdAt: new Date().toISOString(), appVersion: "0.1.0", appBuild: "web",
-    model: { id: settings.modelId, name: modelNames[settings.modelId], family: settings.modelId === "sd-fluo" ? "stardist" : "cellpose" },
+    createdAt: new Date().toISOString(), appVersion: "0.2.0", appBuild: "web",
+    model: { id: settings.modelId, name: modelNames[settings.modelId], family: settings.modelId === "classical" ? "classical" : settings.modelId === "sd-fluo" ? "stardist" : "cellpose" },
+    browser: { sourceChannel: settings.sourceChannel ?? -1, projection: settings.projection ?? "first", thresholdMethod: settings.thresholdMethod ?? "otsu", manualThreshold: settings.manualThreshold ?? .5, invert: settings.invert ?? false, minimumAreaPx: settings.minimumAreaPx ?? 9 },
     detection: { expectedDiameterUm: settings.diameterUm, channelsCyto: 0, channelsNuclei: 0, confidenceThreshold: settings.confidence },
     calibration: { pxPerUm: settings.pxPerUm }, sizeBins: { thresholdsUm: [20, 30] },
     preprocessing: { backgroundSubtract: settings.backgroundSubtract, rollingBallRadiusPx: 50, watershedSplit: settings.watershedSplit, watershedMinDistanceUm: 8 }, manualMarkerDiameterUm: settings.diameterUm || 30,
@@ -105,7 +106,7 @@ export function AnalysisLabView({ image, images, settings, onSettings, onWorkspa
   };
   const applyProtocol = (protocol: AnalysisProtocolV1) => {
     const applied = applyAnalysisProtocol(protocol, Object.keys(modelNames));
-    onSettings({ ...settings, modelId: applied.modelId as AnalysisSettings["modelId"], diameterUm: applied.expectedDiameterUm, confidence: applied.confidenceThreshold, pxPerUm: applied.pxPerUm, backgroundSubtract: applied.backgroundSubtract, watershedSplit: applied.watershedSplit });
+    onSettings({ ...settings, sourceChannel: applied.sourceChannel ?? -1, projection: applied.projection ?? "first", thresholdMethod: applied.thresholdMethod ?? "otsu", manualThreshold: applied.manualThreshold ?? .5, invert: applied.invert ?? false, minimumAreaPx: applied.minimumAreaPx ?? 9, modelId: applied.modelId as AnalysisSettings["modelId"], diameterUm: applied.expectedDiameterUm, confidence: applied.confidenceThreshold, pxPerUm: applied.pxPerUm, backgroundSubtract: applied.backgroundSubtract, watershedSplit: applied.watershedSplit });
   };
   const loadProtocol = async (file?: File) => {
     if (!file) return;

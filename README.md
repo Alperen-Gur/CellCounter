@@ -9,7 +9,7 @@ Segmentation, per-cell measurements, assays, correction, and export on macOS, Wi
 
 [![macOS](https://img.shields.io/badge/macOS-v1.0.13-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13)
 [![Windows](https://img.shields.io/badge/Windows-v1.1.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0)
-[![Web](https://img.shields.io/badge/Web-v0.1.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
+[![Web](https://img.shields.io/badge/Web-v0.2.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -36,13 +36,19 @@ Image analysis is local by design. CellCounter does not require an account and d
 |---|---|---|
 | **macOS** | [v1.0.13](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13) | Native universal app for macOS 15 or later |
 | **Windows** | [v1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
-| **Web** | [v0.1.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0) | Installable, fully client-side PWA for modern WebGPU browsers |
+| **Web** | [v0.2.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.0) | Installable PWA with local classical segmentation; learned models remain unavailable |
 
 > [!NOTE]
-> The web preview keeps images in the browser and includes the browser-native analysis workspace, but its three
+> The web preview keeps images in the browser and runs classical threshold/watershed segmentation, but its three
 > learned segmentation models are not bundled yet. Use the macOS or Windows app when live model inference is
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
 > [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
+
+## New in Web v0.2.0 preview
+
+A neutral, muted-blue workbench replaces the crowded interface. Preview and process with local classical segmentation, recover saved jobs, and review linked measurements or mask alternatives. An optional 3D point-cloud introduction supports rotation, morphing and reduced motion; library icons replace bespoke interface marks. See the [web release notes](docs/releases/web-v0.2.0.md) and [design guide](docs/design/cellcounter-guide.md).
+
+![CellCounter Web welcome screen](docs/design/screenshots/welcome-v0.2.0.png)
 
 ## New in Windows v1.1.0
 
@@ -266,7 +272,7 @@ families: Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. See the
 
 ### Web — private PWA preview
 
-[![Download](https://img.shields.io/badge/Download-Web%20v0.1.0%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.1.0)
+[![Download](https://img.shields.io/badge/Download-Web%20v0.1.0%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.0)
 
 The web edition is a fully client-side PWA with no account, upload, telemetry, or application server. Download
 the release archive and serve it from HTTPS or `localhost`, then install it from a current WebGPU-capable browser.

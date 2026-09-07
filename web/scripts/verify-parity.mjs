@@ -2,6 +2,23 @@ import { access, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const expectedIds = [
+  "input-omezarr",
+  "input-multidimensional",
+  "input-native-preview",
+  "workspace-layers",
+  "workspace-registration",
+  "workspace-lineage",
+  "workspace-painting",
+  "workspace-replay",
+  "workspace-animation",
+  "edit-prompt-refinement",
+  "edit-sequence-propagation",
+  "detection-advanced-preprocessing",
+  "workflow-reviewed-training",
+  "model-native-catalog",
+  "workspace-extensions",
+
+  "model-classical", "input-projection", "workflow-preview", "workflow-queue", "workflow-linked", "workflow-variants", "workflow-shortcuts",
   "input-standard", "input-folder", "input-vendor", "input-dedup", "input-calibration-meta", "input-calibration-manual", "input-calibration-persist",
   "model-cpsam", "model-cyto3", "model-stardist", "detection-batch", "detection-cancel", "detection-preprocess", "detection-watershed", "detection-provenance",
   "analysis-measure", "analysis-bins", "analysis-qc", "analysis-colony", "analysis-intensity", "analysis-area", "analysis-puncta", "analysis-spatial", "analysis-tracking", "analysis-neurite", "analysis-line-profile",
@@ -16,7 +33,7 @@ const catalogPath = resolve("src/parity/capabilities.json");
 const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
 const failures = [];
 
-if (catalog.length !== 47) failures.push(`expected 47 capabilities, received ${catalog.length}`);
+if (catalog.length !== expectedIds.length) failures.push(`expected ${expectedIds.length} capabilities, received ${catalog.length}`);
 const ids = catalog.map((capability) => capability.id);
 if (new Set(ids).size !== ids.length) failures.push("capability IDs are not unique");
 for (const id of expectedIds) if (!ids.includes(id)) failures.push(`missing frozen capability ${id}`);
@@ -65,7 +82,7 @@ for (const id of ["model-cpsam", "model-cyto3", "model-stardist", "export-segnpy
   if (states.get(id) !== "buildRequired") failures.push(`${id}: artifact/codec-gated capability must remain buildRequired`);
 }
 for (const id of ["input-vendor", "workflow-finetune"]) {
-  if (states.get(id) !== "unsupported") failures.push(`${id}: impossible browser capability must remain visibly unsupported`);
+  if (states.get(id) !== "unsupported") failures.push(`${id}: unimplemented browser capability must remain visibly unsupported`);
 }
 
 if (failures.length) {
@@ -74,4 +91,4 @@ if (failures.length) {
 }
 
 const counts = catalog.reduce((result, capability) => ({ ...result, [capability.state]: (result[capability.state] ?? 0) + 1 }), {});
-console.log(`Web parity verification passed: 47/47 inventoried (${counts.available ?? 0} available, ${counts.buildRequired ?? 0} build required, ${counts.unsupported ?? 0} unsupported); all source evidence resolves.`);
+console.log(`Web capability inventory verification passed (behavior tested separately): ${catalog.length}/${expectedIds.length} inventoried (${counts.available ?? 0} available, ${counts.buildRequired ?? 0} build required, ${counts.unsupported ?? 0} unsupported); all source evidence resolves.`);

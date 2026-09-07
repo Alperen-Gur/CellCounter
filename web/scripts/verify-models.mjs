@@ -25,6 +25,6 @@ for (const token of ["NoWebGpuError", "ModelArtifactUnavailableError", "verifySh
   if (!runtime.includes(token) && !errors.includes(token)) throw new Error(`Explicit failure path missing: ${token}`);
 }
 if (!buildContract.includes("Current live-artifact blocker") || !buildContract.includes("Fixture inference must never")) throw new Error("Build contract does not disclose artifact/fixture boundary");
-if (!/const defaultSettings:[\s\S]{0,160}modelId:\s*"cp-cyto3"/.test(app)) throw new Error("Web default model must match the macOS/Windows cp-cyto3 default");
+if (!/const defaultSettings:[\s\S]{0,160}modelId:\s*"classical"/.test(app)) throw new Error("Browser default must be the explicitly named built-in classical detector until learned artifacts are available");
 
 console.log("Web model catalog verification passed (exactly 3 models; WebGPU-only runtime; artifacts explicitly gated)");

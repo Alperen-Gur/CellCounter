@@ -1,6 +1,6 @@
 # CellCounter interface direction
 
-Design brief and implementation guidance · 8 September 2026. This is a proposed product direction grounded in the current PWA inspection, not a claim that the redesign has shipped. Use with the [general reference](../design-reference.md), [resource catalogue](../resource-catalogue.md), [systems research](research/systems-evidence.md), and [critique research](research/critique-evidence.md).
+Design brief and implementation guidance · 8 September 2026. The guide preceded the redesign; the implementation record below identifies what has since been observed. Publication status is recorded in the release notes. Use with the [general reference](../design-reference.md), [resource catalogue](../resource-catalogue.md), [systems research](research/systems-evidence.md), and [critique research](research/critique-evidence.md).
 
 ## The job
 
@@ -33,15 +33,72 @@ Use Swiss-influenced alignment, typographic order and disciplined grouping, adap
 | Canvas | Neutral near-black surround in both themes; optional plain or subtle grid only where orientation benefits | Keep fluorescence colors and masks distinct from application branding |
 | Light chrome | Neutral white and cool gray surfaces, dark text, crisp separators | Avoid the muddy combination of warm paper tones and low-contrast green-gray labels |
 | Dark chrome | Neutral charcoal surfaces with a clear text hierarchy | Keep the dark theme distinct from a single green tint applied everywhere |
-| Accent | A restrained teal for the principal action, selected navigation, and focus; no glow by default | Retain product continuity while giving color a consistent job |
+| Accent | Muted instrument blue: light `#315e91`, dark `#9bb8dc`; no green branding or luminous control treatments | Follow the user’s direction and keep UI color separate from fluorescence data |
 | Specimen overlays | Separate palette from chrome; selected object gets an explicit outline/handle treatment and linked row | Application accent must not become the only way to identify a cell against green fluorescence |
 | Typography | A dependable system sans stack initially; 14 px normal controls/data, 13 px secondary metadata, 18–22 px section/page titles; tabular figures for measurements | Readability and alignment before adding fonts; exact sizes are project starting points, not accessibility standards |
 | Spacing | 4 px base rhythm; 8 px within compact groups, 16 px between related groups, 24 px between sections | Use space to express relationships instead of repeatedly outlining boxes |
 | Controls | 36–40 px desktop control height; larger touch targets in touch layouts; 6–8 px control corners | Consistent hit areas and visual weight without soft, pillow-like controls |
 | Depth | Borders and surface contrast for permanent panes; shadow for transient menus/dialogs | Make elevation reflect interaction, rather than decorate every section |
-| Motion | Brief feedback for selection/disclosure, no entrance choreography before useful content | Preserve orientation without delaying work |
+| Motion | Brief feedback in the workbench; an optional, separate particle introduction may support exploration | Keep analysis immediately available and avoid continuous decorative rendering during image work |
 
 Neumorphic styling may suit an isolated illustration or a nonessential status ornament. It should not carry the only boundary, selected state, or focus indication for analysis controls. Apple-style translucency belongs only where foreground controls stay readable over changing specimens; an opaque surface is the default here. This is a contextual decision, not a ban on either visual language in other products.
+
+## Visual contract: no neon, no invented icons
+
+This section incorporates the user’s explicit direction on 8 September 2026
+before the revised palette and particle scene are implemented.
+
+- Use white/cool-gray chrome, charcoal text and a muted blue accent. Dark mode
+  uses neutral charcoal, pale gray text and a desaturated blue accent. Remove
+  green-tinted backgrounds, neon green branding, luminous status pills and
+  glow around ordinary controls. A fluorescence image’s green pixels are data,
+  not application styling, and must remain unchanged.
+- Use the existing **Lucide** icon library consistently, including the small
+  microscopy brand mark. Do not draw new CSS/SVG icons. Any future bespoke
+  raster branding should use image generation or appropriately licensed assets,
+  with provenance and license recorded. Lucide’s ISC license permits use,
+  modification and distribution with its notice retained.
+  [Lucide license](https://lucide.dev/license).
+- The particle scene is a scientific-inspired illustration, not a specimen,
+  measurement, simulation result or claim about cellular mechanics. Label it as
+  an illustration. Never synthesize apparent analysis output to decorate an
+  empty result.
+
+### Optional interactive introduction
+
+The user likes movable 3D point clouds, shape morphing, orbital fields,
+procedural motion, depth cues, additive light and scroll-linked transitions.
+Use those capabilities on a dedicated **Welcome** surface. The proposed default
+is a first-visit introduction with an immediate **Open workspace** action;
+returning projects should reopen their work. Placement can change if the user
+chooses a separate landing page. Do not put the animated scene behind specimen
+images, tables or analysis controls.
+
+The composition should pair a concise, left-aligned product statement with a
+large, dark-neutral 3D viewing area. White, steel-blue and a small amount of
+muted violet distinguish the point structures; no neon green or rainbow
+spectrum. The illustration morphs among a membrane-like cloud, a divided
+cluster and orbital paths around a core. It uses restrained soft light rather
+than a blown-out white center. Exact camera angles and particle distributions
+are art-direction choices, not scientific models.
+
+Required behavior:
+
+1. Pointer dragging rotates the actual 3D view. Arrow-key controls or visible
+   buttons provide the same ability; scrolling the introduction changes morph
+   state, with labeled shape buttons as a direct alternative.
+2. Include visible pause/resume and a direct exit to the workspace. Honor
+   `prefers-reduced-motion`: show a static selected shape, disable scroll-driven
+   motion and automatic orbit, and allow explicit shape changes.
+3. Load the renderer only for this surface. Cap particle count and pixel ratio;
+   pause when hidden or offscreen and dispose GPU resources on exit. The
+   illustration must not delay importing or decoding microscopy images.
+4. Use real depth-based point size, bounded additive blending and soft particle
+   falloff. Smooth morphs may use a procedural curl field; do not describe a
+   simple linear tween as a fluid simulation.
+5. A WebGL failure leaves readable content and the workspace action available.
+   It must not prevent using the PWA’s classical analysis method. Record the
+   renderer’s license and distinguish observed performance from targets.
 
 ## Organize around tasks
 
@@ -109,3 +166,27 @@ Also record product timings that those metrics do not explain: import to usable 
 5. Review a representative complete workflow at desktop and narrow widths. Exercise changed interactions once with appropriate evidence; honor the user’s request to avoid repetitive full-suite checks.
 
 The current browser parity gaps and unfinished release integration remain separate engineering work. This design brief does not mark them complete.
+
+## Implementation record: Web 0.2.0
+
+The workbench now follows this direction. One production-browser pass at
+1280 × 720 measured an **804 × 455 px** analyzed-image stage, compared with the
+original **862 × 215 px** stage. Primary navigation renders at **14 px**.
+At 390 × 844, the page width remained 390 px, the image stage was 455 px high,
+and closing the inspector sheet returned focus to its opening button.
+
+A synthetic two-object image produced a two-object classical preview and saved
+result. A waiting update reloaded the app without removing that local study.
+These are workflow observations, not biological validation or a full
+accessibility audit. The optional Three.js illustration rendered in the
+browser; its shape, rotation and pause controls responded, and its canvas was
+removed on entering the workspace. Reduced-motion/visibility behavior is
+implemented in source; device-wide GPU or frame-rate performance is not claimed.
+
+![Welcome with the optional orbital point illustration](screenshots/welcome-v0.2.0.png)
+
+![Analysis workbench showing a deliberately synthetic two-object fixture](screenshots/workbench-v0.2.0.png)
+
+Licenses for Lucide and Three.js accompany the static application in
+[`web/public/licenses`](../../web/public/licenses/README.txt). No private
+microscopy data or user screenshots were included in these publication images.

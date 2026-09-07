@@ -4,8 +4,10 @@ import { resolve } from "node:path";
 const dist = resolve("dist");
 const serviceWorker = await readFile(resolve(dist, "sw.js"), "utf8");
 const urls = [...serviceWorker.matchAll(/url:\s*["']([^"']+)["']/g)].map((match) => match[1]);
-const forbidden = urls.filter((url) => /(?:\/ort(?:[.-])|inference\.worker-|\/models\/|\.onnx(?:$|\?))/.test(url));
-if (forbidden.length) throw new Error(`Inference-only assets are eagerly precached: ${forbidden.join(", ")}`);
+const forbidden = urls.filter((url) => /(?:\/ort(?:[.-])|\/particleField-|\/models\/|\.onnx(?:$|\?))/.test(url));
+if (forbidden.length) throw new Error(`Optional renderer or learned-runtime assets are eagerly precached: ${forbidden.join(", ")}`);
+
+if (!urls.some((url) => /inference\.worker-/.test(url))) throw new Error("The built-in classical analysis worker must be available offline");
 
 let eagerBytes = 0;
 for (const url of new Set(urls)) {

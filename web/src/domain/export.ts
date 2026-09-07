@@ -75,7 +75,8 @@ export function exportCellsCsv(analysis: ImageAnalysis, provenance: AnalysisProv
 }
 
 export function exportAnalysisJson(analysis: ImageAnalysis, provenance: AnalysisProvenance): string {
-  return deterministicJson({ analysis, provenance });
+  const { displayPlane: _displayPlane, ...record } = analysis;
+  return deterministicJson({ analysis: record, provenance });
 }
 
 export function createExportBlob(contents: string, mediaType: string): Blob {
