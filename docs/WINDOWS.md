@@ -8,6 +8,11 @@ Windows-adapted, or not yet available.
 
 Version 1.1.0 fixes the first-analysis **“Sidecar scripts are not staged”** error and adds saved analysis setup, representative previews, resumable processing, linked measurements, and reversible mask versions. Model IDs remain the same three supported families. The expanded capability inventory now also lists native workflows that have not been ported; this release does not claim full macOS parity.
 
+The release inventory records **45 ready, 7 adapted and 15 pending** capabilities.
+See the [cross-platform status](PLATFORM-PARITY.md) for the shared workflow,
+remaining differences and evidence for the reported desktop fixes, or the
+[feature matrix](FEATURES.md) for individual functions.
+
 ## System requirements
 
 - 64-bit Windows 10 or Windows 11. The 1.1.0 workflow and bundled `uv` helper

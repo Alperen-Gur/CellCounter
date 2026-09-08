@@ -61,6 +61,10 @@ Inference remains CPU-only. The in-app capability inventory explicitly records
 additional native models, OME-Zarr/layer tools, prompt/sequence correction and
 other workflows that have not been ported. **Full macOS parity is not claimed.**
 
+The release inventory contains **45 ready, 7 adapted and 15 pending** capabilities.
+See the [cross-platform parity snapshot](../PLATFORM-PARITY.md) and
+[detailed feature comparison](../FEATURES.md) for the remaining differences.
+
 ## Validation boundary
 
 Focused tests cover embedded-script recovery, source projections, specimen

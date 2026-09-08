@@ -49,6 +49,12 @@ See the [v1.0.12 hotfix notes](releases/v1.0.12.md).
 
 macOS v1.0.13 bounds decoded contour memory and pages review candidates, including queues with more than 1,000 items. Update normally and reopen Review Queue; a data reset is unnecessary. Libraries with older review metadata may briefly prepare their review index on first use.
 
+This addresses [issue #9](https://github.com/Alperen-Gur/CellCounter/issues/9).
+The fix was exercised with 320 images and 1,280 review candidates; confirmation
+with the reporter's original library is still pending. See the
+[release-status and feature-parity summary](PLATFORM-PARITY.md) for validation
+limits and the differences between macOS, Windows and Web.
+
 ### Find keyboard shortcuts
 
 Open **Help → Keyboard Shortcuts** with `⌘/`, or use the shortcuts section in **Settings**. Menus show the actions available on the current screen; disabled actions have no applicable target. Letter keys for cell editing apply when the image canvas has focus. Search fields and text editors keep normal Mac text selection and undo behavior.

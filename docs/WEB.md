@@ -7,11 +7,15 @@ telemetry, image upload or application server path.
 
 ## What is available
 
-The in-product **Help → Browser capabilities** view records 69 capabilities,
+The in-product **Help → Browser capabilities** view records 69 capabilities:
+**48 available, 4 build required and 17 unsupported**,
 including the native workflows still missing from the browser. Each entry cites
 source evidence and distinguishes available, build-required and unavailable
 behavior. These source checks establish traceability; they are not proof of full
 macOS feature parity.
+
+See the [cross-platform parity snapshot](PLATFORM-PARITY.md) for the current
+release status and the [feature matrix](FEATURES.md) for individual differences.
 
 ### New in 0.2.0–0.2.1
 

@@ -21,10 +21,27 @@ remote-inference path.
 ## Highlights
 
 - Native x64 `.exe` and `.msi` installers for Windows 10 and Windows 11
+- First-analysis script staging is repaired automatically in 1.1.0
 - Cellpose-SAM, Cellpose `cyto3`, and StarDist fluorescence model families
+- Saved setup, representative previews, resumable processing and failed-image retry
+- Linked image/table/scatter selection, saved mask versions and bounded Review Queue pages
 - Microscopy import, Z-stack and channel handling, manual correction, advanced assays, comparison, and export
 - Local projects, source images, model environments, measurements, and provenance
 - Responsive React interface with Windows-native file handling and packaging
+
+## Feature parity
+
+Windows 1.1.0 shares the main inspect → preview → process → review workflow with
+macOS. It is not a complete macOS port: inference is CPU-only, the setup viewer
+shows the imported display preview, and the wider model catalog, layered
+microscopy workspace, prompt/sequence correction and reviewed-library training
+remain unavailable. Local `cyto3` training uses grouped image/mask folders.
+
+**Support → Platform parity** lists every inventoried capability and its limits.
+See the [current parity snapshot](../docs/PLATFORM-PARITY.md) and
+[detailed feature matrix](../docs/FEATURES.md). The
+[1.1.0 release notes](../docs/releases/windows-v1.1.0.md) document the first-analysis
+fix and its native Windows build evidence.
 
 ## Install
 

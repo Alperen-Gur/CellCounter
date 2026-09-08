@@ -13,6 +13,13 @@ Status meanings:
 For installation and operational guidance, see the [main README](../README.md), [Windows guide](WINDOWS.md), and
 [web guide](WEB.md).
 
+**Full macOS parity has not been reached.** The
+[release-status and parity snapshot](PLATFORM-PARITY.md) summarizes the shared
+workflow, remaining gaps, and published fixes for the two reported desktop
+issues. Windows inventories 45 ready, 7 adapted and 15 pending capabilities;
+Web inventories 48 available, 4 build-required and 17 unsupported capabilities.
+These differently grouped inventories are not completion percentages.
+
 ## Privacy and storage
 
 | Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
@@ -100,17 +107,23 @@ population structure are absent; the application does not fabricate a quantitati
 |---|---|---|---|
 | Mask fills, contours, boxes, labels, and selection markers | **Available** | **Available** | **Available** |
 | Add, remove, resize, merge, split, and freehand-trace corrections | **Available** | **Adapted / limited:** available except freehand tracing | **Adapted / limited:** available except freehand tracing |
-| Undo and redo with persisted correction history | **Available** | **Available** | **Available** |
+| Result-editor undo and redo | **Available** | **Adapted / limited:** undo/redo stack belongs to the loaded image editor | **Adapted / limited:** bounded undo/redo stack belongs to the current app session |
 | Include and exclude regions of interest | **Available** | **Available** | **Available** |
 | Ground-truth annotations with live precision, recall, and F1 | **Available** | **Available** | **Available** |
 | Point- and box-prompt correction | **Available** | **Not available** | **Not available** |
 | Propagation, interpolation, and drift-aware sequence correction | **Available** | **Not available** | **Not available** |
 | Low-confidence review queue | **Available** | **Available** | **Available** |
+| Review Queue Skip and decision undo | **Available** across pages | **Adapted / limited:** Skip and one last-decision undo across pages during the session | **Not available** as dedicated queue controls; accept, reject and resize remain available |
 | Card and tiled-grid curation | **Available** | **Adapted / limited:** card-based review | **Adapted / limited:** card-based review |
 | Reversible mask variants | **Available** | **Available:** up to eight saved versions per image | **Available** |
 | Risk-ranked fields | **Available** | **Not available** as the native ranking workflow | **Not available** as the native ranking workflow |
 | Per-image notes and review-confidence labels | **Available** | **Available** | **Available** |
 | Confidence, diameter, drift, agreement, and quality-insight summaries | **Available** | **Adapted / limited:** quality indicators without the complete macOS insight panel | **Adapted / limited:** browser-native quality indicators |
+
+Saved corrections and undo history have different lifetimes. Windows and Web
+persist corrected results, but their interactive result-editor undo stacks are
+not restored after reopening the application. Dedicated Review Queue undo has
+the separate limits listed above.
 
 ## Inspect, process and linked review
 

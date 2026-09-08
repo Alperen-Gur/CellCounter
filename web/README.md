@@ -23,6 +23,13 @@ on the device.
 > three learned segmentation models are not bundled. The interface reports learned inference as unavailable instead of substituting another model.
 > Use the native macOS or Windows release when live model inference is required.
 
+The browser now shares saved preview/processing/review workflows with the native
+apps, but full parity is not complete. Training, proprietary microscope readers,
+the native microscopy workspace and several correction tools remain unavailable.
+See the [parity snapshot](../docs/PLATFORM-PARITY.md) and
+[complete feature comparison](../docs/FEATURES.md); **Help → Browser capabilities**
+provides the same inventory's per-feature limitations in the app.
+
 ## Highlights
 
 - A continuous landing page with a full-viewport point illustration that changes with native scrolling,

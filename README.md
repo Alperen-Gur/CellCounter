@@ -44,6 +44,12 @@ Image analysis is local by design. CellCounter does not require an account and d
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
 > [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
 
+**Feature parity is partial.** All three platforms now provide saved setup, preview, resumable processing,
+linked measurements, and mask review. Windows retains three CPU-only learned models; the PWA currently runs
+classical segmentation. The broader model catalog, microscopy workspace and several correction/training tools
+remain macOS-specific. See [release status and remaining parity gaps](docs/PLATFORM-PARITY.md) for the current
+inventory and confirmation status of the two reported desktop issues.
+
 ## New in Web v0.2.1 preview
 
 A neutral, muted-blue workbench replaces the crowded interface. Preview and process with local classical segmentation, recover saved jobs, and review linked measurements or mask alternatives. A continuous, full-page 3D introduction follows the scroll from cell-like forms to an ordered field, with rotation, pause and reduced motion; library icons replace bespoke interface marks. See the [web release notes](docs/releases/web-v0.2.1.md) and [design guide](docs/design/cellcounter-guide.md).
