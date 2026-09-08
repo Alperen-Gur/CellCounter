@@ -27,7 +27,8 @@ nonisolated final class PythonModuleImportCache: @unchecked Sendable {
 
     /// Blocking background API. Concurrent misses join the same import. The
     /// result expires so external environment changes are caught on refresh.
-    func isImportable(pythonURL: URL) -> Bool {
+    func isImportable(pythonURL: URL,
+                      onInFlightJoin: (@Sendable () -> Void)? = nil) -> Bool {
         guard !Thread.isMainThread else { return cachedAnswer(pythonURL: pythonURL) ?? false }
         let key = pythonURL.path
         lock.lock()
@@ -37,6 +38,9 @@ nonisolated final class PythonModuleImportCache: @unchecked Sendable {
         }
         if let flight = flights[key] {
             lock.unlock()
+            // Observe selection of this exact flight outside the lock. Tests
+            // can synchronize invalidation without assuming a dispatch delay.
+            onInFlightJoin?()
             flight.done.wait()
             return flight.result
         }

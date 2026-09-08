@@ -121,10 +121,20 @@ jobs:
             -scheme CellCounting \
             -destination 'platform=macOS' \
             -only-testing:CellCountingTests \
+            -resultBundlePath "$RUNNER_TEMP/CellCounterTests.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=""
+
+      - name: Preserve native test failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-macos-test-results
+          path: ${{ runner.temp }}/CellCounterTests.xcresult
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Verify training and assay workers
         run: |

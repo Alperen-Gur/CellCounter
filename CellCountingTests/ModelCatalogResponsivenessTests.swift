@@ -67,8 +67,10 @@ struct ModelCatalogResponsivenessTests {
         #expect(await probe.maximumActive == 2)
     }
 
-    @Test func moduleProbeCoalescesColdMissesAndInvalidationRejectsStalePublication() async throws {
+    @Test(arguments: [true, false])
+    func moduleProbeCoalescesColdMissesAndInvalidationRejectsStalePublication(joinBeforeInvalidation: Bool) async throws {
         let control = BlockingImportProbe()
+        let joins = CatalogNotificationCounter()
         let cache = PythonModuleImportCache(module: "fixture", probe: { _ in control.run() })
         let python = URL(fileURLWithPath: "/fixture/python")
         // These fixtures deliberately block until the test releases them.
@@ -77,18 +79,30 @@ struct ModelCatalogResponsivenessTests {
         let first = Task { await catalogBlockingWork { cache.isImportable(pythonURL: python) } }
         defer { control.releaseFirst.signal() }
         try await waitFor { control.count == 1 }
-        let joined = Task { await catalogBlockingWork { cache.isImportable(pythonURL: python) } }
         // Cached reads return immediately while import is blocked.
         #expect(cache.cachedAnswer(pythonURL: python) == nil)
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(control.count == 1)
+        let request = {
+            Task { await catalogBlockingWork {
+                cache.isImportable(pythonURL: python, onInFlightJoin: { joins.increment() })
+            } }
+        }
+        let earlyJoin = joinBeforeInvalidation ? request() : nil
+        if joinBeforeInvalidation {
+            // Task creation (even followed by a sleep) does not prove that a
+            // caller selected the old flight. Wait for that selection itself.
+            try await waitFor { joins.count == 1 }
+            #expect(control.count == 1)
+        }
         cache.invalidate(pythonURL: python)
+        let joined = earlyJoin ?? request()
         let second = Task { await catalogBlockingWork { cache.isImportable(pythonURL: python) } }
         try await waitFor { control.count == 2 }
         #expect(await second.value == false)
         control.releaseFirst.signal()
         #expect(await first.value)
-        #expect(await joined.value)
+        // A caller that starts after invalidation must see the new generation.
+        #expect(await joined.value == joinBeforeInvalidation)
+        #expect(control.count == 2)
         #expect(cache.cachedAnswer(pythonURL: python) == false)
         #expect(cache.isImportable(pythonURL: python) == false)
     }
