@@ -21,3 +21,5 @@ The original [design reference](https://github.com/Alperen-Gur/Famulus/blob/d4d3
 YC transcript passages and original published chapter descriptions were inspected; the footage was not watched. Social metrics are dated observations of attention, not usability findings. Historical/practitioner opinions, official specifications and our applications are labeled separately. No design tools or skills were installed, and no original Famulus files were modified.
 
 The CellCounter guide is an implementation brief. It does not claim that the PWA redesign, full platform parity, or outstanding releases are complete.
+
+The [landing-page guide](landing-page-guide.md) defines the subsequent full-page, scroll-linked experience and records the reference-selection limits.

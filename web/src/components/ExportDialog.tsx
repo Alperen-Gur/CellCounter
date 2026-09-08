@@ -26,7 +26,7 @@ export function ExportDialog({ image, onClose }: { image: WorkspaceImage; onClos
   const stem = image.fileName.replace(/\.[^.]+$/, "");
   const cells = useMemo(() => filterCellsByRois(image), [image]);
   const provenance = useMemo(() => ({
-    appVersion: "0.2.0", appBuild: "web", exportedAt: new Date().toISOString(), coordinateSpace: "source-image pixels",
+    appVersion: "0.2.1", appBuild: "web", exportedAt: new Date().toISOString(), coordinateSpace: "source-image pixels",
     calibration: { pxPerUm: image.pxPerUm, source: image.calibrationSource ?? "default", confidence: image.calibrationConfidence ?? "low" },
     originalSource: image.analysis?.originalSource ?? (image.sourceSha256 ? { fileName: image.fileName, mediaType: image.sourceMediaType, byteLength: image.sourceByteLength, sha256: image.sourceSha256 } : null),
     analysisRaster: image.analysis?.image ?? null, model: image.analysis?.model ?? null, parameters: image.analysis?.parameters ?? null,

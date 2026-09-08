@@ -190,3 +190,5 @@ implemented in source; device-wide GPU or frame-rate performance is not claimed.
 Licenses for Lucide and Three.js accompany the static application in
 [`web/public/licenses`](../../web/public/licenses/README.txt). No private
 microscopy data or user screenshots were included in these publication images.
+
+The next landing iteration follows the [continuous-study guide](landing-page-guide.md), which supersedes the initial split-screen illustration layout shown above.

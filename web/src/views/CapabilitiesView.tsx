@@ -24,7 +24,7 @@ export function CapabilitiesView() {
     <main className="page-view capabilities-view">
       <header className="page-heading capability-heading">
         <div>
-          <span className="eyebrow">Browser v0.2.0 · Platform support</span>
+          <span className="eyebrow">Browser v0.2.1 · Platform support</span>
           <h1>Browser capability inventory</h1>
           <p>Available browser workflows and the native features this version does not support. Expand a feature for its implementation reference.</p>
         </div>

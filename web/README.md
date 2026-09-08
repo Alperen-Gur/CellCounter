@@ -4,11 +4,11 @@
 
 Private microscopy analysis in an installable, fully client-side PWA.
 
-[![Web preview](https://img.shields.io/badge/Web-v0.2.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.0)
+[![Web preview](https://img.shields.io/badge/Web-v0.2.1%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.0) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
 
 </div>
 
@@ -19,11 +19,14 @@ telemetry, or application server. Imported images, measurements, corrections, st
 on the device.
 
 > [!IMPORTANT]
-> Version 0.2.0 includes local classical threshold/watershed segmentation, but production weights for its
+> Version 0.2.1 includes local classical threshold/watershed segmentation, but production weights for its
 > three learned segmentation models are not bundled. The interface reports learned inference as unavailable instead of substituting another model.
 > Use the native macOS or Windows release when live model inference is required.
 
 ## Highlights
+
+- A continuous landing page with a full-viewport point illustration that changes with native scrolling,
+  clear section links, motion controls and immediate workspace access
 
 - Research workbench with Library, Analyze, Processing and Review navigation, a larger image canvas,
   a tabbed inspector and an on-demand measurement panel

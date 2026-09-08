@@ -1,4 +1,4 @@
-# CellCounter Web 0.2.0 preview
+# CellCounter Web 0.2.1 preview
 
 CellCounter Web is a fully client-side, installable PWA for private microscopy
 analysis. Imported pixels, model artifacts, measurements, corrections, study
@@ -13,7 +13,7 @@ source evidence and distinguishes available, build-required and unavailable
 behavior. These source checks establish traceability; they are not proof of full
 macOS feature parity.
 
-### New in 0.2.0
+### New in 0.2.0–0.2.1
 
 - **A research workbench:** Library, Analyze, Processing and Review are the main
   destinations. Analyze reserves most of the workspace for the image; Setup,
@@ -32,9 +32,10 @@ macOS feature parity.
 - **Linked review:** image selection, a paged measurement table and scatter
   selection share cell identity. Saved mask alternatives use the same image
   coordinates, show change counts and preserve the current mask before restore.
-- **An optional introduction:** a rotatable, morphing 3D point illustration
-  uses muted blue-white light, explicit controls, scroll-linked transitions
-  and reduced-motion support. It unloads on entering the analysis workspace.
+- **An optional introduction:** an unframed 3D point illustration spans the landing page,
+  with native scrolling linking cell-like forms, boundaries and an ordered
+  field. Muted blue-gray points, explicit section/motion controls and
+  reduced-motion support preserve readability. It unloads on entering the analysis workspace.
   Lucide icons and Three.js include their license notices in `licenses/`.
 - **Clearer context:** recorded run settings and calibration remain distinct
   from later review settings. Phone-sized screens use an explicitly dismissible
