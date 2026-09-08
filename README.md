@@ -15,8 +15,6 @@ Segmentation, per-cell measurements, assays, correction, and export on macOS, Wi
 
 [Platforms](#platforms) · [What it does](#what-it-does) · [Complete feature list](docs/FEATURES.md) · [Quick start](#quick-start) · [Limitations](#statistical-notes-and-limitations) · [Citing](#citing)
 
-For interface work, see the [design library](docs/design/README.md): a reusable design reference, expanded resource catalogue, sourced critique, Astra guidance, and the CellCounter application brief.
-
 </div>
 
 ---
@@ -52,7 +50,7 @@ inventory and confirmation status of the two reported desktop issues.
 
 ## New in Web v0.2.1 preview
 
-A neutral, muted-blue workbench replaces the crowded interface. Preview and process with local classical segmentation, recover saved jobs, and review linked measurements or mask alternatives. A continuous, full-page 3D introduction follows the scroll from cell-like forms to an ordered field, with rotation, pause and reduced motion; library icons replace bespoke interface marks. See the [web release notes](docs/releases/web-v0.2.1.md) and [design guide](docs/design/cellcounter-guide.md).
+A neutral, muted-blue workbench replaces the crowded interface. Preview and process with local classical segmentation, recover saved jobs, and review linked measurements or mask alternatives. A continuous, full-page 3D introduction follows the scroll from cell-like forms to an ordered field, with rotation, pause and reduced motion; library icons replace bespoke interface marks. See the [web release notes](docs/releases/web-v0.2.1.md).
 
 ![CellCounter Web continuous landing page](docs/design/screenshots/welcome-v0.2.1.png)
 

@@ -59,3 +59,10 @@ secrets.*
 
 # Local development tooling
 .unlazy/
+
+# Internal working references stay local and are not release documentation.
+AGENTS.md
+docs/design-reference.md
+docs/resource-catalogue.md
+docs/design/*.md
+docs/design/research/

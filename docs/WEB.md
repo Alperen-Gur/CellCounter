@@ -45,9 +45,6 @@ release status and the [feature matrix](FEATURES.md) for individual differences.
   from later review settings. Phone-sized screens use an explicitly dismissible
   inspector sheet; Help contains shortcuts, privacy details and capability limits.
 
-The reusable [design library](design/README.md) explains the research behind this
-interface and separates source evidence from design recommendations.
-
 Browser-native functionality includes:
 
 - PNG, JPEG, WebP, BMP, TIFF and OME-TIFF import, plus recursive folder import

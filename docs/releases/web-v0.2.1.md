@@ -22,7 +22,6 @@ workflow, local-only storage, blue workbench and licensed Lucide icons remain.
 Learned browser models and the documented native-platform gaps are still
 unavailable; this design update does not imply full feature parity.
 
-See the [landing-page design guide](../design/landing-page-guide.md) and
-[browser guide](../WEB.md). Download the static PWA archive and checksum from
+See the [browser guide](../WEB.md). Download the static PWA archive and checksum from
 this release and serve the files over HTTPS (or localhost). This is a release
 archive, not a new hosted analysis service.

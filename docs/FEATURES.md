@@ -211,7 +211,7 @@ capabilities remain as listed for their separate releases above.
 |---|---|
 | Models responsiveness | Cached status renders immediately; shared runtime checks use bounded background work, and missing-model results do not trigger another environment refresh. |
 | Keyboard navigation | Menus and Help → Keyboard Shortcuts share the actual action registry. Commands operate on the focused screen or canvas and remain disabled when unavailable; text editing and dialogs retain their expected keys. |
-| App icon | A microscopy mark is supplied at all ten native macOS icon resolutions, with transparent margins. Source artwork and generation prompts are in docs/branding. |
+| App icon | A microscopy mark is supplied at all ten native macOS icon resolutions, with transparent margins. Source artwork and asset provenance are in docs/branding. |
 | Analysis setup | Import without an installed detector, inspect a representative image, set calibration and supported source channels/projection, and run a whole-image preview. Matching previews are reused in the batch. |
 | Processing | Jobs and their immutable settings are saved locally before work starts. Pause finishes the current image; resume and retry retain completed work. After an interrupted launch jobs remain paused for explicit resume. Remaining time appears after warm timings exist. |
 | Task presets | Cell/nucleus counting opens the overview, positivity leads to measurements/intensity assays, and wound closure leads to area assays. Wound analysis can start with import only. |

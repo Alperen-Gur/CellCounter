@@ -52,6 +52,4 @@ HTTPS, or use localhost for development; opening `index.html` directly is not
 supported. This release archive does not establish a hosted service. Browser
 storage can be cleared or evicted, so export results you need to retain.
 
-See the [browser guide](../WEB.md), [feature comparison](../FEATURES.md), and
-[design library](../design/README.md). The original Famulus design documents
-remain unchanged; this repository contains the expanded, sourced adaptation.
+See the [browser guide](../WEB.md) and [feature comparison](../FEATURES.md).
