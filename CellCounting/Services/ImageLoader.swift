@@ -4,6 +4,22 @@ import ImageIO
 import UniformTypeIdentifiers
 import CryptoKit
 
+/// Serializes review image decoding without blocking the main actor. Unlike
+/// per-card detached tasks, queued calls retain their caller's cancellation.
+actor ReviewImageDecoder {
+    static let shared = ReviewImageDecoder()
+
+    func preview(at url: URL) -> NSImage? {
+        guard !Task.isCancelled else { return nil }
+        return autoreleasepool { ImageLoader.cachedReviewPreview(at: url) }
+    }
+
+    func thumbnail(at url: URL, fallbackURL: URL) -> NSImage? {
+        guard !Task.isCancelled else { return nil }
+        return autoreleasepool { ImageLoader.cachedThumbnail(at: url, fallbackURL: fallbackURL) }
+    }
+}
+
 /// Decodes JPEG/PNG/TIFF/BMP via ImageIO; rejects anything else with a clear error.
 struct LoadedImage {
     let cgImage: CGImage
@@ -55,9 +71,9 @@ enum ImageLoader {
     /// Shared bounded caches. Per-view `@State` still owns presentation, while
     /// these caches eliminate repeat disk decode when the user steps backward,
     /// reopens Home, or reviews several cells from the same source image.
-    private final class MemoryCaches: @unchecked Sendable {
+    nonisolated private final class MemoryCaches: @unchecked Sendable {
         let thumbnails = NSCache<NSURL, NSImage>()
-        let reviewPreviews = NSCache<NSURL, NSImage>()
+        let reviewPreviews = NSCache<NSString, NSImage>()
         let displayImages = NSCache<NSURL, NSImage>()
 
         init() {
@@ -70,7 +86,7 @@ enum ImageLoader {
         }
     }
 
-    private static let memory = MemoryCaches()
+    nonisolated private static let memory = MemoryCaches()
 
     static func load(_ url: URL) throws -> LoadedImage {
         let resolvedURL = displayDecodableURL(for: url)
@@ -265,9 +281,10 @@ enum ImageLoader {
     /// Failure is always non-fatal — callers should log a warning but not abort the import.
     @discardableResult
     static func writeThumbnail(_ cg: CGImage, to url: URL, maxDim: Int = 256) -> Bool {
+        guard maxDim > 0, cg.width > 0, cg.height > 0 else { return false }
         let scale = Double(maxDim) / Double(max(cg.width, cg.height))
-        let w = Int(Double(cg.width) * scale)
-        let h = Int(Double(cg.height) * scale)
+        let w = max(1, Int(Double(cg.width) * scale))
+        let h = max(1, Int(Double(cg.height) * scale))
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
                                    bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
@@ -284,14 +301,18 @@ enum ImageLoader {
 
     /// Lightweight: just open the thumbnail JPEG for grid views.
     static func loadThumb(_ record: ImageRecord) -> NSImage? {
-        cachedThumbnail(at: record.thumbURL)
+        cachedThumbnail(at: record.thumbURL, fallbackURL: record.displayURL)
     }
 
-    nonisolated static func cachedThumbnail(at url: URL) -> NSImage? {
+    nonisolated static func cachedThumbnail(at url: URL, fallbackURL: URL? = nil) -> NSImage? {
         let key = url as NSURL
         if let cached = memory.thumbnails.object(forKey: key) { return cached }
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        let cost = max(1, Int(image.size.width * image.size.height * 4))
+        // NSImage(contentsOf:) can defer decoding until SwiftUI draws it and
+        // trusts a thumbnail's declared size. Materialize at most 256px here,
+        // and recover old imports whose non-fatal thumbnail write failed.
+        guard let image = downsampledImage(at: url, maxPixelSize: 256)
+            ?? fallbackURL.flatMap({ downsampledImage(at: $0, maxPixelSize: 256) }) else { return nil }
+        let cost = Int(image.size.width * image.size.height * 4)
         memory.thumbnails.setObject(image, forKey: key, cost: cost)
         return image
     }
@@ -315,24 +336,32 @@ enum ImageLoader {
     /// microscope frame.
     nonisolated static func cachedReviewPreview(at url: URL,
                                                 maxPixelSize: Int = 1800) -> NSImage? {
-        let key = url as NSURL
+        guard maxPixelSize > 0 else { return nil }
+        let key = "\(url.absoluteString)\n\(maxPixelSize)" as NSString
         if let cached = memory.reviewPreviews.object(forKey: key) { return cached }
+        guard let image = downsampledImage(at: url, maxPixelSize: maxPixelSize) else { return nil }
+        memory.reviewPreviews.setObject(image, forKey: key,
+                                       cost: Int(image.size.width * image.size.height * 4))
+        return image
+    }
+
+    nonisolated private static func downsampledImage(at url: URL, maxPixelSize: Int) -> NSImage? {
         let resolvedURL = displayDecodableURL(for: url)
         guard let src = CGImageSourceCreateWithURL(resolvedURL as CFURL, [
             kCGImageSourceShouldCache: false,
         ] as CFDictionary) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
+            // Detection and stored image dimensions use raw pixel coordinates.
+            // Applying EXIF rotation here alone misaligns cells and their crops.
+            kCGImageSourceCreateThumbnailWithTransform: false,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceShouldCacheImmediately: true,
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else {
             return nil
         }
-        let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-        memory.reviewPreviews.setObject(image, forKey: key, cost: cg.width * cg.height * 4)
-        return image
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
     nonisolated static func pixelSize(at url: URL) -> CGSize? {

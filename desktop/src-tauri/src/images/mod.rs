@@ -3,4 +3,5 @@
 //! See [`importer`] for the `import_image` command (ARCHITECTURE.md §3.8).
 
 pub mod importer;
+pub mod preview;
 pub(crate) mod projection;

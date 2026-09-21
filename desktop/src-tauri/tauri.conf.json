@@ -26,10 +26,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": [
-            "$APPDATA/com.alperengur.cellcounter/CellCounter/Images/**",
-            "$APPDATA/com.alperengur.cellcounter/CellCounter/Thumbnails/**"
-          ],
+          "allow": [],
           "deny": []
         }
       }

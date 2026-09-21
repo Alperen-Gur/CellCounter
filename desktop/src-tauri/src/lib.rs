@@ -23,6 +23,7 @@ pub mod paths;
 pub mod proc;
 
 use detection::sidecar::SidecarManager;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,6 +47,14 @@ pub fn run() {
                 eprintln!("[startup] failed to open store.sqlite: {e}");
                 return Err(e.into());
             }
+
+            // Register actual storage paths as literals. Config scopes are glob
+            // patterns: a profile name containing '[' can otherwise deny every
+            // image (or fail scope initialization before setup even runs).
+            let store = paths::FileStore::from_app(&handle)?;
+            let image_scope = handle.asset_protocol_scope();
+            image_scope.allow_directory(store.images_dir(), true)?;
+            image_scope.allow_directory(store.thumbs_dir(), true)?;
 
             // Complete staging before the UI can request its first analysis.
             // A recoverable disk/lock problem must leave the library usable;
@@ -135,6 +144,7 @@ pub fn run() {
             db::repo::wipe_all_user_data,
             // ── image import ──
             images::importer::import_image,
+            images::preview::repair_image_preview,
             images::importer::list_images_in_dir,
             // ── detection transport ──
             detection::sidecar::run_detection,

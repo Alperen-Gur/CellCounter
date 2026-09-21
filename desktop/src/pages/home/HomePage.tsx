@@ -1,3 +1,4 @@
+import { LocalImage } from "../../kernel/viewport/LocalImage";
 /**
  * pages/home/HomePage.tsx — the Home screen (feat-home-import).
  *
@@ -302,7 +303,7 @@ export default function HomePage() {
                 >
                   <span className="home-recent__thumb">
                     {row.thumbSrc ? (
-                      <img src={row.thumbSrc} alt="" />
+                      <LocalImage src={row.thumbSrc} alt="" />
                     ) : (
                       <span
                         className="home-recent__thumb-fallback"

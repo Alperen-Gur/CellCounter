@@ -541,6 +541,8 @@ fn remove_image_files(
         }
     }
     let _ = std::fs::remove_file(store.thumb_path(id));
+    let _ = std::fs::remove_file(store.images_dir().join(format!("{id}.preview.png")));
+    let _ = std::fs::remove_file(store.thumbs_dir().join(format!("{id}.preview.jpg")));
 }
 
 /// Delete every batch whose `images` array is empty (mirrors `cleanupEmptyBatches`).

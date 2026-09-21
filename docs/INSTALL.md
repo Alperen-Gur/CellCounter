@@ -1,6 +1,6 @@
 # Installing CellCounter
 
-## macOS v1.0.13
+## macOS v1.0.14
 
 CellCounter requires **macOS 15 or later**. The macOS download is a **universal build for Intel and Apple Silicon Macs**. Python environments and model dependencies are installed separately for your Mac when needed.
 
@@ -8,7 +8,7 @@ The application is **ad-hoc signed and not notarized**. macOS may block its firs
 
 ### Install and open
 
-1. Download `CellCounter-v1.0.13.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
+1. Download `CellCounter-v1.0.14.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
 2. Unzip the download and drag **CellCounting.app** into **Applications**. The application is called CellCounter; its bundle on disk is named `CellCounting.app`. Quit an older copy before replacing it. Replacing the application is separate from resetting its saved library.
 3. Open the application. If macOS blocks it, dismiss the message without moving the app to Trash.
 4. Open **System Settings → Privacy & Security** and find the message about CellCounter being blocked. Choose **Open Anyway**, then confirm **Open** when prompted. Depending on your Mac's security policy, administrator approval may be required.
@@ -47,13 +47,11 @@ See the [v1.0.12 hotfix notes](releases/v1.0.12.md).
 
 ### Large Review Queues
 
-macOS v1.0.13 bounds decoded contour memory and pages review candidates, including queues with more than 1,000 items. Update normally and reopen Review Queue; a data reset is unnecessary. Libraries with older review metadata may briefly prepare their review index on first use.
+macOS v1.0.14 adds repairs for stale review entries after deletion or reset, safer background decoding, durable review saves and undo, and protection against delayed Results edits. Calibration updates also refresh review measurements. Missing thumbnails can use a bounded preview of the imported image.
 
-This addresses [issue #9](https://github.com/Alperen-Gur/CellCounter/issues/9).
-The fix was exercised with 320 images and 1,280 review candidates; confirmation
-with the reporter's original library is still pending. See the
-[release-status and feature-parity summary](PLATFORM-PARITY.md) for validation
-limits and the differences between macOS, Windows and Web.
+Quit the old copy, replace the application, and reopen Review Queue. Existing images and corrections are preserved; a data reset is unnecessary. Older libraries may briefly prepare their review index. Read or save failures are shown explicitly instead of appearing as an empty queue.
+
+The follow-up report is [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). The universal release archive was built, but automated tests and interactive validation were not run for this release. The reporter's exact crash remains unconfirmed. See the [v1.0.14 release notes](releases/v1.0.14.md).
 
 ### Find keyboard shortcuts
 

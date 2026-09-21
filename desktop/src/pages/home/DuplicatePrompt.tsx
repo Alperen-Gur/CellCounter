@@ -1,3 +1,4 @@
+import { LocalImage } from "../../kernel/viewport/LocalImage";
 /**
  * pages/home/DuplicatePrompt.tsx — the duplicate-import decision sheet.
  *
@@ -93,7 +94,7 @@ export function DuplicatePrompt({
               <div className="home-dup__row" key={d.imported.id}>
                 <div className="home-dup__thumb">
                   {thumb ? (
-                    <img src={thumb} alt="" />
+                    <LocalImage src={thumb} alt="" />
                   ) : (
                     <div className="home-dup__thumb-fallback" aria-hidden="true">
                       <Icon name="image" size={20} />

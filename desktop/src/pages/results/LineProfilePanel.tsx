@@ -1,3 +1,4 @@
+import { LocalImage } from "../../kernel/viewport/LocalImage";
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -103,7 +104,7 @@ export function LineProfilePanel({
       </p>
       {imageSrc ? (
         <div className="rv-profile-preview">
-          <img src={imageSrc} alt="Select line profile endpoints" onClick={setPoint} draggable={false} />
+          <LocalImage src={imageSrc} alt="Select line profile endpoints" onClick={setPoint} draggable={false} />
           <span
             className="rv-profile-dot rv-profile-dot--start"
             style={{ left: `${(start[0] / image.widthPx) * 100}%`, top: `${(start[1] / image.heightPx) * 100}%` }}

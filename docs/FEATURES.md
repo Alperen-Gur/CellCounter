@@ -1,6 +1,6 @@
 # CellCounter feature reference
 
-This is the public feature inventory for the currently documented releases: macOS v1.0.13, Windows v1.1.0,
+This is the public feature inventory for the currently documented releases: macOS v1.0.14, Windows v1.1.0,
 and Web v0.2.1 preview. It describes user-facing behavior and deliberately omits private implementation details.
 
 Status meanings:
@@ -22,7 +22,7 @@ These differently grouped inventories are not completion percentages.
 
 ## Privacy and storage
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Local image analysis with no image-upload path | **Available** | **Available** | **Available** |
 | Account-free use | **Available** | **Available** | **Available** |
@@ -33,7 +33,7 @@ These differently grouped inventories are not completion percentages.
 
 ## Import and calibration
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | JPEG, PNG, BMP, TIFF, and OME-TIFF | **Available** | **Available** | **Available**, plus WebP |
 | Recursive folder and batch import | **Available** | **Available** | **Available** where the browser supports folder selection |
@@ -49,7 +49,7 @@ These differently grouped inventories are not completion percentages.
 
 ## Segmentation models
 
-| Model or family | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Model or family | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Cellpose-SAM v2 | **Available** | **Not available** as a distinct checkpoint; legacy `cpsam_v2` runs Cellpose-SAM | **Preview / build required:** production weights are not bundled |
 | Cellpose-SAM and Cellpose-DINO ViT-L / ViT-B | **Available** | **Adapted / limited:** Cellpose-SAM only | **Preview / build required:** Cellpose-SAM only |
@@ -67,7 +67,7 @@ models in this table.
 
 ## Detection and refinement
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Single-image and batch detection with progress | **Available** | **Available** | **Available** for classical segmentation; learned models remain build required |
 | Cancellation without discarding the previous result | **Available** | **Available** with Windows-native process handling | **Available** for worker tasks; learned inference remains build required |
@@ -81,7 +81,7 @@ models in this table.
 
 ## Measurements and assays
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Count and configurable size-bin summaries | **Available** | **Available** | **Available** |
 | Area, perimeter, equivalent diameter, circularity, aspect ratio, solidity, and eccentricity | **Available** | **Available** | **Available** |
@@ -103,7 +103,7 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Editing, validation, and review
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Mask fills, contours, boxes, labels, and selection markers | **Available** | **Available** | **Available** |
 | Add, remove, resize, merge, split, and freehand-trace corrections | **Available** | **Adapted / limited:** available except freehand tracing | **Adapted / limited:** available except freehand tracing |
@@ -127,7 +127,7 @@ the separate limits listed above.
 
 ## Inspect, process and linked review
 
-| Workflow | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Workflow | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Saved setup, representative preview and matching-preview reuse | **Available** | **Available** | **Available** for classical segmentation |
 | Persistent processing, pause/resume, interruption recovery and failed-image retry | **Available** | **Available** | **Available** |
@@ -138,7 +138,7 @@ the separate limits listed above.
 
 ## Libraries, studies, and repeatable workflows
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Persistent image library and duplicate groups | **Available** | **Available** | **Available** |
 | Batches, conditions, and aggregate summaries | **Available** | **Available** | **Available** |
@@ -158,7 +158,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## Export and interoperability
 
-| Capability | macOS v1.0.13 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
 |---|---|---|---|
 | Per-cell CSV | **Available** | **Available** | **Available** |
 | Per-image or batch summary CSV | **Available** | **Available** | **Available** |
@@ -176,7 +176,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## macOS microscopy workspace
 
-The following layer-based exploratory workspace is currently specific to macOS v1.0.13:
+The following layer-based exploratory workspace is currently specific to macOS v1.0.14:
 
 - Image, label, point, shape, surface, and track layers with visibility and opacity controls.
 - Multidimensional time, Z, and channel navigation.
@@ -254,3 +254,9 @@ See the [v1.0.12 release notes](releases/v1.0.12.md) for focused validation and 
 - Legacy review-key migration finishes before opening the queue, and older background saves cannot replace a newer correction.
 
 See the [v1.0.13 release notes](releases/v1.0.13.md) for the issue context, focused validation and download checksum.
+
+## macOS v1.0.14 review reliability
+
+Stale review entries are repaired after deletion or reset. Review decisions wait for pending Results edits and a successful database save. Undo preserves current edits, and recalibration refreshes queue measurements. Background decoding is serialized, malformed measurements are guarded, and missing thumbnails can recover from the source image.
+
+The universal archive was built; automated tests and interactive validation were not run for this patch. See the [v1.0.14 release notes](releases/v1.0.14.md).

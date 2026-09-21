@@ -56,8 +56,11 @@ function validateBundle(config, packageJson, packageLock, cargoToml, cargoLock) 
   check(security?.freezePrototype === true, "JavaScript prototype hardening is disabled");
   check(security?.assetProtocol?.enable === true, "local microscopy image protocol is disabled");
   const assetAllow = security?.assetProtocol?.scope?.allow;
-  check(Array.isArray(assetAllow) && assetAllow.length === 2, "asset protocol must have two narrow image scopes");
-  check(assetAllow?.every((entry) => entry.startsWith("$APPDATA/com.alperengur.cellcounter/CellCounter/")), "asset protocol scope escaped app data");
+  // Setup grants only the actual Images and Thumbnails directories, escaping
+  // profile names literally. Config expansion both duplicated the identifier
+  // and interpreted '[' in Windows profile names as glob syntax.
+  check(Array.isArray(assetAllow) && assetAllow.length === 0,
+    "asset paths must be registered literally during setup, not expanded as config globs");
   check(cargoToml.includes('tauri = { version = "2", features = ["protocol-asset"] }'), "Tauri protocol-asset feature is not enabled");
   return issues;
 }
@@ -87,10 +90,22 @@ try {
     assertFile(resource, `Bundled Python resource is missing or empty: ${resource}`);
   }
   assertIncludes(config.app.security.csp, "http://asset.localhost", "CSP does not permit Tauri's asset host");
+  const startup = readText("src-tauri/src/lib.rs");
+  assertIncludes(startup, "handle.asset_protocol_scope()", "startup must register local image access");
+  assertIncludes(startup, "image_scope.allow_directory(store.images_dir(), true)?", "image storage scope missing");
+  assertIncludes(startup, "image_scope.allow_directory(store.thumbs_dir(), true)?", "thumbnail storage scope missing");
 
   const negative = structuredClone(config);
   negative.bundle.targets = ["msi"];
   assert(validateBundle(negative, packageJson, packageLock, cargoToml, cargoLock).length > 0, "target negative control did not fail");
+
+  const duplicatedAppIdentifier = structuredClone(config);
+  duplicatedAppIdentifier.app.security.assetProtocol.scope.allow = [
+    "$APPDATA/com.alperengur.cellcounter/CellCounter/Images/**",
+    "$APPDATA/com.alperengur.cellcounter/CellCounter/Thumbnails/**",
+  ];
+  assert(validateBundle(duplicatedAppIdentifier, packageJson, packageLock, cargoToml, cargoLock).length > 0,
+    "duplicated app identifier must fail image-scope validation");
 
   const crlfCargoLock = cargoLock.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
   assertEqual(

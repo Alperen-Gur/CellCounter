@@ -57,9 +57,21 @@ struct ReviewQueueView: View {
             header
             Divider().overlay(Tokens.divider).frame(height: 0.5)
 
-            if state.isReviewIndexing {
-                ProgressView("Preparing review queue…")
+            if state.isReviewIndexing || state.isRecalibrating {
+                ProgressView(state.isRecalibrating ? "Updating calibration…" : "Preparing review queue…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = state.reviewIndexError ?? session.errorMessage {
+                VStack(spacing: 12) {
+                    Text("Review queue unavailable").font(.headline)
+                    Text(error).foregroundStyle(Tokens.textSecondary)
+                    Button("Retry") {
+                        if state.reviewIndexError != nil { state.retryReviewIndex() }
+                        else { rebuild(preservingCursor: true) }
+                    }
+                        .appButton(.standard, size: .sm)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if queue.isEmpty {
                 EmptyStateView(
                     title: "Done — nothing to review",
@@ -122,12 +134,19 @@ struct ReviewQueueView: View {
             rebuild(preservingCursor: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in
-            guard editingDiameter == nil, !actionInFlight else { return }
+            // Deletion/reset invalidates edits and undo even during a decode.
+            // In-flight actions check owner liveness before writing.
+            editingDiameter = nil
             lastAction = nil
             rebuild(preservingCursor: true)
         }
         .onChange(of: state.isReviewIndexing) { _, indexing in
             if !indexing { rebuild() }
+        }
+        .onChange(of: state.isRecalibrating) { _, updating in
+            editingDiameter = nil
+            lastAction = nil
+            if !updating { rebuild(preservingCursor: true) }
         }
         .onChange(of: state.reviewQueueCount) { _, _ in
             // Legacy index backfill can finish while an empty Review screen
@@ -142,6 +161,8 @@ struct ReviewQueueView: View {
         var actions = ScreenShortcutActions()
         guard !actionInFlight else { return actions }
         actions.cancel = { cancelReviewAction() }
+        guard !state.isReviewIndexing, !state.isRecalibrating, state.reviewIndexError == nil,
+              session.errorMessage == nil else { return actions }
         if cursor < queue.count { actions.next = { skipCell() } }
         if editingDiameter != nil { actions.save = { commitEdit() } }
         if canTriage {
@@ -156,7 +177,8 @@ struct ReviewQueueView: View {
     private func handleReviewKey(_ press: KeyPress) -> KeyPress.Result {
         guard press.modifiers.isEmpty, !KeyboardShortcutContext.isEditingText,
               !KeyboardShortcutContext.hasNativeSheet, !KeyboardShortcutContext.hasOverlay(state),
-              !actionInFlight else { return .ignored }
+              !actionInFlight, !state.isReviewIndexing, !state.isRecalibrating, state.reviewIndexError == nil,
+              session.errorMessage == nil else { return .ignored }
         switch press.key {
         case .escape: cancelReviewAction()
         case .rightArrow: guard cursor < queue.count else { return .ignored }; skipCell()
@@ -213,80 +235,82 @@ struct ReviewQueueView: View {
         .padding(.horizontal, 32).padding(.vertical, 20)
     }
 
-    private var cardStack: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                // Background "next card" peek
-                if cursor + 1 < queue.count {
-                    ReviewCardView(state: state, item: queue[cursor + 1], thresholds: state.thresholds,
-                                   palette: state.overlayPalette,
-                                   editingDiameter: .constant(nil))
-                        .id(queue[cursor + 1].id)
-                        .scaleEffect(0.96)
-                        .offset(y: 14)
-                        .opacity(0.4)
-                        .allowsHitTesting(false)
+    @ViewBuilder private var cardStack: some View {
+        if let current = session.current {
+            VStack(spacing: 16) {
+                ZStack {
+                    // Background "next card" peek
+                    if cursor + 1 < queue.count {
+                        ReviewCardView(state: state, item: queue[cursor + 1], thresholds: state.thresholds,
+                                       palette: state.overlayPalette,
+                                       editingDiameter: .constant(nil))
+                            .id(queue[cursor + 1].id)
+                            .scaleEffect(0.96)
+                            .offset(y: 14)
+                            .opacity(0.4)
+                            .allowsHitTesting(false)
+                    }
+                    ReviewCardView(state: state, item: current,
+                                    thresholds: state.thresholds,
+                                    palette: state.overlayPalette,
+                                    editingDiameter: $editingDiameter)
+                        .id(current.id)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                ReviewCardView(state: state, item: queue[cursor],
-                                thresholds: state.thresholds,
-                                palette: state.overlayPalette,
-                                editingDiameter: $editingDiameter)
-                    .id(queue[cursor].id)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-            .frame(maxWidth: 560)
-
-            actionRow
                 .frame(maxWidth: 560)
-                .disabled(actionInFlight)
 
-            // Undo affordance — visible right after a Reject/Keep so a mistaken
-            // action is recoverable without knowing the Cmd+Z shortcut.
-            if lastAction != nil {
-                Button(action: undoLastAction) {
+                actionRow
+                    .frame(maxWidth: 560)
+                    .disabled(actionInFlight || !current.hasValidGeometry || current.confidenceFraction == nil)
+
+                // Undo affordance — visible right after a Reject/Keep so a mistaken
+                // action is recoverable without knowing the Cmd+Z shortcut.
+                if lastAction != nil {
+                    Button(action: undoLastAction) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(lastAction?.action == .reject ? "Undo reject (⌘Z)" : "Undo keep (⌘Z)")
+                                .font(.system(size: 12))
+                        }
+                        .foregroundStyle(Tokens.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                    .disabled(actionInFlight)
+                }
+
+                // Always-visible escape hatch — user should never feel trapped in the queue
+                Button {
+                    state.view = .home
+                } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "arrow.uturn.backward")
+                        Image(systemName: "chevron.left")
                             .font(.system(size: 11, weight: .semibold))
-                        Text(lastAction?.action == .reject ? "Undo reject (⌘Z)" : "Undo keep (⌘Z)")
+                        Text("Done — back to home")
                             .font(.system(size: 12))
                     }
-                    .foregroundStyle(Tokens.textSecondary)
+                    .foregroundStyle(Tokens.textTertiary)
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 2)
-                .disabled(actionInFlight)
+                .padding(.top, 4)
             }
-
-            // Always-visible escape hatch — user should never feel trapped in the queue
-            Button {
-                state.view = .home
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Done — back to home")
-                        .font(.system(size: 12))
-                }
-                .foregroundStyle(Tokens.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 4)
+            .padding(.horizontal, 32).padding(.vertical, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(.horizontal, 32).padding(.vertical, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var gridStack: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 260), spacing: 12)],
                       spacing: 12) {
-                ForEach(Array(queue.enumerated()), id: \.element.id) { index, item in
+                ForEach(queue) { item in
                     ReviewGridTile(item: item,
                                    thresholds: state.thresholds,
                                    palette: state.overlayPalette,
-                                   isBusy: actionInFlight,
-                                   onReject: { applyAction(.reject, at: index) },
-                                   onKeep: { applyAction(.keep, at: index) })
+                                   isBusy: actionInFlight || !item.hasValidGeometry || item.confidenceFraction == nil,
+                                   onReject: { applyAction(.reject, itemID: item.id) },
+                                   onKeep: { applyAction(.keep, itemID: item.id) })
                 }
             }
             .padding(24)
@@ -351,7 +375,10 @@ struct ReviewQueueView: View {
         let removedIndex: Int?
     }
 
-    private var canTriage: Bool { cursor < queue.count && !actionInFlight && editingDiameter == nil }
+    private var canTriage: Bool {
+        session.current.map { $0.hasLiveOwners && $0.hasValidGeometry && $0.confidenceFraction != nil } == true
+            && !actionInFlight && editingDiameter == nil
+    }
     private func cancelReviewAction() {
         if editingDiameter != nil { editingDiameter = nil }
         else { state.view = .home }
@@ -362,17 +389,35 @@ struct ReviewQueueView: View {
     }
 
     private func startEditing() {
-        guard cursor < queue.count else { return }
+        guard canTriage else { return }
+        guard let item = session.current, checkCalibration(for: item) else { return }
         editingDiameter = queue[cursor].cell.diameter
+    }
+
+    private func checkCalibration(for item: ReviewItem) -> Bool {
+        guard !state.isRecalibrating, item.hasCurrentCalibration else {
+            editingDiameter = nil
+            lastAction = nil
+            rebuild(preservingCursor: true)
+            reviewMessage = "The image or its calibration changed. Please review the refreshed measurements."
+            return false
+        }
+        return true
     }
 
     private func commitEdit() {
         guard !actionInFlight, cursor < queue.count, let d = editingDiameter else { return }
         let item = queue[cursor]
+        guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
+        guard checkCalibration(for: item) else { return }
         actionInFlight = true
         Task { @MainActor in
             defer { actionInFlight = false }
-            var cells = await state.loadCells(for: item.detection)
+            guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
+            var cells: [DetectedCell]
+            do { cells = try await state.loadReviewCells(for: item.detection) }
+            catch { reviewMessage = error.localizedDescription; return }
+            guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
             let revision = item.detection.cellsRevision
             guard let i = cells.firstIndex(where: { $0.id == item.cell.id }) else {
                 reviewMessage = "This cell was removed from the image. Close this edit to refresh the queue."
@@ -384,17 +429,25 @@ struct ReviewQueueView: View {
             let storage = await Task.detached(priority: .userInitiated) {
                 DetectionRecord.makeStorageSnapshot(cells)
             }.value
+            guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
+            guard checkCalibration(for: item) else { return }
             guard item.detection.cellsRevision == revision, !item.candidate.triaged else {
                 reviewMessage = "This image changed while saving. Your diameter is still here; please try again."
                 return
             }
-            let result = state.repos.commitCellEdit(
-                storage: storage,
-                corrections: [CorrectionSpec(kind: "resize", cellId: item.cell.id,
-                                             cx: item.cell.cx, cy: item.cell.cy,
-                                             diameter: d)],
-                detection: item.detection,
-                image: item.image)
+            let result: CellEditCommitResult
+            do {
+                result = try state.repos.commitReviewCellEdit(
+                    storage: storage,
+                    corrections: [CorrectionSpec(kind: "resize", cellId: item.cell.id,
+                                                 cx: item.cell.cx, cy: item.cell.cy,
+                                                 diameter: d)],
+                    detection: item.detection,
+                    image: item.image)
+            } catch {
+                reviewMessage = error.localizedDescription
+                return
+            }
 
             suppressNextRebuild = true
             NotificationCenter.default.post(name: .ccCorrectionsChanged,
@@ -405,11 +458,13 @@ struct ReviewQueueView: View {
         }
     }
 
-    private func applyAction(_ action: Action, at requestedIndex: Int? = nil) {
+    private func applyAction(_ action: Action, itemID: UUID? = nil) {
         guard !actionInFlight else { return }
-        let actionIndex = requestedIndex ?? cursor
-        guard queue.indices.contains(actionIndex) else { return }
-        let item = queue[actionIndex]
+        let selected: ReviewItem?
+        if let itemID { selected = queue.first { $0.id == itemID } }
+        else { selected = session.current }
+        guard let item = selected, item.hasLiveOwners, item.hasValidGeometry,
+              item.confidenceFraction != nil else { return }
         let kind: String
         switch action {
         case .reject: kind = "remove"
@@ -426,12 +481,19 @@ struct ReviewQueueView: View {
         actionInFlight = true
         Task { @MainActor in
             defer { actionInFlight = false }
+            guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
             var removedIndex: Int? = nil
             var removedCell: DetectedCell? = nil
             var storage: DetectionRecord.CellsStorageSnapshot? = nil
+            do { try await state.finishPendingCellEdits(for: item.detection) }
+            catch { reviewMessage = error.localizedDescription; return }
+            guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
             var revision = item.detection.cellsRevision
             if action == .reject {
-                var cells = await state.loadCells(for: item.detection)
+                var cells: [DetectedCell]
+                do { cells = try await state.loadReviewCells(for: item.detection) }
+                catch { reviewMessage = error.localizedDescription; return }
+                guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
                 revision = item.detection.cellsRevision
                 if let i = cells.firstIndex(where: { $0.id == item.cell.id }) {
                     removedCell = cells[i]
@@ -443,6 +505,8 @@ struct ReviewQueueView: View {
                 }
             }
 
+            guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
+            guard checkCalibration(for: item) else { return }
             guard item.detection.cellsRevision == revision, !item.candidate.triaged,
                   action != .reject || removedCell != nil else {
                 reviewMessage = "This image changed while saving. Please review the refreshed cell and try again."
@@ -450,11 +514,17 @@ struct ReviewQueueView: View {
                 return
             }
 
-            let result = state.repos.commitCellEdit(
-                storage: storage,
-                corrections: [CorrectionSpec(kind: kind, cell: item.cell)],
-                detection: item.detection,
-                image: item.image)
+            let result: CellEditCommitResult
+            do {
+                result = try state.repos.commitReviewCellEdit(
+                    storage: storage,
+                    corrections: [CorrectionSpec(kind: kind, cell: item.cell)],
+                    detection: item.detection,
+                    image: item.image)
+            } catch {
+                reviewMessage = error.localizedDescription
+                return
+            }
             guard let c = result.corrections.first else { return }
 
             lastAction = UndoableAction(action: action,
@@ -480,38 +550,62 @@ struct ReviewQueueView: View {
     /// where it was so the card reappears for re-triage.
     private func undoLastAction() {
         guard !actionInFlight, editingDiameter == nil, let undo = lastAction else { return }
-        // Restore a rejected cell into detection.cells at its original slot.
-        var restoredCells: [DetectedCell]? = nil
-        if undo.action == .reject, let cell = undo.removedCell {
-            var cells = undo.detection.cells
-            if !cells.contains(where: { $0.id == cell.id }) {
-                let insertAt = min(undo.removedIndex ?? cells.count, cells.count)
-                cells.insert(cell, at: insertAt)
-                restoredCells = cells
+        actionInFlight = true
+        Task { @MainActor in
+            defer { actionInFlight = false }
+            do {
+                guard !undo.candidate.isDeleted, undo.candidate.modelContext != nil,
+                      !undo.detection.isDeleted, undo.detection.modelContext != nil,
+                      !undo.correction.isDeleted, undo.correction.modelContext != nil,
+                      let item = try state.repos.reviewItems(for: [undo.candidate]).first else {
+                    lastAction = nil
+                    rebuild(preservingCursor: true)
+                    return
+                }
+                var storage: DetectionRecord.CellsStorageSnapshot?
+                try await state.finishPendingCellEdits(for: undo.detection)
+                guard item.hasLiveOwners, !undo.correction.isDeleted else {
+                    lastAction = nil
+                    rebuild(preservingCursor: true)
+                    return
+                }
+                var revision = undo.detection.cellsRevision
+                if undo.action == .reject, let cell = undo.removedCell {
+                    var cells = try await state.loadReviewCells(for: undo.detection)
+                    guard item.hasLiveOwners else { lastAction = nil; rebuild(preservingCursor: true); return }
+                    revision = undo.detection.cellsRevision
+                    if !cells.contains(where: { $0.id == cell.id }) {
+                        let restored = AppState.calibratedCells([cell], pxPerUm: item.pxPerUm,
+                                                               fallbackScale: item.pxPerUm)
+                        cells.insert(contentsOf: restored, at: min(undo.removedIndex ?? cells.count, cells.count))
+                        storage = await Task.detached(priority: .userInitiated) {
+                            DetectionRecord.makeStorageSnapshot(cells)
+                        }.value
+                    }
+                }
+                guard item.hasLiveOwners, !undo.correction.isDeleted,
+                      lastAction != nil, undo.detection.cellsRevision == revision else {
+                    reviewMessage = "This image changed while undoing. Please review it again."
+                    return
+                }
+                guard checkCalibration(for: item) else { return }
+                let delta = try state.repos.undoReviewCorrection(
+                    undo.correction, candidate: undo.candidate, restoredStorage: storage,
+                    detection: undo.detection, image: item.image)
+                lastAction = nil
+                suppressNextRebuild = true
+                NotificationCenter.default.post(name: .ccCorrectionsChanged,
+                                                object: item.image.id,
+                                                userInfo: ["reviewDelta": delta])
+                session.restore(undo.candidate, using: state.repos)
+            } catch {
+                reviewMessage = error.localizedDescription
             }
         }
-        guard let image = undo.candidate.image else { return }
-        let delta = state.repos.undoReviewCorrection(
-            undo.correction,
-            candidate: undo.candidate,
-            restoredCells: restoredCells,
-            detection: undo.detection,
-            image: image)
-        lastAction = nil
-
-        // Rebuild so the restored cell reappears, then land the cursor on it so
-        // the user sees exactly what they just un-rejected (the queue is sorted
-        // by confidence, so it may belong to an earlier page).
-        // suppressNextRebuild guards the notification round-trip.
-        suppressNextRebuild = true
-        NotificationCenter.default.post(name: .ccCorrectionsChanged,
-                                        object: image.id,
-                                        userInfo: ["reviewDelta": delta])
-        session.restore(undo.candidate, using: state.repos)
     }
 
     private func rebuild(preservingCursor: Bool = false) {
-        guard !state.isReviewIndexing else { return }
+        guard !state.isReviewIndexing, !state.isRecalibrating, state.reviewIndexError == nil else { return }
         session.reload(using: state.repos, preservingCurrent: preservingCursor)
     }
 }
@@ -527,12 +621,17 @@ private struct ReviewGridTile: View {
     let onKeep: () -> Void
 
     @State private var loaded: NSImage? = nil
+    @State private var loadFinished = false
 
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
                 Rectangle().fill(Tokens.bgSunken)
-                if let loaded { crop(loaded) } else { AppSpinner() }
+                if !item.hasValidGeometry {
+                    Text("Invalid measurements. Reanalyze this image in Results.")
+                } else if let loaded { crop(loaded) }
+                else if loadFinished { Text("Image preview unavailable") }
+                else { AppSpinner() }
             }
             .frame(height: 150)
             .clipped()
@@ -543,11 +642,11 @@ private struct ReviewGridTile: View {
                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Tokens.text)
                     Spacer()
-                    Text("\(Int(item.cell.confidence * 100))%")
+                    Text(item.confidenceLabel)
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(Tokens.warning)
                 }
-                Text(item.image.fileName)
+                Text(item.fileName)
                     .font(.system(size: 10)).foregroundStyle(Tokens.textTertiary)
                     .lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 6) {
@@ -572,8 +671,8 @@ private struct ReviewGridTile: View {
 
     private func crop(_ image: NSImage) -> some View {
         GeometryReader { geometry in
-            let rect = computeCropRect(widthPx: item.image.widthPx,
-                                       heightPx: item.image.heightPx,
+            let rect = computeCropRect(widthPx: item.widthPx,
+                                       heightPx: item.heightPx,
                                        cell: item.cell,
                                        canvasSize: geometry.size)
             let scale = max(geometry.size.width / rect.width,
@@ -582,8 +681,8 @@ private struct ReviewGridTile: View {
                 Canvas { context, _ in
                     context.draw(Image(nsImage: image), in: CGRect(
                         x: -rect.minX * scale, y: -rect.minY * scale,
-                        width: CGFloat(item.image.widthPx) * scale,
-                        height: CGFloat(item.image.heightPx) * scale))
+                        width: CGFloat(item.widthPx) * scale,
+                        height: CGFloat(item.heightPx) * scale))
                     let index = BinMath.binIndex(for: item.cell.diameter,
                                                  thresholds: thresholds)
                     let color = palette.overlayColor(forBin: index)
@@ -616,13 +715,12 @@ private struct ReviewGridTile: View {
 
     private func load() async {
         loaded = nil
-        let url = item.image.thumbURL
-        let image = await Task.detached(priority: .utility) {
-            guard !Task.isCancelled else { return NSImage?.none }
-            return ImageLoader.cachedThumbnail(at: url)
-        }.value
+        loadFinished = false
+        let url = item.thumbURL
+        let image = await ReviewImageDecoder.shared.thumbnail(at: url, fallbackURL: item.displayURL)
         guard !Task.isCancelled else { return }
         loaded = image
+        loadFinished = true
     }
 }
 
@@ -637,6 +735,7 @@ private struct ReviewCardView: View {
 
     @Environment(AppTheme.self) private var theme
     @State private var loaded: NSImage? = nil
+    @State private var loadFinished = false
     @State private var detectionCells: [DetectedCell] = []
 
     private var binIdx: Int {
@@ -653,8 +752,12 @@ private struct ReviewCardView: View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack {
                 Rectangle().fill(Tokens.bgSunken)
-                if let nsImage = loaded {
+                if !item.hasValidGeometry {
+                    Text("Invalid measurements. Reanalyze this image in Results.")
+                } else if let nsImage = loaded {
                     cropView(nsImage: nsImage)
+                } else if loadFinished {
+                    Text("Image preview unavailable. Check that the imported image still exists.")
                 } else {
                     AppSpinner()
                 }
@@ -676,7 +779,7 @@ private struct ReviewCardView: View {
                     diameterSlider(current: d)
                 }
 
-                Text(item.image.fileName)
+                Text(item.fileName)
                     .font(.system(size: 11))
                     .foregroundStyle(Tokens.textTertiary)
                     .lineLimit(1)
@@ -702,9 +805,9 @@ private struct ReviewCardView: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Tokens.bgSunken).frame(width: 80, height: 6)
                 Capsule().fill(confidenceColor)
-                    .frame(width: max(2, 80 * item.cell.confidence), height: 6)
+                    .frame(width: max(2, 80 * (item.confidenceFraction ?? 0)), height: 6)
             }
-            Text("\(Int(item.cell.confidence * 100))%")
+            Text(item.confidenceLabel)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Tokens.textSecondary)
         }
@@ -724,7 +827,7 @@ private struct ReviewCardView: View {
             Slider(value: Binding(
                 get: { editingDiameter ?? item.cell.diameter },
                 set: { editingDiameter = $0 }
-            ), in: max(2, item.cell.diameter * 0.3)...(item.cell.diameter * 2.5))
+            ), in: item.diameterEditRange)
             .controlSize(.small)
             Text(formatDiameter(current))
                 .font(.system(size: 11.5, design: .monospaced))
@@ -747,8 +850,8 @@ private struct ReviewCardView: View {
             // For any image-pixel point p, the view-space point is:
             //   v = (p - cropRect.origin) * scale
             let cropRect = computeCropRect(
-                widthPx: item.image.widthPx,
-                heightPx: item.image.heightPx,
+                widthPx: item.widthPx,
+                heightPx: item.heightPx,
                 cell: item.cell,
                 canvasSize: geo.size
             )
@@ -763,16 +866,16 @@ private struct ReviewCardView: View {
                 Canvas { ctx, _ in
                     ctx.draw(Image(nsImage: nsImage), in: CGRect(
                         x: -cropRect.minX * scale, y: -cropRect.minY * scale,
-                        width: CGFloat(item.image.widthPx) * scale,
-                        height: CGFloat(item.image.heightPx) * scale))
+                        width: CGFloat(item.widthPx) * scale,
+                        height: CGFloat(item.heightPx) * scale))
                     let thresholds = self.thresholds
                     let targetId = item.cell.id
-                    let targetCell = detectionCells.first(where: { $0.id == targetId }) ?? item.cell
+                    let targetCell = detectionCells.first(where: { $0.id == targetId && isDrawable($0) }) ?? item.cell
 
                     // 1) Neighbors first (drawn under the target so the target ring
                     //    stays visually on top).
                     for c in detectionCells where c.id != targetId {
-                        guard cellIntersectsCropRect(c, cropRect: cropRect) else { continue }
+                        guard isDrawable(c), cellIntersectsCropRect(c, cropRect: cropRect) else { continue }
                         let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
                         let col = palette.overlayColor(forBin: idx)
                         if let contour = c.contourPx, contour.count >= 3 {
@@ -912,19 +1015,28 @@ private struct ReviewCardView: View {
         return bb.intersects(cropRect)
     }
 
+    private func isDrawable(_ cell: DetectedCell) -> Bool {
+        let limit = Double(max(item.widthPx, item.heightPx)) * 4
+        guard cell.cx.isFinite, cell.cy.isFinite, cell.diameter.isFinite,
+              cell.diameterPx.isFinite, cell.diameterPx > 0, cell.diameterPx <= limit,
+              abs(cell.cx) <= limit, abs(cell.cy) <= limit else { return false }
+        return cell.contourPx?.allSatisfy {
+            $0.x.isFinite && $0.y.isFinite && abs($0.x) <= limit && abs($0.y) <= limit
+        } ?? true
+    }
+
     private func load() async {
         loaded = nil
+        loadFinished = false
         detectionCells = []
-        let url = item.image.displayURL
+        let url = item.displayURL
         let detection = item.detection
         async let cells = state.loadCells(for: detection)
-        let ns = await Task.detached(priority: .userInitiated) {
-            guard !Task.isCancelled else { return NSImage?.none }
-            return ImageLoader.cachedReviewPreview(at: url)
-        }.value
+        let ns = await ReviewImageDecoder.shared.preview(at: url)
         let decoded = await cells
         guard !Task.isCancelled else { return }
         loaded = ns
+        loadFinished = true
         detectionCells = decoded
     }
 

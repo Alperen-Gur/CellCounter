@@ -23,6 +23,7 @@
     "verify:windows-artifacts": "node scripts/verify-windows-artifacts.mjs",
     "verify:windows": "node scripts/verify-windows.mjs",
     "verify:workflow": "node --experimental-strip-types --test tests/workflow.test.ts",
+    "verify:previews": "node --experimental-strip-types --test src/kernel/viewport/imageRecovery.test.mjs",
     "verify:results": "node --experimental-strip-types src/pages/results/reviewBehavior.test.mjs"
   },
   "dependencies": {

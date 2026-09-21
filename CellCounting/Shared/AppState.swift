@@ -12,6 +12,7 @@ enum AppView: String, Hashable, CaseIterable {
 private struct PendingCellEdit {
     let detection: DetectionRecord
     let image: ImageRecord
+    let baseRevision: Int
     var cells: [DetectedCell]
     var corrections: [CorrectionSpec]
     var revision: Int
@@ -242,6 +243,7 @@ final class AppState {
     private(set) var recentBatchSummaries: [BatchSummary] = []
     private(set) var reviewQueueCount: Int = 0
     private(set) var isReviewIndexing = true
+    private(set) var reviewIndexError: String?
 
     /// Confidence cutoff used for the Review queue badge count. Kept here so the
     /// notification listener and the on-launch refresh agree on the threshold.
@@ -383,12 +385,12 @@ final class AppState {
     @ObservationIgnored private var currentBatchCacheId: UUID?
     @ObservationIgnored private var currentBatchCache: BatchRecord?
     @ObservationIgnored private var orderedImagesCache: (batchId: UUID, count: Int, images: [ImageRecord])?
-    /// Small shared LRU for decoded detection payloads. The viewer, sidebar,
-    /// and Review card previously decoded the same JSON independently.
-    @ObservationIgnored private var decodedCellsTasks: [UUID: (revision: Int, task: Task<[DetectedCell], Never>)] = [:]
+    /// Coalesce rapid overlay edits while their payload is encoded off the UI thread.
     @ObservationIgnored private var pendingCellEdits: [UUID: PendingCellEdit] = [:]
     @ObservationIgnored private var pendingCellEditTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var calibrationTask: Task<Void, Error>?
+    private var calibrationUpdatesInFlight = 0
+    var isRecalibrating: Bool { calibrationUpdatesInFlight > 0 }
 
     var activeModelName: String {
         models.first(where: { $0.id == activeModelId })?.name ?? "Cellpose cyto3"
@@ -545,14 +547,14 @@ final class AppState {
             forName: .ccCorrectionsChanged,
             object: nil,
             queue: .main
-        ) { [weak self] note in
+        ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let delta = note.userInfo?["reviewDelta"] as? Int {
-                    self.reviewQueueCount = max(0, self.reviewQueueCount + delta)
-                } else {
-                    self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
-                }
+                // Notifications are delivered through deferred main-actor
+                // tasks. A reset or index refresh may already include this
+                // change; applying an old delta would count it twice or
+                // resurrect a badge after every image was deleted.
+                self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
                 // Cell edits can change the denormalized total in a recent row;
                 // this is five lightweight batch reads, not a library scan.
                 self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
@@ -571,12 +573,7 @@ final class AppState {
         // normalized once, then remains O(1)/fetchCount on future launches.
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.repos.rebuildPerformanceIndexes { [weak self] in
-                guard let self else { return }
-                self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
-                self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
-            }
-            self.isReviewIndexing = false
+            await self.prepareReviewIndex()
         }
 
         // Pass-12 K1: keep `activeModelInstallState` (and `detector`) coherent
@@ -842,40 +839,62 @@ final class AppState {
     }
 
     /// Decode a detection once off the MainActor and share the result between
-    /// every Results/Review consumer. Concurrent requests coalesce onto the
-    /// same task, and stale results are discarded if an edit lands meanwhile.
+    /// every Results/Review consumer. The serial worker rechecks the shared
+    /// cache, and stale results are discarded if an edit lands meanwhile.
     func loadCells(for detection: DetectionRecord) async -> [DetectedCell] {
-        if let cached = cachedCells(for: detection) { return cached }
+        (try? await loadReviewCells(for: detection)) ?? []
+    }
+
+    /// Review writes must fail visibly on unreadable saved measurements.
+    func loadReviewCells(for detection: DetectionRecord) async throws -> [DetectedCell] {
+        try await finishPendingCellEdits(for: detection)
+        if let cached = cachedCells(for: detection), !cached.isEmpty { return cached }
 
         let id = detection.id
         let revision = detection.cellsRevision
-        if let inFlight = decodedCellsTasks[id], inFlight.revision == revision {
-            let cells = await inFlight.task.value
-            // Coalesced callers must validate the revision too: a correction
-            // can land while they are suspended on another caller's decode.
-            guard detection.cellsRevision == revision else {
-                return await loadCells(for: detection)
-            }
-            return cells
-        }
-
-        decodedCellsTasks[id]?.task.cancel()
         let data = detection.cellsData
-        let task: Task<[DetectedCell], Never> = Task.detached(priority: .userInitiated) {
-            guard !Task.isCancelled else { return [DetectedCell]() }
-            return DetectionRecord.decodeCellsData(data)
-        }
-        decodedCellsTasks[id] = (revision, task)
-        let cells = await task.value
-
-        if decodedCellsTasks[id]?.revision == revision {
-            decodedCellsTasks[id] = nil
-        }
+        let cells = try await CellDecodeWorker.shared.decode(id: id, revision: revision, data: data)
+        try Task.checkCancellation()
+        guard !detection.isDeleted, detection.modelContext != nil else { throw CancellationError() }
         guard detection.cellsRevision == revision else {
-            return await loadCells(for: detection)
+            return try await loadReviewCells(for: detection)
         }
         detection.cacheDecodedCells(cells, revision: revision)
         return cells
+    }
+
+    /// A Results edit can still be encoding when the user opens Review. Drain
+    /// it before reading or triaging the detection, so it cannot later replace
+    /// the review decision with an older cell array.
+    func finishPendingCellEdits(for detection: DetectionRecord) async throws {
+        try Task.checkCancellation()
+        guard !detection.isDeleted, detection.modelContext != nil else { throw CancellationError() }
+        let id = detection.id
+        while let task = pendingCellEditTasks[id] {
+            await task.value
+            try Task.checkCancellation()
+            guard !detection.isDeleted, detection.modelContext != nil else { throw CancellationError() }
+        }
+    }
+
+    func retryReviewIndex() {
+        guard !isReviewIndexing else { return }
+        isReviewIndexing = true
+        Task { await prepareReviewIndex() }
+    }
+
+    private func prepareReviewIndex() async {
+        reviewIndexError = nil
+        defer { isReviewIndexing = false }
+        do {
+            try await repos.rebuildPerformanceIndexes { [weak self] in
+                guard let self else { return }
+                self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
+                self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
+            }
+        } catch {
+            reviewIndexError = "Could not prepare the review queue: \(error.localizedDescription)"
+        }
     }
 
     var currentImage: ImageRecord? {
@@ -1294,7 +1313,8 @@ final class AppState {
                 "This image has a different pixel scale. Analyze it in a separate batch or explicitly confirm a manual scale."])
         }
         // Finish committed corrections before saving the previous mask variant.
-        if let pending = pendingCellEditTasks[image.detection?.id ?? UUID()] { await pending.value }
+        if let detection = image.detection { try await finishPendingCellEdits(for: detection) }
+        guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
         inFlightRerunImageIds.insert(imageId)
         defer { inFlightRerunImageIds.remove(imageId) }
         let source = settings.sourceURL(for: image)
@@ -1305,11 +1325,13 @@ final class AppState {
             recordedSettings.weightsSHA256 = ProvenanceMetadata.weightsHash(for: family, modelId: settings.modelId)
         }
         let result = try await svc.detect(settings.detectionInput(imageURL: source))
+        guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
         // Edits made while inference was running belong to the saved previous
         // variant. Drain them before replacing its detection record.
         while let detection = image.detection, let pending = pendingCellEditTasks[detection.id] {
             await pending.value
             try Task.checkCancellation()
+            guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
         }
         try Task.checkCancellation()
         var measuredCells = result.cells
@@ -1394,6 +1416,9 @@ final class AppState {
                           corrections: [CorrectionSpec],
                           detection: DetectionRecord,
                           image: ImageRecord) {
+        guard !detection.isDeleted, detection.modelContext != nil,
+              !image.isDeleted, image.modelContext != nil,
+              image.detection?.id == detection.id else { return }
         let id = detection.id
         let nextRevision = (pendingCellEdits[id]?.revision ?? 0) &+ 1
         if var pending = pendingCellEdits[id] {
@@ -1403,7 +1428,7 @@ final class AppState {
             pendingCellEdits[id] = pending
         } else {
             pendingCellEdits[id] = PendingCellEdit(
-                detection: detection, image: image, cells: cells,
+                detection: detection, image: image, baseRevision: detection.cellsRevision, cells: cells,
                 corrections: corrections, revision: nextRevision)
         }
 
@@ -1413,6 +1438,14 @@ final class AppState {
             catch { return }
             guard let self, let pending = self.pendingCellEdits[id],
                   pending.revision == nextRevision else { return }
+            defer {
+                if self.pendingCellEdits[id]?.revision == nextRevision {
+                    self.pendingCellEdits[id] = nil
+                    self.pendingCellEditTasks[id] = nil
+                }
+            }
+            guard !pending.detection.isDeleted, pending.detection.modelContext != nil,
+                  !pending.image.isDeleted, pending.image.modelContext != nil else { return }
 
             let snapshotCells = pending.cells
             let storage = await Task.detached(priority: .userInitiated) {
@@ -1421,16 +1454,25 @@ final class AppState {
             guard !Task.isCancelled,
                   let latest = self.pendingCellEdits[id],
                   latest.revision == nextRevision else { return }
+            guard !latest.detection.isDeleted, latest.detection.modelContext != nil,
+                  !latest.image.isDeleted, latest.image.modelContext != nil,
+                  latest.image.detection?.id == id else { return }
+            guard latest.detection.cellsRevision == latest.baseRevision else {
+                self.flashExport("The analysis changed before the edit could be saved. Please reopen the image and try again.", isError: true)
+                return
+            }
 
-            let result = self.repos.commitCellEdit(
-                storage: storage,
-                corrections: latest.corrections,
-                detection: latest.detection,
-                image: latest.image)
-            self.pendingCellEdits[id] = nil
-            self.pendingCellEditTasks[id] = nil
-            self.postCorrectionsChanged(imageId: latest.image.id,
-                                        reviewDelta: result.reviewCountDelta)
+            do {
+                let result = try self.repos.commitReviewCellEdit(
+                    storage: storage,
+                    corrections: latest.corrections,
+                    detection: latest.detection,
+                    image: latest.image)
+                self.postCorrectionsChanged(imageId: latest.image.id,
+                                            reviewDelta: result.reviewCountDelta)
+            } catch {
+                self.flashExport("The edit could not be saved: \(error.localizedDescription)", isError: true)
+            }
         }
     }
 
@@ -1734,29 +1776,47 @@ final class AppState {
     /// Serialize calibration requests and only apply a prepared snapshot if no
     /// correction arrived while it was encoded. Memory is bounded to one image.
     func recalibrateBatch(_ batch: BatchRecord, pxPerUm scale: Double, source: String) async throws {
+        calibrationUpdatesInFlight += 1
+        defer { calibrationUpdatesInFlight -= 1 }
         let previous = calibrationTask
         let task = Task { @MainActor in
             _ = try? await previous?.value
+            try Task.checkCancellation()
+            guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
             guard scale.isFinite, scale > 0 else { return }
             let oldScale = batch.pxPerUm
             batch.pxPerUm = scale; batch.pxPerUmSource = source
-            if oldScale != scale {
-                for image in self.orderedImages(in: batch) {
-                    while let detection = image.detection {
-                        if let pending = self.pendingCellEditTasks[detection.id] { await pending.value; continue }
-                        let revision = detection.cellsRevision
-                        let cells = await self.loadCells(for: detection)
-                        let snapshot = await Task.detached(priority: .utility) {
-                            DetectionRecord.makeStorageSnapshot(Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: oldScale))
-                        }.value
-                        guard image.detection?.id == detection.id,
-                              detection.cellsRevision == revision,
-                              self.pendingCellEditTasks[detection.id] == nil else { continue }
-                        detection.applyStorageSnapshot(snapshot)
-                        break
+            // Per-cell scale inference makes this idempotent. Visit images
+            // even when the batch already has this scale: a failed earlier
+            // pass may have stopped partway through the batch.
+            for image in self.orderedImages(in: batch) {
+                while !image.isDeleted, image.modelContext != nil, let detection = image.detection {
+                    try Task.checkCancellation()
+                    guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+                    if let pending = self.pendingCellEditTasks[detection.id] { await pending.value; continue }
+                    let revision = detection.cellsRevision
+                    let cells = try await self.loadReviewCells(for: detection)
+                    let snapshot = await Task.detached(priority: .utility) {
+                        DetectionRecord.makeStorageSnapshot(Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: oldScale))
+                    }.value
+                    try Task.checkCancellation()
+                    guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+                    guard !image.isDeleted, image.modelContext != nil,
+                          !detection.isDeleted, detection.modelContext != nil else { break }
+                    guard image.detection?.id == detection.id,
+                          detection.cellsRevision == revision,
+                          self.pendingCellEditTasks[detection.id] == nil else { continue }
+                    guard !snapshot.data.isEmpty else {
+                        throw NSError(domain: "CellCounter.Calibration", code: 1, userInfo: [
+                            NSLocalizedDescriptionKey: "The calibrated measurements could not be encoded. The original measurements were preserved."
+                        ])
                     }
+                    try self.repos.recalibrateReviewCandidates(for: detection, pxPerUm: scale)
+                    detection.applyStorageSnapshot(snapshot)
+                    break
                 }
             }
+            guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
             batch.contentRevision &+= 1
             try self.repos.context.save()
             NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)

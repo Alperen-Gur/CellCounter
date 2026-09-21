@@ -7,7 +7,7 @@
 Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
-[![macOS](https://img.shields.io/badge/macOS-v1.0.13-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13)
+[![macOS](https://img.shields.io/badge/macOS-v1.0.14-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.14)
 [![Windows](https://img.shields.io/badge/Windows-v1.1.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0)
 [![Web](https://img.shields.io/badge/Web-v0.2.1%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
@@ -32,7 +32,7 @@ Image analysis is local by design. CellCounter does not require an account and d
 
 | Platform | Release | Availability |
 |---|---|---|
-| **macOS** | [v1.0.13](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13) | Native universal app for macOS 15 or later |
+| **macOS** | [v1.0.14](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.14) | Native universal app for macOS 15 or later |
 | **Windows** | [v1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
 | **Web** | [v0.2.1 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1) | Installable PWA with local classical segmentation; learned models remain unavailable |
 
@@ -47,6 +47,10 @@ linked measurements, and mask review. Windows retains three CPU-only learned mod
 classical segmentation. The broader model catalog, microscopy workspace and several correction/training tools
 remain macOS-specific. See [release status and remaining parity gaps](docs/PLATFORM-PARITY.md) for the current
 inventory and confirmation status of the two reported desktop issues.
+
+## New in macOS v1.0.14 — review reliability
+
+Review now repairs stale queue entries, protects decisions from delayed edits and failed saves, and keeps measurements synchronized with calibration. Missing thumbnails recover from the imported image. This release was archived for Intel and Apple Silicon; automated tests and interactive validation were not run. See the [release notes](docs/releases/v1.0.14.md).
 
 ## New in Web v0.2.1 preview
 
@@ -237,11 +241,11 @@ edition, including platform adaptations, preview features, and intentional limit
 
 ### macOS — current release
 
-[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.13-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13)
+[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.14-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.14)
 
 Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 
-1. Download `CellCounter-v1.0.13.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.13).
+1. Download `CellCounter-v1.0.14.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.14).
 2. Unzip and move **`CellCounting.app`** into Applications.
    *(The application is called CellCounter; the bundle on disk is still named `CellCounting.app`.)*
 3. The app is not notarized, so the first launch is blocked. Open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough: [docs/INSTALL.md](docs/INSTALL.md).

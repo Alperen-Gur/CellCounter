@@ -1,3 +1,4 @@
+import { LocalImage } from "./LocalImage";
 /**
  * kernel/viewport/Viewport.tsx — pan / zoom / image render (ARCHITECTURE.md §3.4).
  *
@@ -243,7 +244,7 @@ export function Viewport({
         userSelect: "none",
       }}
     >
-      <img
+      <LocalImage
         src={imageSrc}
         alt=""
         draggable={false}

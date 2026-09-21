@@ -1,3 +1,4 @@
+import { LocalImage } from "../../kernel/viewport/LocalImage";
 /** Results uses one source-coordinate selection for overlays, measurements and plots. */
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -362,7 +363,7 @@ export default function ResultsPage() {
                   disabled={operationBusy || exportOpen}
                   title={im.fileName}
                 >
-                  <img src={convertFileSrc(im.thumbPath)} alt="" draggable={false} />
+                  <LocalImage src={convertFileSrc(im.thumbPath)} alt="" draggable={false} />
                   <span className="rv-nav__idx">{i + 1}</span>
                 </button>
               ))}

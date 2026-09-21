@@ -42,6 +42,13 @@ final class Repositories {
     let container: ModelContainer
     var context: ModelContext { container.mainContext }
 
+    /// Allows isolated persistent stores (including SQLite regression fixtures)
+    /// without falling back silently to an in-memory store.
+    init(container: ModelContainer) {
+        self.container = container
+        seedDefaultsIfNeeded()
+    }
+
     init(inMemory: Bool = false) {
         let schema = Schema([
             BatchRecord.self,
@@ -178,6 +185,8 @@ final class Repositories {
     func deleteBatch(_ batch: BatchRecord) {
         // remove image + thumb files too
         for img in batch.images {
+            deleteReviewCandidates(forImageId: img.id)
+            deleteSegmentationVariants(forImageId: img.id)
             // B1-3: guard against empty fileName to avoid removing wrong/root URLs
             guard !img.fileName.isEmpty else { continue }
             try? FileManager.default.removeItem(at: img.storedURL)
@@ -185,8 +194,6 @@ final class Repositories {
                 try? FileManager.default.removeItem(at: img.displayURL)
             }
             try? FileManager.default.removeItem(at: img.thumbURL)
-            deleteReviewCandidates(forImageId: img.id)
-            deleteSegmentationVariants(forImageId: img.id)
         }
         context.delete(batch)
         try? context.save()
@@ -281,10 +288,12 @@ final class Repositories {
     /// been snapshotted, keeping bulk Library deletion responsive.
     func deleteImages(_ images: [ImageRecord]) {
         var fileURLs = Set<URL>()
-        for image in images where !image.fileName.isEmpty {
-            fileURLs.insert(image.storedURL)
-            fileURLs.insert(image.displayURL)
-            fileURLs.insert(image.thumbURL)
+        for image in images {
+            if !image.fileName.isEmpty {
+                fileURLs.insert(image.storedURL)
+                fileURLs.insert(image.displayURL)
+                fileURLs.insert(image.thumbURL)
+            }
             let removedCells = image.detection?.summaryCellCount ?? 0
             deleteReviewCandidates(forImageId: image.id)
             deleteSegmentationVariants(forImageId: image.id)
@@ -437,6 +446,16 @@ final class Repositories {
 
     // MARK: — Review index / scalable summaries
 
+    /// Keep the queue's scalar measurements in the same units as its source.
+    /// Recalibration changes neither cell identity nor previous review decisions.
+    func recalibrateReviewCandidates(for detection: DetectionRecord, pxPerUm: Double) throws {
+        guard pxPerUm.isFinite, pxPerUm > 0 else { return }
+        let detectionID = detection.id
+        let rows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { $0.detectionId == detectionID }))
+        for row in rows { row.diameter = row.diameterPx / pxPerUm }
+    }
+
     private func indexReviewCandidates(cells: [DetectedCell],
                                        detection: DetectionRecord,
                                        image: ImageRecord) {
@@ -489,7 +508,7 @@ final class Repositories {
 
     func pendingReviewCandidates(limit: Int = 96,
                                  after position: ReviewQueuePosition? = nil,
-                                 includingBoundary: Bool = false) -> [ReviewCandidateRecord] {
+                                 includingBoundary: Bool = false) throws -> [ReviewCandidateRecord] {
         guard limit > 0 else { return [] }
         var desc = FetchDescriptor<ReviewCandidateRecord>(
             predicate: #Predicate { !$0.triaged },
@@ -507,7 +526,7 @@ final class Repositories {
             }
         }
         desc.fetchLimit = min(96, limit)
-        return (try? context.fetch(desc)) ?? []
+        return try context.fetch(desc)
     }
 
     func pendingReviewCandidateCount() -> Int {
@@ -516,33 +535,95 @@ final class Repositories {
         return (try? context.fetchCount(desc)) ?? 0
     }
 
+    /// Never traverse a candidate's potentially dangling owner relationships.
+    /// Fetch live owners in batches, retaining at most one queue page.
+    func reviewItems(for candidates: [ReviewCandidateRecord]) throws -> [ReviewItem] {
+        try resolveReviewItems(for: candidates)
+    }
+
+    private func resolveReviewItems(for candidates: [ReviewCandidateRecord]) throws -> [ReviewItem] {
+        guard !candidates.isEmpty else { return [] }
+        let imageIDs = Array(Set(candidates.map(\.imageId)))
+        let detectionIDs = Array(Set(candidates.map(\.detectionId)))
+        let images = try context.fetch(FetchDescriptor<ImageRecord>(
+            predicate: #Predicate { imageIDs.contains($0.id) }))
+        var detectionFetch = FetchDescriptor<DetectionRecord>(
+            predicate: #Predicate { detectionIDs.contains($0.id) })
+        // A page may span 96 images. Do not pull all 96 contour JSON blobs
+        // into memory merely to verify ownership; only visible cards load them.
+        detectionFetch.propertiesToFetch = [\.id, \.cellsRevision]
+        let detections = try context.fetch(detectionFetch)
+        var imagesByID: [UUID: ImageRecord] = [:]
+        var detectionsByID: [UUID: DetectionRecord] = [:]
+        for image in images { imagesByID[image.id] = image }
+        for detection in detections { detectionsByID[detection.id] = detection }
+        return candidates.compactMap { candidate in
+            guard let image = imagesByID[candidate.imageId],
+                  let detection = detectionsByID[candidate.detectionId] else { return nil }
+            return ReviewItem(candidate, image: image, detection: detection)
+        }
+    }
+
+    /// Repair old resets/deletions that left normalized review rows behind.
+    /// Read failures must not be interpreted as proof that owners are missing.
+    /// Only index rows are removed; detections and corrections are preserved.
+    func removeOrphanedReviewCandidates(onChunk: (() -> Void)? = nil) async throws {
+        var offset = 0
+        while !Task.isCancelled {
+            var desc = FetchDescriptor<ReviewCandidateRecord>(
+                sortBy: [SortDescriptor(\.createdAt)])
+            desc.fetchLimit = ReviewQueueSession.pageSize
+            desc.fetchOffset = offset
+            let rows = try context.fetch(desc)
+            guard !rows.isEmpty else { return }
+            let liveIDs = Set(try resolveReviewItems(for: rows).map(\.id))
+            for row in rows where !liveIDs.contains(row.id) { context.delete(row) }
+            try context.save()
+            // Deleted rows no longer occupy an offset in the next fetch.
+            offset += liveIDs.count
+            onChunk?()
+            if rows.count < ReviewQueueSession.pageSize { return }
+            await Task.yield()
+        }
+    }
+
     /// Upgrade legacy rows without monopolizing the main run loop. Each old
     /// detection is decoded once, then all future Home badges and Review opens
     /// use queryable integer/index rows. A save/yield every eight images keeps
     /// launch and navigation responsive even for 700-image stores.
-    func rebuildPerformanceIndexes(onChunk: (() -> Void)? = nil) async {
+    func rebuildPerformanceIndexes(onChunk: (() -> Void)? = nil) async throws {
+        try await removeOrphanedReviewCandidates(onChunk: onChunk)
         var desc = FetchDescriptor<DetectionRecord>(
             predicate: #Predicate { $0.reviewIndexVersion < 1 })
         desc.fetchLimit = 8
         while !Task.isCancelled {
-            let detections = (try? context.fetch(desc)) ?? []
+            let detections = try context.fetch(desc)
             guard !detections.isEmpty else { break }
             for detection in detections {
-                guard let image = detection.image else {
+                // Earlier iterations suspend while decoding. A reset can
+                // delete the rest of this already-fetched batch meanwhile.
+                guard !detection.isDeleted, detection.modelContext != nil else { continue }
+                guard let image = detection.image, image.batch != nil,
+                      image.detection?.id == detection.id else {
                     detection.reviewIndexVersion = 1
                     continue
                 }
-                deleteReviewCandidates(forDetectionId: detection.id)
                 let revision = detection.cellsRevision
                 let data = detection.cellsData
-                let cells = await Task.detached(priority: .utility) {
-                    DetectionRecord.decodeCellsData(data)
-                }.value
+                let cells = try await CellDecodeWorker.shared.decode(
+                    id: detection.id, revision: revision, data: data)
+                guard !Task.isCancelled else { return }
+                guard !detection.isDeleted, detection.modelContext != nil,
+                      !image.isDeleted, image.modelContext != nil else { continue }
                 guard detection.cellsRevision == revision,
                       image.detection?.id == detection.id else { continue }
+                let detectionID = detection.id
+                let previousRows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>(
+                    predicate: #Predicate { $0.detectionId == detectionID }))
+                for row in previousRows { context.delete(row) }
                 indexReviewCandidates(cells: cells, detection: detection, image: image)
             }
-            try? context.save()
+            try context.save()
             onChunk?()
             await Task.yield()
         }
@@ -553,10 +634,10 @@ final class Repositories {
             predicate: #Predicate { $0.sortKey == "" })
         legacy.fetchLimit = 96
         while !Task.isCancelled {
-            let rows = (try? context.fetch(legacy)) ?? []
+            let rows = try context.fetch(legacy)
             guard !rows.isEmpty else { break }
             for row in rows { row.sortKey = row.id.uuidString }
-            try? context.save()
+            try context.save()
             onChunk?()
             await Task.yield()
         }
@@ -564,6 +645,7 @@ final class Repositories {
         // Batch summaries are rebuilt after detection summaries, so this pass
         // only adds integers and never re-decodes a cell blob.
         for (offset, batch) in allBatches().enumerated() {
+            guard !batch.isDeleted, batch.modelContext != nil else { continue }
             if batch.imageCountSummary < 0 || batch.cellCountSummary < 0 {
                 batch.imageCountSummary = batch.images.count
                 batch.cellCountSummary = batch.images.reduce(0) {
@@ -572,7 +654,7 @@ final class Repositories {
             }
             if offset % 32 == 31 { await Task.yield() }
         }
-        try? context.save()
+        try context.save()
         onChunk?()
     }
 
@@ -585,6 +667,57 @@ final class Repositories {
                         corrections specs: [CorrectionSpec],
                         detection: DetectionRecord,
                         image: ImageRecord) -> CellEditCommitResult {
+        let result = stageCellEdit(storage: storage, corrections: specs, detection: detection, image: image)
+        try? context.save()
+        return result
+    }
+
+    /// Review must not advance or clear undo until the database confirms a save.
+    func commitReviewCellEdit(storage: DetectionRecord.CellsStorageSnapshot?,
+                             corrections specs: [CorrectionSpec],
+                             detection: DetectionRecord,
+                             image: ImageRecord) throws -> CellEditCommitResult {
+        try validateReviewStorage(storage)
+        let detectionID = detection.id
+        let cellIDs = specs.map(\.cellId)
+        let rows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>(predicate: #Predicate {
+            $0.detectionId == detectionID && cellIDs.contains($0.cellId) && !$0.triaged
+        }))
+        return try saveReviewChange(detection: detection) {
+            stageCellEdit(storage: storage, corrections: specs, detection: detection, image: image,
+                          reviewRows: rows)
+        }
+    }
+
+    private func validateReviewStorage(_ storage: DetectionRecord.CellsStorageSnapshot?) throws {
+        if let storage, storage.data.isEmpty {
+            throw NSError(domain: "CellCounter.Review", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "The cell measurements could not be encoded. No review changes were saved."
+            ])
+        }
+    }
+
+    private func saveReviewChange<T>(detection: DetectionRecord, _ change: () -> T) throws -> T {
+        // Flush unrelated pending changes before the synchronous transaction.
+        // There is no suspension point between this checkpoint and rollback.
+        try context.save()
+        let detectionID = detection.id
+        do {
+            let result = change()
+            try context.save()
+            return result
+        } catch {
+            context.rollback()
+            DecodedCellCache.shared.remove(detectionID)
+            throw error
+        }
+    }
+
+    private func stageCellEdit(storage: DetectionRecord.CellsStorageSnapshot?,
+                               corrections specs: [CorrectionSpec],
+                               detection: DetectionRecord,
+                               image: ImageRecord,
+                               reviewRows: [ReviewCandidateRecord]? = nil) -> CellEditCommitResult {
         let oldCount = detection.summaryCellCount
         if let storage {
             detection.applyStorageSnapshot(storage)
@@ -608,11 +741,16 @@ final class Repositories {
         }
 
         let ids = Set(specs.map(\.cellId))
-        let triaged = triageReviewCandidates(detectionId: detection.id, cellIds: ids)
+        let triaged: Int
+        if let reviewRows {
+            triaged = reviewRows.count
+            for row in reviewRows { row.triaged = true }
+        } else {
+            triaged = triageReviewCandidates(detectionId: detection.id, cellIds: ids)
+        }
         if detection.reviewPendingCount >= 0 {
             detection.reviewPendingCount = max(0, detection.reviewPendingCount - triaged)
         }
-        try? context.save()
         return CellEditCommitResult(corrections: records, reviewCountDelta: -triaged)
     }
 
@@ -629,29 +767,30 @@ final class Repositories {
     @discardableResult
     func undoReviewCorrection(_ correction: CorrectionRecord,
                               candidate: ReviewCandidateRecord,
-                              restoredCells: [DetectedCell]?,
+                              restoredStorage: DetectionRecord.CellsStorageSnapshot?,
                               detection: DetectionRecord,
-                              image: ImageRecord) -> Int {
-        let oldCount = detection.summaryCellCount
-        if let restoredCells {
-            let storage = DetectionRecord.makeStorageSnapshot(restoredCells)
-            detection.applyStorageSnapshot(storage)
-            if let batch = image.batch {
-                if batch.cellCountSummary >= 0 {
-                    batch.cellCountSummary += storage.count - oldCount
+                              image: ImageRecord) throws -> Int {
+        try validateReviewStorage(restoredStorage)
+        return try saveReviewChange(detection: detection) {
+            let oldCount = detection.summaryCellCount
+            if let storage = restoredStorage {
+                detection.applyStorageSnapshot(storage)
+                if let batch = image.batch {
+                    if batch.cellCountSummary >= 0 {
+                        batch.cellCountSummary += storage.count - oldCount
+                    }
+                    batch.contentRevision &+= 1
                 }
-                batch.contentRevision &+= 1
             }
+            context.delete(correction)
+            var delta = 0
+            if candidate.triaged {
+                candidate.triaged = false
+                delta = 1
+                if detection.reviewPendingCount >= 0 { detection.reviewPendingCount += 1 }
+            }
+            return delta
         }
-        context.delete(correction)
-        var delta = 0
-        if candidate.triaged {
-            candidate.triaged = false
-            delta = 1
-            if detection.reviewPendingCount >= 0 { detection.reviewPendingCount += 1 }
-        }
-        try? context.save()
-        return delta
     }
 
     // MARK: — Presets
@@ -757,24 +896,30 @@ final class Repositories {
 
     // MARK: — Destructive wipe (pass 11)
 
-    /// Deletes every batch (cascades to images, detections, corrections, ROIs)
-    /// and wipes the on-disk image + thumbnail directories. Preserves user
-    /// workflow config — Conditions, CalibrationPresets, BinPresets, and
-    /// ModelVersions are intentionally left intact, as is the Python venv and
-    /// the Exports folder.
-    ///
-    /// Used by Settings → About → "Reset all data…". The one-time migration
-    /// path in `FileStore.runMigrationsIfNeeded()` does the same on-disk work
-    /// directly (it has to, because the store isn't open yet).
-    func wipeAllUserData() throws {
+    /// Database portion of Reset. Kept separate from filesystem deletion so
+    /// persistent-store regressions can use an isolated database safely.
+    func deleteAllLibraryRecords() throws {
+        let rows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>())
+        let batches = try context.fetch(FetchDescriptor<BatchRecord>())
+        // Review candidates have no cascade inverse on their owners. Delete
+        // them explicitly, including orphans left by an earlier reset.
+        for row in rows {
+            context.delete(row)
+        }
         // Delete every BatchRecord (cascades to ImageRecord -> DetectionRecord
         // + CorrectionRecord, and to ROIRecord). NOTE: ConditionRecord and
         // ModelVersionRecord and the preset tables survive — those are user
         // workflow config, not run output.
-        for batch in allBatches() {
+        for batch in batches {
             context.delete(batch)
         }
         try context.save()
+    }
+
+    /// Deletes the library and its image/thumbnail files, preserving presets,
+    /// model environments and exports. Used by Settings → Reset all data.
+    func wipeAllUserData() throws {
+        try deleteAllLibraryRecords()
 
         // Files
         let fm = FileManager.default

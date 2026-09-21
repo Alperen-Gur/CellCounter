@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useRecoverableImage } from "../../kernel/viewport/useRecoverableImage";
 
 interface HistData {
   buckets: number[]; // 256
@@ -99,13 +100,14 @@ export interface IntensityHistogramProps {
 }
 
 export function IntensityHistogram({ imageSrc, imageId }: IntensityHistogramProps) {
+  const preview = useRecoverableImage(imageSrc);
   const [data, setData] = useState<HistData>(EMPTY);
   const reqRef = useRef(0);
 
   useEffect(() => {
     const req = ++reqRef.current;
     setData(EMPTY);
-    if (!imageSrc) return;
+    if (!preview.src) return;
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
@@ -113,11 +115,11 @@ export function IntensityHistogram({ imageSrc, imageId }: IntensityHistogramProp
       setData(computeHistogram(img));
     };
     img.onerror = () => {
-      /* leave EMPTY */
+      if (req === reqRef.current) preview.onError();
     };
-    img.src = imageSrc;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageSrc, imageId]);
+    img.src = preview.src;
+    return () => { reqRef.current += 1; img.onload = null; img.onerror = null; };
+  }, [preview.src, preview.onError, imageId]);
 
   const maxBucket = Math.max(1, ...data.buckets);
 

@@ -1,9 +1,27 @@
 import Foundation
 
+/// At most one contour payload is materialized at a time. Calling this actor
+/// directly preserves cancellation when a review card disappears; detached
+/// per-image tasks could otherwise continue decoding a whole skipped queue.
+actor CellDecodeWorker {
+    static let shared = CellDecodeWorker()
+
+    func decode(id: UUID, revision: Int, data: Data) throws -> [DetectedCell] {
+        try Task.checkCancellation()
+        // The legacy synchronous accessor caches [] on a decoding failure.
+        // Validate empty payloads here rather than trusting that sentinel.
+        if let cached = DecodedCellCache.shared.cells(for: id, revision: revision), !cached.isEmpty { return cached }
+        let cells = try autoreleasepool { try DetectionRecord.decodeCellsDataForReview(data) }
+        try Task.checkCancellation()
+        DecodedCellCache.shared.insert(cells, for: id, revision: revision)
+        return cells
+    }
+}
+
 /// One process-wide budget for decoded contours. Retaining a cache on each
 /// SwiftData record kept every processed image alive even after the UI's own
 /// six-image cache evicted it. Records now share this strictly bounded LRU.
-final class DecodedCellCache: @unchecked Sendable {
+nonisolated final class DecodedCellCache: @unchecked Sendable {
     static let shared = DecodedCellCache()
 
     private struct Entry {

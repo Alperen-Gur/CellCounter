@@ -22,6 +22,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useRecoverableImage } from "../../kernel/viewport/useRecoverableImage";
 
 import type { CellDTO } from "../../kernel/types";
 import type { ReviewItem } from "./useReviewQueue";
@@ -97,6 +98,7 @@ export function ReviewCard({
     () => (item.image.storedPath ? safeConvert(item.image.storedPath) : undefined),
     [item.image.storedPath],
   );
+  const preview = useRecoverableImage(imageSrc);
 
   const activeDiameter = editingDiameter ?? item.cell.diameterUm;
   const binIdx = reviewBinIndex(activeDiameter, thresholds);
@@ -104,25 +106,23 @@ export function ReviewCard({
 
   // ── load the full source image once per card (cancellable) ───────────────
   useEffect(() => {
-    if (!imageSrc) {
-      setImg(null);
-      return;
-    }
+    setImg(null);
+    if (!preview.src) return;
     let alive = true;
     const el = new Image();
     el.onload = () => {
       if (alive) setImg(el);
     };
     el.onerror = () => {
-      if (alive) setImg(null);
+      if (alive) { setImg(null); preview.onError(); }
     };
-    el.src = imageSrc;
+    el.src = preview.src;
     return () => {
       alive = false;
       el.onload = null;
       el.onerror = null;
     };
-  }, [imageSrc]);
+  }, [preview.src, preview.onError]);
 
   // ── draw the crop + overlay whenever the image / cell / edit changes ──────
   useEffect(() => {
@@ -253,8 +253,9 @@ export function ReviewCard({
         : "cc-review__conf-fill--ok";
 
   // Slider bounds mirror the Swift card: 0.3×…2.5× the original diameter.
-  const sliderMin = Math.max(2, item.cell.diameterUm * 0.3);
-  const sliderMax = item.cell.diameterUm * 2.5;
+  const diameter = Number.isFinite(item.cell.diameterUm) && item.cell.diameterUm > 0 ? item.cell.diameterUm : 1;
+  const sliderMin = Math.min(diameter, Math.max(0.01, diameter * 0.3));
+  const sliderMax = Math.min(Number.MAX_VALUE, diameter * 2.5);
 
   return (
     <div
@@ -273,8 +274,8 @@ export function ReviewCard({
           )} µm, size bin ${binLabel}`}
         />
         {!img && (
-          <div className="cc-review__crop-loading" aria-hidden="true">
-            Loading…
+          <div className="cc-review__crop-loading" role="status" title={preview.error}>
+            {preview.error ? "Image preview unavailable" : "Loading…"}
           </div>
         )}
       </div>

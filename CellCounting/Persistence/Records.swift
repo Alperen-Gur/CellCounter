@@ -230,8 +230,13 @@ final class DetectionRecord {
     }
 
     nonisolated static func decodeCellsData(_ data: Data) -> [DetectedCell] {
-        ((try? JSONDecoder().decode([CellPayload].self, from: data)) ?? [])
-            .map(\.cell)
+        (try? decodeCellsDataForReview(data)) ?? []
+    }
+
+    /// Repair and undo must distinguish an empty detection from unreadable
+    /// measurements; otherwise they can silently replace data with an empty set.
+    nonisolated static func decodeCellsDataForReview(_ data: Data) throws -> [DetectedCell] {
+        try JSONDecoder().decode([CellPayload].self, from: data).map(\.cell)
     }
 
     /// Share an off-main decode with direct model consumers when it still

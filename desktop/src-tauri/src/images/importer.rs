@@ -260,7 +260,7 @@ fn prepare_standard_image(
     })
 }
 
-fn validate_decoded_pixel_budget(
+pub(super) fn validate_decoded_pixel_budget(
     width: u32,
     height: u32,
     decoded_bytes: u64,
@@ -474,7 +474,7 @@ fn copy_and_hash(src: &std::path::Path, dest: &std::path::Path) -> std::io::Resu
 
 /// Write a JPEG thumbnail scaled to fit within `max_dim` (mirrors
 /// `ImageLoader.writeThumbnail`, quality ≈ 0.7 → JPEG quality 70).
-fn write_thumbnail(
+pub(super) fn write_thumbnail(
     img: &image::DynamicImage,
     dest: &std::path::Path,
     max_dim: u32,

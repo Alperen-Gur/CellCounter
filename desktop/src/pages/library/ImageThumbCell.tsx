@@ -1,3 +1,4 @@
+import { LocalImage } from "../../kernel/viewport/LocalImage";
 /**
  * pages/library/ImageThumbCell.tsx — one card in the Images Library grid.
  *
@@ -93,7 +94,7 @@ export function ImageThumbCell({
       >
         <div className="cc-lib__thumb">
           {thumbSrc ? (
-            <img
+            <LocalImage
               className="cc-lib__thumb-img"
               src={thumbSrc}
               alt=""

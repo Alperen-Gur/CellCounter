@@ -1,3 +1,4 @@
+import { LocalImage } from "../../kernel/viewport/LocalImage";
 /**
  * pages/onboarding/CalibrationModal.tsx — the calibration sheet.
  *
@@ -469,7 +470,7 @@ function DrawlineTab({
       >
         {src ? (
           <>
-            <img
+            <LocalImage
               ref={imgRef}
               className="cc-cal-draw__img"
               src={src}
