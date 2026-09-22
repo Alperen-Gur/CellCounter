@@ -1,10 +1,12 @@
-# CellCounter for Windows 1.1.0
+# CellCounter for Windows 1.1.1
 
 CellCounter for Windows is the React interface packaged as a native Tauri 2
 application. The Windows build is local-first: imported microscopy images,
 measurements, corrections, and inference stay on the PC. The live **Support →
 Platform parity** screen is the source of truth for features that are ready,
 Windows-adapted, or not yet available.
+
+Version 1.1.1 corrects local image access and recovers broken thumbnails and full-image previews from existing imports. Original images and analyses are retained. See the [release notes](releases/windows-v1.1.1.md).
 
 Version 1.1.0 fixes the first-analysis **“Sidecar scripts are not staged”** error and adds saved analysis setup, representative previews, resumable processing, linked measurements, and reversible mask versions. Model IDs remain the same three supported families. The expanded capability inventory now also lists native workflows that have not been ported; this release does not claim full macOS parity.
 
@@ -15,7 +17,7 @@ remaining differences and evidence for the reported desktop fixes, or the
 
 ## System requirements
 
-- 64-bit Windows 10 or Windows 11. The 1.1.0 workflow and bundled `uv` helper
+- 64-bit Windows 10 or Windows 11. The 1.1.1 workflow and bundled `uv` helper
   target `x86_64-pc-windows-msvc`; Windows on ARM is not an initial release
   target.
 - Microsoft Edge WebView2 Runtime. The installer embeds Microsoft's small
@@ -26,7 +28,7 @@ remaining differences and evidence for the reported desktop fixes, or the
 - Enough free disk space for the application, copied source images, thumbnails,
   exports, and three separate Python/model environments. These can use several
   gigabytes; keep additional working space available during installation.
-- The Windows v1.1.0 model runtimes are intentionally CPU-only. A GPU driver is
+- The Windows v1.1.1 model runtimes are intentionally CPU-only. A GPU driver is
   not required, and the app does not present an acceleration control it cannot
   honor. A separately validated CUDA runtime may be added in a later release.
 
@@ -54,7 +56,7 @@ CellCounter release or GitHub Actions run and its SHA-256 matches
 `SHA256SUMS.txt`. In PowerShell:
 
 ```powershell
-Get-FileHash .\CellCounter_1.1.0_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CellCounter_1.1.1_x64-setup.exe -Algorithm SHA256
 ```
 
 Compare the printed hash with the matching `nsis/...` or `msi/...` entry in the
@@ -101,7 +103,7 @@ backup.
 
 ## Install the three models
 
-The runnable 1.1.0 catalog contains exactly three explicit model IDs:
+The runnable 1.1.1 catalog contains exactly three explicit model IDs:
 
 | App model ID | Pipeline | Local environment |
 | --- | --- | --- |
@@ -148,7 +150,7 @@ Fine-tuning is limited to the `cp-cyto3` family. Choose image/mask pairs in
 **Fine-tune**, train and evaluate locally, then explicitly activate the saved
 version. A derived version is recorded as `cp-cyto3@<version-id>` and does not
 become a fourth built-in model. Checkpoints must remain regular files inside the
-app-owned `Models` directory. Windows v1.1.0 trains on CPU and does not offer a
+app-owned `Models` directory. Windows v1.1.1 trains on CPU and does not offer a
 mixed-precision control.
 
 Training now requires at least three specimen groups and six epochs. Use a `groups.json` mapping from relative image filename to specimen ID, or supported patient-prefix filenames such as `OM-04-…`. Groups stay together across train/validation/test splits, duplicate source images are rejected, and malformed pairs fail explicitly. This pair-folder workflow is different from macOS’s immutable reviewed-library dataset builder.
@@ -176,7 +178,7 @@ CellCounter stores its Windows data below these identifier-scoped directories:
 
 Microscopy images never upload or leave this PC as part of detection. The app
 does make outbound downloads when WebView2 or a selected model runtime is not
-already present. There is no server inference path in the Windows 1.1.0 build.
+already present. There is no server inference path in the Windows 1.1.1 build.
 
 ## Backup and restore
 
@@ -210,9 +212,17 @@ as well as microscopy data; do it only while the app is closed.
 
 ## Troubleshooting
 
+### Imported images show broken thumbnails or previews
+
+Install Windows 1.1.1 and reopen CellCounter. Local image access now uses the
+actual library folders, and failed previews can be regenerated from the imported
+source. Existing images do not need to be reimported or reset. This patch has
+been packaged but its behavior on the reporter's PC remains unconfirmed.
+
+
 ### First analysis says “Sidecar scripts are not staged”
 
-Install version 1.1.0 and reopen CellCounter. The application now carries its required analysis scripts inside the executable and prepares them before model checks or analysis. Missing or damaged staged scripts are repaired automatically. Existing images and model environments are retained; a library reset is not needed.
+Install version 1.1.1 and reopen CellCounter. The application now carries its required analysis scripts inside the executable and prepares them before model checks or analysis. Missing or damaged staged scripts are repaired automatically. Existing images and model environments are retained; a library reset is not needed.
 
 If preparation still fails, keep the specific error and check free disk space and write access to `%APPDATA%\com.alperengur.cellcounter\py`. A file-lock or disk error is reported with recovery guidance. Reinstall the application from the official release if its executable itself is missing or damaged; reinstalling models alone does not repair an older application’s first-run staging bug.
 
@@ -238,7 +248,7 @@ the app will not fall back to a different checkpoint.
 
 ### Detection is slow
 
-Windows v1.1.0 uses the validated CPU path for all three models. Initial
+Windows v1.1.1 uses the validated CPU path for all three models. Initial
 inference can be slower while a runtime warms its model; later images with the
 same Cellpose configuration reuse warm workers. Saved jobs process one image at a time to bound concurrent work. GPU acceleration is not advertised by this release.
 
@@ -254,7 +264,11 @@ not a complete backup.
 
 ## Validation boundary
 
-The Windows workflow runs on GitHub's `windows-latest` x64 image with pinned
+Version 1.1.1 uses the manual packaging-only workflow: production compilation,
+native installer generation and checksum checks. Automated tests and interactive
+app validation were not run for this patch.
+
+By default, the Windows workflow runs on GitHub's `windows-latest` x64 image with pinned
 Node.js, Rust, npm/Cargo lockfiles, and a checksum-pinned `uv` archive. It runs
 the portable release audits, production frontend build, Rust tests, native MSI
 and NSIS builds, installer discovery, SHA-256 generation, and artifact upload.

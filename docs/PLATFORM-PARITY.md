@@ -1,9 +1,8 @@
 # Release status and feature parity
 
-Snapshot: **21 September 2026**, for macOS **1.0.14**, Windows **1.1.0**, and
+Snapshot: **22 September 2026**, for macOS **1.0.14**, Windows **1.1.1**, and
 Web **0.2.1 preview**. The macOS download contains further review fixes. Windows
-image-display fixes are committed in source and await a new Windows installer
-release. Windows and Web share the main analysis workflow with macOS, but neither
+1.1.1 contains local image-access and preview-recovery fixes. Windows and Web share the main analysis workflow with macOS, but neither
 has complete macOS feature parity.
 
 ## Reported issues and released fixes
@@ -11,17 +10,18 @@ has complete macOS feature parity.
 | Platform | Report | Published fix | Evidence and remaining confirmation |
 | --- | --- | --- | --- |
 | macOS | [Issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10): Review Queue crashes persist after the earlier large-queue update | [1.0.14](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.14): stale-entry repair, bounded background decoding, guarded saves and undo, delayed-edit protection, and synchronized calibration | Universal archive built. Automated tests and interactive validation were not run for this patch. The reporter's exact crash remains unconfirmed. |
+| Windows | Broken thumbnails and full previews after successful imports | [1.1.1](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.1): corrected library access and native preview recovery | Native installer packaging and checksum checks only; no automated tests or interactive validation for this patch. |
 | Windows | First analysis fails with “Sidecar scripts are not staged” | [1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0): required scripts are embedded in the executable, staged before Python operations, and repaired when missing or damaged | Recovery tests and [native Windows installer CI](https://github.com/Alperen-Gur/CellCounter/actions/runs/34170823672) passed. Installation and first model setup on the reporter's physical PC have not been confirmed. |
 
 Earlier macOS improvements to Models-page responsiveness, keyboard commands and
 image preview loading are included in 1.0.13 through the
 [1.0.11](releases/v1.0.11.md) and [1.0.12](releases/v1.0.12.md) changes.
 
-Issue #9 is closed; the follow-up crash report is tracked in [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). Windows source now includes corrected local image access and preview recovery, but those changes are not present in the published 1.1.0 installers.
+Issue #9 is closed; the follow-up crash report is tracked in [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). Windows 1.1.1 includes corrected local image access and preview recovery. Automated tests and interactive validation were not run for this patch; behavior on the reporter's PC remains unconfirmed.
 
 ## Shared workflow, different capabilities
 
-| Workflow | macOS 1.0.14 | Windows 1.1.0 | Web 0.2.1 |
+| Workflow | macOS 1.0.14 | Windows 1.1.1 | Web 0.2.1 |
 | --- | --- | --- | --- |
 | Import, save setup, preview, then process | Available | Available; setup shows the imported display preview | Available for classical segmentation |
 | Saved jobs, pause/resume, interruption recovery, failed-image retry | Available | Available | Available |
@@ -83,7 +83,7 @@ On macOS, quit the old copy, install **CellCounting.app** from 1.0.14, and reope
 **Review Queue**. Existing images and corrections are preserved; no library
 reset is required. See the [installation guide](INSTALL.md#large-review-queues).
 
-On Windows, quit CellCounter and install the 1.1.0 `.exe` or `.msi`, preferably
+On Windows, quit CellCounter and install the 1.1.1 `.exe` or `.msi`, preferably
 using the same installer format as before. Retain application data and reopen
 the app; required scripts are staged or repaired automatically. Model setup can
 still require internet access for its first package/weight download. See the

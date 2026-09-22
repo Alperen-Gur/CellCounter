@@ -1,6 +1,6 @@
 # CellCounter feature reference
 
-This is the public feature inventory for the currently documented releases: macOS v1.0.14, Windows v1.1.0,
+This is the public feature inventory for the currently documented releases: macOS v1.0.14, Windows v1.1.1,
 and Web v0.2.1 preview. It describes user-facing behavior and deliberately omits private implementation details.
 
 Status meanings:
@@ -22,7 +22,7 @@ These differently grouped inventories are not completion percentages.
 
 ## Privacy and storage
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Local image analysis with no image-upload path | **Available** | **Available** | **Available** |
 | Account-free use | **Available** | **Available** | **Available** |
@@ -33,7 +33,7 @@ These differently grouped inventories are not completion percentages.
 
 ## Import and calibration
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | JPEG, PNG, BMP, TIFF, and OME-TIFF | **Available** | **Available** | **Available**, plus WebP |
 | Recursive folder and batch import | **Available** | **Available** | **Available** where the browser supports folder selection |
@@ -49,7 +49,7 @@ These differently grouped inventories are not completion percentages.
 
 ## Segmentation models
 
-| Model or family | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Model or family | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Cellpose-SAM v2 | **Available** | **Not available** as a distinct checkpoint; legacy `cpsam_v2` runs Cellpose-SAM | **Preview / build required:** production weights are not bundled |
 | Cellpose-SAM and Cellpose-DINO ViT-L / ViT-B | **Available** | **Adapted / limited:** Cellpose-SAM only | **Preview / build required:** Cellpose-SAM only |
@@ -67,7 +67,7 @@ models in this table.
 
 ## Detection and refinement
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Single-image and batch detection with progress | **Available** | **Available** | **Available** for classical segmentation; learned models remain build required |
 | Cancellation without discarding the previous result | **Available** | **Available** with Windows-native process handling | **Available** for worker tasks; learned inference remains build required |
@@ -81,7 +81,7 @@ models in this table.
 
 ## Measurements and assays
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Count and configurable size-bin summaries | **Available** | **Available** | **Available** |
 | Area, perimeter, equivalent diameter, circularity, aspect ratio, solidity, and eccentricity | **Available** | **Available** | **Available** |
@@ -103,7 +103,7 @@ population structure are absent; the application does not fabricate a quantitati
 
 ## Editing, validation, and review
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Mask fills, contours, boxes, labels, and selection markers | **Available** | **Available** | **Available** |
 | Add, remove, resize, merge, split, and freehand-trace corrections | **Available** | **Adapted / limited:** available except freehand tracing | **Adapted / limited:** available except freehand tracing |
@@ -127,7 +127,7 @@ the separate limits listed above.
 
 ## Inspect, process and linked review
 
-| Workflow | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Workflow | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Saved setup, representative preview and matching-preview reuse | **Available** | **Available** | **Available** for classical segmentation |
 | Persistent processing, pause/resume, interruption recovery and failed-image retry | **Available** | **Available** | **Available** |
@@ -138,7 +138,7 @@ the separate limits listed above.
 
 ## Libraries, studies, and repeatable workflows
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Persistent image library and duplicate groups | **Available** | **Available** | **Available** |
 | Batches, conditions, and aggregate summaries | **Available** | **Available** | **Available** |
@@ -158,7 +158,7 @@ aggregate by the true biological replicate or use an appropriate hierarchical mo
 
 ## Export and interoperability
 
-| Capability | macOS v1.0.14 | Windows v1.1.0 | Web v0.2.1 |
+| Capability | macOS v1.0.14 | Windows v1.1.1 | Web v0.2.1 |
 |---|---|---|---|
 | Per-cell CSV | **Available** | **Available** | **Available** |
 | Per-image or batch summary CSV | **Available** | **Available** | **Available** |
@@ -196,7 +196,7 @@ The following layer-based exploratory workspace is currently specific to macOS v
   though the WebGPU interface and three-model catalog are present. Classical threshold/watershed analysis is usable locally.
 - Web v0.2.1 does not claim proprietary microscope-container import, OME-Zarr, live model training, 3D learned
   inference, or full Cellpose GUI session round-tripping.
-- Windows v1.1.0 provides saved analysis and review workflows with three supported models and a CPU-only
+- Windows v1.1.1 provides saved analysis and review workflows with three supported models and a CPU-only
   inference path. Its expanded inventory records 15 native capabilities still unavailable. macOS-only workspace, prompt/sequence correction, and broader model-catalog features are not
   presented as Windows functionality.
 - Fine-tuning remains specific to supported model families: macOS supports Cellpose 3.x cytoplasm/nuclei

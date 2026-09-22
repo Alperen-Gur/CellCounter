@@ -4,11 +4,11 @@
 
 Native, private microscopy analysis for Windows 10 and 11.
 
-[![Windows release](https://img.shields.io/badge/Windows-v1.1.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0)
+[![Windows release](https://img.shields.io/badge/Windows-v1.1.1-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.1)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/windows.yml?branch=main&label=Windows%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/windows.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0) · [Installation guide](../docs/WINDOWS.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.1) · [Installation guide](../docs/WINDOWS.md) · [Main project](../README.md)
 
 </div>
 
@@ -18,10 +18,14 @@ CellCounter for Windows preserves the React interface in a native Tauri applicat
 images, model inference, measurements, corrections, and exports remain on the PC; there is no image-upload or
 remote-inference path.
 
+Version 1.1.1 corrects local image access and adds preview recovery for existing
+imports. Automated tests and interactive validation were not run for this patch.
+See the [release notes](../docs/releases/windows-v1.1.1.md).
+
 ## Highlights
 
 - Native x64 `.exe` and `.msi` installers for Windows 10 and Windows 11
-- First-analysis script staging is repaired automatically in 1.1.0
+- First-analysis script staging is repaired automatically since 1.1.0
 - Cellpose-SAM, Cellpose `cyto3`, and StarDist fluorescence model families
 - Saved setup, representative previews, resumable processing and failed-image retry
 - Linked image/table/scatter selection, saved mask versions and bounded Review Queue pages
@@ -31,7 +35,7 @@ remote-inference path.
 
 ## Feature parity
 
-Windows 1.1.0 shares the main inspect → preview → process → review workflow with
+Windows 1.1.1 shares the main inspect → preview → process → review workflow with
 macOS. It is not a complete macOS port: inference is CPU-only, the setup viewer
 shows the imported display preview, and the wider model catalog, layered
 microscopy workspace, prompt/sequence correction and reviewed-library training
@@ -40,12 +44,12 @@ remain unavailable. Local `cyto3` training uses grouped image/mask folders.
 **Support → Platform parity** lists every inventoried capability and its limits.
 See the [current parity snapshot](../docs/PLATFORM-PARITY.md) and
 [detailed feature matrix](../docs/FEATURES.md). The
-[1.1.0 release notes](../docs/releases/windows-v1.1.0.md) document the first-analysis
+[1.1.1 release notes](../docs/releases/windows-v1.1.1.md) document the first-analysis
 fix and its native Windows build evidence.
 
 ## Install
 
-[![Download](https://img.shields.io/badge/Download-Windows%20v1.1.0-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0)
+[![Download](https://img.shields.io/badge/Download-Windows%20v1.1.1-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.1)
 
 Choose the NSIS `.exe` for a standard workstation installation or the WiX `.msi` for managed deployment. Both
 packages contain the same application. The installers are currently unsigned, so verify the download against

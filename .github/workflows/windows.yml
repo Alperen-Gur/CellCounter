@@ -13,6 +13,11 @@ on:
       - "docs/WINDOWS.md"
       - ".github/workflows/windows.yml"
   workflow_dispatch:
+    inputs:
+      package_only:
+        description: Build installers without running automated tests
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,18 +75,22 @@ jobs:
           Move-Item -Force -Path (Join-Path $expanded "uv.exe") -Destination "src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe"
 
       - name: Verify Windows release contract
+        if: ${{ !inputs.package_only }}
         working-directory: desktop
         run: npm run verify:windows
 
       - name: Test saved analysis workflow
+        if: ${{ !inputs.package_only }}
         working-directory: desktop
         run: npm run verify:workflow
 
       - name: Test linked results and mask restoration
+        if: ${{ !inputs.package_only }}
         working-directory: desktop
         run: npm run verify:results
 
       - name: Test analysis startup, source planes and training groups
+        if: ${{ !inputs.package_only }}
         working-directory: desktop
         shell: pwsh
         run: |
@@ -93,6 +102,7 @@ jobs:
         run: npm run build
 
       - name: Test Rust backend
+        if: ${{ !inputs.package_only }}
         working-directory: desktop
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
@@ -107,7 +117,7 @@ jobs:
       - name: Upload unsigned Windows installers
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: CellCounter-Windows-1.1.0-x64-unsigned
+          name: CellCounter-Windows-1.1.1-x64-unsigned
           if-no-files-found: error
           retention-days: 14
           path: |
