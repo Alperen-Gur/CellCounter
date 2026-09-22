@@ -338,9 +338,9 @@ function GeneralSection() {
 
       <SetRow
         label="GPU acceleration"
-        desc="Unavailable in Windows v1.1.0. The three validated runtimes are CPU-only, so detection always uses the honest CPU path."
+        desc="Unavailable in Windows v1.1.1. The three validated runtimes are CPU-only, so detection always uses the honest CPU path."
       >
-        <Toggle on={false} onChange={setUseGpu} label="GPU unavailable in Windows v1.1.0" disabled />
+        <Toggle on={false} onChange={setUseGpu} label="GPU unavailable in Windows v1.1.1" disabled />
       </SetRow>
     </section>
   );

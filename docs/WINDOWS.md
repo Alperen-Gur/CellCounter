@@ -219,7 +219,6 @@ actual library folders, and failed previews can be regenerated from the imported
 source. Existing images do not need to be reimported or reset. This patch has
 been packaged but its behavior on the reporter's PC remains unconfirmed.
 
-
 ### First analysis says “Sidecar scripts are not staged”
 
 Install version 1.1.1 and reopen CellCounter. The application now carries its required analysis scripts inside the executable and prepares them before model checks or analysis. Missing or damaged staged scripts are repaired automatically. Existing images and model environments are retained; a library reset is not needed.
