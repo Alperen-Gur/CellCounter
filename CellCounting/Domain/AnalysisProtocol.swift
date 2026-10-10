@@ -86,6 +86,8 @@ struct AnalysisProtocol: Codable, Identifiable, Hashable, Sendable {
         var channelsNuclei: Int
         /// Cells below this confidence are hidden from counts/exports/overlay.
         var confidenceThreshold: Double
+        /// Optional so older protocols retain the original Omnipose defaults.
+        var omniposeSettings: OmniposeSegmentationSettings? = nil
     }
 
     struct CalibrationSettings: Codable, Hashable, Sendable {

@@ -1642,6 +1642,7 @@ private struct AboutSection: View {
             "cc-export-timestamp", "cc-export-csv-sep",
             "cc-export-folder-bookmark",
             "cc-thresholds", "cc-pxperum", "cc-confidence", "cc-expected-diameter",
+            "cc-omnipose-settings",
             "cc-active-model",
             "cc-model-filter", "cc-onboarded", "cc-current-batch",
             "cc-models-banner-dismissed", "cc-install-banner-dismissed",

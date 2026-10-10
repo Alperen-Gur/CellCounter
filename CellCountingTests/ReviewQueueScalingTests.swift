@@ -259,6 +259,70 @@ struct ReviewQueueScalingTests {
         #expect(item.diameterEditRange.lowerBound < item.diameterEditRange.upperBound)
     }
 
+    @Test @MainActor func retainedReviewRowsAreIgnoredAfterDeletionAndReset() throws {
+        let (repos, _) = try library(imageCount: 1)
+        let rows = try repos.pendingReviewCandidates()
+        let removed = try #require(rows.first)
+        repos.context.delete(removed)
+        try repos.context.save()
+        #expect(try repos.reviewItems(for: [removed]).isEmpty)
+
+        try repos.deleteAllLibraryRecords()
+        #expect(try repos.reviewItems(for: rows).isEmpty,
+                "Retained pages must not read invalidated candidate backing rows")
+    }
+
+    @Test @MainActor func resetAlsoRemovesDetachedLibraryOutput() throws {
+        let (repos, images) = try library(imageCount: 1)
+        let image = try #require(images.first)
+        let detection = try #require(image.detection)
+        let imageID = image.id
+        // These owners survived the old batch-only reset because no batch
+        // cascade could reach them. Related and scalar-ID output must go too.
+        image.batch = nil
+        image.detection = nil
+        let correction = CorrectionRecord(kind: "accept", cellId: UUID(),
+                                          cx: 10, cy: 10, diameter: 8)
+        correction.detection = detection
+        repos.context.insert(correction)
+        repos.context.insert(ROIRecord(imageId: imageID, kind: "include", shape: "rect",
+                                       x: 0, y: 0, width: 10, height: 10))
+        repos.context.insert(GroundTruthAnnotation(imageId: imageID, cx: 10, cy: 10))
+        repos.context.insert(SegmentationVariantRecord(image: image, detectorId: "test",
+                                                       label: "Detached fixture", cells: []))
+        try repos.context.save()
+
+        try repos.deleteAllLibraryRecords()
+        #expect(try repos.context.fetchCount(FetchDescriptor<BatchRecord>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<ImageRecord>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<DetectionRecord>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<CorrectionRecord>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<ReviewCandidateRecord>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<ROIRecord>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<GroundTruthAnnotation>()) == 0)
+        #expect(try repos.context.fetchCount(FetchDescriptor<SegmentationVariantRecord>()) == 0)
+        #expect(!repos.calibrationPresets().isEmpty)
+        #expect(!repos.binPresets().isEmpty)
+    }
+
+    @Test @MainActor func extremeCalibrationCannotProduceUnboundedReviewGeometry() throws {
+        let (repos, images) = try library(imageCount: 1)
+        let image = try #require(images.first)
+        let detection = try #require(image.detection)
+        let batch = try #require(image.batch)
+        let row = try #require(try repos.pendingReviewCandidates(limit: 1).first)
+        // All values are individually finite; the calibration multiplication
+        // still cannot describe a circle this source image can contain.
+        batch.pxPerUm = 1e300
+        let oversized = try #require(ReviewItem(row, image: image, detection: detection))
+        #expect(!oversized.hasValidGeometry)
+        batch.pxPerUm = Double.leastNonzeroMagnitude
+        row.diameter = 0.01
+        let underflowed = try #require(ReviewItem(row, image: image, detection: detection))
+        #expect(!underflowed.hasValidGeometry)
+        repos.context.rollback()
+    }
+
     @Test @MainActor func sqliteReviewPagingAndResetUseThePersistentStore() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

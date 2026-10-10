@@ -1,7 +1,7 @@
 import Foundation
 
-/// `DetectionService` for Omnipose — bacteria and anything filamentous or
-/// elongated, where Cellpose's round-cell diameter prior actively hurts.
+/// `DetectionService` for Omnipose's published 2D models and distance-field
+/// reconstruction, with configurable thresholds and clustering.
 ///
 /// Runs `Resources/python/omnipose_detect.py` inside the isolated
 /// `python/venv_omni/` interpreter that `OmniposeDownloader` provisions.
@@ -45,6 +45,10 @@ struct OmniposeDetectionService: DetectionService {
         // built on `_cellpose_common.build_arg_parser` accept these;
         // StarDist/SAM hand-roll their parsers and would exit 2.
         args += input.channelStackArguments
+        if let error = input.omniposeSettings.validationError {
+            throw DetectionError.sidecarFailed(exitCode: -1, stderr: error)
+        }
+        args += input.omniposeSettings.arguments
         if input.backgroundSubtract {
             args += ["--bg-subtract", "--rolling-ball-radius", String(input.rollingBallRadius)]
         }
@@ -57,10 +61,9 @@ struct OmniposeDetectionService: DetectionService {
             "--small-threshold", String(input.smallThreshold),
             "--large-threshold", String(input.largeThreshold),
         ]
-        // Deliberately NOT defaulted from the size bins. Omnipose's whole
-        // premise is that an elongated cell has no meaningful "diameter", and
-        // its own docs recommend leaving the prior unset for the omni models.
-        // We forward a diameter only when the user explicitly pinned one.
+        // Keep size classification independent of image rescaling. Omnipose
+        // cyto2 was trained at a 30 px scale; an explicit diameter changes its
+        // rescaling. Bacterial models generally use the acquired image scale.
         let expectedDiameterUm = input.expectedDiameterUm
         if expectedDiameterUm > 0 {
             args += ["--diameter", String(expectedDiameterUm)]

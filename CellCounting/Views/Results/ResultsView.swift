@@ -615,6 +615,9 @@ private struct ViewerPanel: View {
                             zoom: zoom,
                             visibleSourceRect: sourceViewport(image: image, viewportSize: viewportSize,
                                                               maxW: maxW, maxH: maxH, zoom: zoom))
+                // Interaction state and undo events belong to one image. The
+                // shared decode caches, rather than old view state, warm visits.
+                .id(image.id)
                 .background(GeometryReader { geometry in
                     Color.clear.preference(key: ReviewImageFramePreference.self,
                                            value: geometry.frame(in: .named("resultsImageViewport")))
@@ -647,6 +650,37 @@ private struct DetectionCellsLoadKey: Hashable {
     let imageId: UUID
     let detectionId: UUID?
     let revision: Int
+}
+
+private struct ViewerImageLoadKey: Hashable {
+    let imageId: UUID
+    let url: URL
+    let pixelSize: Int
+}
+
+private nonisolated struct PreparedResultsOverlay: Sendable {
+    let summary: ReviewSummary
+    let geometry: CellSpatialIndex
+}
+
+/// Avoid competing full contour scans when navigation/notifications overlap.
+/// Only immutable snapshots enter this worker; SwiftData stays on MainActor.
+private actor ResultsOverlayPreparation {
+    static let shared = ResultsOverlayPreparation()
+
+    func summary(cells: [DetectedCell], key: ReviewDataKey) throws -> ReviewSummary {
+        try Task.checkCancellation()
+        let summary = ReviewSummary.make(cells: cells, confidence: key.confidence, regions: key.regions)
+        try Task.checkCancellation()
+        return summary
+    }
+
+    func prepare(cells: [DetectedCell], key: ReviewDataKey) throws -> PreparedResultsOverlay {
+        let summary = try summary(cells: cells, key: key)
+        let geometry = CellSpatialIndex(cells: summary.cells)
+        try Task.checkCancellation()
+        return PreparedResultsOverlay(summary: summary, geometry: geometry)
+    }
 }
 
 private struct RealImageViewer: View {
@@ -684,18 +718,22 @@ private struct RealImageViewer: View {
     @State private var liveCellsImageId: UUID?
     @State private var overlayFilterCache = ReviewSummaryCache()
     @State private var liveCellsRevision: Int = 0
+    @State private var preparedGeometry: CellSpatialIndex?
+    @State private var preparedGeometryRevision: Int?
+    @State private var cellsLoadGeneration: Int = 0
+    @State private var cellsLoadError: String?
+    @Environment(\.displayScale) private var displayScale
     /// Pass-17 (Lane B): in-memory mirror of the ground-truth annotations on
     /// this image. Synced from `state.repos.annotations(for:)` on appear / image
     /// change. Holding this in @State (instead of querying inside `body`) lets
     /// a click both persist + repaint the crosshair layer in the same tick.
     @State private var annotations: [GroundTruthAnnotation] = []
-    // Pass-11 K6: cache the loaded NSImage off-main. Calling NSImage(contentsOf:)
-    // synchronously inside `body` hit the disk on every render, freezing Results
-    // for hundreds of ms on large microscope TIFFs. Now we load on appear /
-    // image change in a detached Task and only Image() when the cache is ready.
+    // Keep the current display bitmap while a higher zoom resolution loads.
+    // Source dimensions, rather than bitmap dimensions, define every overlay.
     @State private var loadedImage: NSImage? = nil
     @State private var loadedImageId: UUID? = nil
-    @State private var imageLoadTask: Task<Void, Never>? = nil
+    @State private var neighborPrefetchTask: Task<Void, Never>? = nil
+    @State private var correctionReloadTask: Task<Void, Never>? = nil
     @State private var promptTask: Task<Void, Never>? = nil
     @State private var promptBusy = false
     @State private var promptStatus: String? = nil
@@ -716,12 +754,32 @@ private struct RealImageViewer: View {
                               revision: image.detection?.cellsRevision ?? 0)
     }
 
+    private var cellsPreparationKey: ReviewDataKey {
+        overlayKey(revision: image.detection?.cellsRevision ?? 0)
+    }
+
     private var visibleCellsForEditing: [DetectedCell] {
-        let key = ReviewDataKey(imageId: image.id, detectionId: image.detection?.id,
-                                revision: liveCellsRevision,
-                                confidence: state.effectiveConfidence(for: image),
-                                regions: image.rois.map(ReviewRegion.init), pxPerUm: batchPxPerUm)
+        let key = overlayKey(revision: liveCellsRevision)
         return overlayFilterCache.value(for: key, cells: liveCellsImageId == image.id ? liveCells : []).cells
+    }
+
+    private func overlayKey(revision: Int) -> ReviewDataKey {
+        ReviewDataKey(imageId: image.id, detectionId: image.detection?.id, revision: revision,
+                      confidence: state.effectiveConfidence(for: image),
+                      regions: image.rois.map(ReviewRegion.init), pxPerUm: batchPxPerUm)
+    }
+
+    private func displayPixelSize(for image: ImageRecord, zoom: Double) -> Int {
+        let source = CGSize(width: max(1, image.widthPx), height: max(1, image.heightPx))
+        let scale = min(maxW / source.width, maxH / source.height) * CGFloat(zoom)
+        return ViewerImageResolution.pixelSize(source: source,
+            display: CGSize(width: source.width * scale, height: source.height * scale),
+            displayScale: displayScale)
+    }
+
+    private var imageLoadKey: ViewerImageLoadKey {
+        ViewerImageLoadKey(imageId: image.id, url: image.displayURL,
+                          pixelSize: displayPixelSize(for: image, zoom: zoom))
     }
 
     private var overlayRenderRevision: Int {
@@ -747,7 +805,9 @@ private struct RealImageViewer: View {
                     Image(nsImage: ns)
                         .resizable()
                         .interpolation(.medium)
-                        .aspectRatio(contentMode: .fit)
+                        // ImageIO rounds thumbnail dimensions. Use the exact
+                        // source ratio so that rounding cannot inset overlays.
+                        .aspectRatio(srcW / srcH, contentMode: .fit)
                 } else if loadedImageId == image.id {
                     // Tried and failed to load.
                     Rectangle().fill(Tokens.bgSunken)
@@ -782,11 +842,13 @@ private struct RealImageViewer: View {
                     let visibleBinding = Binding<[DetectedCell]>(
                         get: { visibleCellsForEditing },
                         set: { newVisible in
+                            guard liveCellsImageId == image.id else { return }
                             // Read the current snapshot for every setter, including
                             // multiple edits delivered before SwiftUI redraws.
                             liveCells = MeasurementSelection.merging(visible: newVisible, into: liveCells,
                                 previouslyVisibleIds: Set(visibleCellsForEditing.map(\.id)))
                             liveCellsRevision &+= 1
+                            preparedGeometry = nil; preparedGeometryRevision = nil
                         }
                     )
                     EditableOverlay(
@@ -797,11 +859,12 @@ private struct RealImageViewer: View {
                         uncertaintyThreshold: cutoff,
                         palette: state.overlayPalette,
                         renderRevision: overlayRenderRevision,
+                        preparedGeometry: preparedGeometryRevision == overlayRenderRevision ? preparedGeometry : nil,
                         viewScale: Double(scale),
                         viewOffset: .zero,
                         visibleSourceRect: visibleSourceRect,
                         onEdit: { handleEdit($0) },
-                        editorMode: $editorMode,
+                        editorMode: liveCellsImageId == image.id ? $editorMode : nil,
                         manualMarkerDiameter: state.manualMarkerDiameter,
                         externalSelectedCellIds: $selectedCellIds,
                         // Pass-17 (Lane B): ground-truth annotations layer.
@@ -814,6 +877,31 @@ private struct RealImageViewer: View {
                         onPrompt: { prompt in runPrompt(prompt) }
                     )
                     .focusedValue(\.reviewCanvasActive, true)
+                }
+
+                if loadedImageId == image.id, image.detection != nil, liveCellsImageId != image.id {
+                    HStack(spacing: 7) {
+                        if let cellsLoadError {
+                            Image(systemName: "exclamationmark.triangle")
+                            Text("Detections unavailable").help(cellsLoadError)
+                            Button("Retry") {
+                                correctionReloadTask?.cancel()
+                                correctionReloadTask = Task { await syncFromDetection() }
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.white)
+                        } else {
+                            AppSpinner()
+                            Text("Loading detections…")
+                        }
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Capsule().fill(.black.opacity(0.68)))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(12)
+                    .allowsHitTesting(cellsLoadError != nil)
                 }
 
                 if promptBusy || promptStatus != nil {
@@ -866,9 +954,9 @@ private struct RealImageViewer: View {
                 .padding(.bottom, 14)
         }
         .frame(width: drawW, height: drawH)
-        .onAppear { syncAnnotations(); loadImageAsync() }
-        .onChange(of: image.id) { syncAnnotations(); loadImageAsync() }
-        .task(id: cellsLoadKey) { await syncFromDetection() }
+        .onAppear { syncAnnotations() }
+        .task(id: imageLoadKey) { await loadImageAsync() }
+        .task(id: cellsPreparationKey) { await syncFromDetection() }
         // The overlay draws from the private `liveCells` mirror, which otherwise
         // only resyncs on image.id change. Three paths mutate `detection.cells`
         // directly on the model while the image stays selected — multi-select
@@ -882,7 +970,8 @@ private struct RealImageViewer: View {
             // re-run/split that replaced this image's DetectionRecord wholesale
             // (which .onChange on the old relationship's count can miss).
             if note.object == nil || (note.object as? UUID) == image.id {
-                Task { await syncFromDetection() }
+                correctionReloadTask?.cancel()
+                correctionReloadTask = Task { await syncFromDetection() }
             }
         }
         // Pass-17 (Lane B): the F1 sidebar panel pings this when an external
@@ -893,23 +982,53 @@ private struct RealImageViewer: View {
             }
         }
         .onDisappear {
-            imageLoadTask?.cancel(); imageLoadTask = nil
+            neighborPrefetchTask?.cancel(); neighborPrefetchTask = nil
+            correctionReloadTask?.cancel(); correctionReloadTask = nil
+            cellsLoadGeneration &+= 1
             promptTask?.cancel(); promptTask = nil
         }
     }
 
     private func syncFromDetection() async {
+        cellsLoadGeneration &+= 1
+        let generation = cellsLoadGeneration
+        let loadKey = cellsLoadKey
+        cellsLoadError = nil
         guard let detection = image.detection else {
             liveCells = []; liveCellsImageId = image.id
             liveCellsRevision &+= 1
+            preparedGeometry = nil; preparedGeometryRevision = nil
             return
         }
-        let detectionId = detection.id
-        let cells = await state.loadCells(for: detection)
-        guard !Task.isCancelled, image.detection?.id == detectionId,
+        let cells: [DetectedCell]
+        do {
+            cells = try await state.loadReviewCells(for: detection)
+        } catch {
+            guard !Task.isCancelled, cellsLoadGeneration == generation, cellsLoadKey == loadKey,
+                  state.currentImage?.id == image.id else { return }
+            // Keep the encoded measurements intact and prevent an empty
+            // fallback from becoming the next manual-edit save.
+            cellsLoadError = error.localizedDescription
+            liveCells = []
+            liveCellsImageId = nil
+            liveCellsRevision &+= 1
+            overlayFilterCache.store(ReviewSummary(), for: overlayKey(revision: liveCellsRevision))
+            preparedGeometry = nil; preparedGeometryRevision = nil
+            return
+        }
+        guard !Task.isCancelled, cellsLoadKey == loadKey, cellsLoadGeneration == generation,
+              state.currentImage?.id == image.id else { return }
+        let revision = liveCellsRevision &+ 1
+        let key = overlayKey(revision: revision)
+        guard let prepared = try? await ResultsOverlayPreparation.shared.prepare(cells: cells, key: key) else { return }
+        guard !Task.isCancelled, cellsLoadKey == loadKey, cellsLoadGeneration == generation,
+              liveCellsRevision &+ 1 == revision, overlayKey(revision: revision) == key,
               state.currentImage?.id == image.id else { return }
         liveCells = cells; liveCellsImageId = image.id
-        liveCellsRevision &+= 1
+        liveCellsRevision = revision
+        overlayFilterCache.store(prepared.summary, for: key)
+        preparedGeometry = prepared.geometry
+        preparedGeometryRevision = overlayFilterCache.rebuildCount
     }
 
     /// Pass-17 (Lane B): reload the annotations for the current image from
@@ -938,45 +1057,47 @@ private struct RealImageViewer: View {
         NotificationCenter.default.post(name: .ccAnnotationsChanged, object: image.id)
     }
 
-    /// Pass-11 K6: load the full-res NSImage off-main and cache. Replaces the
-    /// `NSImage(contentsOf:)` call that used to run inside `body`.
-    private func loadImageAsync() {
-        // Cancel any in-flight load for a previous image.
-        imageLoadTask?.cancel()
-        // If we already have the right image, no-op.
-        if loadedImageId == image.id, loadedImage != nil { return }
-        loadedImage = nil
-        loadedImageId = nil
-        let url = image.storedURL
-        let targetId = image.id
-        var neighborURLs: [URL] = []
+    /// The structured view task cancels stale foreground requests; the serial
+    /// decoder materializes only the pixels needed by the current canvas.
+    private func loadImageAsync() async {
+        neighborPrefetchTask?.cancel(); neighborPrefetchTask = nil
+        let request = imageLoadKey
+        if loadedImageId != request.imageId {
+            loadedImage = nil; loadedImageId = nil
+        }
+        let ns = await ViewerImageDecoder.shared.image(at: request.url, maxPixelSize: request.pixelSize)
+        guard !Task.isCancelled, state.currentImage?.id == request.imageId else { return }
+        guard let ns else {
+            // A failed higher-resolution decode must not remove an already
+            // visible bitmap of this image.
+            if loadedImageId != request.imageId { loadedImageId = request.imageId }
+            return
+        }
+        loadedImage = ns; loadedImageId = request.imageId
+
+        var neighbors: [ViewerImageLoadKey] = []
         if let batch = state.currentBatch {
             let images = state.orderedImages(in: batch)
-            if let index = images.firstIndex(where: { $0.id == targetId }) {
-                if images.indices.contains(index + 1) { neighborURLs.append(images[index + 1].storedURL) }
-                if images.indices.contains(index - 1) { neighborURLs.append(images[index - 1].storedURL) }
+            if let index = images.firstIndex(where: { $0.id == request.imageId }) {
+                for neighborIndex in [index + 1, index - 1] where images.indices.contains(neighborIndex) {
+                    let neighbor = images[neighborIndex]
+                    neighbors.append(ViewerImageLoadKey(imageId: neighbor.id, url: neighbor.displayURL,
+                        pixelSize: displayPixelSize(for: neighbor, zoom: 1)))
+                }
             }
         }
-        imageLoadTask = Task.detached(priority: .userInitiated) {
-            let ns = ImageLoader.cachedDisplayImage(at: url)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                // Only commit if the user hasn't moved on to a different image.
-                loadedImage = ns
-                loadedImageId = targetId
-            }
-            // Most microscopy review is sequential. Warm only the immediate
-            // neighbors, bounded by ImageLoader's four-image cache, after the
-            // current frame is visible so prefetch never delays first paint.
-            for neighborURL in neighborURLs {
+        // Warm fit-resolution neighbors, even when this image is highly
+        // magnified. Rapid navigation cancels queued prefetch before decode.
+        neighborPrefetchTask = Task(priority: .background) {
+            for neighbor in neighbors {
                 guard !Task.isCancelled else { return }
-                _ = ImageLoader.cachedDisplayImage(at: neighborURL)
+                _ = await ViewerImageDecoder.shared.image(at: neighbor.url, maxPixelSize: neighbor.pixelSize)
             }
         }
     }
 
     private func handleEdit(_ event: EditableOverlay.EditEvent) {
-        guard let det = image.detection else { return }
+        guard liveCellsImageId == image.id, let det = image.detection else { return }
         let isManualMode = (editorMode == .manualCount)
         let specs: [CorrectionSpec]
         switch event {
@@ -1571,6 +1692,8 @@ private struct ResultsSidebar: View {
     @State private var rawCellsSnapshot: [DetectedCell] = []
     @State private var summary = ReviewSummary()
     @State private var summaryKey: ReviewDataKey?
+    @State private var correctionReloadTask: Task<Void, Never>?
+    @State private var cellsLoadFailure: (key: ReviewDataKey, message: String)?
 
     private var workspace: ResultsWorkspace {
         get { ResultsWorkspace(rawValue: workspaceRaw) ?? .overview }
@@ -1633,15 +1756,31 @@ private struct ResultsSidebar: View {
             Divider().overlay(Tokens.divider)
             ScrollView {
                 VStack(spacing: 0) {
-                    TotalBlock(summary: displaySummary)
-                        .opacity(summaryKey == reviewKey ? 1 : 0.45)
-                    if summaryKey != reviewKey {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.mini)
-                            Text("Updating measurements…").font(.system(size: 10))
-                        }.foregroundStyle(Tokens.textTertiary).padding(.bottom, 6)
+                    if let failure = cellsLoadFailure, failure.key == reviewKey {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Measurements unavailable", systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(failure.message)
+                                .font(.system(size: 11)).foregroundStyle(Tokens.textTertiary)
+                            Button("Retry loading measurements") {
+                                correctionReloadTask?.cancel()
+                                correctionReloadTask = Task { await reloadCellsSnapshot() }
+                            }
+                            .font(.system(size: 11))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(18)
+                    } else {
+                        TotalBlock(summary: displaySummary)
+                            .opacity(summaryKey == reviewKey ? 1 : 0.45)
+                        if summaryKey != reviewKey {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("Updating measurements…").font(.system(size: 10))
+                            }.foregroundStyle(Tokens.textTertiary).padding(.bottom, 6)
+                        }
+                        workspaceContent
                     }
-                    workspaceContent
                 }
             }
         }
@@ -1656,22 +1795,31 @@ private struct ResultsSidebar: View {
         .task(id: reviewKey) { await reloadCellsSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
             guard note.object == nil || (note.object as? UUID) == state.currentImage?.id else { return }
-            Task { await reloadCellsSnapshot() }
+            correctionReloadTask?.cancel()
+            correctionReloadTask = Task { await reloadCellsSnapshot() }
         }
+        .onDisappear { correctionReloadTask?.cancel(); correctionReloadTask = nil }
     }
 
     private func reloadCellsSnapshot() async {
         let key = reviewKey
         guard summaryKey != key else { return }
+        cellsLoadFailure = nil
         guard let image = state.currentImage, let detection = image.detection else {
             rawCellsSnapshot = []; summary = ReviewSummary(); summaryKey = key
             return
         }
-        let cells = await state.loadCells(for: detection)
+        let cells: [DetectedCell]
+        do {
+            cells = try await state.loadReviewCells(for: detection)
+        } catch {
+            guard !Task.isCancelled, reviewKey == key else { return }
+            rawCellsSnapshot = []; summary = ReviewSummary(); summaryKey = nil
+            cellsLoadFailure = (key: key, message: error.localizedDescription)
+            return
+        }
         guard !Task.isCancelled, reviewKey == key else { return }
-        let updated = await Task.detached(priority: .userInitiated) {
-            ReviewSummary.make(cells: cells, confidence: key.confidence, regions: key.regions)
-        }.value
+        guard let updated = try? await ResultsOverlayPreparation.shared.summary(cells: cells, key: key) else { return }
         guard !Task.isCancelled, reviewKey == key else { return }
         rawCellsSnapshot = cells
         summary = updated; summaryKey = key

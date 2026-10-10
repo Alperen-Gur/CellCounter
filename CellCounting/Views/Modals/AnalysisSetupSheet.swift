@@ -134,6 +134,9 @@ struct AnalysisSetupSheet: View {
                         }.onChange(of: settings.modelId) { _, id in
                             if let model = state.models.first(where: { $0.id == id }) {
                                 settings.modelName = model.name; settings.modelFamily = model.family.rawValue
+                                if settings.usesOmnipose, settings.omniposeSettings == nil {
+                                    settings.omniposeSettings = state.omniposeSettings
+                                }
                             }
                             edited = true
                         }
@@ -145,6 +148,14 @@ struct AnalysisSetupSheet: View {
                         if settings.modelId == "cw-manual" {
                             TextField("Manual threshold (raw intensity)", value: $settings.manualThreshold, format: .number)
                                 .textFieldStyle(.roundedBorder)
+                        }
+                        if settings.usesOmnipose {
+                            DisclosureGroup("Omnipose reconstruction") {
+                                OmniposeSettingsControls(settings: Binding(
+                                    get: { settings.omniposeSettings ?? .init() },
+                                    set: { settings.omniposeSettings = $0 }
+                                ))
+                            }
                         }
                         Divider()
                         Text("Pixel calibration").font(.headline)

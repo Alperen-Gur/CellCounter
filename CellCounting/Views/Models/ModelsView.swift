@@ -123,6 +123,41 @@ struct ModelsView: View {
                 )
                 .padding(.bottom, 16)
 
+                if state.modelFilter == .all {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Complex or elongated cells")
+                            .font(.system(size: 12.5, weight: .semibold))
+                        Text("Omnipose cyto2 provides a published alternative for irregular eukaryotic shapes. Compare its masks on a representative image, or add a model trained on your own annotations.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Tokens.textSecondary)
+                        Button("View Omnipose models") { state.setFilter(.omnipose) }
+                            .appButton(.standard, size: .sm)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(RoundedRectangle(cornerRadius: Tokens.Radius.lg).fill(Tokens.bgSunken))
+                    .padding(.bottom, 16)
+                }
+
+                if state.modelFilter == .omnipose
+                    || state.models.first(where: { $0.id == state.activeModelId })?.family == .omnipose {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Omnipose reconstruction defaults")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Used by new Omnipose analyses. Saved jobs keep their own settings; edit those in Set up analysis.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Tokens.textSecondary)
+                        OmniposeSettingsControls(settings: $state.omniposeSettings)
+                        if let error = state.omniposeSettings.validationError {
+                            Text(error).font(.system(size: 12)).foregroundStyle(Tokens.danger)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(RoundedRectangle(cornerRadius: Tokens.Radius.lg).fill(Tokens.bgSunken))
+                    .padding(.bottom, 16)
+                }
+
                 ModelsSections(
                     filtered: filteredModels,
                     allModels: allModels,
@@ -187,6 +222,46 @@ struct ModelsView: View {
         .onReceive(NotificationCenter.default.publisher(for: CustomModelStore.changedNotification)) { _ in
             state.models = ModelCatalog.all
             state.installStateCache.refresh(for: state.models, registry: state.detectorRegistry)
+        }
+    }
+}
+
+/// Shared by the Models defaults and an analysis job's immutable draft.
+struct OmniposeSettingsControls: View {
+    @Binding var settings: OmniposeSegmentationSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Mask threshold")
+                Spacer()
+                TextField("0", value: $settings.maskThreshold, format: .number)
+                    .textFieldStyle(.roundedBorder).frame(width: 90)
+                    .accessibilityLabel("Omnipose mask threshold")
+            }
+            Text("Lower values include more mask pixels and can recover faint extensions. Higher values shrink masks. This changes segmentation, independently of the confidence filter.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("Flow error threshold")
+                Spacer()
+                TextField("0", value: $settings.flowThreshold, format: .number)
+                    .textFieldStyle(.roundedBorder).frame(width: 90)
+                    .accessibilityLabel("Omnipose flow error threshold")
+            }
+            Text("0 disables flow error filtering. Positive values reject masks with a larger error; smaller positive values are stricter.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Cluster thin structures", isOn: $settings.cluster)
+            Text("Clustering can retain thin regions, but may merge neighboring cells with weak boundaries. Inspect those masks before accepting a count. Leave Split touching cells off when it fragments long cells.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("For cyto2, expected diameter controls image rescaling relative to its 30 px training scale. With 0, this app uses the acquired image scale. Choose a diameter if cell width differs substantially.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Use defaults") { settings = .init() }
+                    .buttonStyle(.borderless)
+                Spacer()
+                Link("Omnipose settings", destination: URL(string: "https://omnipose.readthedocs.io/settings.html")!)
+            }
+            .font(.caption)
         }
     }
 }
@@ -889,8 +964,10 @@ private struct ModelRowActionsStatic: View {
                     Button {
                         if model.family == .cellpose4 {
                             state.showInstallCellpose4 = true
-                        } else {
+                        } else if model.family == .cellpose {
                             state.showInstallCellpose = true
+                        } else {
+                            state.detectorRegistry.install(model.id, models: state.models)
                         }
                     } label: {
                         HStack(spacing: 4) {
@@ -941,8 +1018,10 @@ private struct ModelRowActionsStatic: View {
             let openSheet: () -> Void = {
                 if model.family == .cellpose4 {
                     state.showInstallCellpose4 = true
-                } else {
+                } else if model.family == .cellpose {
                     state.showInstallCellpose = true
+                } else {
+                    state.detectorRegistry.install(model.id, models: state.models)
                 }
             }
             if isActive {

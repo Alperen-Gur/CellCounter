@@ -8,11 +8,8 @@ struct CellCountingApp: App {
     @State private var showShortcuts: Bool = false
 
     @MainActor init() {
-        // Pass-11: run one-time data wipe BEFORE opening the SwiftData store.
-        // If we built `Repositories` first, SwiftData would open the old DB
-        // file (with mock-detector rows / orphan image refs) under the new
-        // schema and either crash or surface ghost data again.
-        FileStore.runMigrationsIfNeeded()
+        // Open the existing library without deleting it based on preferences.
+        // Legacy review rows are repaired after startup by the repository index.
 
         // Pass-13: kill any orphaned cellpose_detect.py / install_python.sh
         // processes that survived a prior CellCounter death (PPID=1) and wire

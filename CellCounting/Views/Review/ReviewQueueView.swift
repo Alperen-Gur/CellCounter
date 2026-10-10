@@ -408,6 +408,10 @@ struct ReviewQueueView: View {
     private func commitEdit() {
         guard !actionInFlight, cursor < queue.count, let d = editingDiameter else { return }
         let item = queue[cursor]
+        guard item.hasValidGeometry, d.isFinite, item.diameterEditRange.contains(d) else {
+            reviewMessage = "Choose a valid diameter before saving this edit."
+            return
+        }
         guard item.hasLiveOwners else { rebuild(preservingCursor: true); return }
         guard checkCalibration(for: item) else { return }
         actionInFlight = true
@@ -913,7 +917,10 @@ private struct ReviewCardView: View {
                         ctx.stroke(poly, with: .color(col), style: StrokeStyle(lineWidth: 1.2))
                     } else {
                         // Legacy fallback: circle from diameter (uses live edit diameter).
-                        let activeDiameterPx = targetDiameter * item.pxPerUm
+                        // Saved pixel geometry is already bounded. Only an
+                        // active diameter edit needs calibration multiplication.
+                        let activeDiameterPx = editingDiameter.map { $0 * item.pxPerUm }
+                            ?? targetCell.diameterPx
                         let cx = (targetCell.cx - cropRect.minX) * scale
                         let cy = (targetCell.cy - cropRect.minY) * scale
                         let r = activeDiameterPx * scale / 2
@@ -947,24 +954,30 @@ private struct ReviewCardView: View {
     /// µm value so the reviewer gets an honest size reference at any zoom.
     @ViewBuilder
     private func reviewScaleBar(pxPerUm: Double, scale: Double, availableWidth: Double) -> some View {
-        if pxPerUm > 0, scale > 0, availableWidth > 60 {
-            let targetUm = (availableWidth * 0.33) / (pxPerUm * scale)
+        let pointsPerUm = pxPerUm * scale
+        if pointsPerUm.isFinite, pointsPerUm > 0, availableWidth.isFinite, availableWidth > 60 {
+            let targetUm = (availableWidth * 0.33) / pointsPerUm
             let niceUm = Self.niceScaleLength(targetUm)
-            let barPt = max(6, niceUm * pxPerUm * scale)
-            HStack(spacing: 6) {
-                Rectangle()
-                    .fill(.white)
-                    .frame(width: barPt, height: 2)
-                Text(Self.formatScaleLabel(niceUm))
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white)
+            let barPt = max(6, niceUm * pointsPerUm)
+            // An extreme calibration can overflow this product or make the
+            // smallest scale label wider than the card. Never pass it to a
+            // SwiftUI frame, or display a capped bar with a misleading label.
+            if barPt.isFinite, barPt <= availableWidth {
+                HStack(spacing: 6) {
+                    Rectangle()
+                        .fill(.white)
+                        .frame(width: barPt, height: 2)
+                    Text(Self.formatScaleLabel(niceUm))
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(.black.opacity(0.55))
+                )
             }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(.black.opacity(0.55))
-            )
         }
     }
 
@@ -1018,6 +1031,7 @@ private struct ReviewCardView: View {
     private func isDrawable(_ cell: DetectedCell) -> Bool {
         let limit = Double(max(item.widthPx, item.heightPx)) * 4
         guard cell.cx.isFinite, cell.cy.isFinite, cell.diameter.isFinite,
+              cell.diameter > 0,
               cell.diameterPx.isFinite, cell.diameterPx > 0, cell.diameterPx <= limit,
               abs(cell.cx) <= limit, abs(cell.cy) <= limit else { return false }
         return cell.contourPx?.allSatisfy {

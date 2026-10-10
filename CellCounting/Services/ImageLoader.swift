@@ -20,6 +20,76 @@ actor ReviewImageDecoder {
     }
 }
 
+/// The viewer only needs enough pixels for its current canvas and display.
+/// Bucketing avoids a new decode for every pinch/resize tick; the source's
+/// original raster remains available to measurements and exports.
+nonisolated enum ViewerImageResolution {
+    static let maximumPixelSize = 8_192
+
+    static func pixelSize(source: CGSize, display: CGSize, displayScale: CGFloat) -> Int {
+        let sourceLimit = max(source.width, source.height)
+        let needed = max(display.width, display.height) * max(1, displayScale)
+        guard sourceLimit.isFinite, sourceLimit > 0, needed.isFinite else { return 1_024 }
+        let bounded = max(1, min(needed, sourceLimit, CGFloat(maximumPixelSize)))
+        let bucket = [1_024, 2_048, 4_096, maximumPixelSize].first { CGFloat($0) >= bounded }
+            ?? maximumPixelSize
+        return max(1, Int(min(sourceLimit, CGFloat(bucket))))
+    }
+}
+
+/// At most one Results bitmap is decoded at a time, including neighbor
+/// prefetch. Actor calls retain the view task's cancellation, so queued work
+/// for skipped images is discarded before opening another source file.
+actor ViewerImageDecoder {
+    static let shared = ViewerImageDecoder()
+
+    func image(at url: URL, maxPixelSize: Int) -> NSImage? {
+        guard !Task.isCancelled else { return nil }
+        let image = autoreleasepool {
+            ImageLoader.cachedViewerImage(at: url, maxPixelSize: maxPixelSize)
+        }
+        return Task.isCancelled ? nil : image
+    }
+}
+
+/// NSCache's cost limits are advisory. Navigation bitmaps use an explicit
+/// LRU budget so warming neighbors cannot retain an entire large batch.
+nonisolated private final class ViewerBitmapCache: @unchecked Sendable {
+    private struct Entry { let image: NSImage; let bytes: Int }
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var order: [String] = []
+    private var bytes = 0
+    private let countLimit = 6
+    private let byteLimit = 128 * 1_024 * 1_024
+
+    func image(for key: String) -> NSImage? {
+        lock.withLock {
+            guard let entry = entries[key] else { return nil }
+            order.removeAll { $0 == key }; order.append(key)
+            return entry.image
+        }
+    }
+
+    func insert(_ image: NSImage, for key: String, bytes cost: Int) {
+        lock.withLock {
+            remove(key)
+            guard cost > 0, cost <= byteLimit else { return }
+            while order.count >= countLimit || bytes > byteLimit - cost {
+                guard let oldest = order.first else { break }
+                remove(oldest)
+            }
+            entries[key] = Entry(image: image, bytes: cost)
+            order.append(key); bytes += cost
+        }
+    }
+
+    private func remove(_ key: String) {
+        if let entry = entries.removeValue(forKey: key) { bytes -= entry.bytes }
+        order.removeAll { $0 == key }
+    }
+}
+
 /// Decodes JPEG/PNG/TIFF/BMP via ImageIO; rejects anything else with a clear error.
 struct LoadedImage {
     let cgImage: CGImage
@@ -75,6 +145,7 @@ enum ImageLoader {
         let thumbnails = NSCache<NSURL, NSImage>()
         let reviewPreviews = NSCache<NSString, NSImage>()
         let displayImages = NSCache<NSURL, NSImage>()
+        let viewerImages = ViewerBitmapCache()
 
         init() {
             thumbnails.countLimit = 384
@@ -330,6 +401,19 @@ enum ImageLoader {
         return image
     }
 
+    /// An eagerly decoded display bitmap at the requested resolution. ImageIO
+    /// keeps the source orientation used by detections, and callers still lay
+    /// out the canvas using the stored source dimensions rather than this size.
+    nonisolated static func cachedViewerImage(at url: URL, maxPixelSize: Int) -> NSImage? {
+        let limit = min(ViewerImageResolution.maximumPixelSize, max(1, maxPixelSize))
+        let key = "\(url.absoluteString)\n\(limit)"
+        if let cached = memory.viewerImages.image(for: key) { return cached }
+        guard let cg = downsampledCGImage(at: url, maxPixelSize: limit) else { return nil }
+        let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        memory.viewerImages.insert(image, for: key, bytes: cg.bytesPerRow * cg.height)
+        return image
+    }
+
     /// Downsampled whole-image preview for Review cards. The existing card
     /// applies source-coordinate crop transforms, so a resizable preview stays
     /// geometrically exact while using a fraction of the memory of a 20–80 MP
@@ -346,6 +430,11 @@ enum ImageLoader {
     }
 
     nonisolated private static func downsampledImage(at url: URL, maxPixelSize: Int) -> NSImage? {
+        guard let cg = downsampledCGImage(at: url, maxPixelSize: maxPixelSize) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    nonisolated private static func downsampledCGImage(at url: URL, maxPixelSize: Int) -> CGImage? {
         let resolvedURL = displayDecodableURL(for: url)
         guard let src = CGImageSourceCreateWithURL(resolvedURL as CFURL, [
             kCGImageSourceShouldCache: false,
@@ -358,10 +447,7 @@ enum ImageLoader {
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceShouldCacheImmediately: true,
         ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else {
-            return nil
-        }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary)
     }
 
     nonisolated static func pixelSize(at url: URL) -> CGSize? {

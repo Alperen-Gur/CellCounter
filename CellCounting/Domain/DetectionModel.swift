@@ -185,10 +185,10 @@ enum ModelCatalog {
               outputType: "Masks + boxes"),
     ]
 
-    /// Omnipose — the distance-field reformulation of Cellpose that drops the
-    /// "cells are roughly round" assumption. This is the family to reach for
-    /// with bacteria, filaments, and anything elongated, where Cellpose's
-    /// diameter prior actively hurts. MIT licensed.
+    /// Omnipose — distance-field segmentation with morphology-aware mask
+    /// reconstruction. Performance depends on the training data and image
+    /// scale, so the cyto2 model is an alternative to evaluate for complex
+    /// eukaryotic shapes rather than a cell-type-specific accuracy guarantee.
     ///
     /// Installs into its own `venv_omni/` (see `OmniposeDownloader`) because
     /// `omnipose` pulls `cellpose_omni` — a Cellpose fork whose numpy/torch
@@ -216,9 +216,9 @@ enum ModelCatalog {
               outputType: "Masks + boxes + outlines"),
         .init(id: "omni-cyto2", family: .omnipose, name: "Omnipose cyto2",
               sizeMB: 26, sizeLabel: "26 MB weights · ~2 GB env",
-              desc: "Eukaryotic cells with the Omnipose mask reconstruction. Better on irregular, non-round shapes.",
+              desc: "Alternative for irregular eukaryotic cells, including elongated fibroblasts and neuron images. Tune mask reconstruction and inspect results on your own images.",
               state: .off, speed: .med, accuracy: .med,
-              tags: ["bf", "phase", "fluor"],
+              tags: ["bf", "phase", "fluor", "elongated", "fibroblasts", "neurons"],
               license: "MIT",
               architecture: "U-Net + distance field (Omnipose)",
               trainingData: "Cellpose cyto2 set, Omnipose-retrained",

@@ -10,6 +10,9 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
     var calibrationSource: String = "manual"
     var confidence: Double = 0.5
     var expectedDiameterUm: Double = 0
+    /// Optional for decoding runs saved before Omnipose controls were exposed.
+    /// A missing value replays the sidecar's original defaults.
+    var omniposeSettings: OmniposeSegmentationSettings?
     var thresholds: [Double] = [20, 30]
     var channels: [Int] = [0, 0]
     var backgroundSubtract: Bool = false
@@ -30,6 +33,10 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
         var lhs = self, rhs = other
         lhs.detectorVersion = nil; rhs.detectorVersion = nil
         lhs.weightsSHA256 = nil; rhs.weightsSHA256 = nil
+        // Omnipose parameters affect only an Omnipose run (or its ensemble
+        // member). Nil and the historical defaults represent the same input.
+        lhs.omniposeSettings = lhs.usesOmnipose ? (lhs.omniposeSettings ?? .init()) : nil
+        rhs.omniposeSettings = rhs.usesOmnipose ? (rhs.omniposeSettings ?? .init()) : nil
         return lhs == rhs
     }
 
@@ -39,6 +46,7 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
         if !pxPerUm.isFinite || pxPerUm <= 0 { return "Enter a positive pixel scale." }
         if !confidence.isFinite || !(0...1).contains(confidence) { return "Confidence must be between 0 and 1." }
         if !expectedDiameterUm.isFinite || expectedDiameterUm < 0 { return "Expected diameter must be zero (automatic) or positive." }
+        if usesOmnipose, let error = (omniposeSettings ?? .init()).validationError { return error }
         if thresholds.isEmpty || thresholds.contains(where: { !$0.isFinite || $0 <= 0 })
             || zip(thresholds, thresholds.dropFirst()).contains(where: { $0 >= $1 }) {
             return "Size boundaries must be positive and increasing."
@@ -62,6 +70,7 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
         value.calibrationSource = "manual"
         value.confidence = state.confidence
         value.expectedDiameterUm = state.expectedDiameterUm
+        if value.usesOmnipose { value.omniposeSettings = state.omniposeSettings }
         value.thresholds = state.thresholds
         value.channels = state.channels.asArray
         value.backgroundSubtract = state.backgroundSubtract
@@ -81,6 +90,13 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
         return [ModelFamily.cellpose, .cellpose4, .classical, .omnipose, .custom].contains(family)
     }
 
+    var usesOmnipose: Bool {
+        if modelFamily == "Omnipose" || modelId.hasPrefix("omni-") { return true }
+        guard modelFamily == "Ensemble" || modelId == "ensemble-2" else { return false }
+        return ensemblePrimaryId?.hasPrefix("omni-") == true
+            || ensembleSecondaryId?.hasPrefix("omni-") == true
+    }
+
     @MainActor func sourceURL(for image: ImageRecord) -> URL {
         ImageLoader.isVendorExtension(image.storedURL.pathExtension) && !supportsSourceChannels
             ? image.displayURL : image.storedURL
@@ -94,6 +110,7 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
                        watershedSplit: watershedSplit, watershedMinDistance: watershedMinDistanceUm,
                        smallThreshold: thresholds.first ?? 20, largeThreshold: thresholds.last ?? 30,
                        useGPU: useGPU, expectedDiameterUm: expectedDiameterUm,
+                       omniposeSettings: omniposeSettings ?? .init(),
                        zProjection: zProjection, segmentChannel: segmentChannel,
                        manualThreshold: manualThreshold)
     }

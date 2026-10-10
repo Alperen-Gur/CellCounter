@@ -1,5 +1,30 @@
 import Foundation
 
+/// Omnipose's mask reconstruction parameters, independent of the display
+/// confidence filter. Defaults retain the sidecar's historical behavior.
+nonisolated struct OmniposeSegmentationSettings: Codable, Equatable, Hashable, Sendable {
+    var maskThreshold: Double = 0
+    /// Zero disables flow-error filtering; positive values set the maximum
+    /// allowed flow error for a mask.
+    var flowThreshold: Double = 0
+    var cluster: Bool = false
+
+    var validationError: String? {
+        if !maskThreshold.isFinite { return "Omnipose mask threshold must be finite." }
+        if !flowThreshold.isFinite || flowThreshold < 0 {
+            return "Omnipose flow threshold must be zero (off) or positive."
+        }
+        return nil
+    }
+
+    var arguments: [String] {
+        var values = ["--mask-threshold", String(maskThreshold),
+                      "--flow-threshold", String(flowThreshold)]
+        if cluster { values.append("--cluster") }
+        return values
+    }
+}
+
 enum PreprocessingPreset: String, Codable, CaseIterable, Sendable {
     case none
     case clahe
@@ -48,6 +73,7 @@ struct DetectionInput {
     /// (Cellpose: `--no-gpu` arg; StarDist/SAM similarly). Default true.
     let useGPU: Bool
     let expectedDiameterUm: Double
+    let omniposeSettings: OmniposeSegmentationSettings
     let zProjection: String
     let segmentChannel: Int
     let manualThreshold: Double
@@ -66,6 +92,7 @@ struct DetectionInput {
          largeThreshold: Double = 30,
          useGPU: Bool = true,
          expectedDiameterUm: Double = 0,
+         omniposeSettings: OmniposeSegmentationSettings = .init(),
          zProjection: String = "max",
          segmentChannel: Int = 0,
          manualThreshold: Double = 0) {
@@ -83,6 +110,7 @@ struct DetectionInput {
         self.largeThreshold = largeThreshold
         self.useGPU = useGPU
         self.expectedDiameterUm = expectedDiameterUm
+        self.omniposeSettings = omniposeSettings
         self.zProjection = zProjection
         self.segmentChannel = segmentChannel
         self.manualThreshold = manualThreshold

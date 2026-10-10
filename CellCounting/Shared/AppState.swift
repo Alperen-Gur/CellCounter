@@ -101,6 +101,14 @@ final class AppState {
             UserDefaults.standard.set(expectedDiameterUm, forKey: "cc-expected-diameter")
         }
     }
+    /// Defaults for new Omnipose runs. Jobs and results capture their own copy.
+    var omniposeSettings: OmniposeSegmentationSettings {
+        didSet {
+            guard !suppressDefaultsWriteback else { return }
+            UserDefaults.standard.set(try? JSONEncoder().encode(omniposeSettings),
+                                      forKey: "cc-omnipose-settings")
+        }
+    }
     /// The currently active detector. Persisted under `cc-active-model`.
     /// Distinct from `cc-default-model` (Settings → General "Default model"),
     /// which is the *fallback* model id used at first launch when no active
@@ -448,6 +456,8 @@ final class AppState {
         // missing key, which is exactly the Auto default; only a value the user
         // explicitly set (> 0) overrides the sidecar's bin-derived prior.
         self.expectedDiameterUm = UserDefaults.standard.double(forKey: "cc-expected-diameter")
+        self.omniposeSettings = UserDefaults.standard.data(forKey: "cc-omnipose-settings")
+            .flatMap { try? JSONDecoder().decode(OmniposeSegmentationSettings.self, from: $0) } ?? .init()
         self.activeModelId = UserDefaults.standard.string(forKey: "cc-active-model") ?? "cp-cyto3"
 
         if let data = UserDefaults.standard.data(forKey: "cc-channels-cyto"),
@@ -763,6 +773,9 @@ final class AppState {
         // the user may reset an explicit diameter back to Auto from Settings.
         let storedDiam = ud.double(forKey: "cc-expected-diameter")
         if storedDiam != expectedDiameterUm { expectedDiameterUm = storedDiam }
+        let storedOmnipose = ud.data(forKey: "cc-omnipose-settings")
+            .flatMap { try? JSONDecoder().decode(OmniposeSegmentationSettings.self, from: $0) } ?? .init()
+        if storedOmnipose != omniposeSettings { omniposeSettings = storedOmnipose }
         if let id = ud.string(forKey: "cc-active-model"), id != activeModelId {
             activeModelId = id
             refreshDetector()

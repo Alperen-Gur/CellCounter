@@ -15,6 +15,9 @@ struct EditableOverlay: View {
     /// changes. Selection-only updates keep this stable, allowing the heavy
     /// Canvas layer to skip an O(cells × contour-points) equality comparison.
     var renderRevision: Int? = nil
+    /// Results can prepare the initial exact bounds tree off the MainActor.
+    /// This must describe the same cells and revision supplied to this view.
+    var preparedGeometry: CellSpatialIndex? = nil
     /// Source-pixel -> view-point scale factor. View frame should be
     /// (sourceWidth * viewScale) by (sourceHeight * viewScale).
     var viewScale: Double = 1.0
@@ -77,7 +80,8 @@ struct EditableOverlay: View {
 
     @State private var geometryCache = OverlayGeometryCache()
     private var geometry: CellSpatialIndex {
-        geometryCache.prepare(cells: cells, revision: renderRevision)
+        geometryCache.prepare(cells: cells, revision: renderRevision,
+                              preparedIndex: preparedGeometry)
     }
 
     private func cellsWithCentroids(in rect: CGRect) -> [DetectedCell] {
@@ -1368,18 +1372,23 @@ final class OverlayGeometryCache {
         self.maxPaths = max(0, maxPaths)
     }
 
-    func prepare(cells: [DetectedCell], revision: Int?) -> CellSpatialIndex {
+    func prepare(cells: [DetectedCell], revision: Int?,
+                 preparedIndex: CellSpatialIndex? = nil) -> CellSpatialIndex {
         let unchanged = index != nil && previousRevision == revision
             && (revision != nil || previousCells == cells)
         if !unchanged {
             previousCells = cells
             previousRevision = revision
-            index = CellSpatialIndex(cells: cells)
+            if let preparedIndex {
+                index = preparedIndex
+            } else {
+                index = CellSpatialIndex(cells: cells)
+                indexBuildCount += 1
+            }
             paths.removeAll(keepingCapacity: true)
             cachedVertices = 0
             pathOrder.removeAll(keepingCapacity: true)
             evictionHead = 0
-            indexBuildCount += 1
         }
         return index!
     }

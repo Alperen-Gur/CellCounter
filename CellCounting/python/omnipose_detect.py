@@ -2,11 +2,10 @@
 """
 omnipose_detect.py — CellCounter sidecar for Omnipose.
 
-Omnipose (Cutler et al., Nature Methods 2022) replaces Cellpose's flow field
-with a distance-field formulation that does not assume roughly round cells.
-That makes it the right tool for bacteria and anything filamentous or
-elongated — the exact population where Cellpose's diameter prior falls apart.
-MIT licensed.
+Omnipose (Cutler et al., Nature Methods 2022) uses a distance-field
+formulation and configurable mask reconstruction. Its published cyto2 model
+is an alternative for irregular eukaryotic shapes; suitability depends on
+the image modality, scale and training data. MIT licensed.
 
 Runtime isolation
 -----------------
@@ -35,6 +34,10 @@ from __future__ import annotations
 
 import os
 import sys
+import contextlib
+import math
+import shutil
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -42,14 +45,14 @@ import _cellpose_common as cc  # noqa: E402
 from _cellpose_common import log, emit_error  # noqa: E402
 
 
-# Catalog id → Omnipose pretrained model name. `resolve_model_name` also
-# accepts a bare Omnipose name so a future id can be added Swift-side alone.
+# Published 2D checkpoints only. The plant model is volumetric and cannot
+# be used by this sidecar's 2D image/measurement contract.
+# https://omnipose.readthedocs.io/models.html
 _MODEL_MAP = {
     "omni-bact-phase": "bact_phase_omni",
     "omni-bact-fluor": "bact_fluor_omni",
     "omni-cyto2": "cyto2_omni",
     "omni-worm": "worm_omni",
-    "omni-plant": "plant_omni",
 }
 
 _KNOWN_NAMES = set(_MODEL_MAP.values())
@@ -60,12 +63,10 @@ def resolve_model_name(raw: str) -> str:
         return _MODEL_MAP[raw]
     if raw in _KNOWN_NAMES:
         return raw
-    log(f"[cellpose_detect] unknown Omnipose model '{raw}'; "
-        "defaulting to bact_phase_omni")
-    return "bact_phase_omni"
+    raise ValueError(f"Unknown 2D Omnipose model: {raw}")
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = cc.build_arg_parser(
         description="Omnipose detection sidecar for CellCounter",
         default_model="omni-bact-phase",
@@ -78,63 +79,104 @@ def parse_args():
     )
     parser.add_argument(
         "--flow-threshold", dest="flow_threshold", type=float, default=0.0,
-        help="Omnipose flow_threshold. 0.0 (the default, and what the "
-             "Omnipose authors recommend for the omni models) disables the "
-             "flow-error QC filter, which is tuned for round cells.",
+        help="Omnipose flow_threshold. 0 disables flow error filtering; "
+             "positive values set the maximum accepted flow error.",
     )
     parser.add_argument(
         "--cluster", action="store_true",
-        help="Enable Omnipose's DBSCAN mask reconstruction. Slower, but "
-             "noticeably better on dense, touching filaments.",
+        help="Enable Omnipose's clustering reconstruction for thin regions. "
+             "May merge neighboring cells with poorly defined flows.",
     )
     parser.add_argument(
         "--diameter", type=float, default=0.0,
-        help="Explicit expected cell diameter in micrometers. Default 0 = let "
-             "Omnipose infer it. Unlike Cellpose, Omnipose does NOT need a "
-             "diameter prior for elongated cells, so the default is usually "
-             "the right choice.",
+        help="Expected cell diameter in micrometers for image rescaling. "
+             "0 (default) retains the acquired image scale; this sidecar "
+             "does not run Omnipose's separate size estimator.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def _eval_with_degradation(model, img, kwargs):
-    """Call model.eval, dropping kwargs the installed build doesn't accept.
+def build_eval_kwargs(args, channels):
+    """Keep requested reconstruction inputs intact, or reject them.
 
-    Omnipose's eval signature has drifted across releases (`omni=`, `cluster=`,
-    `transparency=`, `mask_threshold=` vs the older `mask_threshold` spelling).
-    Rather than pin one version, we retry without whichever keyword the
-    TypeError names until the call goes through.
+    Unsupported runtime arguments must fail visibly, since dropping omni,
+    channels or thresholds would silently change the analysis being saved.
+    https://omnipose.readthedocs.io/api/api/cellpose_omni.models.CellposeModel.html
     """
-    attempt = dict(kwargs)
-    for _ in range(len(kwargs) + 1):
-        try:
-            return model.eval(img, **attempt)
-        except TypeError as exc:
-            message = str(exc)
-            dropped = None
-            for key in list(attempt.keys()):
-                if key in message:
-                    dropped = key
-                    break
-            if dropped is None:
-                break
-            log(f"[cellpose_detect] eval() rejected '{dropped}' "
-                f"({message}); retrying without it")
-            attempt.pop(dropped, None)
-    # Last resort: the most conservative call any cellpose-derived API accepts.
-    log("[cellpose_detect] falling back to a minimal eval() call")
-    return model.eval(img)
+    if not math.isfinite(args.mask_threshold):
+        raise ValueError("Omnipose mask threshold must be finite.")
+    if not math.isfinite(args.flow_threshold) or args.flow_threshold < 0:
+        raise ValueError("Omnipose flow threshold must be zero (off) or positive.")
+    if not math.isfinite(args.diameter) or args.diameter < 0:
+        raise ValueError("Expected diameter must be zero or positive.")
+    if not math.isfinite(args.pxPerUm) or args.pxPerUm <= 0:
+        raise ValueError("Pixels per micrometer must be positive.")
+    diameter_px = float(args.diameter) * float(args.pxPerUm)
+    if not math.isfinite(diameter_px):
+        raise ValueError("Expected diameter in pixels must be finite.")
+    return {
+        "channels": channels,
+        "omni": True,
+        "mask_threshold": float(args.mask_threshold),
+        "flow_threshold": float(args.flow_threshold),
+        "resample": True,
+        "cluster": bool(args.cluster),
+        "verbose": False,
+        "diameter": diameter_px,
+    }
+
+
+def configure_model_cache(model_name):
+    """Match the Swift inventory path without losing existing checkpoints.
+
+    cellpose_omni otherwise defaults to ~/.cellpose/models, which the base
+    Cellpose runtime also owns. Reuse only the exact published Omnipose
+    checkpoint filename, without moving or deleting the user's cached copy.
+    """
+    cache = os.path.join(os.path.expanduser("~"), ".cellpose_omni", "models")
+    os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = cache
+    basename = f"{model_name}torch_0"
+    previous = os.path.join(os.path.expanduser("~"), ".cellpose", "models", basename)
+    destination = os.path.join(cache, basename)
+    if os.path.isfile(destination) or not os.path.isfile(previous):
+        return
+    temporary = None
+    try:
+        if os.path.getsize(previous) == 0:
+            return
+        os.makedirs(cache, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=cache, prefix=".cc-import-", delete=False) as handle:
+            temporary = handle.name
+        shutil.copyfile(previous, temporary)
+        os.replace(temporary, destination)
+        temporary = None
+        log(f"[cellpose_detect] reused cached Omnipose checkpoint {basename}")
+    except OSError as exc:
+        log(f"[cellpose_detect] could not reuse cached checkpoint: {exc!r}")
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
 
 
 def main() -> None:
     args = parse_args()
     channels = cc.parse_channels(args.channels)
-    model_name = resolve_model_name(args.model)
+    try:
+        model_name = resolve_model_name(args.model)
+        eval_kwargs = build_eval_kwargs(args, channels)
+    except ValueError as exc:
+        emit_error("invalid-model-settings", hint=str(exc), exit_code=2)
+        return
+    configure_model_cache(model_name)
 
     # Lazy imports so the not-installed branch can emit a structured error.
     try:
         import numpy as np  # noqa: F401
-        from cellpose_omni import models as omni_models
+        # The fork prints download paths and import notices to stdout.
+        # Keep those off the host's JSON-only result channel.
+        with contextlib.redirect_stdout(sys.stderr):
+            from cellpose_omni import models as omni_models
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] omnipose import failed: {exc!r}")
         emit_error(
@@ -143,6 +185,10 @@ def main() -> None:
                  "environment (python/venv_omni).",
             exit_code=2,
         )
+        return
+
+    if model_name not in getattr(omni_models, "MODEL_NAMES", []):
+        emit_error("unsupported-model", hint=f"The installed Omnipose runtime does not provide {model_name}. Reinstall Omnipose in Models.", exit_code=4)
         return
 
     img = cc.open_image_for_detection(args.image, channels, args)
@@ -161,15 +207,12 @@ def main() -> None:
     override_device, use_gpu_kw = cc.resolve_device(args, _torch)
 
     # --- Build the model ---------------------------------------------------
-    def _build():
-        kw = {"model_type": model_name, "omni": True}
-        try:
-            return omni_models.CellposeModel(gpu=use_gpu_kw, **kw)
-        except TypeError:
-            return omni_models.CellposeModel(**kw)
-
     try:
-        model = _build()
+        with contextlib.redirect_stdout(sys.stderr):
+            model = omni_models.CellposeModel(
+                gpu=use_gpu_kw, model_type=model_name, omni=True,
+                nchan=2, nclasses=3, dim=2,
+            )
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] model load failed: {exc!r}")
         emit_error("model-load-failed", hint=str(exc), exit_code=4)
@@ -205,29 +248,24 @@ def main() -> None:
     log(f"[cellpose_detect] using device: {resolved_device} (torch {_torch.__version__})")
 
     # --- Evaluate ----------------------------------------------------------
-    eval_kwargs = {
-        "channels": channels,
-        "omni": True,
-        "mask_threshold": float(args.mask_threshold),
-        "flow_threshold": float(args.flow_threshold),
-        "resample": True,
-        "cluster": bool(args.cluster),
-        "verbose": False,
-    }
-    # Only pass a diameter when the user pinned one. Omnipose's whole point is
-    # that elongated cells have no meaningful "diameter"; forcing the Cellpose
-    # bin-derived prior in here would re-introduce the bug it exists to avoid.
     if args.diameter > 0:
-        diam_px = max(5.0, float(args.diameter) * float(args.pxPerUm))
-        eval_kwargs["diameter"] = diam_px
+        diam_px = eval_kwargs["diameter"]
         log(f"[cellpose_detect] using explicit diameter={diam_px:.1f}px "
             f"({args.diameter:.1f}µm @ {args.pxPerUm}px/µm)")
     else:
-        log("[cellpose_detect] no diameter prior (recommended for omni models)")
+        log("[cellpose_detect] diameter rescaling off; using acquired image scale")
+
+    log(f"[cellpose_detect] Omnipose reconstruction: mask_threshold={args.mask_threshold:g}, "
+        f"flow_threshold={args.flow_threshold:g}, cluster={args.cluster}")
 
     log("[cellpose_detect] running eval ...")
     try:
-        eval_out = _eval_with_degradation(model, img, eval_kwargs)
+        with contextlib.redirect_stdout(sys.stderr):
+            eval_out = model.eval(img, **eval_kwargs)
+    except TypeError as exc:
+        log(f"[cellpose_detect] Omnipose runtime rejected requested parameters: {exc!r}")
+        emit_error("incompatible-runtime", hint=f"Omnipose could not honor the requested reconstruction settings: {exc}. Reinstall Omnipose in Models.", exit_code=5)
+        return
     except Exception as exc:  # noqa: BLE001
         log(f"[cellpose_detect] eval failed: {exc!r}")
         emit_error("eval-failed", hint=str(exc), exit_code=5)
@@ -239,6 +277,12 @@ def main() -> None:
         flows = eval_out[1]
 
     masks = cc.apply_watershed_if_requested(masks, args)
+    image_stats.update({
+        "omnipose_mask_threshold": float(args.mask_threshold),
+        "omnipose_flow_threshold": float(args.flow_threshold),
+        "omnipose_cluster": float(args.cluster),
+        "omnipose_diameter_px": eval_kwargs["diameter"],
+    })
     image_stats.update(cc.compute_colony_stats(masks, args, height_px, width_px))
 
     cells = cc.measure_cells(masks, img, args, flows=flows)

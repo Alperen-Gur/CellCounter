@@ -30,7 +30,6 @@ struct OmniposeDownloader: ModelDownloader {
         "omni-bact-fluor": "bact_fluor_omni",
         "omni-cyto2":      "cyto2_omni",
         "omni-worm":       "worm_omni",
-        "omni-plant":      "plant_omni",
     ]
 
     static func isKnownModelId(_ id: String) -> Bool { modelMap[id] != nil }

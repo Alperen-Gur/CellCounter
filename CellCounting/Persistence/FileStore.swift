@@ -139,51 +139,6 @@ struct FileStore {
         displayImagesDir.appendingPathComponent("\(imageId.uuidString).png")
     }
 
-    /// Pass-11: one-time auto-wipe of the SwiftData store + image/thumb dirs.
-    ///
-    /// Ghost cells from prior runs could appear in the Review queue
-    /// (mock-detector rows) and "recent" rows whose image files no longer exist.
-    /// We wipe the on-disk store BEFORE `Repositories()` opens it, so SwiftData
-    /// never tries to migrate or read the stale rows under the new schema.
-    ///
-    /// Preserved: `pythonDir` (venv), `modelsDir` (any custom checkpoints),
-    /// `exportsDir` (user-visible export artefacts). Gated by a UserDefaults
-    /// flag — fires exactly once per install.
-    ///
-    /// MUST be called from `CellCountingApp.init` BEFORE building `Repositories`.
-    static func runMigrationsIfNeeded() {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["CELLCOUNTER_DATA_ROOT"] == nil,
-              environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"] == nil,
-              environment["XCTestConfigurationFilePath"] == nil,
-              environment["XCTestBundlePath"] == nil else { return }
-        let flagKey = "cc-wiped-pre-clean-v1"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-
-        let fm = FileManager.default
-        let store = FileStore.shared
-        let root = store.root
-
-        // 1) Delete store.sqlite + WAL/SHM siblings.
-        for suffix in ["", "-wal", "-shm"] {
-            let url = root.appendingPathComponent("store.sqlite\(suffix)")
-            try? fm.removeItem(at: url)
-        }
-
-        // 2/3) Nuke images + native display derivatives + thumbnails (recursive).
-        try? fm.removeItem(at: store.imagesDir)
-        try? fm.removeItem(at: store.displayImagesDir)
-        try? fm.removeItem(at: store.thumbsDir)
-
-        // 6) Recreate empty dirs so downstream code doesn't trip on missing paths.
-        try? fm.createDirectory(at: store.imagesDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: store.displayImagesDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: store.thumbsDir, withIntermediateDirectories: true)
-
-        // 5) Set the flag so we never run again.
-        UserDefaults.standard.set(true, forKey: flagKey)
-    }
-
     /// Free disk-space estimate for the storage root (for the "X MB on disk" footer).
     func diskUsageMB() -> Int {
         var total: Int64 = 0

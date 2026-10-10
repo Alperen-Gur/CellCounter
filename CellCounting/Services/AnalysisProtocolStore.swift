@@ -65,6 +65,9 @@ enum AnalysisProtocolStore {
     /// pretty-printed JSON — openable in any text editor, `json.load()`-able
     /// from Python, diffable in git.
     nonisolated static func save(_ analysisProtocol: AnalysisProtocol, to url: URL) throws {
+        if let error = analysisProtocol.detection.omniposeSettings?.validationError {
+            throw AnalysisProtocol.LoadError.malformed(error)
+        }
         let data: Data
         do {
             data = try makeEncoder().encode(analysisProtocol)
@@ -107,11 +110,16 @@ enum AnalysisProtocolStore {
                 found: version, newestSupported: AnalysisProtocol.currentSchemaVersion)
         }
 
+        let decoded: AnalysisProtocol
         do {
-            return try makeDecoder().decode(AnalysisProtocol.self, from: data)
+            decoded = try makeDecoder().decode(AnalysisProtocol.self, from: data)
         } catch {
             throw AnalysisProtocol.LoadError.malformed(String(describing: error))
         }
+        if let error = decoded.detection.omniposeSettings?.validationError {
+            throw AnalysisProtocol.LoadError.malformed(error)
+        }
+        return decoded
     }
 
     // MARK: — Library
@@ -260,7 +268,9 @@ extension AppState {
             detection: .init(expectedDiameterUm: expectedDiameterUm,
                              channelsCyto: channels.cyto,
                              channelsNuclei: channels.nuclei,
-                             confidenceThreshold: confidence),
+                             confidenceThreshold: confidence,
+                             omniposeSettings: AnalysisRunSettings.capture(state: self).usesOmnipose
+                                ? omniposeSettings : nil),
             calibration: .init(pxPerUm: pxPerUm),
             sizeBins: .init(thresholdsUm: thresholds),
             preprocessing: .init(backgroundSubtract: backgroundSubtract,
@@ -290,6 +300,7 @@ extension AppState {
         pxPerUm = analysisProtocol.calibration.pxPerUm
         confidence = analysisProtocol.detection.confidenceThreshold
         expectedDiameterUm = analysisProtocol.detection.expectedDiameterUm
+        omniposeSettings = analysisProtocol.detection.omniposeSettings ?? .init()
         channels = DetectionChannels(cyto: analysisProtocol.detection.channelsCyto,
                                      nuclei: analysisProtocol.detection.channelsNuclei)
         backgroundSubtract = analysisProtocol.preprocessing.backgroundSubtract

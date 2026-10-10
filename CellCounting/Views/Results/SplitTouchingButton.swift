@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 // MARK: — Splice point (for main-thread integration)
 //
@@ -24,8 +25,9 @@ import SwiftUI
 ///
 /// Behaviour:
 /// - Disabled while a previous split run is in flight, or when no current image.
-/// - Re-uses the *current* `activeModelId` + calibration; does NOT mutate
-///   `state.watershedSplit` (the persistent UI toggle) — this is one-shot.
+/// - Re-uses saved settings when the active model matches the original run;
+///   otherwise captures the current settings. Does not mutate the default
+///   watershed toggle.
 /// - On success, replaces `currentImage.detection` via `Repositories.saveDetection`
 ///   and posts a `Notification.Name("ccCorrectionsChanged")` so any observing
 ///   sidebars/charts refresh.
@@ -72,35 +74,56 @@ struct SplitTouchingButton: View {
 
     private func runSplit() {
         guard !isRunning, let image = state.currentImage else { return }
-        let priorCount = image.detection?.summaryCellCount ?? 0
+        let imageId = image.id
         isRunning = true
         confirmation = nil
         confirmationTask?.cancel()
 
         Task {
             defer { isRunning = false }
-            guard let svc = state.detector else {
-                showConfirmation("No detector installed")
-                return
-            }
             do {
-                let input = DetectionInput(
-                    imageURL: image.storedURL,
-                    modelId: state.activeModelId,
-                    pxPerUm: image.batch?.pxPerUm ?? state.pxPerUm,
-                    confidenceThreshold: state.confidence,
-                    channels: state.channels.asArray,
-                    backgroundSubtract: state.backgroundSubtract,
-                    rollingBallRadius: state.rollingBallRadius,
-                    preprocessingPreset: state.preprocessingPreset,
-                    watershedSplit: true,
-                    watershedMinDistance: 8
-                )
+                if let detection = image.detection { try await state.finishPendingCellEdits(for: detection) }
+                guard !image.isDeleted, image.modelContext != nil, image.id == imageId else {
+                    throw CancellationError()
+                }
+                guard let svc = state.detector else {
+                    showConfirmation("No detector installed")
+                    return
+                }
+                let detectionId = image.detection?.id
+                let detectionRevision = image.detection?.cellsRevision
+                let priorCount = image.detection?.summaryCellCount ?? 0
+                let savedSettings = image.detection?.runSettings
+                var settings = savedSettings?.modelId == state.activeModelId
+                    ? (savedSettings ?? AnalysisRunSettings.capture(state: state))
+                    : AnalysisRunSettings.capture(state: state)
+                if savedSettings?.modelId != state.activeModelId {
+                    settings.pxPerUm = image.batch?.pxPerUm ?? state.pxPerUm
+                }
+                settings.watershedSplit = true
+                settings.watershedMinDistanceUm = 8
+                if let error = settings.validationError {
+                    throw DetectionError.sidecarFailed(exitCode: -1, stderr: error)
+                }
+                let input = settings.detectionInput(imageURL: settings.sourceURL(for: image))
                 let result = try await svc.detect(input)
+                try Task.checkCancellation()
+                guard !image.isDeleted, image.modelContext != nil,
+                      image.id == imageId, image.detection?.id == detectionId else {
+                    throw CancellationError()
+                }
+                if let detection = image.detection { try await state.finishPendingCellEdits(for: detection) }
+                guard !image.isDeleted, image.modelContext != nil,
+                      image.id == imageId, image.detection?.id == detectionId,
+                      image.detection?.cellsRevision == detectionRevision else {
+                    throw CancellationError()
+                }
                 state.repos.saveDetection(
                     result.cells,
-                    detectorId: "\(type(of: svc))/\(state.activeModelId)+watershed",
-                    for: image
+                    detectorId: "\(type(of: svc))/\(settings.modelId)+watershed",
+                    for: image,
+                    imageStats: result.imageStats,
+                    runSettings: settings
                 )
                 NotificationCenter.default.post(
                     name: Notification.Name("ccCorrectionsChanged"),
@@ -108,6 +131,8 @@ struct SplitTouchingButton: View {
                 )
                 let delta = max(0, result.cells.count - priorCount)
                 showConfirmation("Split \(delta) new cell\(delta == 1 ? "" : "s")")
+            } catch is CancellationError {
+                showConfirmation("Split cancelled; image or masks changed")
             } catch {
                 NSLog("CellCounter: SplitTouchingButton detect failed: %@",
                       error.localizedDescription)

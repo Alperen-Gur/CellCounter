@@ -215,6 +215,7 @@ struct EnsembleDetectionService: DetectionService {
                        largeThreshold: input.largeThreshold,
                        useGPU: input.useGPU,
                        expectedDiameterUm: input.expectedDiameterUm,
+                       omniposeSettings: input.omniposeSettings,
                        zProjection: input.zProjection,
                        segmentChannel: input.segmentChannel,
                        manualThreshold: input.manualThreshold)

@@ -38,14 +38,16 @@ struct ReviewItem: Identifiable {
     }
 
     var hasValidGeometry: Bool {
-        widthPx > 0 && heightPx > 0 &&
+        let calibratedDiameterPx = cell.diameter * pxPerUm
+        return widthPx > 0 && heightPx > 0 &&
         cell.cx.isFinite && cell.cy.isFinite &&
         cell.cx >= 0 && cell.cy >= 0 &&
         cell.cx <= Double(widthPx) && cell.cy <= Double(heightPx) &&
         cell.diameter.isFinite && cell.diameter > 0 &&
         cell.diameterPx.isFinite && cell.diameterPx > 0 &&
         cell.diameterPx <= Double(max(widthPx, heightPx)) * 2 &&
-        (cell.diameter * pxPerUm).isFinite &&
+        calibratedDiameterPx.isFinite && calibratedDiameterPx > 0 &&
+        calibratedDiameterPx <= Double(max(widthPx, heightPx)) * 2 &&
         pxPerUm.isFinite && pxPerUm > 0
     }
 

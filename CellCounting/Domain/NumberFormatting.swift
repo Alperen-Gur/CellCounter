@@ -6,8 +6,11 @@ extension Double {
     /// Single source of truth for the size-threshold / calibration display
     /// formatting used across bins, the results panel, exports, and provenance.
     var trimmedString: String {
-        truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(self))
-            : String(format: "%.1f", self)
+        guard isFinite else { return "—" }
+        // Imported settings can contain finite values outside Int's range.
+        // Converting those with Int(self) traps while rendering Review/Results.
+        if let whole = Int(exactly: self) { return String(whole) }
+        if abs(self) >= 1e15 { return String(format: "%.6g", self) }
+        return String(format: "%.1f", self)
     }
 }

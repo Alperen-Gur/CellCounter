@@ -287,6 +287,14 @@ final class ReviewSummaryCache {
         self.key = key; rebuildCount += 1
         return snapshot
     }
+
+    /// Seed a prepared navigation snapshot without repeating its filtering and
+    /// measurement pass while SwiftUI evaluates the first populated canvas.
+    func store(_ snapshot: ReviewSummary, for key: ReviewDataKey) {
+        self.snapshot = snapshot
+        self.key = key
+        rebuildCount &+= 1
+    }
 }
 
 /// A shared source-coordinate transform drives both comparison panes.

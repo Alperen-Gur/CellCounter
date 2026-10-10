@@ -542,6 +542,10 @@ final class Repositories {
     }
 
     private func resolveReviewItems(for candidates: [ReviewCandidateRecord]) throws -> [ReviewItem] {
+        // Callers can retain a page through reset/reanalysis animations. A
+        // saved deletion detaches its model; reading scalar fields from that
+        // invalidated backing row can trap before owner resolution begins.
+        let candidates = candidates.filter { !$0.isDeleted && $0.modelContext === context }
         guard !candidates.isEmpty else { return [] }
         let imageIDs = Array(Set(candidates.map(\.imageId)))
         let detectionIDs = Array(Set(candidates.map(\.detectionId)))
@@ -899,21 +903,40 @@ final class Repositories {
     /// Database portion of Reset. Kept separate from filesystem deletion so
     /// persistent-store regressions can use an isolated database safely.
     func deleteAllLibraryRecords() throws {
-        let rows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>())
-        let batches = try context.fetch(FetchDescriptor<BatchRecord>())
-        // Review candidates have no cascade inverse on their owners. Delete
-        // them explicitly, including orphans left by an earlier reset.
-        for row in rows {
-            context.delete(row)
-        }
-        // Delete every BatchRecord (cascades to ImageRecord -> DetectionRecord
-        // + CorrectionRecord, and to ROIRecord). NOTE: ConditionRecord and
-        // ModelVersionRecord and the preset tables survive — those are user
-        // workflow config, not run output.
-        for batch in batches {
-            context.delete(batch)
-        }
+        // Keep rollback scoped to this reset if any fetch or the final save
+        // fails. In particular, do not report a failed reset while leaving
+        // the live context full of staged deletions.
         try context.save()
+        let rows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>())
+        var variantFetch = FetchDescriptor<SegmentationVariantRecord>()
+        variantFetch.propertiesToFetch = [\.id]
+        let variants = try context.fetch(variantFetch)
+        let annotations = try context.fetch(FetchDescriptor<GroundTruthAnnotation>())
+        let corrections = try context.fetch(FetchDescriptor<CorrectionRecord>())
+        let rois = try context.fetch(FetchDescriptor<ROIRecord>())
+        var detectionFetch = FetchDescriptor<DetectionRecord>()
+        detectionFetch.propertiesToFetch = [\.id]
+        let detections = try context.fetch(detectionFetch)
+        let images = try context.fetch(FetchDescriptor<ImageRecord>())
+        let batches = try context.fetch(FetchDescriptor<BatchRecord>())
+        // Delete run output explicitly, including detached images/detections
+        // left by earlier deletes. A batch cascade cannot reach those rows,
+        // or the scalar-ID variant/annotation tables. Workflow configuration
+        // (conditions, model versions, presets) survives.
+        do {
+            for row in rows { context.delete(row) }
+            for variant in variants { context.delete(variant) }
+            for annotation in annotations { context.delete(annotation) }
+            for correction in corrections { context.delete(correction) }
+            for roi in rois { context.delete(roi) }
+            for detection in detections { context.delete(detection) }
+            for image in images { context.delete(image) }
+            for batch in batches { context.delete(batch) }
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
     }
 
     /// Deletes the library and its image/thumbnail files, preserving presets,
@@ -924,8 +947,10 @@ final class Repositories {
         // Files
         let fm = FileManager.default
         try? fm.removeItem(at: FileStore.shared.imagesDir)
+        try? fm.removeItem(at: FileStore.shared.displayImagesDir)
         try? fm.removeItem(at: FileStore.shared.thumbsDir)
         try fm.createDirectory(at: FileStore.shared.imagesDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: FileStore.shared.displayImagesDir, withIntermediateDirectories: true)
         try fm.createDirectory(at: FileStore.shared.thumbsDir, withIntermediateDirectories: true)
 
         // Pass-12 K1: even though this routine intentionally preserves the
