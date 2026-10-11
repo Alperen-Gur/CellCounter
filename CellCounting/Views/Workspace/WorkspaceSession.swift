@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import AppKit
 import ImageIO
 import Observation
