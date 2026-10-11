@@ -33,7 +33,8 @@ gh api "repos/$REPO/releases" --paginate \
   --jq '.[].assets[] | "  \(.download_count)\t\(.name)"' \
   | sort -rn || true
 
-TOTAL=$(gh api "repos/$REPO/releases" --paginate --jq '[.[].assets[].download_count] | add // 0')
+TOTAL=$(gh api "repos/$REPO/releases" --paginate --jq '[.[].assets[].download_count] | add // 0' \
+  | awk '{ total += $1 } END { print total + 0 }')
 echo
 echo "  TOTAL: ${TOTAL}"
 hr

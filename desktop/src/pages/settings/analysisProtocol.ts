@@ -52,7 +52,7 @@ export function makeAnalysisProtocol(
     name: name.trim(),
     notes: notes.trim(),
     createdAt: new Date().toISOString(),
-    appVersion: "1.1.1",
+    appVersion: "1.1.2",
     appBuild: "windows",
     model: {
       id: state.activeModelId,

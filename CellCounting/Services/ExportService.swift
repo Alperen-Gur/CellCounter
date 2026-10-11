@@ -430,29 +430,6 @@ enum ExportService {
 
     // MARK: — CSV
 
-    static func writeCSV(detection: DetectionRecord,
-                         image: ImageRecord,
-                         thresholds: [Double],
-                         pxPerUm: Double,
-                         confidence: Double? = nil,
-                         modelId: String? = nil,
-                         separator: String = ",",
-                         provenance: ProvenanceMetadata? = nil,
-                         to url: URL) throws {
-        // Snapshot the SwiftData-backed values on the caller's actor, then hand
-        // off to the `nonisolated` core so the row-building + write can run off
-        // the MainActor when called from a `Task.detached`.
-        try writeCSVCore(cells: detection.cells,
-                         imageFileName: image.fileName,
-                         thresholds: thresholds,
-                         pxPerUm: pxPerUm,
-                         confidence: confidence,
-                         modelId: modelId ?? detection.detectorId,
-                         separator: separator,
-                         provenance: provenance,
-                         to: url)
-    }
-
     /// Off-main-safe CSV writer: builds every row + writes the file from Sendable
     /// value types only (no SwiftData `@Model` access).
     nonisolated static func writeCSVCore(cells: [DetectedCell],
@@ -731,11 +708,16 @@ enum ExportService {
 
     nonisolated static func scaleBarGeometry(imageWidth w: Int,
                                              imageHeight h: Int,
-                                             pxPerUm: Double) -> ScaleBarGeometry {
-        ScaleBarGeometry(
-            barLengthPx: max(20.0, 100.0 * pxPerUm),
+                                             pxPerUm: Double) -> ScaleBarGeometry? {
+        guard w > 0, h > 0, pxPerUm.isFinite, pxPerUm > 0 else { return nil }
+        let barLengthPx = 100.0 * pxPerUm
+        let padding = max(12, CGFloat(min(w, h)) * 0.018)
+        guard barLengthPx.isFinite, barLengthPx >= 1,
+              barLengthPx + 2 * padding <= CGFloat(w) else { return nil }
+        return ScaleBarGeometry(
+            barLengthPx: barLengthPx,
             barHeight: max(3, CGFloat(min(w, h)) * 0.006),
-            padding: max(12, CGFloat(min(w, h)) * 0.018),
+            padding: padding,
             fontSize: max(11, CGFloat(min(w, h)) * 0.022),
             label: "100 µm")
     }
@@ -744,8 +726,8 @@ enum ExportService {
                                      imageWidth w: Int,
                                      imageHeight h: Int,
                                      pxPerUm: Double) {
-        let geometry = scaleBarGeometry(imageWidth: w, imageHeight: h,
-                                        pxPerUm: pxPerUm)
+        guard let geometry = scaleBarGeometry(imageWidth: w, imageHeight: h,
+                                               pxPerUm: pxPerUm) else { return }
         let barLengthPx = geometry.barLengthPx
         let barHeight = geometry.barHeight
         let padding = geometry.padding
@@ -771,6 +753,8 @@ enum ExportService {
 
         let capsuleWidth = max(CGFloat(barLengthPx), textSize.width) + capsuleHPad * 2
         let capsuleHeight = barHeight + gap + textSize.height + capsuleVPad * 2
+        guard capsuleWidth + 2 * padding <= CGFloat(w),
+              capsuleHeight + 2 * padding <= CGFloat(h) else { return }
 
         // Bottom-left in viewer-space corresponds to top-left of source image.
         // In CG (origin bottom-left), drawn image upright means the photo's top is at y=h.
@@ -1076,39 +1060,6 @@ enum ExportService {
         let n_rois: Int?
         let path: String?
         let error: String?
-    }
-
-    /// Write an ImageJ-compatible `RoiSet.zip` for the given detection.
-    ///
-    /// Polygon ROIs are emitted when a cell has a non-nil `contourPx`; cells
-    /// without contours fall back to an OVAL ROI sized from `diameterPx`.
-    /// Each ROI's z/c/t position is set to 1 (2D images).
-    ///
-    /// Blocks the caller on the venv Python subprocess. The helper finishes
-    /// in well under a second even for 500+ cells.
-    ///
-    /// Pass-15: filters by `confidence` and writes a sibling
-    /// `RoiSet.config.txt` next to the .zip (since `roifile` doesn't expose a
-    /// metadata channel we control) so the analysis is self-describing.
-    static func writeImageJROIs(image: ImageRecord,
-                                detection: DetectionRecord,
-                                thresholds: [Double] = [],
-                                pxPerUm: Double = 1.0,
-                                confidence: Double = 0.0,
-                                modelId: String? = nil,
-                                to url: URL) throws {
-        // Snapshot the SwiftData-backed values on the caller's actor, then hand
-        // off to the `nonisolated` core so the (blocking) Python subprocess wait
-        // runs off the MainActor when invoked from a `Task.detached`.
-        try writeImageJROIsCore(cells: detection.cells,
-                                imageWidthPx: image.widthPx,
-                                imageHeightPx: image.heightPx,
-                                imageFileName: image.fileName,
-                                thresholds: thresholds,
-                                pxPerUm: pxPerUm,
-                                confidence: confidence,
-                                modelId: modelId ?? detection.detectorId,
-                                to: url)
     }
 
     /// Off-main-safe ROI writer: encodes the wire blob, spawns + waits on the

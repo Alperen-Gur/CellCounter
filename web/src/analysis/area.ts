@@ -1,5 +1,5 @@
 import { connectedComponents, otsuThreshold } from "./math";
-import { assertCalibration, assertLabelMap, assertRaster, type LabelMap, type PixelArray, type Raster } from "./types";
+import { assertCalibration, assertLabelMap, assertRaster, type LabelMap, type Raster } from "./types";
 
 export interface ConfluenceResult {
   readonly mode: "mask" | "threshold";
@@ -31,13 +31,6 @@ function coverage(mask: ArrayLike<number>, width: number, height: number, pxPerU
 export function confluenceFromMask(mask: LabelMap, pxPerUm: number): ConfluenceResult {
   assertLabelMap(mask);
   return coverage(mask.data, mask.width, mask.height, pxPerUm, "mask", "", null);
-}
-
-export function confluenceFromIntensity(
-  raster: Raster,
-  options: { readonly pxPerUm: number; readonly channel?: number; readonly invert?: boolean; readonly threshold?: { readonly mode: "fixed"; readonly value: number } | { readonly mode: "otsu" } },
-): ConfluenceResult {
-  return confluenceAndMaskFromIntensity(raster, options).confluence;
 }
 
 /** Resolves the threshold and materializes its mask once for downstream area assays. */
@@ -179,16 +172,4 @@ export function spheroidAnalysis(mask: LabelMap, options: { readonly pxPerUm: nu
     .sort((a, b) => b.areaUm2 - a.areaUm2 || a.label - b.label)
     .map((object, index) => ({ ...object, label: index + 1 }));
   return { widthPx: mask.width, heightPx: mask.height, count: objects.length, objects };
-}
-
-/** Colony sizing uses the same calibrated connected-region geometry as spheroids. */
-export function colonyAnalysis(mask: LabelMap, options: { readonly pxPerUm: number; readonly minimumAreaUm2?: number }): RegionAssayResult {
-  return spheroidAnalysis(mask, { ...options, minimumCircularity: 0 });
-}
-
-export function binaryLabelMap(data: PixelArray, width: number, height: number, predicate: (value: number) => boolean = (value) => value > 0): LabelMap {
-  if (data.length !== width * height) throw new RangeError("Binary source dimensions do not match its data.");
-  const labels = new Uint32Array(data.length);
-  for (let index = 0; index < data.length; index += 1) labels[index] = predicate(Number(data[index])) ? 1 : 0;
-  return { data: labels, width, height };
 }

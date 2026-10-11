@@ -297,7 +297,7 @@ struct EnsembleDownloader: ModelDownloader {
         // never produce a meaningful second opinion.
         guard primary != secondary,
               primary != Self.modelId, secondary != Self.modelId else {
-            UserDefaults.standard.set(false, forKey: Self.membersReadyCacheKey)
+            _ = await Self.publishReadiness(false, primary: primary, secondary: secondary)
             return false
         }
         // Probed sequentially rather than concurrently: the registry is a
@@ -309,8 +309,17 @@ struct EnsembleDownloader: ModelDownloader {
         let primaryReady = await Self.probeMember(primary)
         let secondaryReady = await Self.probeMember(secondary)
         let ready = primaryReady && secondaryReady
-        UserDefaults.standard.set(ready, forKey: Self.membersReadyCacheKey)
-        return ready
+        let unchanged = await Self.publishReadiness(ready, primary: primary, secondary: secondary)
+        return unchanged && ready
+    }
+
+    /// Serialize publication with UI changes to the pair so a completed
+    /// probe cannot overwrite readiness for a subsequently selected pair.
+    @MainActor
+    private static func publishReadiness(_ ready: Bool, primary: String, secondary: String) -> Bool {
+        guard primaryId() == primary, secondaryId() == secondary else { return false }
+        UserDefaults.standard.set(ready, forKey: membersReadyCacheKey)
+        return true
     }
 
     /// Deep-probe one member through the registry, hopping to the main actor
@@ -349,18 +358,19 @@ struct EnsembleDownloader: ModelDownloader {
             let ok = await Self.probeMember(member)
             if !ok { missing.append(member) }
         }
+        guard await Self.publishReadiness(missing.isEmpty, primary: primary, secondary: secondary) else {
+            throw CancellationError()
+        }
         if !missing.isEmpty {
             let names = missing.map { id in
                 models.first(where: { $0.id == id })?.name ?? id
             }.joined(separator: " and ")
-            UserDefaults.standard.set(false, forKey: Self.membersReadyCacheKey)
             throw NSError(domain: "EnsembleDownloader", code: 3, userInfo: [
                 NSLocalizedDescriptionKey:
                     "The ensemble needs both of its models installed. Install \(names) first, "
                   + "or pick a different pair in Models.",
             ])
         }
-        UserDefaults.standard.set(true, forKey: Self.membersReadyCacheKey)
         await MainActor.run {
             progress.append("[ensemble] both members installed — ready")
             progress.stage = .ready

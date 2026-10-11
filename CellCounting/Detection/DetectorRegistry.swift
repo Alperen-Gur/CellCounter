@@ -164,6 +164,16 @@ final class DetectorRegistry: ObservableObject {
             return progress
         }
         installStateCache?.markInstalling(modelId)
+        let warmWorkerPrefix: String?
+        switch info.family {
+        case .cellpose, .stardist, .sam:
+            // StarDist and SAM install dependencies into the Cellpose 3 venv.
+            warmWorkerPrefix = "cellpose3|"
+        case .cellpose4:
+            warmWorkerPrefix = "cellpose4|"
+        default:
+            warmWorkerPrefix = nil
+        }
         Task { [weak self] in
             defer {
                 // Always re-probe so the cache reflects truth — whether the
@@ -174,6 +184,9 @@ final class DetectorRegistry: ObservableObject {
                                                     models: models, force: true)
                 }
                 NotificationCenter.default.post(name: .ccModelStorageChanged, object: modelId)
+            }
+            if let warmWorkerPrefix {
+                await PersistentSidecarPool.shared.retire(modelSignaturePrefix: warmWorkerPrefix)
             }
             do {
                 progress.stage = .checkingDependencies
@@ -187,6 +200,11 @@ final class DetectorRegistry: ObservableObject {
                 progress.stage = .failed("Cancelled")
             } catch {
                 progress.stage = .failed(error.localizedDescription)
+            }
+            // Also retire workers opened while pip was running, including
+            // after a failed install that partially changed dependencies.
+            if let warmWorkerPrefix {
+                await PersistentSidecarPool.shared.retire(modelSignaturePrefix: warmWorkerPrefix)
             }
         }
         return progress

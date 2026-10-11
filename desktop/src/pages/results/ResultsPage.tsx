@@ -71,7 +71,8 @@ export default function ResultsPage() {
   const selectedCellIds = useAppStore((s) => s.selectedCellIds);
   const editorMode = useAppStore((s) => s.editorMode);
   const setCurrentImageIdx = useAppStore((s) => s.setCurrentImageIdx);
-  const pxPerUm = useAppStore((s) => s.pxPerUm);
+  const globalPxPerUm = useAppStore((s) => s.pxPerUm);
+  const pxPerUm = batch?.pxPerUm ?? globalPxPerUm;
   const setSelectedCellIds = useAppStore((s) => s.setSelectedCellIds);
   const currentBatchId = useAppStore((s) => s.currentBatchId);
 
@@ -91,6 +92,7 @@ export default function ResultsPage() {
   const editor = useMaskEditor({
     imageId: currentImage?.id,
     readOnly,
+    pxPerUm,
     sourceWidth: currentImage?.widthPx,
     sourceHeight: currentImage?.heightPx,
   });
@@ -338,7 +340,7 @@ export default function ResultsPage() {
         </div>
 
         {currentImage && panel && <div className="rv-review-dock">
-          {panel === "measurements" ? <LinkedMeasurements key={currentImage.id} cells={sidebarCells} /> : imageSrc && <MaskVersionsPanel key={currentImage.id} image={currentImage} imageSrc={imageSrc} detection={detection} cells={displayCells} run={savedRun.run} reviewPxPerUm={pxPerUm} thresholds={thresholds} disabled={readOnly || loading || editor.loading || !editor.engine || !!loadError || savedRun.loading} flush={editor.flush} onRestored={onRestored} onBusyChange={setOperationBusy} />}
+          {panel === "measurements" ? <LinkedMeasurements key={currentImage.id} cells={sidebarCells} /> : imageSrc && <MaskVersionsPanel key={currentImage.id} image={currentImage} imageSrc={imageSrc} detection={detection} cells={displayCells} run={savedRun.run} reviewPxPerUm={pxPerUm} batchThresholds={batch?.thresholds ?? thresholds} thresholds={thresholds} disabled={readOnly || loading || editor.loading || !editor.engine || !!loadError || savedRun.loading} flush={editor.flush} onRestored={onRestored} onBusyChange={setOperationBusy} />}
         </div>}
         {/* Directory nav strip — ←/→ through the batch's images. */}
         {images.length > 0 && (

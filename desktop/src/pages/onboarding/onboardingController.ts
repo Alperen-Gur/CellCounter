@@ -50,15 +50,6 @@ export function markOnboarded(): void {
   }
 }
 
-/** Clear the completion flag (Settings "show onboarding again" / tests). */
-export function resetOnboarded(): void {
-  try {
-    window.localStorage.removeItem(ONBOARDED_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Modal request bus
 // ---------------------------------------------------------------------------

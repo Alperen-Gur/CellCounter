@@ -78,7 +78,3 @@ export function exportAnalysisJson(analysis: ImageAnalysis, provenance: Analysis
   const { displayPlane: _displayPlane, ...record } = analysis;
   return deterministicJson({ analysis: record, provenance });
 }
-
-export function createExportBlob(contents: string, mediaType: string): Blob {
-  return new Blob([contents], { type: `${mediaType};charset=utf-8` });
-}

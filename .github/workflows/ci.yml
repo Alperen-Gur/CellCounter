@@ -66,9 +66,7 @@ jobs:
       # tauri-build's config validation passes in the backend step below.
       - name: Frontend typecheck + build
         working-directory: desktop
-        run: |
-          npx tsc --noEmit
-          npm run build
+        run: npm run build
 
       # The uv externalBin sidecar must exist for the host target, or
       # tauri-build's config validation fails the cargo check below.

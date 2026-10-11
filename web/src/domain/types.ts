@@ -191,8 +191,6 @@ export interface DetectionResultDTO {
   readonly cells: readonly CellDTO[];
   readonly imageStats: Readonly<Record<string, number>>;
 }
-export type Provenance = AnalysisProvenance;
-
 export function assertCalibration(value: Calibration): void {
   if (!Number.isFinite(value.pxPerUm) || value.pxPerUm <= 0) {
     throw new RangeError("Calibration pxPerUm must be a finite positive number");

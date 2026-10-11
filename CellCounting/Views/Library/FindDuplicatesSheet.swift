@@ -136,7 +136,11 @@ struct FindDuplicatesSheet: View {
         let resp = alert.runModal()
         guard resp == .alertFirstButtonReturn else { return }
 
-        state.repos.deleteImages(toDelete)
+        do { try state.repos.deleteImages(toDelete) }
+        catch {
+            state.flashExport("The duplicates could not be deleted: \(error.localizedDescription)", isError: true)
+            return
+        }
         NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
         reload()
     }
@@ -160,7 +164,11 @@ struct FindDuplicatesSheet: View {
         let resp = alert.runModal()
         guard resp == .alertFirstButtonReturn else { return }
 
-        state.repos.deleteImages(toDelete)
+        do { try state.repos.deleteImages(toDelete) }
+        catch {
+            state.flashExport("The duplicates could not be deleted: \(error.localizedDescription)", isError: true)
+            return
+        }
         NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
         reload()
     }

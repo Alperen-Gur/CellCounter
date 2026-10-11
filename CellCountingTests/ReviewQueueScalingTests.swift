@@ -229,11 +229,11 @@ struct ReviewQueueScalingTests {
         let (repos, images) = try library(imageCount: 3)
         let first = try #require(images.first)
         first.fileName = ""
-        repos.deleteImage(first)
+        try repos.deleteImage(first)
         #expect(repos.pendingReviewCandidateCount() == 8)
         let batch = try #require(images.last?.batch)
         for image in batch.images { image.fileName = "" }
-        repos.deleteBatch(batch)
+        try repos.deleteBatch(batch)
         #expect(repos.pendingReviewCandidateCount() == 0)
 
         _ = try library(imageCount: 2, repository: repos)

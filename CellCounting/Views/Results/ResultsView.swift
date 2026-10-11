@@ -27,6 +27,7 @@ struct ResultsView: View {
     // Pass-15 (A2): multi-selection set shared between EditableOverlay and the
     // Cell-Edit toolbar's "delete selected" override.
     @State private var selectedCellIds: Set<UUID> = []
+    @State private var editableCellsKey: DetectionCellsLoadKey?
     @FocusedValue(\.reviewCanvasActive) private var canvasHasFocus: Bool?
 
     var body: some View {
@@ -74,7 +75,8 @@ struct ResultsView: View {
                         roiMode: $roiMode,
                         profileMode: $profileMode,
                         fullScreenEdit: $fullScreenEdit,
-                        selectedCellIds: $selectedCellIds
+                        selectedCellIds: $selectedCellIds,
+                        editableCellsKey: $editableCellsKey
                     )
                     .focusable()
                     .focusEffectDisabled()
@@ -118,6 +120,7 @@ struct ResultsView: View {
                 }
             }
             .onChange(of: state.currentImage?.id) { selectedCellIds.removeAll() }
+            .onChange(of: state.currentImage?.detection?.id) { selectedCellIds.removeAll() }
             .focusable()
             .focusEffectDisabled()
             // Space — master overlay toggle. Either both fills + outlines on,
@@ -365,6 +368,8 @@ struct ResultsView: View {
     /// keyboard shortcut still works when the overlay doesn't hold focus.
     /// Empty-selection is a no-op. The mutation itself lives on AppState.removeCells.
     fileprivate func deleteSelectedCells() {
+        guard let image = state.currentImage,
+              editableCellsKey == DetectionCellsLoadKey(image: image) else { return }
         state.removeCells(selectedCellIds)
         selectedCellIds.removeAll()
     }
@@ -435,6 +440,7 @@ private struct ViewerPanel: View {
     @Binding var fullScreenEdit: Bool
     // Pass-15 (A2): multi-selection set bound from ResultsView.
     @Binding var selectedCellIds: Set<UUID>
+    @Binding var editableCellsKey: DetectionCellsLoadKey?
 
     /// Pass-15: cumulative reading from the in-flight pinch — used to derive
     /// a per-tick delta into the committed `zoom` Binding.
@@ -558,7 +564,9 @@ private struct ViewerPanel: View {
             ScrollView(.horizontal, showsIndicators: true) {
                 EditorModeToolbar(mode: $editorMode, manualMarkerDiameter: $state.manualMarkerDiameter,
                                   onRemoveTapped: {
-                    guard !selectedCellIds.isEmpty else { return false }
+                    guard !selectedCellIds.isEmpty,
+                          let image = state.currentImage,
+                          editableCellsKey == DetectionCellsLoadKey(image: image) else { return false }
                     state.removeCells(selectedCellIds); selectedCellIds.removeAll()
                     return true
                 }).fixedSize(horizontal: true, vertical: false)
@@ -610,6 +618,7 @@ private struct ViewerPanel: View {
                             roiMode: $roiMode,
                             profileMode: $profileMode,
                             selectedCellIds: $selectedCellIds,
+                            editableCellsKey: $editableCellsKey,
                             maxW: maxW,
                             maxH: maxH,
                             zoom: zoom,
@@ -650,6 +659,17 @@ private struct DetectionCellsLoadKey: Hashable {
     let imageId: UUID
     let detectionId: UUID?
     let revision: Int
+
+    init(image: ImageRecord) {
+        imageId = image.id
+        detectionId = image.detection?.id
+        revision = image.detection?.cellsRevision ?? 0
+    }
+}
+
+private struct OverlayEditingSessionKey: Hashable {
+    let detectionId: UUID?
+    let pxPerUm: Double
 }
 
 private struct ViewerImageLoadKey: Hashable {
@@ -706,6 +726,7 @@ private struct RealImageViewer: View {
     // Pass-15 (A2): selection set is owned by ResultsView so it can be shared
     // with the EditorModeToolbar's "delete selected" override.
     @Binding var selectedCellIds: Set<UUID>
+    @Binding var editableCellsKey: DetectionCellsLoadKey?
     let maxW: CGFloat
     let maxH: CGFloat
     /// Pass-15: multiplier applied to the fit-scale to drive the canvas size.
@@ -715,7 +736,7 @@ private struct RealImageViewer: View {
     var visibleSourceRect: CGRect? = nil
 
     @State private var liveCells: [DetectedCell] = []
-    @State private var liveCellsImageId: UUID?
+    @State private var liveCellsLoadKey: DetectionCellsLoadKey?
     @State private var overlayFilterCache = ReviewSummaryCache()
     @State private var liveCellsRevision: Int = 0
     @State private var preparedGeometry: CellSpatialIndex?
@@ -749,9 +770,11 @@ private struct RealImageViewer: View {
     }
 
     private var cellsLoadKey: DetectionCellsLoadKey {
-        DetectionCellsLoadKey(imageId: image.id,
-                              detectionId: image.detection?.id,
-                              revision: image.detection?.cellsRevision ?? 0)
+        DetectionCellsLoadKey(image: image)
+    }
+
+    private var liveCellsAreCurrent: Bool {
+        state.currentImage?.id == image.id && liveCellsLoadKey == cellsLoadKey
     }
 
     private var cellsPreparationKey: ReviewDataKey {
@@ -760,7 +783,9 @@ private struct RealImageViewer: View {
 
     private var visibleCellsForEditing: [DetectedCell] {
         let key = overlayKey(revision: liveCellsRevision)
-        return overlayFilterCache.value(for: key, cells: liveCellsImageId == image.id ? liveCells : []).cells
+        let sameDetection = liveCellsLoadKey?.imageId == image.id
+            && liveCellsLoadKey?.detectionId == image.detection?.id
+        return overlayFilterCache.value(for: key, cells: sameDetection ? liveCells : []).cells
     }
 
     private func overlayKey(revision: Int) -> ReviewDataKey {
@@ -842,7 +867,7 @@ private struct RealImageViewer: View {
                     let visibleBinding = Binding<[DetectedCell]>(
                         get: { visibleCellsForEditing },
                         set: { newVisible in
-                            guard liveCellsImageId == image.id else { return }
+                            guard liveCellsAreCurrent else { return }
                             // Read the current snapshot for every setter, including
                             // multiple edits delivered before SwiftUI redraws.
                             liveCells = MeasurementSelection.merging(visible: newVisible, into: liveCells,
@@ -864,7 +889,7 @@ private struct RealImageViewer: View {
                         viewOffset: .zero,
                         visibleSourceRect: visibleSourceRect,
                         onEdit: { handleEdit($0) },
-                        editorMode: liveCellsImageId == image.id ? $editorMode : nil,
+                        editorMode: liveCellsAreCurrent ? $editorMode : nil,
                         manualMarkerDiameter: state.manualMarkerDiameter,
                         externalSelectedCellIds: $selectedCellIds,
                         // Pass-17 (Lane B): ground-truth annotations layer.
@@ -876,10 +901,11 @@ private struct RealImageViewer: View {
                         onRemoveAnnotation: { a in removeAnnotation(a) },
                         onPrompt: { prompt in runPrompt(prompt) }
                     )
+                    .id(OverlayEditingSessionKey(detectionId: image.detection?.id, pxPerUm: batchPxPerUm))
                     .focusedValue(\.reviewCanvasActive, true)
                 }
 
-                if loadedImageId == image.id, image.detection != nil, liveCellsImageId != image.id {
+                if loadedImageId == image.id, image.detection != nil, !liveCellsAreCurrent {
                     HStack(spacing: 7) {
                         if let cellsLoadError {
                             Image(systemName: "exclamationmark.triangle")
@@ -985,17 +1011,20 @@ private struct RealImageViewer: View {
             neighborPrefetchTask?.cancel(); neighborPrefetchTask = nil
             correctionReloadTask?.cancel(); correctionReloadTask = nil
             cellsLoadGeneration &+= 1
+            if editableCellsKey == liveCellsLoadKey { editableCellsKey = nil }
             promptTask?.cancel(); promptTask = nil
         }
     }
 
     private func syncFromDetection() async {
+        guard !Task.isCancelled, state.currentImage?.id == image.id else { return }
         cellsLoadGeneration &+= 1
         let generation = cellsLoadGeneration
         let loadKey = cellsLoadKey
         cellsLoadError = nil
         guard let detection = image.detection else {
-            liveCells = []; liveCellsImageId = image.id
+            liveCells = []; liveCellsLoadKey = loadKey
+            editableCellsKey = loadKey
             liveCellsRevision &+= 1
             preparedGeometry = nil; preparedGeometryRevision = nil
             return
@@ -1010,7 +1039,8 @@ private struct RealImageViewer: View {
             // fallback from becoming the next manual-edit save.
             cellsLoadError = error.localizedDescription
             liveCells = []
-            liveCellsImageId = nil
+            liveCellsLoadKey = nil
+            editableCellsKey = nil
             liveCellsRevision &+= 1
             overlayFilterCache.store(ReviewSummary(), for: overlayKey(revision: liveCellsRevision))
             preparedGeometry = nil; preparedGeometryRevision = nil
@@ -1024,7 +1054,8 @@ private struct RealImageViewer: View {
         guard !Task.isCancelled, cellsLoadKey == loadKey, cellsLoadGeneration == generation,
               liveCellsRevision &+ 1 == revision, overlayKey(revision: revision) == key,
               state.currentImage?.id == image.id else { return }
-        liveCells = cells; liveCellsImageId = image.id
+        liveCells = cells; liveCellsLoadKey = loadKey
+        editableCellsKey = loadKey
         liveCellsRevision = revision
         overlayFilterCache.store(prepared.summary, for: key)
         preparedGeometry = prepared.geometry
@@ -1097,7 +1128,7 @@ private struct RealImageViewer: View {
     }
 
     private func handleEdit(_ event: EditableOverlay.EditEvent) {
-        guard liveCellsImageId == image.id, let det = image.detection else { return }
+        guard liveCellsAreCurrent, let det = image.detection else { return }
         let isManualMode = (editorMode == .manualCount)
         let specs: [CorrectionSpec]
         switch event {
@@ -1118,7 +1149,9 @@ private struct RealImageViewer: View {
     }
 
     private func runPrompt(_ prompt: MaskPrompt) {
-        guard !promptBusy, let detection = image.detection else { return }
+        guard !promptBusy, liveCellsAreCurrent, let detection = image.detection else { return }
+        let loadKey = cellsLoadKey
+        let localRevision = liveCellsRevision
         let center = prompt.center
         let centerX = Double(center.x)
         let centerY = Double(center.y)
@@ -1148,7 +1181,8 @@ private struct RealImageViewer: View {
                     prompt: prompt, pxPerUm: scale,
                     expectedDiameterPx: expectedPx,
                     replacingId: replacing?.id)
-                guard !Task.isCancelled, image.id == imageId,
+                guard !Task.isCancelled, liveCellsAreCurrent, cellsLoadKey == loadKey,
+                      liveCellsRevision == localRevision, image.id == imageId,
                       let currentDetection = image.detection,
                       currentDetection.id == detection.id else { return }
                 var updated = liveCells
@@ -1174,46 +1208,6 @@ private struct RealImageViewer: View {
             try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled { promptStatus = nil }
         }
-    }
-}
-
-// MARK: — Cell overlay (boxes/outlines only — transparent BG)
-
-private struct CellOverlay: View {
-    let cells: [DetectedCell]
-    /// Source image's pixel size; overlay maps cell coords from this into the
-    /// rendered area, which is sized by the parent.
-    let sourceSize: CGSize
-    let overlayMode: OverlayMode
-    let thresholds: [Double]
-    let uncertaintyThreshold: Double
-
-    var body: some View {
-        Canvas { context, size in
-            let sx = size.width / max(1, sourceSize.width)
-            let sy = size.height / max(1, sourceSize.height)
-            // Cells are in source-image pixel space — apply per-axis scale (will be equal under aspect-fit).
-            for c in cells {
-                let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
-                let col = Tokens.binColor(idx)
-                let isUncertain = c.confidence < uncertaintyThreshold
-                let dxPx = c.diameterPx * sx
-                let dyPx = c.diameterPx * sy
-                let r = min(dxPx, dyPx) / 2  // B4-6: use min so non-uniform scale doesn't oversize cells
-                let cx = c.cx * sx
-                let cy = c.cy * sy
-                let rect = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
-                let path = overlayMode == .outline
-                    ? Path(ellipseIn: rect)
-                    : Path(roundedRect: rect, cornerRadius: 2)
-                context.fill(path, with: .color(col.opacity(overlayMode == .outline ? 0.18 : 0.10)))
-                let style: StrokeStyle = isUncertain
-                    ? StrokeStyle(lineWidth: 1.5, dash: [3.5, 3])
-                    : StrokeStyle(lineWidth: 1.5)
-                context.stroke(path, with: .color(col), style: style)
-            }
-        }
-        .allowsHitTesting(false)
     }
 }
 
@@ -1710,12 +1704,6 @@ private struct ResultsSidebar: View {
             && summaryKey?.detectionId == state.currentImage?.detection?.id ? rawCellsSnapshot : []
     }
 
-    private var cellsLoadKey: DetectionCellsLoadKey? {
-        guard let image = state.currentImage else { return nil }
-        return DetectionCellsLoadKey(imageId: image.id,
-                                     detectionId: image.detection?.id,
-                                     revision: image.detection?.cellsRevision ?? 0)
-    }
     /// Pass-15: the confidence slider is now a real filter. Cells whose
     /// `confidence` is below the effective cutoff (per-image override beats
     /// global) are hidden everywhere downstream — TotalBlock count, BinsPanel,
@@ -2799,53 +2787,6 @@ private struct MeasRow: View {
             }
         }
         .padding(.vertical, 4)
-    }
-}
-
-// MARK: — Export panel (Export agent will replace; keep buttons rendering as no-ops)
-
-private struct ExportPanel: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            SectionHeader(title: "Export")
-                .padding(.bottom, 0)
-
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button {
-                    } label: {
-                        HStack(spacing: 6) {
-                            Icon("image", size: 13)
-                            Text("Annotated PNG")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .appButton(.standard, size: .sm)
-
-                    Button {
-                    } label: {
-                        HStack(spacing: 6) {
-                            Icon("table", size: 13)
-                            Text("CSV")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .appButton(.standard, size: .sm)
-                }
-
-                Button {
-                } label: {
-                    HStack(spacing: 6) {
-                        Icon("download", size: 13)
-                        Text("Export both")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .appButton(.primary, size: .sm)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 18)
     }
 }
 

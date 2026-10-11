@@ -1568,11 +1568,13 @@ private struct AboutSection: View {
 
         do {
             try state.repos.wipeAllUserData()
-            NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
         } catch {
+            if let batchID = state.currentBatchId, state.repos.batch(id: batchID) == nil {
+                state.currentBatchId = nil
+            }
             let failed = NSAlert()
             failed.messageText = "Couldn't fully reset data."
-            failed.informativeText = "The on-disk image directory may not have been recreated. Restart CellCounter and try again. Error: \(error.localizedDescription)"
+            failed.informativeText = "Reset could not finish: \(error.localizedDescription). Restart CellCounter and try again."
             failed.alertStyle = .warning
             failed.addButton(withTitle: "OK")
             failed.runModal()

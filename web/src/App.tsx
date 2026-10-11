@@ -104,7 +104,7 @@ function demoteWorkspaceImage(image: WorkspaceImage): WorkspaceImage {
 
 export function enforceLoadedSourceLimit(images: WorkspaceImage[], recentIds: readonly string[], maximum = MAX_LOADED_SOURCES): WorkspaceImage[] {
   const keep = new Set(recentIds.slice(0, maximum));
-  return images.map((image) => image.sourceLoaded && !keep.has(image.id) ? demoteWorkspaceImage(image) : image);
+  return images.map((image) => image.sourceLoaded && image.sourcePersisted !== false && !keep.has(image.id) ? demoteWorkspaceImage(image) : image);
 }
 
 function circleContour(cell: WorkspaceCell) {
@@ -266,8 +266,15 @@ export default function App() {
   const workerClient = useRef<InferenceWorkerClient | undefined>(undefined);
   const imageSnapshot = useRef<WorkspaceImage[]>([]);
   const recentSourceIds = useRef<string[]>([]);
+  const removedImageIds = useRef(new Set<string>());
+  const importing = useRef(false);
   const metadataWriter = useRef<DebouncedByIdWriter<WorkspaceImage> | undefined>(undefined);
-  metadataWriter.current ??= new DebouncedByIdWriter(350, (image) => repository.current?.putWorkspaceImage(workspaceMetadata(image)));
+  metadataWriter.current ??= new DebouncedByIdWriter(350, (image) => {
+    if (removedImageIds.current.has(image.id)) return;
+    return repository.current?.putWorkspaceImage(workspaceMetadata(image)).catch((error: unknown) => {
+      setNotice({ tone: "error", title: "Image changes could not be saved.", detail: ` ${error instanceof Error ? error.message : String(error)}` });
+    });
+  });
   const { theme, toggleTheme } = useTheme();
 
   const readyModels = useMemo(() => new Set([
@@ -362,44 +369,57 @@ export default function App() {
   const importImages = useCallback(() => fileInput.current?.click(), []);
   const importFolder = useCallback(() => folderInput.current?.click(), []);
   const onFiles = async (files: FileList | null) => {
-    if (!files?.length || busyRef.current) return;
-    const decoded = await decodeImageFiles(files);
-    const knownDigests = new Set(images.map((image) => image.sourceSha256).filter((digest): digest is string => Boolean(digest)));
-    const accepted: WorkspaceImage[] = [];
-    let duplicateCount = 0;
-    for (const image of decoded.images) {
-      if (image.sourceSha256 && knownDigests.has(image.sourceSha256)) { duplicateCount += 1; releaseImage(image); }
-      else { accepted.push(image); if (image.sourceSha256) knownDigests.add(image.sourceSha256); }
-    }
-    if (accepted.length) {
-      setImages((current) => [...current, ...accepted]);
-      setActiveId(accepted[0].id);
-      setRoute("workspace");
-      let stored = 0;
-      try {
-        for (const image of accepted) {
-          const sourceFile = image.originalFile ?? image.file;
-          await repository.current?.putSource(createBrowserImageSource(sourceFile, { id: image.id, fileName: image.fileName, lastModified: sourceFile.lastModified }));
-          await repository.current?.putWorkspaceImage(workspaceMetadata(image));
-          stored += 1;
+    if (!files?.length || busyRef.current || importing.current) return;
+    importing.current = true;
+    try {
+      const decoded = await decodeImageFiles(files);
+      const knownDigests = new Set(imageSnapshot.current.filter((image) => !removedImageIds.current.has(image.id)).map((image) => image.sourceSha256).filter((digest): digest is string => Boolean(digest)));
+      const accepted: WorkspaceImage[] = [];
+      let duplicateCount = 0;
+      for (const image of decoded.images) {
+        if (image.sourceSha256 && knownDigests.has(image.sourceSha256)) { duplicateCount += 1; releaseImage(image); }
+        else { accepted.push({ ...image, sourcePersisted: false }); if (image.sourceSha256) knownDigests.add(image.sourceSha256); }
+      }
+      if (accepted.length) {
+        // Publish only after initial writes settle so edits/deletion cannot race them.
+        setNotice({ tone: "info", title: "Saving imported images on this device…" });
+        let stored = 0;
+        try {
+          const opened = repository.current;
+          if (!opened) throw new Error("Local storage is unavailable. Keep this page open or export your work before leaving.");
+          for (const image of accepted) {
+            const sourceFile = image.originalFile ?? image.file;
+            await opened.putSource(createBrowserImageSource(sourceFile, { id: image.id, fileName: image.fileName, lastModified: sourceFile.lastModified }));
+            await opened.putWorkspaceImage(workspaceMetadata(image));
+            stored += 1;
+          }
+          setNotice({ tone: "success", title: `${accepted.length} image${accepted.length === 1 ? "" : "s"} imported.`, detail: `${duplicateCount ? ` ${duplicateCount} exact duplicate${duplicateCount === 1 ? " was" : "s were"} skipped.` : ""} Stored privately on this device.` });
+        } catch (error) {
+          setNotice({ tone: "warning", title: `${accepted.length} images opened; ${stored} persisted.`, detail: ` Local storage stopped safely: ${error instanceof Error ? error.message : String(error)}` });
         }
         recentSourceIds.current = [accepted[0].id, ...recentSourceIds.current.filter((id) => id !== accepted[0].id)].slice(0, MAX_LOADED_SOURCES);
-        setImages((current) => enforceLoadedSourceLimit(current, recentSourceIds.current));
-        setNotice({ tone: "success", title: `${accepted.length} image${accepted.length === 1 ? "" : "s"} imported.`, detail: `${duplicateCount ? ` ${duplicateCount} exact duplicate${duplicateCount === 1 ? " was" : "s were"} skipped.` : ""} Stored privately on this device.` });
-      } catch (error) {
-        setNotice({ tone: "warning", title: `${accepted.length} images opened; ${stored} persisted.`, detail: ` Local storage stopped safely: ${error instanceof Error ? error.message : String(error)}` });
+        const openedImages = accepted.map((image, index) => ({ ...image, sourcePersisted: index < stored }));
+        setImages((current) => enforceLoadedSourceLimit([...current, ...openedImages], recentSourceIds.current));
+        setActiveId(accepted[0].id);
+        setRoute("workspace");
       }
+      else if (duplicateCount) setNotice({ tone: "info", title: "No new images imported.", detail: ` ${duplicateCount} exact duplicate${duplicateCount === 1 ? " was" : "s were"} skipped by SHA-256.` });
+      if (decoded.errors.length) setNotice({ tone: "warning", title: "Some files were skipped.", detail: ` ${decoded.errors.join(" ")}` });
+    } finally {
+      importing.current = false;
+      if (fileInput.current) fileInput.current.value = "";
+      if (folderInput.current) folderInput.current.value = "";
     }
-    else if (duplicateCount) setNotice({ tone: "info", title: "No new images imported.", detail: ` ${duplicateCount} exact duplicate${duplicateCount === 1 ? " was" : "s were"} skipped by SHA-256.` });
-    if (decoded.errors.length) setNotice({ tone: "warning", title: "Some files were skipped.", detail: ` ${decoded.errors.join(" ")}` });
-    if (fileInput.current) fileInput.current.value = "";
   };
 
-  const updateActive = useCallback((update: (image: WorkspaceImage) => WorkspaceImage) => {
-    if (!activeId) return;
+  const updateActive = useCallback((update: (image: WorkspaceImage) => WorkspaceImage, flush = false) => {
+    if (!activeId || removedImageIds.current.has(activeId)) return;
     setImages((current) => current.map((image) => {
-      if (image.id !== activeId) return image;
-      const updated = update(image); queueMetadataPersistence(updated); return updated;
+      if (image.id !== activeId || removedImageIds.current.has(image.id)) return image;
+      const updated = update(image);
+      queueMetadataPersistence(updated);
+      if (flush) metadataWriter.current?.flush(updated.id);
+      return updated;
     }));
   }, [activeId, queueMetadataPersistence]);
   const pushHistory = useCallback((image: WorkspaceImage) => {
@@ -424,7 +444,6 @@ export default function App() {
       pushHistory(activeImage);
       updateActive((image) => {
         const updated = { ...image, groundTruth: [...image.groundTruth, { id: `truth-${crypto.randomUUID()}`, x, y, diameterPx: (settings.diameterUm || 30) * image.pxPerUm }] };
-        void repository.current?.putWorkspaceImage(workspaceMetadata(updated));
         return updated;
       });
       return;
@@ -458,7 +477,6 @@ export default function App() {
     if (activeImage) pushHistory(activeImage);
     updateActive((image) => {
       const updated = { ...image, rois: [...image.rois, { id: `roi-${crypto.randomUUID()}`, kind, x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) }] };
-      void repository.current?.putWorkspaceImage(workspaceMetadata(updated));
       return updated;
     });
   };
@@ -468,7 +486,6 @@ export default function App() {
     pushHistory(activeImage);
     updateActive((image) => {
       const updated = target === "truth" ? { ...image, groundTruth: [] } : { ...image, rois: [] };
-      void repository.current?.putWorkspaceImage(workspaceMetadata(updated));
       return updated;
     });
   };
@@ -482,12 +499,7 @@ export default function App() {
   };
 
   const updateImageMetadata = (patch: Pick<WorkspaceImage, "note" | "reviewConfidence">) => {
-    updateActive((image) => {
-      const updated = { ...image, ...patch };
-      queueMetadataPersistence(updated);
-      if (patch.reviewConfidence !== image.reviewConfidence) metadataWriter.current?.flush(updated.id);
-      return updated;
-    });
+    updateActive((image) => ({ ...image, ...patch }), patch.reviewConfidence !== activeImage?.reviewConfidence);
   };
 
   const undo = () => {
@@ -497,7 +509,6 @@ export default function App() {
     updateActive((image) => {
       if (previous.analysis) void repository.current?.putAnalysis(previous.analysis);
       const updated = { ...image, cells: previous.cells, analysis: previous.analysis, groundTruth: previous.groundTruth, rois: previous.rois };
-      void repository.current?.putWorkspaceImage(workspaceMetadata(updated));
       return updated;
     });
     setHistory((items) => items.slice(0, -1));
@@ -510,7 +521,6 @@ export default function App() {
     updateActive((image) => {
       if (next.analysis) void repository.current?.putAnalysis(next.analysis);
       const updated = { ...image, cells: next.cells, analysis: next.analysis, groundTruth: next.groundTruth, rois: next.rois };
-      void repository.current?.putWorkspaceImage(workspaceMetadata(updated));
       return updated;
     });
     setRedoHistory((items) => items.slice(0, -1));
@@ -562,7 +572,7 @@ export default function App() {
     if (!repo) throw new Error("Local storage is unavailable.");
     metadataWriter.current?.flush(imageId);
     const image = imageSnapshot.current.find((candidate) => candidate.id === imageId);
-    if (!image) throw new Error("This image was removed from the library.");
+    if (!image || removedImageIds.current.has(imageId)) throw new Error("This image was removed from the library.");
     const previous = image.analysis ?? (image.analysisId ? await repo.getAnalysis(image.analysisId) : null);
     if (previous) await repo.putVariant({ id: crypto.randomUUID(), imageId, name: `Before processing · ${new Date().toLocaleString()}`, createdAt: new Date().toISOString(), analysis: previous });
     const updated = { ...image, width: analysis.image.widthPx, height: analysis.image.heightPx, cells: analysis.cells.map(toWorkspaceCell), modelId: analysis.model.id, analysisId: analysis.id, analysis };
@@ -572,7 +582,7 @@ export default function App() {
   }, []);
 
   const run = useCallback(async () => {
-    if (!activeImage || busyRef.current) return;
+    if (!activeImage || busyRef.current || removedImageIds.current.has(activeImage.id)) return;
     busyRef.current = true;
     const controller = new AbortController(); abortController.current = controller; setRunState("preparing");
     try {
@@ -601,7 +611,7 @@ export default function App() {
       changed: (job) => setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]),
       process: async (item, frozen, signal) => {
         const image = imageSnapshot.current.find((candidate) => candidate.id === item.imageId);
-        if (!image) throw new Error("Image is no longer in the library.");
+        if (!image || removedImageIds.current.has(image.id)) throw new Error("Image is no longer in the library.");
         if (image.sourceSha256 !== item.sourceSha256) throw new Error("Source identity changed since this job was created.");
         const snapshot = { ...frozen, calibration: item.calibration };
         const key = previewKey(item.sourceSha256, snapshot);
@@ -633,16 +643,23 @@ export default function App() {
   };
 
   const saveVariant = async () => {
-    if (!activeImage?.analysis || !repository.current || busy) return;
+    if (!activeImage?.analysis || !repository.current || busyRef.current || removedImageIds.current.has(activeImage.id)) return;
     const name = `Saved mask · ${new Date().toLocaleString()}`;
     await repository.current.putVariant({ id: crypto.randomUUID(), imageId: activeImage.id, name, createdAt: new Date().toISOString(), analysis: activeImage.analysis });
     await refreshVariants(activeImage.id);
   };
   const applyVariant = async () => {
-    if (!alternative || !activeImage || busy) return;
-    await saveResult(activeImage.id, restoreVariant(alternative, calibrationForImage(activeImage)));
-    setShowingPreview(false); setAlternativeId(undefined); await refreshVariants(activeImage.id);
-    setNotice({ tone: "success", title: "Alternative mask restored.", detail: " The previous mask remains saved; original run settings and the current measurement calibration are retained." });
+    if (!alternative || !activeImage || busyRef.current || removedImageIds.current.has(activeImage.id)) return;
+    busyRef.current = true; setRunState("preparing");
+    try {
+      await saveResult(activeImage.id, restoreVariant(alternative, calibrationForImage(activeImage)));
+      setShowingPreview(false); setAlternativeId(undefined); await refreshVariants(activeImage.id);
+      setRunState("complete");
+      setNotice({ tone: "success", title: "Alternative mask restored.", detail: " The previous mask remains saved; original run settings and the current measurement calibration are retained." });
+    } catch (error) {
+      setRunState("error");
+      setNotice({ tone: "error", title: "The alternative mask could not be restored.", detail: ` ${error instanceof Error ? error.message : String(error)}` });
+    } finally { busyRef.current = false; }
   };
 
   const cancel = useCallback(() => {
@@ -661,7 +678,7 @@ export default function App() {
   useKeyboard(keyActions);
 
   const openImage = async (id: string) => {
-    if (busyRef.current) return;
+    if (busyRef.current || removedImageIds.current.has(id)) return;
     const current = images.find((image) => image.id === id);
     if (current && !current.sourceLoaded && repository.current) {
       try {
@@ -672,6 +689,7 @@ export default function App() {
         ]);
         if (source && metadata) {
           const loaded = await workspaceFromStored(source.blob, metadata, analysis ?? undefined, current.thumbnailUrl);
+          if (removedImageIds.current.has(id)) { releaseImage(loaded); return; }
           recentSourceIds.current = [id, ...recentSourceIds.current.filter((item) => item !== id)].slice(0, MAX_LOADED_SOURCES);
           setImages((items) => enforceLoadedSourceLimit(items.map((image) => image.id === id ? loaded : image), recentSourceIds.current));
         }
@@ -683,31 +701,45 @@ export default function App() {
       recentSourceIds.current = [id, ...recentSourceIds.current.filter((item) => item !== id)].slice(0, MAX_LOADED_SOURCES);
       setImages((items) => enforceLoadedSourceLimit(items, recentSourceIds.current));
     }
+    if (removedImageIds.current.has(id)) return;
     setActiveId(id);
     setRoute("workspace");
     setHistory([]);
     setRedoHistory([]);
     setSelectedCellId(undefined);
   };
-  const removeImage = (id: string) => {
-    if (busyRef.current) return;
+  const removeImage = async (id: string) => {
+    if (busyRef.current || removedImageIds.current.has(id)) return;
     const removed = images.find((image) => image.id === id);
-    if (removed) { releaseImage(removed); void repository.current?.deleteSource(id); void repository.current?.deleteWorkspaceImage(id); if (removed.analysisId) void repository.current?.deleteAnalysis(removed.analysisId); }
-    const remaining = images.filter((image) => image.id !== id);
-    setImages(remaining);
-    if (id === activeId) setActiveId(remaining[0]?.id);
+    if (!removed) return;
+    // A pending edit must not recreate the metadata row after deletion.
+    removedImageIds.current.add(id);
+    metadataWriter.current?.discard(id);
+    try {
+      await repository.current?.deleteImage(id);
+      releaseImage(removed);
+      setImages((current) => current.filter((image) => image.id !== id));
+      setActiveId((current) => current === id ? imageSnapshot.current.find((image) => !removedImageIds.current.has(image.id))?.id : current);
+      if (id === activeId) { setHistory([]); setRedoHistory([]); setSelectedCellId(undefined); }
+    } catch (error) {
+      removedImageIds.current.delete(id);
+      queueMetadataPersistence(imageSnapshot.current.find((image) => image.id === id) ?? removed);
+      setNotice({ tone: "error", title: "The image could not be removed.", detail: ` ${error instanceof Error ? error.message : String(error)}` });
+    }
   };
   const updateCondition = (id: string, condition: string) => {
+    if (removedImageIds.current.has(id)) return;
     setImages((items) => items.map((image) => image.id === id ? { ...image, condition } : image));
     const changed = images.find((image) => image.id === id);
-    if (changed) void repository.current?.putWorkspaceImage(workspaceMetadata({ ...changed, condition }));
+    if (changed) queueMetadataPersistence({ ...changed, condition });
     const grouped = images.filter((image) => (image.id === id ? condition : image.condition) === condition).flatMap((image) => image.analysis ? [image.analysis] : []);
     if (grouped.length) void repository.current?.putBatch({ id: `condition:${condition}`, name: condition, condition, analyses: grouped });
   };
   const updateReviewCell = async (imageId: string, cellId: string, action: "accept" | "reject" | "resize") => {
     const current = images.find((image) => image.id === imageId);
-    if (!current) return;
+    if (!current || removedImageIds.current.has(imageId)) return;
     const storedAnalysis = !current.analysis && current.analysisId ? await repository.current?.getAnalysis(current.analysisId) : null;
+    if (removedImageIds.current.has(imageId)) return;
     const hydrated = storedAnalysis ? { ...current, cells: storedAnalysis.cells.map(toWorkspaceCell), analysis: storedAnalysis } : current;
     let updated: WorkspaceImage;
     if (action === "accept") {
@@ -721,6 +753,8 @@ export default function App() {
         : { id: operationId, appliedAt: new Date().toISOString(), kind: "resize", cellId, diameterUm: settings.diameterUm || 30 });
     }
     if (updated.analysis) await repository.current?.putAnalysis(updated.analysis);
+    if (removedImageIds.current.has(imageId)) return;
+    metadataWriter.current?.discard(imageId);
     await repository.current?.putWorkspaceImage(workspaceMetadata(updated));
     const compact = updated.sourceLoaded ? updated : { ...updated, cells: updated.cells.map(cellSummary), analysis: undefined };
     setImages((items) => items.map((image) => image.id === imageId ? compact : image));
@@ -753,9 +787,10 @@ export default function App() {
     if (!pendingUpdate || busyRef.current || updating) return;
     setUpdating(true);
     try {
+      if (importing.current || images.some((image) => image.sourcePersisted === false && !removedImageIds.current.has(image.id))) throw new Error("Some image sources have not been saved. Finish importing or export your work before reloading.");
       flushPendingMetadata();
       if (images.length && !repository.current) throw new Error("Local storage is unavailable. Export your work before reloading.");
-      await Promise.all(images.map((image) => repository.current!.putWorkspaceImage(workspaceMetadata(image))));
+      await Promise.all(images.filter((image) => !removedImageIds.current.has(image.id)).map((image) => repository.current!.putWorkspaceImage(workspaceMetadata(image))));
       await pendingUpdate();
     } catch (cause) {
       setNotice({ tone: "error", title: "The update could not be applied.", detail: ` ${cause instanceof Error ? cause.message : String(cause)}` });
@@ -780,7 +815,7 @@ export default function App() {
           {activeImage && <LinkedMeasurements calibrationVerified={Boolean(activeImage.calibrationSource && activeImage.calibrationSource !== "default")} key={activeId} hasLearnedConfidence={displayAnalysis?.model.id !== "classical"} cells={showingPreview ? stageImage?.cells ?? [] : visibleCells} selectedId={selectedCellId} onSelect={setSelectedCellId} />}
           {images.length > 0 && <Filmstrip images={images} activeId={activeId} onSelect={openImage} onImport={importImages} />}
         </main>
-        {activeImage && <Inspector image={activeImage} selectedCell={stageImage?.cells.find((cell) => cell.id === selectedCellId)} showingPreview={showingPreview} mobileOpen={inspectorOpen} onClose={() => setInspectorOpen(false)} tool={tool} onTool={setTool} onMetadata={updateImageMetadata} truthMetrics={truthMetrics} onClearValidation={clearValidation} settings={settings} onSettings={(next) => { if (busyRef.current) return; setSettings(next); if (next.pxPerUm !== settings.pxPerUm) updateActive((image) => { const updated = updateCalibration(image, next.pxPerUm, "manual"); queueMetadataPersistence(updated); return updated; }); }} count={showingPreview ? stageImage?.cells.length ?? 0 : visibleCells.length} meanDiameter={showingPreview ? (stageImage?.cells.reduce((sum, cell) => sum + cell.diameterUm, 0) ?? 0) / (stageImage?.cells.length || 1) : meanDiameter} onModelFile={() => selectModelFile()} onExport={exportResults} modelReady={readyModels.has(settings.modelId)}>
+        {activeImage && <Inspector image={activeImage} selectedCell={stageImage?.cells.find((cell) => cell.id === selectedCellId)} showingPreview={showingPreview} mobileOpen={inspectorOpen} onClose={() => setInspectorOpen(false)} tool={tool} onTool={setTool} onMetadata={updateImageMetadata} truthMetrics={truthMetrics} onClearValidation={clearValidation} settings={settings} onSettings={(next) => { if (busyRef.current) return; setSettings(next); if (next.pxPerUm !== settings.pxPerUm) updateActive((image) => updateCalibration(image, next.pxPerUm, "manual")); }} count={showingPreview ? stageImage?.cells.length ?? 0 : visibleCells.length} meanDiameter={showingPreview ? (stageImage?.cells.reduce((sum, cell) => sum + cell.diameterUm, 0) ?? 0) / (stageImage?.cells.length || 1) : meanDiameter} onModelFile={() => selectModelFile()} onExport={exportResults} modelReady={readyModels.has(settings.modelId)}>
           {activeImage && <details className="mask-variants"><summary>Mask variants and recorded run</summary><p>{activeImage.analysis ? `${activeImage.analysis.model.displayName} · ${new Date(activeImage.analysis.ranAt).toLocaleString()} · source channel ${activeImage.analysis.parameters.sourceChannel === -1 ? "luminance" : (activeImage.analysis.parameters.sourceChannel ?? 0) + 1} · projection ${activeImage.analysis.parameters.projection ?? "unknown"} · ${activeImage.analysis.cells.length} detected · ${visibleCells.length} included after ROI filters` : "Original run settings are unknown until this image is processed."}</p><div className="processing-actions"><button disabled={!activeImage.analysis || busy} onClick={() => void saveVariant()}>Save current mask</button><label>Alternative <select value={alternativeId ?? ""} onChange={(event) => setAlternativeId(event.target.value || undefined)}><option value="">Choose a saved mask</option>{variants.map((variant) => <option key={variant.id} value={variant.id}>{variant.name} · {variant.analysis.cells.length} objects</option>)}</select></label><button disabled={!alternative || busy} onClick={() => void applyVariant()}>Apply alternative</button></div>{alternative && <p>{variantComparison ? `${variantComparison.added} added · ${variantComparison.removed} removed · ${variantComparison.changed} changed · ${variantComparison.unchanged} unchanged. ` : ""}Orange contours show the alternative using the same pan and zoom. Applying preserves the current mask and original run metadata.</p>}{activeImage.analysis && <details><summary>Recorded settings</summary><pre>{JSON.stringify({ model: activeImage.analysis.model, parameters: activeImage.analysis.parameters, runCalibration: activeImage.analysis.workflow?.runCalibration ?? activeImage.analysis.calibration, currentCalibration: calibrationForImage(activeImage), job: activeImage.analysis.workflow }, null, 2)}</pre></details>}</details>}
         </Inspector>}
       </>}
@@ -788,7 +823,7 @@ export default function App() {
       {route === "help" && <HelpView onWelcome={() => setWelcomeOpen(true)} onShortcuts={() => setHelpOpen(true)} onCapabilities={() => setRoute("capabilities")} />}
       {route === "library" && <LibraryView images={images} activeId={activeId} onOpen={openImage} onRemove={removeImage} onCondition={updateCondition} onImport={importImages} onImportFolder={importFolder} />}
       {route === "review" && <ReviewView images={images} onOpen={(imageId, cellId) => { void openImage(imageId).then(() => setSelectedCellId(cellId)); }} onAccept={(imageId, cellId) => updateReviewCell(imageId, cellId, "accept")} onReject={(imageId, cellId) => updateReviewCell(imageId, cellId, "reject")} onResize={(imageId, cellId) => updateReviewCell(imageId, cellId, "resize")} />}
-      {route === "lab" && <AnalysisLabView image={activeImage} images={images} settings={settings} onSettings={(next) => { if (busyRef.current) return; setSettings(next); if (next.pxPerUm !== settings.pxPerUm) updateActive((image) => { const updated = updateCalibration(image, next.pxPerUm, "protocol"); queueMetadataPersistence(updated); return updated; }); }} onWorkspace={() => setRoute("workspace")} />}
+      {route === "lab" && <AnalysisLabView image={activeImage} images={images} settings={settings} onSettings={(next) => { if (busyRef.current) return; setSettings(next); if (next.pxPerUm !== settings.pxPerUm) updateActive((image) => updateCalibration(image, next.pxPerUm, "protocol")); }} onWorkspace={() => setRoute("workspace")} />}
       {route === "compare" && <CompareView images={images} onLibrary={() => setRoute("library")} />}
       {route === "models" && <ModelsView readyModels={readyModels} onModelFile={selectModelFile} />}
       {route === "capabilities" && <CapabilitiesView />}

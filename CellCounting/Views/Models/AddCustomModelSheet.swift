@@ -305,7 +305,8 @@ struct AddCustomModelSheet: View {
         }
         state.installStateCache.refresh(modelId: EnsembleDownloader.modelId,
                                         registry: state.detectorRegistry,
-                                        models: state.models)
+                                        models: state.models, force: true)
+        if state.activeModelId == EnsembleDownloader.modelId { state.refreshDetector() }
         dismiss()
     }
 

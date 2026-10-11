@@ -74,6 +74,9 @@ struct AnalysisProtocol: Codable, Identifiable, Hashable, Sendable {
         /// `ModelFamily.rawValue` at save time — informational (helps a
         /// human read the file / the warning message); not used for matching.
         var family: String
+        /// Optional for older files, which did not capture the ensemble pair.
+        var ensemblePrimaryId: String? = nil
+        var ensembleSecondaryId: String? = nil
     }
 
     struct DetectionSettings: Codable, Hashable, Sendable {

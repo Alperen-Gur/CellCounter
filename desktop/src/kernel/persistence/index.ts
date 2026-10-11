@@ -28,12 +28,3 @@ export function getPort(): PersistencePort {
   }
   return instance;
 }
-
-/**
- * Override the active port. Intended for the browser build's bootstrap and for
- * tests (inject a fake). Passing `null` resets to the default factory on the
- * next `getPort()` call.
- */
-export function setPort(port: PersistencePort | null): void {
-  instance = port;
-}

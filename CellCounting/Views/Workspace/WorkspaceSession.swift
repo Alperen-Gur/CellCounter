@@ -9,7 +9,9 @@ private nonisolated func runWorkspaceWorker<Value: Sendable>(
 ) async throws -> Value {
     let worker = Task.detached(priority: priority, operation: operation)
     return try await withTaskCancellationHandler(operation: {
-        try await worker.value
+        let value = try await worker.value
+        try Task<Never, Never>.checkCancellation()
+        return value
     }, onCancel: {
         worker.cancel()
     })
@@ -129,6 +131,8 @@ final class WorkspaceSession {
         if cancelOperations {
             activeOperationTask?.cancel()
             planeLoadTask?.cancel()
+            isBusy = false
+            progress = 0
         }
         let y = WorkspaceAxis(name: "y", kind: .y, length: 1, unit: "pixel")
         let x = WorkspaceAxis(name: "x", kind: .x, length: 1, unit: "pixel")
@@ -184,6 +188,8 @@ final class WorkspaceSession {
         }
         let images = state.orderedImages(in: batch)
         guard !images.isEmpty else { errorMessage = "The current batch contains no images."; return }
+        let batchName = batch.displayName
+        let frameURLs = images.map(\.displayURL)
         begin("Building workspace from \(images.count) batch images…")
         activeOperationTask?.cancel()
         activeOperationTask = Task {
@@ -192,6 +198,7 @@ final class WorkspaceSession {
             do {
                 for (index, image) in images.enumerated() {
                     try Task.checkCancellation()
+                    guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
                     if initialPlane == nil, let loaded = ImageLoader.loadStored(image) {
                         initialPlane = try await runWorkspaceWorker(priority: .userInitiated) {
                             let plane = try ImageRegistrationService.grayscalePlane(from: loaded.cgImage,
@@ -199,20 +206,23 @@ final class WorkspaceSession {
                             return (plane, plane.makeCGImage())
                         }
                     }
+                    guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
                     if let detection = image.detection { frames.append(await state.loadCells(for: detection)) }
                     else { frames.append([]) }
                     progress = Double(index + 1) / Double(images.count)
                     await Task.yield()
                 }
-                reset(name: batch.displayName, cancelOperations: false)
+                try Task.checkCancellation()
+                guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+                reset(name: batchName, cancelOperations: false)
                 guard let initialPlane else { throw ImageRegistrationError.invalidPlane }
-                integrateFrameSources(images.map(\.displayURL), initialPlane: initialPlane.0,
+                integrateFrameSources(frameURLs, initialPlane: initialPlane.0,
                                       preparedImage: initialPlane.1)
                 importDetections(frames: frames)
                 if lineageFrames().count >= 2 {
                     try await rebuildLineage(maxDistancePx: 80)
                 }
-                finish("Workspace created from “\(batch.displayName)”.")
+                finish("Workspace created from “\(batchName)”.")
             } catch { fail(error) }
         }
     }
@@ -223,6 +233,7 @@ final class WorkspaceSession {
         activeOperationTask = Task {
             do {
                 let dataset = try await OMEZarrService.shared.inspect(rootURL: rootURL)
+                try Task.checkCancellation()
                 guard let base = dataset.arrays.first else {
                     throw OMEZarrError.malformedMetadata("no multiscale arrays")
                 }
@@ -421,6 +432,7 @@ final class WorkspaceSession {
             frames: frames, maxDistancePixels: maxDistancePx) { update in
                 await self.applyLineageProgress(update)
             }
+        try Task.checkCancellation()
         workspace.lineage = result.graph
         selectedLineageNodeIDs.removeAll()
         errorMessage = nil
@@ -513,6 +525,7 @@ final class WorkspaceSession {
                     update in
                     await self.applyWorkflowProgress(update)
                 }
+                try Task.checkCancellation()
                 workspace = result.workspace
                 planes = result.planes
                 rebuildDisplayImages()
@@ -550,6 +563,7 @@ final class WorkspaceSession {
         activeOperationTask = Task {
             do {
                 let loaded = try await WorkspaceDocumentStore.loadInBackground(from: url)
+                try Task.checkCancellation()
                 workspace = loaded
                 planes.removeAll(); displayImages.removeAll(); sourceURLs.removeAll()
                 zarrArrays.removeAll(); residentOrder.removeAll(); residentByteCosts.removeAll()
@@ -858,6 +872,9 @@ final class WorkspaceSession {
     }
 
     private func fail(_ error: Error) {
+        // Cancel/new-workspace already sets its own state. An older operation
+        // must not overwrite a replacement operation's progress or status.
+        guard !Task.isCancelled else { return }
         if error is CancellationError {
             isBusy = false
             progress = 0

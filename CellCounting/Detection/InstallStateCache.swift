@@ -82,11 +82,6 @@ final class InstallStateCache {
         publish([modelId])
     }
 
-    func markBroken(_ modelId: String, reason: String) {
-        states[modelId] = .broken(reason: reason)
-        publish([modelId])
-    }
-
     /// Repeated launch/navigation requests join the existing check. Install
     /// completion explicitly supersedes older results with `force: true`.
     func refresh(modelId: String, registry: DetectorRegistry,

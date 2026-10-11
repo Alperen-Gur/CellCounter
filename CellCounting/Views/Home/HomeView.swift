@@ -626,52 +626,6 @@ private struct RecentRow: View {
     }
 }
 
-private struct SampleRecentRow: View {
-    let batch: RecentBatch
-    let isFirst: Bool
-    let isLast: Bool
-
-    @State private var hovered = false
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ThumbDots(seed: batch.seed)
-                .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(batch.name)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Tokens.text)
-                    .lineLimit(1)
-                Text("\(batch.count) cells · 12 images")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Tokens.textTertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text(batch.count.formatted())
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Tokens.textSecondary)
-
-            Text(batch.when)
-                .font(.system(size: 11.5))
-                .foregroundStyle(Tokens.textTertiary)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(hovered ? Tokens.hover : Color.clear)
-        .onHover { hovered = $0 }
-        .overlay(alignment: .top) {
-            if !isFirst {
-                Rectangle()
-                    .fill(Tokens.divider)
-                    .frame(height: 0.5)
-            }
-        }
-    }
-}
-
 // MARK: — Relative date helper
 
 private enum RelativeDateFormatter {

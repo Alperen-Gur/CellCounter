@@ -237,10 +237,6 @@ export class BrowserRepository {
     return this.listRecords<ImageAnalysis>("analyses");
   }
 
-  async deleteAnalysis(id: string): Promise<void> {
-    await this.deleteRecord("analyses", id);
-  }
-
   async putBatch(batch: BatchAnalysis): Promise<void> {
     await this.putRecord("batches", batch);
   }
@@ -269,8 +265,32 @@ export class BrowserRepository {
     return this.listRecords<WorkspaceImageMetadata>("workspaceImages");
   }
 
-  async deleteWorkspaceImage(id: string): Promise<void> {
-    await this.deleteRecord("workspaceImages", id);
+  /** Commit the library deletion before removing source bytes from OPFS. */
+  async deleteImage(id: string): Promise<void> {
+    const transaction = this.database.transaction(
+      ["workspaceImages", "sources", "analyses", "analysisPreviews", "maskVariants"], "readwrite",
+    );
+    const completed = transactionComplete(transaction);
+    const metadata = transaction.objectStore("workspaceImages").get(id);
+    metadata.onsuccess = () => {
+      const image = metadata.result as WorkspaceImageMetadata | undefined;
+      if (image?.analysisId) transaction.objectStore("analyses").delete(image.analysisId);
+    };
+    transaction.objectStore("workspaceImages").delete(id);
+    transaction.objectStore("sources").delete(id);
+    transaction.objectStore("analysisPreviews").delete(id);
+    const variants = transaction.objectStore("maskVariants").openCursor();
+    variants.onsuccess = () => {
+      const cursor = variants.result;
+      if (!cursor) return;
+      if ((cursor.value as MaskVariant).imageId === id) cursor.delete();
+      cursor.continue();
+    };
+    await completed;
+    // The library deletion has succeeded even if best-effort byte cleanup fails.
+    await this.opfs?.delete(id).catch((error: unknown) => {
+      console.warn("Could not remove deleted image bytes from local storage", error);
+    });
   }
 
   async putJob(job: AnalysisJob): Promise<void> { await this.putRecord("analysisJobs", job); }

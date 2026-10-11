@@ -21,8 +21,3 @@ export function createBrowserImageSource(
     blob,
   });
 }
-
-export function sourceMetadata(source: BrowserImageSource): Omit<BrowserImageSource, "blob"> {
-  const { blob: _blob, ...metadata } = source;
-  return metadata;
-}

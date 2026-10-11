@@ -1,6 +1,6 @@
 # Installing CellCounter
 
-## macOS v1.0.15
+## macOS v1.0.16
 
 CellCounter requires **macOS 15 or later**. The macOS download is a **universal build for Intel and Apple Silicon Macs**. Python environments and model dependencies are installed separately for your Mac when needed.
 
@@ -8,7 +8,7 @@ The application is **ad-hoc signed and not notarized**. macOS may block its firs
 
 ### Install and open
 
-1. Download `CellCounter-v1.0.15.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
+1. Download `CellCounter-v1.0.16.zip` from the [Releases page](https://github.com/Alperen-Gur/CellCounter/releases).
 2. Unzip the download and drag **CellCounting.app** into **Applications**. The application is called CellCounter; its bundle on disk is named `CellCounting.app`. Quit an older copy before replacing it. Replacing the application is separate from resetting its saved library.
 3. Open the application. If macOS blocks it, dismiss the message without moving the app to Trash.
 4. Open **System Settings → Privacy & Security** and find the message about CellCounter being blocked. Choose **Open Anyway**, then confirm **Open** when prompted. Depending on your Mac's security policy, administrator approval may be required.

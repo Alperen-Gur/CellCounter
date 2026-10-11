@@ -148,6 +148,8 @@ export interface UseMaskEditorArgs {
   /** The image being edited. Cells load from its detection; annotations from it. */
   imageId?: string;
   readOnly?: boolean;
+  /** Saved scale for the open batch; the global scale is a future-import default. */
+  pxPerUm: number;
   /** Source-pixel image size — only used for defaults/guards, not required. */
   sourceWidth?: number;
   sourceHeight?: number;
@@ -212,7 +214,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
     if (saveErrorRef.current) throw new Error(saveErrorRef.current);
   }, []);
 
-  const pxPerUm = useAppStore((s) => s.pxPerUm);
+  const pxPerUm = args.pxPerUm;
   const manualMarkerDiameterUm = useAppStore((s) => s.manualMarkerDiameterUm);
   const editorMode = useAppStore((s) => s.editorMode);
 

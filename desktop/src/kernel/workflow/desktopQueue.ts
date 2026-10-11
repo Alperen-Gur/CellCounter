@@ -1,6 +1,7 @@
 import { getPort } from "../persistence";
 import { getTransport } from "../transport";
 import { useAppStore } from "../store/store";
+import { calibratedCells } from "../calibration/calibration";
 import { AnalysisQueue, type AnalysisJob } from "./AnalysisQueue";
 
 import { loadWorkflowDocument, saveWorkflowDocument, deleteWorkflowDocument, type SavedRun } from "./workflowDocuments";
@@ -17,10 +18,13 @@ export const analysisQueue = new AnalysisQueue({
   }, signal),
   commit: async (item, result, job) => {
     const port = getPort();
+    const batch = await port.batch(job.batchId);
+    if (!batch) throw new Error("This analysis batch no longer exists.");
+    const cells = calibratedCells(result.cells, batch.pxPerUm, job.params.pxPerUm, batch.thresholds);
     await deleteWorkflowDocument(`run-${item.imageId}`);
     const runToken = crypto.randomUUID();
     const family = job.params.modelId.startsWith("sd-") ? "stardist" : "cellpose";
-    const saved = await port.saveDetection(item.imageId, `${family}/${job.params.modelId}`, result.cells, result.imageStats);
+    const saved = await port.saveDetection(item.imageId, `${family}/${job.params.modelId}`, cells, result.imageStats);
     await saveWorkflowDocument(`run-${item.imageId}`, {
       version: 1, detectionId: saved.id, runToken, params: job.params, task: job.task,
       calibrationSource: job.calibrationSource, ranAt: saved.ranAt,

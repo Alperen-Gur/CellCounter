@@ -415,7 +415,11 @@ struct BatchView: View {
         alert.buttons.first?.hasDestructiveAction = true
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            state.repos.deleteBatch(batch)
+            do { try state.repos.deleteBatch(batch) }
+            catch {
+                state.flashExport("The batch could not be deleted: \(error.localizedDescription)", isError: true)
+                return
+            }
             state.currentBatchId = nil
             state.view = .home
             // Notify @Observable library stats to refresh.
@@ -711,7 +715,11 @@ private struct HeaderRow: View {
         alert.buttons.first?.hasDestructiveAction = true
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            state.repos.deleteBatch(batch)
+            do { try state.repos.deleteBatch(batch) }
+            catch {
+                state.flashExport("The batch could not be deleted: \(error.localizedDescription)", isError: true)
+                return
+            }
             state.currentBatchId = nil
             state.view = .home
             // Notify @Observable library stats to refresh.

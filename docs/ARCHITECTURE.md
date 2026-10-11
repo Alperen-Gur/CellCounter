@@ -659,7 +659,7 @@ The app shell (`App.tsx` + `components/Sidebar`, `components/Toolbar`) reproduce
 | PDF report | `Services/PDFReportGenerator` | feature `export` (`pages/results` action + Rust/print) |
 | ImageJ ROI export | `python/_export_imagej_roi.py`, `ExportService` | feature `export` (Rust invokes existing Python helper) |
 | CSV export (cells/summary/annotations) | `Services/ExportService` | feature `export` |
-| SHA-256 dedup | `ImageLoader.sha256Hex`, `Repositories.imageRecord(matchingHash:)` | Rust `images/importer`, `pages/library` |
+| SHA-256 dedup | `ImageLoader.sha256Hex`, `AppState.importAndAnalyze` | Rust `images/importer`, `pages/library` |
 | Onboarding | `OnboardingSheet` | `pages/onboarding` |
 | Persistence (SwiftData) | `Persistence/Records`, `Repositories`, `FileStore` | `src-tauri/src/db`, `PersistencePort`, `paths.rs` |
 | Python env install (shell) | `install_python.sh`, `_lib_install.sh`, `CellposeInstaller` | Rust `env/uv` (`uv venv` + `uv sync`), `pages/models` |

@@ -16,7 +16,7 @@
  * No platform deps.
  */
 
-import type { CalibrationDTO, SizeBin } from "../types";
+import type { CalibrationDTO, CellDTO, SizeBin } from "../types";
 
 // ===========================================================================
 // Calibration source priority (the contract the Rust importer follows)
@@ -109,6 +109,34 @@ export function objectiveLabel(pxPerUm: number): string {
   ];
   const match = presets.find(([px]) => Math.abs(pxPerUm - px) / px < 0.25);
   return match ? `${match[1]} objective` : "custom scale";
+}
+
+/** Recalculate physical measurements without changing source-pixel geometry.
+ * Paired diameters identify each cell's stored scale, including masks edited
+ * after analysis, so restoring or recalibrating twice cannot rescale area twice.
+ */
+export function calibratedCells(cells: CellDTO[], pxPerUm: number, fallbackScale: number, rawThresholds: number[]): CellDTO[] {
+  if (!Number.isFinite(pxPerUm) || pxPerUm <= 0 || !Number.isFinite(fallbackScale) || fallbackScale <= 0) {
+    throw new Error("The image calibration must be a positive pixel scale.");
+  }
+  const thresholds = rawThresholds.filter(Number.isFinite).sort((a, b) => a - b);
+  return cells.map((cell): CellDTO => {
+    const ownScale = cell.diameterUm > 0 && cell.diameterPx > 0
+      ? cell.diameterPx / cell.diameterUm : fallbackScale;
+    const ratio = ownScale / pxPerUm;
+    const diameterUm = cell.diameterPx / pxPerUm;
+    const sizeClass = thresholds.length === 0 ? "" : diameterUm < thresholds[0]
+      ? "small" : diameterUm >= thresholds[thresholds.length - 1] ? "large" : "intermediate";
+    return {
+      ...cell,
+      diameterUm,
+      centroidUmX: cell.cx / pxPerUm,
+      centroidUmY: cell.cy / pxPerUm,
+      areaUm2: cell.areaUm2 === undefined ? undefined : cell.areaUm2 * ratio * ratio,
+      perimeterUm: cell.perimeterUm === undefined ? undefined : cell.perimeterUm * ratio,
+      sizeClass: cell.sizeClass === undefined ? undefined : sizeClass,
+    };
+  });
 }
 
 // ===========================================================================

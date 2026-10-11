@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import sys
+import contextlib
 
 # Ensure local helpers (_cellpose_common, _preprocessing, …) are importable
 # both when launched from the staged python dir AND when launched in-tree.
@@ -150,13 +151,11 @@ def main(argv=None) -> None:
             with cc.model_loading_progress():
                 if args.restore:
                     log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
-                    try:
-                        model = _build_model(model_type=model_type, restore_type="denoise_cyto3")
-                    except TypeError:
-                        # Older cellpose builds don't accept restore_type on CellposeModel; degrade gracefully.
-                        log("[cellpose_detect] CellposeModel doesn't accept restore_type; "
-                            "falling back to plain model")
-                        model = _build_model(model_type=model_type)
+                    with contextlib.redirect_stdout(sys.stderr):
+                        from cellpose import denoise
+                        model = denoise.CellposeDenoiseModel(
+                            gpu=use_gpu_kw, device=override_device,
+                            model_type=model_type, restore_type="denoise_cyto3")
                 else:
                     model = _build_model(model_type=model_type)
         except cc.ModelDownloadError as exc:
@@ -221,14 +220,9 @@ def main(argv=None) -> None:
             import numpy as _np
             from PIL import Image as _PILImage
             log("[cellpose_detect] retrying eval at half resolution")
-            if img.ndim == 2:
-                pil_small = _PILImage.fromarray(img).resize(
-                    (img.shape[1] // 2, img.shape[0] // 2), _PILImage.BILINEAR)
-                img_small = _np.array(pil_small, dtype=img.dtype)
-            else:
-                pil_small = _PILImage.fromarray(img).resize(
-                    (img.shape[1] // 2, img.shape[0] // 2), _PILImage.BILINEAR)
-                img_small = _np.array(pil_small, dtype=img.dtype)
+            pil_small = _PILImage.fromarray(img).resize(
+                (img.shape[1] // 2, img.shape[0] // 2), _PILImage.BILINEAR)
+            img_small = _np.array(pil_small, dtype=img.dtype)
             eval_out = model.eval(img_small,
                                   diameter=expected_diam_px / 2.0,
                                   channels=channels)
@@ -248,6 +242,14 @@ def main(argv=None) -> None:
                        exit_code=5)
             return
 
+    # Restoration adds a fourth return value (the restored image); masks and
+    # flows retain the ordinary Cellpose positions. Never accept a plain-model
+    # result for a run saved as restoration.
+    if args.restore and (not isinstance(eval_out, (tuple, list)) or len(eval_out) != 4):
+        emit_error("incompatible-runtime",
+                   hint="Cellpose restoration did not return masks, flows, styles and the restored image.",
+                   exit_code=5)
+        return
     masks = eval_out[0]
     flows = eval_out[1] if len(eval_out) > 1 else None
 

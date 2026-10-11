@@ -8,10 +8,11 @@ import { useAppStore } from "../../kernel/store/store";
 import { appendMaskVersion, readMaskVersions, replaceMasksWithProvenance, type MaskVersion, type MaskVersionDocument } from "./maskVersions";
 import { compareMasks } from "./reviewMath";
 import { assertReviewImageWritable } from "./reviewWriteGuard";
+import { calibratedCells } from "../../kernel/calibration/calibration";
 
-export function MaskVersionsPanel({ image, imageSrc, detection, cells, run, reviewPxPerUm, thresholds, disabled, flush, onRestored, onBusyChange }: {
+export function MaskVersionsPanel({ image, imageSrc, detection, cells, run, reviewPxPerUm, batchThresholds, thresholds, disabled, flush, onRestored, onBusyChange }: {
   image: ImageDTO; imageSrc: string; detection: DetectionDTO | null; cells: CellDTO[];
-  run: SavedRun | null; reviewPxPerUm: number; thresholds: number[]; disabled: boolean;
+  run: SavedRun | null; reviewPxPerUm: number; batchThresholds: number[]; thresholds: number[]; disabled: boolean;
   flush: () => Promise<void>; onRestored: () => Promise<void>; onBusyChange: (busy: boolean) => void;
 }) {
   const [document, setDocument] = useState<MaskVersionDocument>({ version: 1, imageId: image.id, versions: [] });
@@ -67,11 +68,12 @@ export function MaskVersionsPanel({ image, imageSrc, detection, cells, run, revi
   });
   const restore = () => void perform(async () => {
     if (!selected) return;
+    const restored = { ...selected, cells: calibratedCells(selected.cells, reviewPxPerUm, selected.reviewPxPerUm, batchThresholds) };
     // Preserve the current masks first, making restore itself reversible.
     const next = appendMaskVersion(document, snapshot("Before restoring " + selected.label));
     await saveWorkflowDocument(`variant-${image.id}`, next);
     setDocument(next);
-    await replaceMasksWithProvenance(selected, {
+    await replaceMasksWithProvenance(restored, {
       assertWritable: () => assertReviewImageWritable(image.id),
       deleteRun: () => deleteWorkflowDocument(`run-${image.id}`),
       saveDetection: (detector, masks, stats) => getPort().saveDetection(image.id, detector, masks, stats),

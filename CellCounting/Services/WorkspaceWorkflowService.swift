@@ -39,7 +39,9 @@ nonisolated func runWorkflowImageKernel<Value: Sendable>(
             try Task<Never, Never>.checkCancellation()
             await progress(update)
         }
-        return try await worker.value
+        let value = try await worker.value
+        try Task<Never, Never>.checkCancellation()
+        return value
     }, onCancel: {
         worker.cancel()
         continuation.finish()
@@ -82,6 +84,7 @@ actor WorkspaceWorkflowService {
         if let progress {
             await progress(.init(completedSteps: total, totalSteps: total, title: "Complete"))
         }
+        try Task.checkCancellation()
         return context
     }
 
@@ -178,23 +181,6 @@ actor WorkspaceWorkflowService {
     }
 }
 
-actor WorkspaceWorkflowRecorder {
-    private(set) var name: String
-    private(set) var steps: [WorkspaceWorkflowStep] = []
-
-    init(name: String = "Recorded workflow") { self.name = name }
-
-    func rename(_ value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { name = trimmed }
-    }
-
-    func record(_ step: WorkspaceWorkflowStep) { steps.append(step) }
-    func undo() -> WorkspaceWorkflowStep? { steps.popLast() }
-    func clear() { steps.removeAll(keepingCapacity: true) }
-    func snapshot() -> WorkspaceWorkflow { WorkspaceWorkflow(name: name, steps: steps) }
-}
-
 nonisolated enum WorkspaceDocumentStore {
     static func save(_ workspace: MicroscopyWorkspace, to url: URL) throws {
         let data = try JSONEncoder.workspace.encode(workspace)
@@ -206,15 +192,6 @@ nonisolated enum WorkspaceDocumentStore {
         let workspace = try JSONDecoder.workspace.decode(MicroscopyWorkspace.self, from: data)
         try validate(workspace)
         return workspace
-    }
-
-    static func saveWorkflow(_ workflow: WorkspaceWorkflow, to url: URL) throws {
-        try JSONEncoder.workspace.encode(workflow).write(to: url, options: .atomic)
-    }
-
-    static func loadWorkflow(from url: URL) throws -> WorkspaceWorkflow {
-        try JSONDecoder.workspace.decode(WorkspaceWorkflow.self,
-                                         from: Data(contentsOf: url, options: .mappedIfSafe))
     }
 
     /// Executes JSON coding and file I/O away from the main actor. The compact encoder also

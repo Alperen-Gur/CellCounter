@@ -32,7 +32,6 @@ import SwiftData
 ///               reappear next time the queue is opened.
 struct ReviewQueueView: View {
     @Bindable var state: AppState
-    @Environment(AppTheme.self) private var theme
 
     @State private var session = ReviewQueueSession()
     private var cursor: Int { session.cursor }
@@ -690,28 +689,16 @@ private struct ReviewGridTile: View {
                     let index = BinMath.binIndex(for: item.cell.diameter,
                                                  thresholds: thresholds)
                     let color = palette.overlayColor(forBin: index)
-                    if let contour = item.cell.contourPx, contour.count >= 3 {
-                        var path = Path()
-                        let first = contour[0]
-                        path.move(to: CGPoint(x: (first.x - rect.minX) * scale,
-                                              y: (first.y - rect.minY) * scale))
-                        for point in contour.dropFirst() {
-                            path.addLine(to: CGPoint(x: (point.x - rect.minX) * scale,
-                                                     y: (point.y - rect.minY) * scale))
-                        }
-                        path.closeSubpath()
-                        context.fill(path, with: .color(color.opacity(0.32)))
-                        context.stroke(path, with: .color(Tokens.danger),
-                                       style: StrokeStyle(lineWidth: 2))
-                    } else {
-                        let radius = item.cell.diameterPx * scale / 2
-                        let circle = CGRect(x: (item.cell.cx - rect.minX) * scale - radius,
-                                            y: (item.cell.cy - rect.minY) * scale - radius,
-                                            width: radius * 2, height: radius * 2)
-                        context.fill(Path(ellipseIn: circle), with: .color(color.opacity(0.32)))
-                        context.stroke(Path(ellipseIn: circle), with: .color(Tokens.danger),
-                                       style: StrokeStyle(lineWidth: 2))
-                    }
+                    // Queue rows retain scalar geometry; full contours are
+                    // decoded only for the card layout.
+                    let radius = item.cell.diameterPx * scale / 2
+                    let circle = CGRect(x: (item.cell.cx - rect.minX) * scale - radius,
+                                        y: (item.cell.cy - rect.minY) * scale - radius,
+                                        width: radius * 2, height: radius * 2)
+                    let path = Path(ellipseIn: circle)
+                    context.fill(path, with: .color(color.opacity(0.32)))
+                    context.stroke(path, with: .color(Tokens.danger),
+                                   style: StrokeStyle(lineWidth: 2))
                 }
             }
         }
@@ -958,11 +945,11 @@ private struct ReviewCardView: View {
         if pointsPerUm.isFinite, pointsPerUm > 0, availableWidth.isFinite, availableWidth > 60 {
             let targetUm = (availableWidth * 0.33) / pointsPerUm
             let niceUm = Self.niceScaleLength(targetUm)
-            let barPt = max(6, niceUm * pointsPerUm)
+            let barPt = niceUm * pointsPerUm
             // An extreme calibration can overflow this product or make the
             // smallest scale label wider than the card. Never pass it to a
             // SwiftUI frame, or display a capped bar with a misleading label.
-            if barPt.isFinite, barPt <= availableWidth {
+            if barPt.isFinite, barPt >= 6, barPt <= availableWidth {
                 HStack(spacing: 6) {
                     Rectangle()
                         .fill(.white)
@@ -991,7 +978,7 @@ private struct ReviewCardView: View {
     }
 
     private static func formatScaleLabel(_ um: Double) -> String {
-        um >= 1 ? String(format: "%.0f µm", um) : String(format: "%.1f µm", um)
+        String(format: "%.0f µm", um)
     }
 
     /// Build a view-space `Path` from image-pixel contour points.

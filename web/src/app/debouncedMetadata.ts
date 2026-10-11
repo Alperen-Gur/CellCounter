@@ -16,12 +16,17 @@ export class DebouncedByIdWriter<T extends { readonly id: string }> {
   }
 
   flush(id: string): void {
+    const value = this.pending.get(id);
+    this.discard(id);
+    if (value) void this.persist(value);
+  }
+
+  /** Forget a queued snapshot before removing or replacing its record. */
+  discard(id: string): void {
     const timer = this.timers.get(id);
     if (timer !== undefined) clearTimeout(timer);
     this.timers.delete(id);
-    const value = this.pending.get(id);
     this.pending.delete(id);
-    if (value) void this.persist(value);
   }
 
   flushAll(): void {

@@ -267,7 +267,11 @@ struct ImagesLibraryView: View {
         alert.buttons.first?.hasDestructiveAction = true
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            state.repos.deleteImage(image)
+            do { try state.repos.deleteImage(image) }
+            catch {
+                state.flashExport("The image could not be deleted: \(error.localizedDescription)", isError: true)
+                return
+            }
             NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
             reload()
         }
@@ -285,7 +289,11 @@ struct ImagesLibraryView: View {
         alert.buttons.first?.hasDestructiveAction = true
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            state.repos.deleteImages(toDelete)
+            do { try state.repos.deleteImages(toDelete) }
+            catch {
+                state.flashExport("The images could not be deleted: \(error.localizedDescription)", isError: true)
+                return
+            }
             NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
             selectedIDs = []
             reload()

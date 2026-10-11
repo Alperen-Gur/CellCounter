@@ -81,6 +81,15 @@ actor PersistentSidecarPool {
         for worker in workers.values { worker.terminate() }
         workers.removeAll()
     }
+
+    /// Packages are shared within a runtime, but Cellpose 3 and 4 are
+    /// isolated. Retire only workers whose imported runtime changed.
+    func retire(modelSignaturePrefix: String) {
+        let affected = workers.keys.filter { $0.modelSignature.hasPrefix(modelSignaturePrefix) }
+        for key in affected {
+            workers.removeValue(forKey: key)?.terminate()
+        }
+    }
 }
 
 /// Cellpose-facing wrapper which preserves the proven one-shot runner as a

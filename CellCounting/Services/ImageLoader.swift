@@ -144,7 +144,6 @@ enum ImageLoader {
     nonisolated private final class MemoryCaches: @unchecked Sendable {
         let thumbnails = NSCache<NSURL, NSImage>()
         let reviewPreviews = NSCache<NSString, NSImage>()
-        let displayImages = NSCache<NSURL, NSImage>()
         let viewerImages = ViewerBitmapCache()
 
         init() {
@@ -152,8 +151,6 @@ enum ImageLoader {
             thumbnails.totalCostLimit = 80 * 1024 * 1024
             reviewPreviews.countLimit = 8
             reviewPreviews.totalCostLimit = 64 * 1024 * 1024
-            displayImages.countLimit = 4
-            displayImages.totalCostLimit = 600 * 1024 * 1024
         }
     }
 
@@ -370,11 +367,6 @@ enum ImageLoader {
         try? load(record.displayURL)
     }
 
-    /// Lightweight: just open the thumbnail JPEG for grid views.
-    static func loadThumb(_ record: ImageRecord) -> NSImage? {
-        cachedThumbnail(at: record.thumbURL, fallbackURL: record.displayURL)
-    }
-
     nonisolated static func cachedThumbnail(at url: URL, fallbackURL: URL? = nil) -> NSImage? {
         let key = url as NSURL
         if let cached = memory.thumbnails.object(forKey: key) { return cached }
@@ -385,19 +377,6 @@ enum ImageLoader {
             ?? fallbackURL.flatMap({ downsampledImage(at: $0, maxPixelSize: 256) }) else { return nil }
         let cost = Int(image.size.width * image.size.height * 4)
         memory.thumbnails.setObject(image, forKey: key, cost: cost)
-        return image
-    }
-
-    /// Full-resolution viewer image, bounded to the current image plus a few
-    /// neighbors. ImageIO decoding happens on the caller's background task.
-    nonisolated static func cachedDisplayImage(at url: URL) -> NSImage? {
-        let key = url as NSURL
-        if let cached = memory.displayImages.object(forKey: key) { return cached }
-        guard let loaded = try? load(url) else { return nil }
-        let image = NSImage(cgImage: loaded.cgImage,
-                            size: NSSize(width: loaded.widthPx, height: loaded.heightPx))
-        memory.displayImages.setObject(image, forKey: key,
-                                       cost: loaded.widthPx * loaded.heightPx * 4)
         return image
     }
 

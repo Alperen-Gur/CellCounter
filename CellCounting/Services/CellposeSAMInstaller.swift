@@ -37,9 +37,7 @@ final class CellposeSAMInstaller: ObservableObject {
         if FileManager.default.fileExists(atPath: venv4.path) {
             NSLog("[CellposeSAMInstaller] reinstall(): removing existing venv4 at \(venv4.path)")
             try? FileManager.default.removeItem(at: venv4)
-            // Re-probe + AppState refresh hook — same notification both
-            // installers use; the cache layer is family-agnostic.
-            NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
+            NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
         }
         start()
     }
@@ -109,6 +107,7 @@ final class CellposeSAMInstaller: ObservableObject {
                                 withIntermediateDirectories: true)
         try? Data().write(to: FileStore.shared.cellpose4InstallIncompleteSentinel)
         UserDefaults.standard.set(false, forKey: Cellpose4Availability.importableCacheKey)
+        NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -192,19 +191,16 @@ final class CellposeSAMInstaller: ObservableObject {
                 name: .init("cellpose-sam-install-completed"),
                 object: nil
             )
-            NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
         } else {
             if error == nil {
                 error = "Install failed (exit code \(exitCode))"
             }
         }
+        // A failed or cancelled pip run may also have changed the runtime.
+        NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
     }
 
     // MARK: — Helpers
-
-    static func locateInstallScript() -> URL? {
-        PythonRuntime.bundledInstallCp4ScriptURL()
-    }
 
     private static func parseHint(_ line: String) -> String? {
         let lower = line.lowercased()

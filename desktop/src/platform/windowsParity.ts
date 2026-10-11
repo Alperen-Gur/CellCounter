@@ -85,7 +85,7 @@ const EVIDENCE: Record<string, readonly string[]> = {
   "model-native-extras": ["../CellCounting/Domain/DetectionModel.swift#cp-nuclei"],
   "workspace-omezarr": ["../CellCounting/Services/OMEZarrService.swift#actor OMEZarrService"],
   "workspace-navigation": ["../CellCounting/Domain/MicroscopyWorkspace.swift#struct MicroscopyWorkspace"],
-  "workspace-registration": ["../CellCounting/Services/ImageRegistrationService.swift#registerSequence"],
+  "workspace-registration": ["../CellCounting/Services/ImageRegistrationService.swift#estimateTranslation"],
   "workspace-animation": ["../CellCounting/Services/WorkspaceAnimationService.swift#WorkspaceAnimationService"],
   "workspace-replay": ["../CellCounting/Services/WorkspaceWorkflowService.swift#actor WorkspaceWorkflowService"],
   "workspace-lineage": ["../CellCounting/Services/WorkspaceLineageService.swift#WorkspaceLineage"],

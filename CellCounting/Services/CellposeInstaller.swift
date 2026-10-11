@@ -123,6 +123,7 @@ final class CellposeInstaller: ObservableObject {
                                 withIntermediateDirectories: true)
         try? Data().write(to: FileStore.shared.installIncompleteSentinel)
         UserDefaults.standard.set(false, forKey: "cc-cellpose-importable")
+        NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -223,14 +224,13 @@ final class CellposeInstaller: ObservableObject {
                 name: .init("cellpose-install-completed"),
                 object: nil
             )
-            // Pass-12 K1: venv just came into existence (or transitioned from
-            // broken → healthy). Trigger the cache + AppState re-probe path.
-            NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
         } else {
             if error == nil {
                 error = "Install failed (exit code \(exitCode))"
             }
         }
+        // A failed or cancelled pip run may also have changed the runtime.
+        NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
     }
 
     // MARK: — Helpers

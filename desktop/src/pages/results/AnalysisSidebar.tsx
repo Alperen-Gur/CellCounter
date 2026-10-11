@@ -998,7 +998,8 @@ export function AnalysisSidebar(props: AnalysisSidebarProps) {
     reloadAnnotations,
   } = props;
 
-  const pxPerUm = useAppStore((s) => s.pxPerUm);
+  const globalPxPerUm = useAppStore((s) => s.pxPerUm);
+  const pxPerUm = batch?.pxPerUm ?? globalPxPerUm;
 
   const resetAnnotations = useCallback(async () => {
     if (!image) return;
@@ -1048,13 +1049,13 @@ export function AnalysisSidebar(props: AnalysisSidebarProps) {
       {image && (
         <>
           <div className="rv-divider" />
-          <LineProfilePanel image={image} imageSrc={imageSrc} pxPerUm={batch?.pxPerUm ?? pxPerUm} />
+          <LineProfilePanel image={image} imageSrc={imageSrc} pxPerUm={pxPerUm} />
           <div className="rv-divider" />
           <AdvancedAssaysPanel
             batch={batch}
             image={image}
             cells={cells}
-            pxPerUm={batch?.pxPerUm ?? pxPerUm}
+            pxPerUm={pxPerUm}
           />
         </>
       )}

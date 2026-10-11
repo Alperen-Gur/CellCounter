@@ -59,10 +59,8 @@ pub fn run() {
             // Complete staging before the UI can request its first analysis.
             // A recoverable disk/lock problem must leave the library usable;
             // availability and every Python command retry and expose the error.
-            if let Ok(store) = paths::FileStore::from_app(&handle) {
-                if let Err(error) = env::uv::stage_python_project(&handle, &store) {
-                    eprintln!("[startup] {error}");
-                }
+            if let Err(error) = env::uv::stage_python_project(&handle, &store) {
+                eprintln!("[startup] {error}");
             }
 
             // Reap orphaned sidecar processes from a previous crashed session,
@@ -70,10 +68,8 @@ pub fn run() {
             // creation (mirrors ChildProcessTracker.installLifecycle). Scope the
             // sweep to THIS app's staged python dir so we only ever kill our own
             // sidecars (never an unrelated process that mentions the basename).
-            if let Ok(store) = paths::FileStore::from_app(&handle) {
-                let python_dir = store.python_dir();
-                std::thread::spawn(move || detection::sidecar::sweep_orphans(python_dir));
-            }
+            let python_dir = store.python_dir();
+            std::thread::spawn(move || detection::sidecar::sweep_orphans(python_dir));
 
             Ok(())
         })

@@ -142,14 +142,6 @@ export function detectionParamsFromStore(store: AppStore): DetectionParams {
   };
 }
 
-/**
- * The persisted `detectorId` for a run (DTO comment: "cellpose/cp-cyto3").
- * The family prefix identifies the actual selected model family.
- */
-export function detectorIdFor(modelId: string): string {
-  return `${modelId.startsWith("sd-") ? "stardist" : "cellpose"}/${modelId}`;
-}
-
 // ---------------------------------------------------------------------------
 // Display name (mirror proceedWithImport)
 // ---------------------------------------------------------------------------
@@ -235,24 +227,6 @@ export function batchCalibrationFrom(
   const diffFraction = Math.abs(first - globalPxPerUm) / Math.max(globalPxPerUm, 0.001);
   if (diffFraction <= 0.05) return null;
   return cals[0];
-}
-
-// ---------------------------------------------------------------------------
-// The active run — a shared cancel handle for the Processing screen's seam.
-// ---------------------------------------------------------------------------
-
-
-
-/**
- * Abort the in-flight import/detect run, if any. The Processing screen's Cancel
- * routes here (see kernelGaps: the transport-generated runId is not surfaced, so
- * an AbortController is the cross-page cancel primitive). Aborting makes each
- * pending `detect()` reject with `{ kind: "cancelled" }`, which the flow
- * swallows exactly like the Swift host.
- */
-export function abortActiveImport(): void {
-  const active = analysisQueue.getSnapshot().find(job => job.status === "running");
-  if (active) analysisQueue.cancel(active.id);
 }
 
 /** Is an import/detect run currently in flight? */

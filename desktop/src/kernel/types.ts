@@ -167,15 +167,6 @@ export interface SizeBin {
 // Comparison (mirror Services/Statistics.swift + CompareView, §3.7)
 // ---------------------------------------------------------------------------
 
-export interface CompareGroup {
-  condition: string;
-  cells: CellDTO[]; // pooled across all batches with this condition
-  n: number;
-  meanUm: number;
-  sdUm: number;
-  binCounts: number[]; // aligned to the active SizeBin[]
-}
-
 export interface CompareResult {
   // populated only for exactly 2 groups
   u: number;

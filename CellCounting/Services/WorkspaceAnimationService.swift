@@ -28,14 +28,21 @@ enum WorkspaceAnimationService {
         guard plan.framesPerSecond >= 1, plan.framesPerSecond <= 60 else {
             throw WorkspaceAnimationError.invalidFrameRate
         }
+        guard plan.keyframes.allSatisfy({ $0.timeSeconds.isFinite }) else {
+            throw WorkspaceAnimationError.insufficientKeyframes
+        }
         let keyframes = plan.keyframes.sorted { $0.timeSeconds < $1.timeSeconds }
         guard keyframes.count >= 2,
               let first = keyframes.first, let last = keyframes.last,
               last.timeSeconds > first.timeSeconds else {
             throw WorkspaceAnimationError.insufficientKeyframes
         }
-        let frameCount = Int(ceil((last.timeSeconds - first.timeSeconds) * Double(plan.framesPerSecond))) + 1
-        guard frameCount <= 3_600 else { throw WorkspaceAnimationError.tooManyFrames(frameCount) }
+        let intervals = ceil((last.timeSeconds - first.timeSeconds) * Double(plan.framesPerSecond))
+        guard let intervalCount = Int(exactly: intervals), intervalCount < 3_600 else {
+            let requested = Int(exactly: intervals).flatMap { $0 < Int.max ? $0 + 1 : nil } ?? Int.max
+            throw WorkspaceAnimationError.tooManyFrames(requested)
+        }
+        let frameCount = intervalCount + 1
         var states: [WorkspaceAnimationFrameState] = []
         states.reserveCapacity(frameCount)
         var segment = 0
@@ -51,9 +58,11 @@ enum WorkspaceAnimationService {
             if plan.easing == .easeInOut { t = t * t * (3 - 2 * t) }
             var indices: [UUID: Int] = [:]
             for axisID in Set(start.position.indices.keys).union(end.position.indices.keys) {
-                let a = Double(start.position.indices[axisID, default: 0])
-                let b = Double(end.position.indices[axisID, default: Int(a)])
-                indices[axisID] = Int((a + (b - a) * t).rounded())
+                let firstIndex = start.position.indices[axisID, default: 0]
+                let a = Double(firstIndex)
+                let b = Double(end.position.indices[axisID, default: firstIndex])
+                let interpolated = (a + (b - a) * t).rounded()
+                indices[axisID] = Int(exactly: interpolated) ?? (interpolated < 0 ? Int.min : Int.max)
             }
             states.append(WorkspaceAnimationFrameState(
                 frameNumber: frame, timeSeconds: time,
@@ -77,6 +86,7 @@ enum WorkspaceAnimationService {
             throw WorkspaceAnimationError.invalidFrameRate
         }
         guard imageURLs.count <= 3_600 else { throw WorkspaceAnimationError.tooManyFrames(imageURLs.count) }
+        try Task<Never, Never>.checkCancellation()
         guard let destination = CGImageDestinationCreateWithURL(
             outputURL as CFURL, UTType.gif.identifier as CFString, imageURLs.count, nil) else {
             throw WorkspaceAnimationError.destinationCreationFailed
@@ -91,6 +101,7 @@ enum WorkspaceAnimationService {
             kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay]
         ] as CFDictionary
         for url in imageURLs {
+            try Task<Never, Never>.checkCancellation()
             var added = false
             autoreleasepool {
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, [
@@ -109,33 +120,10 @@ enum WorkspaceAnimationService {
                 throw WorkspaceAnimationError.sourceDecodeFailed(url.lastPathComponent)
             }
         }
+        try Task<Never, Never>.checkCancellation()
         guard CGImageDestinationFinalize(destination) else {
             throw WorkspaceAnimationError.finalizeFailed
         }
-    }
-
-    nonisolated static func exportGIF(frames: [CGImage], outputURL: URL,
-                                      framesPerSecond: Int = 8,
-                                      loop: Bool = true) throws {
-        guard frames.count >= 2 else { throw WorkspaceAnimationError.insufficientKeyframes }
-        guard framesPerSecond >= 1, framesPerSecond <= 60 else {
-            throw WorkspaceAnimationError.invalidFrameRate
-        }
-        guard frames.count <= 3_600 else { throw WorkspaceAnimationError.tooManyFrames(frames.count) }
-        guard let destination = CGImageDestinationCreateWithURL(
-            outputURL as CFURL, UTType.gif.identifier as CFString, frames.count, nil) else {
-            throw WorkspaceAnimationError.destinationCreationFailed
-        }
-        if loop {
-            CGImageDestinationSetProperties(destination, [
-                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]
-            ] as CFDictionary)
-        }
-        let properties = [
-            kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1 / Double(framesPerSecond)]
-        ] as CFDictionary
-        for image in frames { CGImageDestinationAddImage(destination, image, properties) }
-        guard CGImageDestinationFinalize(destination) else { throw WorkspaceAnimationError.finalizeFailed }
     }
 
     private nonisolated static func interpolate(_ a: Double?, _ b: Double?, _ t: Double) -> Double? {

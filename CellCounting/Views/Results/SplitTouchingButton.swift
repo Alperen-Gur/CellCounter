@@ -86,10 +86,6 @@ struct SplitTouchingButton: View {
                 guard !image.isDeleted, image.modelContext != nil, image.id == imageId else {
                     throw CancellationError()
                 }
-                guard let svc = state.detector else {
-                    showConfirmation("No detector installed")
-                    return
-                }
                 let detectionId = image.detection?.id
                 let detectionRevision = image.detection?.cellsRevision
                 let priorCount = image.detection?.summaryCellCount ?? 0
@@ -101,10 +97,10 @@ struct SplitTouchingButton: View {
                     settings.pxPerUm = image.batch?.pxPerUm ?? state.pxPerUm
                 }
                 settings.watershedSplit = true
-                settings.watershedMinDistanceUm = 8
                 if let error = settings.validationError {
                     throw DetectionError.sidecarFailed(exitCode: -1, stderr: error)
                 }
+                let svc = try state.detectionService(for: settings)
                 let input = settings.detectionInput(imageURL: settings.sourceURL(for: image))
                 let result = try await svc.detect(input)
                 try Task.checkCancellation()
@@ -119,7 +115,7 @@ struct SplitTouchingButton: View {
                     throw CancellationError()
                 }
                 state.repos.saveDetection(
-                    result.cells,
+                    state.cellsAtBatchScale(result.cells, for: image, measuredAt: settings.pxPerUm),
                     detectorId: "\(type(of: svc))/\(settings.modelId)+watershed",
                     for: image,
                     imageStats: result.imageStats,
@@ -133,6 +129,8 @@ struct SplitTouchingButton: View {
                 showConfirmation("Split \(delta) new cell\(delta == 1 ? "" : "s")")
             } catch is CancellationError {
                 showConfirmation("Split cancelled; image or masks changed")
+            } catch DetectionError.modelNotInstalled(_) {
+                showConfirmation("No detector installed")
             } catch {
                 NSLog("CellCounter: SplitTouchingButton detect failed: %@",
                       error.localizedDescription)

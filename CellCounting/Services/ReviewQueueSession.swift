@@ -20,7 +20,6 @@ struct ReviewItem: Identifiable {
     let image: ImageRecord
     let detection: DetectionRecord
     let pxPerUm: Double
-    let batchName: String
     // View and image-loader inputs remain usable during deletion animations.
     let fileName: String
     let widthPx: Int
@@ -88,7 +87,6 @@ struct ReviewItem: Identifiable {
         self.image = image
         self.detection = detection
         pxPerUm = batch.pxPerUm
-        batchName = batch.displayName
         fileName = image.fileName
         widthPx = image.widthPx
         heightPx = image.heightPx

@@ -97,13 +97,6 @@ enum ChannelStackSettings {
             return detectedName.isEmpty ? "Ch\(index)" : detectedName
         }
     }
-
-    /// Extra sidecar arguments implied by the current settings. Append these to
-    /// whatever the detection service already builds.
-    static func sidecarArguments() -> [String] {
-        ["--z-project", zProjection.rawValue,
-         "--segment-channel", String(segmentChannel)]
-    }
 }
 
 // MARK: — Panel

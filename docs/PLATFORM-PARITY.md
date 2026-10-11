@@ -1,8 +1,8 @@
 # Release status and feature parity
 
-Snapshot: **10 October 2026**, for macOS **1.0.15**, Windows **1.1.1**, and
-Web **0.2.1 preview**. The macOS download contains further review fixes. Windows
-1.1.1 contains local image-access and preview-recovery fixes. Windows and Web share the main analysis workflow with macOS, but neither
+Snapshot: **11 October 2026**, for macOS **1.0.16**, Windows **1.1.2**, and
+Web **0.2.1 preview**. The macOS download adds data-integrity and workspace safeguards. Windows
+1.1.2 adds batch-calibration fixes and retains the earlier preview recovery. Windows and Web share the main analysis workflow with macOS, but neither
 has complete macOS feature parity.
 
 ## Reported issues and released fixes
@@ -19,11 +19,11 @@ Earlier macOS improvements to Models-page responsiveness, keyboard commands and
 image preview loading are included in 1.0.13 through the
 [1.0.11](releases/v1.0.11.md) and [1.0.12](releases/v1.0.12.md) changes.
 
-Issue #9 is closed; the follow-up crash report is tracked in [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). Windows 1.1.1 includes corrected local image access and preview recovery. Automated tests and interactive validation were not run for this patch; behavior on the reporter's PC remains unconfirmed.
+Issue #9 is closed; the follow-up crash report is tracked in [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). Windows 1.1.2 includes corrected local image access and preview recovery. Automated tests and interactive validation were not run for this patch; behavior on the reporter's PC remains unconfirmed.
 
 ## Shared workflow, different capabilities
 
-| Workflow | macOS 1.0.15 | Windows 1.1.1 | Web 0.2.1 |
+| Workflow | macOS 1.0.16 | Windows 1.1.2 | Web 0.2.1 |
 | --- | --- | --- | --- |
 | Import, save setup, preview, then process | Available | Available; setup shows the imported display preview | Available for classical segmentation |
 | Saved jobs, pause/resume, interruption recovery, failed-image retry | Available | Available | Available |
@@ -81,11 +81,11 @@ already possible; it is not a Cellpose GUI session export.
 
 ## Updating after the reported failures
 
-On macOS, quit the old copy, install **CellCounting.app** from 1.0.15, and reopen
+On macOS, quit the old copy, install **CellCounting.app** from 1.0.16, and reopen
 **Review Queue**. Existing images and corrections are preserved; no library
 reset is required. See the [installation guide](INSTALL.md#large-review-queues).
 
-On Windows, quit CellCounter and install the 1.1.1 `.exe` or `.msi`, preferably
+On Windows, quit CellCounter and install the 1.1.2 `.exe` or `.msi`, preferably
 using the same installer format as before. Retain application data and reopen
 the app; required scripts are staged or repaired automatically. Model setup can
 still require internet access for its first package/weight download. See the

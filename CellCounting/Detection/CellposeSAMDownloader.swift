@@ -98,7 +98,7 @@ struct CellposeSAMDownloader: ModelDownloader {
                 progress.append("optional reader: pip install \(package)")
             }
             try? await Self.runPipInstall(pythonURL: python,
-                                          packages: [package],
+                                          packages: [package, "numpy<2"],
                                           progress: progress)
         }
 

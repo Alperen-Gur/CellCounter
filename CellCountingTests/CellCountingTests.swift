@@ -179,8 +179,8 @@ struct CellCountingTests {
             #expect(CGImageSourceCreateWithURL(url as CFURL, nil) != nil)
         }
 
-        let geometry = ExportService.scaleBarGeometry(
-            imageWidth: 800, imageHeight: 500, pxPerUm: 1.5)
+        let geometry = try #require(ExportService.scaleBarGeometry(
+            imageWidth: 800, imageHeight: 500, pxPerUm: 1.5))
         #expect(geometry.barLengthPx == 150)
         #expect(geometry.label == "100 µm")
     }

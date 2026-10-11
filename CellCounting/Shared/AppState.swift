@@ -597,6 +597,7 @@ final class AppState {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                await PersistentSidecarPool.shared.retire(modelSignaturePrefix: "cellpose3|")
                 guard let self else { return }
                 self.refreshDetector()
                 self.refreshActiveModelInstallState()
@@ -624,6 +625,7 @@ final class AppState {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                await PersistentSidecarPool.shared.retire(modelSignaturePrefix: "cellpose4|")
                 guard let self else { return }
                 self.refreshDetector()
                 self.refreshActiveModelInstallState()
@@ -1113,10 +1115,6 @@ final class AppState {
 
     // MARK: — Drop flow
 
-    func processingDone() {
-        view = .results
-    }
-
     /// Real drop flow: user dropped URLs onto Home. Creates a batch, imports the files,
     /// runs detection in the background, saves DetectionRecords, navigates to Results.
     /// Returns the new batch's id.
@@ -1279,14 +1277,24 @@ final class AppState {
             }.value
         }
         let image = imported.record
+        let importedURLs = Set([image.storedURL, image.thumbURL, image.displayURL])
+        func discardImportedFiles() {
+            for url in importedURLs { try? FileManager.default.removeItem(at: url) }
+        }
+        guard !batch.isDeleted, batch.modelContext != nil else {
+            discardImportedFiles()
+            throw CancellationError()
+        }
         // A queued source can be replaced between selection and preparation.
         // Verify the owned copy before trusting the original dedup identity.
         let copiedURL = image.storedURL
         let actualHash = await Task.detached(priority: .utility) { ImageLoader.sha256Hex(of: copiedURL) }.value ?? ""
+        guard !batch.isDeleted, batch.modelContext != nil else {
+            discardImportedFiles()
+            throw CancellationError()
+        }
         if actualHash.isEmpty || (item.knownHash != nil && item.knownHash != actualHash) {
-            try? FileManager.default.removeItem(at: image.storedURL)
-            try? FileManager.default.removeItem(at: image.thumbURL)
-            if image.displayURL != image.storedURL { try? FileManager.default.removeItem(at: image.displayURL) }
+            discardImportedFiles()
             throw NSError(domain: "AnalysisJobs", code: 3, userInfo: [NSLocalizedDescriptionKey:
                 "The source changed after this job was created. Import it again to review the updated image."])
         }
@@ -1302,9 +1310,8 @@ final class AppState {
         return image.id
     }
 
-    private func analyzeJobImage(_ imageId: UUID, settings: AnalysisRunSettings) async throws {
-        guard let image = repos.image(id: imageId) else { throw DetectionError.imageDecodeFailed }
-        let svc: DetectionService
+    /// Resolve the exact models captured by a run, including its ensemble pair.
+    func detectionService(for settings: AnalysisRunSettings) throws -> DetectionService {
         if settings.modelId == EnsembleDownloader.modelId {
             guard let aId = settings.ensemblePrimaryId, let bId = settings.ensembleSecondaryId,
                   aId != bId, aId != settings.modelId, bId != settings.modelId,
@@ -1312,13 +1319,26 @@ final class AppState {
                   let b = detectorRegistry.detector(for: bId, models: models) else {
                 throw DetectionError.modelNotInstalled(modelId: "saved ensemble members")
             }
-            svc = EnsembleDetectionService(primary: a, secondary: b, primaryModelId: aId, secondaryModelId: bId)
+            return EnsembleDetectionService(primary: a, secondary: b, primaryModelId: aId, secondaryModelId: bId)
         } else {
             guard let selected = detectorRegistry.detector(for: settings.modelId, models: models) else {
                 throw DetectionError.modelNotInstalled(modelId: settings.modelId)
             }
-            svc = selected
+            return selected
         }
+    }
+
+    /// Store fresh measurements at the batch's current calibration, which may
+    /// have changed since the run settings were captured.
+    func cellsAtBatchScale(_ cells: [DetectedCell], for image: ImageRecord,
+                           measuredAt sourceScale: Double) -> [DetectedCell] {
+        guard let scale = image.batch?.pxPerUm, scale > 0, scale != sourceScale else { return cells }
+        return Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: sourceScale)
+    }
+
+    private func analyzeJobImage(_ imageId: UUID, settings: AnalysisRunSettings) async throws {
+        guard let image = repos.image(id: imageId) else { throw DetectionError.imageDecodeFailed }
+        let svc = try detectionService(for: settings)
         if let sourcePx = image.sourcePxPerUm,
            settings.calibrationSource != "manual", settings.calibrationSource != "unconfirmed",
            abs(sourcePx - settings.pxPerUm) / settings.pxPerUm > 0.01 {
@@ -1347,17 +1367,7 @@ final class AppState {
             guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
         }
         try Task.checkCancellation()
-        var measuredCells = result.cells
-        if let scale = image.batch?.pxPerUm, scale > 0, scale != settings.pxPerUm {
-            let ratio = settings.pxPerUm / scale
-            for index in measuredCells.indices {
-                measuredCells[index].diameter = measuredCells[index].diameterPx / scale
-                measuredCells[index].centroidUmX = measuredCells[index].cx / scale
-                measuredCells[index].centroidUmY = measuredCells[index].cy / scale
-                if let area = measuredCells[index].areaMicrons2 { measuredCells[index].areaMicrons2 = area * ratio * ratio }
-                if let perimeter = measuredCells[index].perimeterMicrons { measuredCells[index].perimeterMicrons = perimeter * ratio }
-            }
-        }
+        let measuredCells = cellsAtBatchScale(result.cells, for: image, measuredAt: settings.pxPerUm)
         // The model and run inputs are captured before awaiting inference.
         repos.saveDetection(measuredCells, detectorId: "\(type(of: svc))/\(settings.modelId)",
                             for: image, imageStats: result.imageStats, runSettings: recordedSettings, save: false)
@@ -1407,18 +1417,6 @@ final class AppState {
     }
 
     // MARK: — Corrections
-
-    /// Convenience to record a correction against the current image's detection.
-    func recordCorrection(kind: String, cellId: UUID, cx: Double, cy: Double, diameter: Double) {
-        guard let image = currentImage, let det = image.detection else { return }
-        let result = repos.commitCellEdit(
-            cells: nil,
-            corrections: [CorrectionSpec(kind: kind, cellId: cellId, cx: cx,
-                                         cy: cy, diameter: diameter)],
-            detection: det,
-            image: image)
-        postCorrectionsChanged(imageId: image.id, reviewDelta: result.reviewCountDelta)
-    }
 
     /// Coalesce rapid overlay events, serialize the large JSON blob off-main,
     /// then commit the newest cell snapshot and every audit row together.
@@ -1496,6 +1494,28 @@ final class AppState {
             userInfo: ["reviewDelta": reviewDelta])
     }
 
+    /// Compose toolbar and sequence edits with the latest overlay snapshot,
+    /// including changes whose JSON is still being encoded.
+    private func cellsForEditing(in image: ImageRecord) -> [DetectedCell]? {
+        guard !image.isDeleted, image.modelContext != nil,
+              let detection = image.detection,
+              !detection.isDeleted, detection.modelContext != nil else { return nil }
+        if let pending = pendingCellEdits[detection.id],
+           pending.image.id == image.id, pending.detection.id == detection.id,
+           pending.baseRevision == detection.cellsRevision {
+            return pending.cells
+        }
+        if let cached = detection.cachedCells, !cached.isEmpty { return cached }
+        do {
+            let cells = try DetectionRecord.decodeCellsDataForReview(detection.cellsData)
+            detection.cacheDecodedCells(cells, revision: detection.cellsRevision)
+            return cells
+        } catch {
+            flashExport("The saved cell measurements could not be read. The original data was preserved.", isError: true)
+            return nil
+        }
+    }
+
     /// Delete every cell in `ids` from the current image's detection, persist,
     /// and record a "remove" correction per cell for the audit trail. The single
     /// owner of this mutation — both the Results keyboard shortcut and the editor
@@ -1504,8 +1524,8 @@ final class AppState {
     func removeCells(_ ids: Set<UUID>) {
         guard !ids.isEmpty,
               let image = currentImage,
-              let detection = image.detection else { return }
-        var cells = detection.cells
+              let detection = image.detection,
+              var cells = cellsForEditing(in: image) else { return }
         let victims = cells.filter { ids.contains($0.id) }
         guard !victims.isEmpty else { return }
         cells.removeAll { ids.contains($0.id) }
@@ -1522,8 +1542,8 @@ final class AppState {
     func mergeSelectedCells(_ ids: Set<UUID>) {
         guard ids.count >= 2,
               let image = currentImage,
-              let detection = image.detection else { return }
-        var cells = detection.cells
+              let detection = image.detection,
+              var cells = cellsForEditing(in: image) else { return }
         let selected = cells.filter { ids.contains($0.id) }
         guard selected.count >= 2 else { return }
         let points = selected.flatMap { cell -> [CGPoint] in
@@ -1563,7 +1583,7 @@ final class AppState {
     func propagateSelectedCells(_ ids: Set<UUID>, useDrift: Bool) async -> String {
         guard !ids.isEmpty, let batch = currentBatch,
               let sourceImage = currentImage,
-              let sourceDetection = sourceImage.detection else {
+              sourceImage.detection != nil else {
             return "Select one or more masks first."
         }
         let images = orderedImages(in: batch)
@@ -1571,12 +1591,12 @@ final class AppState {
               sourceFrame + 1 < images.count else {
             return "Open a frame that has later frames in this batch."
         }
-        let sourceCells = sourceDetection.cells.filter { ids.contains($0.id) }
+        let sourceCells = (cellsForEditing(in: sourceImage) ?? []).filter { ids.contains($0.id) }
         guard !sourceCells.isEmpty else { return "The selected masks are no longer available." }
 
         var frames: [[DetectedCell]] = []
         for (index, image) in images.enumerated() {
-            frames.append(image.detection?.cells ?? [])
+            frames.append(cellsForEditing(in: image) ?? [])
             if index % 8 == 7 { await Task.yield() }
         }
         let offsets = useDrift
@@ -1595,14 +1615,25 @@ final class AppState {
 
         var added = 0
         var reviewDelta = 0
+        defer { if added > 0 { postCorrectionsChanged(imageId: nil, reviewDelta: reviewDelta) } }
         for frame in targetFrames {
-            guard let additions = propagation.cellsByFrame[frame],
-                  let detection = images[frame].detection else { continue }
             let image = images[frame]
+            guard !image.isDeleted, image.modelContext != nil,
+                  let additions = propagation.cellsByFrame[frame],
+                  let detection = image.detection else { continue }
+            do { try await finishPendingCellEdits(for: detection) }
+            catch { return "Propagation stopped: \(error.localizedDescription)" }
+            guard !image.isDeleted, image.modelContext != nil,
+                  image.detection?.id == detection.id,
+                  let currentCells = cellsForEditing(in: image) else { continue }
             let px = image.batch?.pxPerUm ?? pxPerUm
-            let calibrated = additions.filter {
-                $0.cx >= 0 && $0.cy >= 0
-                    && $0.cx < Double(image.widthPx) && $0.cy < Double(image.heightPx)
+            let calibrated = additions.filter { candidate in
+                candidate.cx >= 0 && candidate.cy >= 0
+                    && candidate.cx < Double(image.widthPx) && candidate.cy < Double(image.heightPx)
+                    && !currentCells.contains { existing in
+                        hypot(existing.cx - candidate.cx, existing.cy - candidate.cy)
+                            <= max(4, min(existing.diameterPx, candidate.diameterPx) * 0.45)
+                    }
             }.map { cell -> DetectedCell in
                 var cell = cell
                 cell.centroidUmX = cell.cx / max(px, 0.000_001)
@@ -1611,14 +1642,13 @@ final class AppState {
             }
             guard !calibrated.isEmpty else { continue }
             let result = repos.commitCellEdit(
-                cells: detection.cells + calibrated,
+                cells: currentCells + calibrated,
                 corrections: calibrated.map { CorrectionSpec(kind: "propagate", cell: $0) },
                 detection: detection, image: image)
             reviewDelta += result.reviewCountDelta
             added += calibrated.count
             await Task.yield()
         }
-        if added > 0 { postCorrectionsChanged(imageId: nil, reviewDelta: reviewDelta) }
         return added == 0
             ? "No masks added; nearby labels already cover the predicted positions."
             : "Propagated \(added) mask\(added == 1 ? "" : "s") across \(targetFrames.count) frame\(targetFrames.count == 1 ? "" : "s")."
@@ -1629,16 +1659,16 @@ final class AppState {
     func interpolateSelectedCellToLast(_ ids: Set<UUID>) async -> String {
         guard ids.count == 1, let selectedId = ids.first,
               let batch = currentBatch, let sourceImage = currentImage,
-              let source = sourceImage.detection?.cells.first(where: { $0.id == selectedId }) else {
+              let source = cellsForEditing(in: sourceImage)?.first(where: { $0.id == selectedId }) else {
             return "Select exactly one anchor mask."
         }
         let images = orderedImages(in: batch)
         guard let start = images.firstIndex(where: { $0.id == sourceImage.id }),
               start + 1 < images.count,
-              let endDetection = images.last?.detection else {
+              images.last?.detection != nil else {
             return "This needs a later detected frame in the same batch."
         }
-        let end = endDetection.cells.min {
+        let end = cellsForEditing(in: images[images.count - 1])?.min {
             hypot($0.cx - source.cx, $0.cy - source.cy)
                 < hypot($1.cx - source.cx, $1.cy - source.cy)
         }
@@ -1650,22 +1680,29 @@ final class AppState {
                                                 end: end, endFrame: images.count - 1)
         }.value
         var added = 0
+        defer { if added > 0 { postCorrectionsChanged(imageId: nil, reviewDelta: 0) } }
         for frame in generated.keys.sorted() {
-            guard let candidate = generated[frame], let detection = images[frame].detection else { continue }
-            let conflict = detection.cells.contains {
+            let image = images[frame]
+            guard !image.isDeleted, image.modelContext != nil,
+                  let candidate = generated[frame], let detection = image.detection else { continue }
+            do { try await finishPendingCellEdits(for: detection) }
+            catch { return "Interpolation stopped: \(error.localizedDescription)" }
+            guard !image.isDeleted, image.modelContext != nil,
+                  image.detection?.id == detection.id,
+                  let currentCells = cellsForEditing(in: image) else { continue }
+            let conflict = currentCells.contains {
                 hypot($0.cx - candidate.cx, $0.cy - candidate.cy)
                     <= max(4, min($0.diameterPx, candidate.diameterPx) * 0.45)
             }
             guard !conflict else { continue }
             let result = repos.commitCellEdit(
-                cells: detection.cells + [candidate],
+                cells: currentCells + [candidate],
                 corrections: [CorrectionSpec(kind: "interpolate", cell: candidate)],
                 detection: detection, image: images[frame])
             _ = result
             added += 1
             await Task.yield()
         }
-        if added > 0 { postCorrectionsChanged(imageId: nil, reviewDelta: 0) }
         return added == 0
             ? "Every intermediate frame already has a nearby label."
             : "Interpolated \(added) missing label\(added == 1 ? "" : "s")."

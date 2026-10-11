@@ -182,21 +182,8 @@ final class Repositories {
         return (try? context.fetch(desc)) ?? []
     }
 
-    func deleteBatch(_ batch: BatchRecord) {
-        // remove image + thumb files too
-        for img in batch.images {
-            deleteReviewCandidates(forImageId: img.id)
-            deleteSegmentationVariants(forImageId: img.id)
-            // B1-3: guard against empty fileName to avoid removing wrong/root URLs
-            guard !img.fileName.isEmpty else { continue }
-            try? FileManager.default.removeItem(at: img.storedURL)
-            if img.displayURL != img.storedURL {
-                try? FileManager.default.removeItem(at: img.displayURL)
-            }
-            try? FileManager.default.removeItem(at: img.thumbURL)
-        }
-        context.delete(batch)
-        try? context.save()
+    func deleteBatch(_ batch: BatchRecord) throws {
+        try deleteImages(batch.images, deletingBatch: batch)
     }
 
     /// Pass-12: Delete every `BatchRecord` whose `images` array is empty.
@@ -233,23 +220,6 @@ final class Repositories {
 
     // MARK: — Pass-17: Duplicate detection
 
-    /// Returns the first existing ImageRecord whose fileHash matches `hash`
-    /// AND whose fileName matches `fileName`, excluding any record with `excludingId`.
-    /// Used at import time to detect re-imports of the same file.
-    func imageRecord(matchingHash hash: String, fileName: String, excludingId: UUID? = nil) -> ImageRecord? {
-        // SwiftData predicates can't do optional comparisons easily, so fetch by fileName
-        // and filter by hash in memory. The library is small (hundreds of images at most).
-        let desc = FetchDescriptor<ImageRecord>(
-            predicate: #Predicate { $0.fileName == fileName },
-            sortBy: [SortDescriptor(\.importedAt, order: .reverse)])
-        let candidates = (try? context.fetch(desc)) ?? []
-        return candidates.first { img in
-            guard img.fileHash == hash else { return false }
-            if let excl = excludingId, img.id == excl { return false }
-            return true
-        }
-    }
-
     /// Returns all duplicate groups: groups of 2+ ImageRecords sharing the same fileHash.
     /// Images with fileHash == nil are excluded (not yet hashed).
     func duplicateGroups() -> [[ImageRecord]] {
@@ -272,21 +242,21 @@ final class Repositories {
         return (try? context.fetch(desc)) ?? []
     }
 
-    /// Updates the fileHash on an ImageRecord and saves.
-    func setFileHash(_ hash: String, on image: ImageRecord) {
-        image.fileHash = hash
-        try? context.save()
-    }
-
     /// Deletes one image without making the caller wait for filesystem cleanup.
-    func deleteImage(_ image: ImageRecord) {
-        deleteImages([image])
+    func deleteImage(_ image: ImageRecord) throws {
+        try deleteImages([image])
     }
 
     /// Removes a selection in one database transaction. Potentially large
     /// source files are unlinked on a utility worker after their URLs have
     /// been snapshotted, keeping bulk Library deletion responsive.
-    func deleteImages(_ images: [ImageRecord]) {
+    func deleteImages(_ images: [ImageRecord]) throws {
+        try deleteImages(images, deletingBatch: nil)
+    }
+
+    private func deleteImages(_ images: [ImageRecord], deletingBatch batchToDelete: BatchRecord?) throws {
+        // Preserve unrelated pending work before a deletion that may roll back.
+        try context.save()
         var fileURLs = Set<URL>()
         for image in images {
             if !image.fileName.isEmpty {
@@ -294,21 +264,30 @@ final class Repositories {
                 fileURLs.insert(image.displayURL)
                 fileURLs.insert(image.thumbURL)
             }
-            let removedCells = image.detection?.summaryCellCount ?? 0
-            deleteReviewCandidates(forImageId: image.id)
-            deleteSegmentationVariants(forImageId: image.id)
-            if let batch = image.batch {
-                if batch.imageCountSummary >= 0 {
-                    batch.imageCountSummary = max(0, batch.imageCountSummary - 1)
-                }
-                if batch.cellCountSummary >= 0 {
-                    batch.cellCountSummary = max(0, batch.cellCountSummary - removedCells)
-                }
-                batch.contentRevision &+= 1
-            }
-            context.delete(image)
         }
-        try? context.save()
+        do {
+            for image in images {
+                let removedCells = image.detection?.summaryCellCount ?? 0
+                try deleteImageAuxiliaryRecords(forImageId: image.id)
+                if batchToDelete == nil, let batch = image.batch {
+                    if batch.imageCountSummary >= 0 {
+                        batch.imageCountSummary = max(0, batch.imageCountSummary - 1)
+                    }
+                    if batch.cellCountSummary >= 0 {
+                        batch.cellCountSummary = max(0, batch.cellCountSummary - removedCells)
+                    }
+                    batch.contentRevision &+= 1
+                }
+                context.delete(image)
+            }
+            if let batchToDelete { context.delete(batchToDelete) }
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+        // A failed database save must never leave persisted owners with their
+        // source files removed. Only unlink files after the deletion commits.
         Task.detached(priority: .utility) {
             for url in fileURLs { try? FileManager.default.removeItem(at: url) }
         }
@@ -432,16 +411,16 @@ final class Repositories {
         try? context.save()
     }
 
-    private func deleteSegmentationVariants(forImageId imageId: UUID) {
-        let desc = FetchDescriptor<SegmentationVariantRecord>(
-            predicate: #Predicate { $0.imageId == imageId })
-        for variant in (try? context.fetch(desc)) ?? [] { context.delete(variant) }
-    }
-
-    func recordCorrection(_ correction: CorrectionRecord, on detection: DetectionRecord) {
-        correction.detection = detection
-        context.insert(correction)
-        try? context.save()
+    private func deleteImageAuxiliaryRecords(forImageId imageId: UUID) throws {
+        let reviewRows = try context.fetch(FetchDescriptor<ReviewCandidateRecord>(
+            predicate: #Predicate { $0.imageId == imageId }))
+        let variants = try context.fetch(FetchDescriptor<SegmentationVariantRecord>(
+            predicate: #Predicate { $0.imageId == imageId }))
+        let annotations = try context.fetch(FetchDescriptor<GroundTruthAnnotation>(
+            predicate: #Predicate { $0.imageId == imageId }))
+        for row in reviewRows { context.delete(row) }
+        for variant in variants { context.delete(variant) }
+        for annotation in annotations { context.delete(annotation) }
     }
 
     // MARK: — Review index / scalable summaries
@@ -475,12 +454,6 @@ final class Repositories {
     private func deleteReviewCandidates(forDetectionId detectionId: UUID) {
         let desc = FetchDescriptor<ReviewCandidateRecord>(
             predicate: #Predicate { $0.detectionId == detectionId })
-        for row in (try? context.fetch(desc)) ?? [] { context.delete(row) }
-    }
-
-    private func deleteReviewCandidates(forImageId imageId: UUID) {
-        let desc = FetchDescriptor<ReviewCandidateRecord>(
-            predicate: #Predicate { $0.imageId == imageId })
         for row in (try? context.fetch(desc)) ?? [] { context.delete(row) }
     }
 
@@ -538,10 +511,6 @@ final class Repositories {
     /// Never traverse a candidate's potentially dangling owner relationships.
     /// Fetch live owners in batches, retaining at most one queue page.
     func reviewItems(for candidates: [ReviewCandidateRecord]) throws -> [ReviewItem] {
-        try resolveReviewItems(for: candidates)
-    }
-
-    private func resolveReviewItems(for candidates: [ReviewCandidateRecord]) throws -> [ReviewItem] {
         // Callers can retain a page through reset/reanalysis animations. A
         // saved deletion detaches its model; reading scalar fields from that
         // invalidated backing row can trap before owner resolution begins.
@@ -580,7 +549,7 @@ final class Repositories {
             desc.fetchOffset = offset
             let rows = try context.fetch(desc)
             guard !rows.isEmpty else { return }
-            let liveIDs = Set(try resolveReviewItems(for: rows).map(\.id))
+            let liveIDs = Set(try reviewItems(for: rows).map(\.id))
             for row in rows where !liveIDs.contains(row.id) { context.delete(row) }
             try context.save()
             // Deleted rows no longer occupy an offset in the next fetch.
@@ -943,6 +912,9 @@ final class Repositories {
     /// model environments and exports. Used by Settings → Reset all data.
     func wipeAllUserData() throws {
         try deleteAllLibraryRecords()
+        // The library is already empty even if directory recreation fails.
+        // Release retained rows before filesystem cleanup can throw.
+        NotificationCenter.default.post(name: .ccLibraryChanged, object: nil)
 
         // Files
         let fm = FileManager.default

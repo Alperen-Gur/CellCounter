@@ -100,7 +100,7 @@ cc_install_run() {
         echo "==> installing optional vendor format readers (best effort)"
         # shellcheck disable=SC2086 — intentionally word-split
         for _cc_pkg in ${CC_PIP_OPTIONAL_PACKAGES}; do
-            if pip install "${_cc_pkg}"; then
+            if pip install "${_cc_pkg}" 'numpy<2'; then
                 echo "    ok:      ${_cc_pkg}"
             else
                 echo "    skipped: ${_cc_pkg} (unavailable for this Python — optional)"

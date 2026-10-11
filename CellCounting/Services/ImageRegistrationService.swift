@@ -31,10 +31,11 @@ nonisolated struct WorkspacePixelPlane: Hashable, Sendable {
             minValue = min(minValue, value)
             maxValue = max(maxValue, value)
         }
-        let span = max(maxValue - minValue, Float.leastNonzeroMagnitude)
+        let minimum = Double(minValue)
+        let span = max(Double(maxValue) - minimum, Double.leastNonzeroMagnitude)
         let bytes = pixels.map { value -> UInt8 in
             guard value.isFinite else { return 0 }
-            return UInt8(clamping: Int(((value - minValue) / span * 255).rounded()))
+            return UInt8(clamping: Int(((Double(value) - minimum) / span * 255).rounded()))
         }
         guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
         return CGImage(width: width, height: height,
@@ -194,29 +195,6 @@ nonisolated enum ImageRegistrationService {
         return WorkspaceRegistrationResult(
             transform: .translation(x: Double(candidate.dx), y: Double(candidate.dy)),
             score: candidate.score, samples: candidate.samples)
-    }
-
-    nonisolated static func registerSequence(_ planes: [WorkspacePixelPlane],
-                                             maxShift: Int = 96,
-                                             progress: ProgressHandler? = nil,
-                                             cancellationCheck: CancellationCheck = {
-                                                 try Task<Never, Never>.checkCancellation()
-                                             }) throws -> [WorkspaceAffineTransform] {
-        guard let first = planes.first, first.isValid else { return [] }
-        var transforms: [WorkspaceAffineTransform] = [.identity]
-        transforms.reserveCapacity(planes.count)
-        for index in planes.indices.dropFirst() {
-            try cancellationCheck()
-            let pair = try estimateTranslation(reference: planes[index - 1],
-                                               moving: planes[index], maxShift: maxShift,
-                                               progress: { update in
-                let completed = (index - 1) * 1_000 + Int(update.fraction * 1_000)
-                progress?(.init(phase: "Registering sequence", completedUnits: completed,
-                                totalUnits: max(1, planes.count - 1) * 1_000))
-            }, cancellationCheck: cancellationCheck)
-            transforms.append(pair.transform.concatenating(transforms[index - 1]))
-        }
-        return transforms
     }
 
     /// Creates deterministic row-major transforms before optional registration refinement.

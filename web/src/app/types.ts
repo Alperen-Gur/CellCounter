@@ -29,6 +29,8 @@ export interface WorkspaceImage {
   thumbnailUrl?: string;
   thumbnailBlob?: Blob;
   sourceLoaded?: boolean;
+  /** False while this session owns the only copy; such rasters cannot be evicted. */
+  sourcePersisted?: boolean;
   width: number;
   height: number;
   importedAt: string;

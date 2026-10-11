@@ -241,6 +241,27 @@ extension AnalysisProtocol {
         if info.comingSoon {
             return "\u{201c}\(name)\u{201d} was saved with \(info.name), which isn\u{2019}t available in this build yet (\u{201c}coming soon\u{201d}). Every other setting was applied — pick an available model before running detection."
         }
+        if info.id == EnsembleDownloader.modelId {
+            guard let primary = model.ensemblePrimaryId,
+                  let secondary = model.ensembleSecondaryId else {
+                return "“\(name)” does not record its ensemble members. Other settings were applied and the current pair was retained; exact reproduction requires choosing the original two models in Models."
+            }
+            guard !primary.isEmpty, !secondary.isEmpty, primary != secondary,
+                  primary != EnsembleDownloader.modelId,
+                  secondary != EnsembleDownloader.modelId else {
+                return "“\(name)” has an invalid ensemble pair. Other settings were applied and the current pair was retained; choose two different member models in Models."
+            }
+            let eligible = EnsembleDownloader.eligibleMembers(from: state.models)
+            for memberId in [primary, secondary] {
+                guard let member = eligible.first(where: { $0.id == memberId }) else {
+                    return "“\(name)” requires ensemble member \(memberId), which is unavailable in this model catalog. Other settings were applied — add that model or choose another pair before running detection."
+                }
+                guard state.detectorRegistry.isInstalled(memberId, models: state.models) else {
+                    return "“\(name)” requires ensemble member \(member.name), which isn’t installed on this Mac. Other settings were applied — install that member before running detection."
+                }
+            }
+            return nil
+        }
         guard state.detectorRegistry.isInstalled(info.id, models: state.models) else {
             return "\u{201c}\(name)\u{201d} was saved with \(info.name), which isn\u{2019}t installed on this Mac. Every other setting was applied — install \(info.name) (or activate a different model) before running detection."
         }
@@ -255,6 +276,7 @@ extension AppState {
     /// see that type's doc comment for the "at minimum" list this satisfies.
     func makeAnalysisProtocolSnapshot(name: String, notes: String = "") -> AnalysisProtocol {
         let info = models.first(where: { $0.id == activeModelId })
+        let runSettings = AnalysisRunSettings.capture(state: self)
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let appBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         return AnalysisProtocol(
@@ -264,12 +286,14 @@ extension AppState {
             appBuild: appBuild,
             model: .init(id: activeModelId,
                         name: info?.name ?? activeModelName,
-                        family: info?.family.rawValue ?? "unknown"),
+                        family: info?.family.rawValue ?? "unknown",
+                        ensemblePrimaryId: runSettings.ensemblePrimaryId,
+                        ensembleSecondaryId: runSettings.ensembleSecondaryId),
             detection: .init(expectedDiameterUm: expectedDiameterUm,
                              channelsCyto: channels.cyto,
                              channelsNuclei: channels.nuclei,
                              confidenceThreshold: confidence,
-                             omniposeSettings: AnalysisRunSettings.capture(state: self).usesOmnipose
+                             omniposeSettings: runSettings.usesOmnipose
                                 ? omniposeSettings : nil),
             calibration: .init(pxPerUm: pxPerUm),
             sizeBins: .init(thresholdsUm: thresholds),
@@ -308,6 +332,22 @@ extension AppState {
         watershedSplit = analysisProtocol.preprocessing.watershedSplit
         watershedMinDistanceUm = analysisProtocol.preprocessing.watershedMinDistanceUm
         manualMarkerDiameter = analysisProtocol.manualMarkerDiameterUm
+
+        if analysisProtocol.model.id == EnsembleDownloader.modelId {
+            let warning = analysisProtocol.installWarning(state: self)
+            if let primary = analysisProtocol.model.ensemblePrimaryId,
+               let secondary = analysisProtocol.model.ensembleSecondaryId,
+               !primary.isEmpty, !secondary.isEmpty,
+               EnsembleDownloader.setMembers(primary: primary, secondary: secondary) {
+                installStateCache.refresh(modelId: EnsembleDownloader.modelId,
+                                          registry: detectorRegistry, models: models, force: true)
+            }
+            // Rebuild directly: the old pair's cached readiness cannot gate
+            // activation of the saved pair while its fresh probe is pending.
+            activeModelId = EnsembleDownloader.modelId
+            refreshDetector()
+            return warning
+        }
 
         if let warning = analysisProtocol.installWarning(state: self) {
             // Still record the intended model id — mirrors how

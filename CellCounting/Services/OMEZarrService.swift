@@ -114,34 +114,6 @@ nonisolated struct OMEZarrPlane: Sendable {
     var width: Int
     var height: Int
     var pixels: [Float]
-
-    func displayBytes() -> [UInt8] {
-        guard !pixels.isEmpty else { return [] }
-        var minimum = Float.greatestFiniteMagnitude
-        var maximum = -Float.greatestFiniteMagnitude
-        for value in pixels where value.isFinite {
-            minimum = min(minimum, value)
-            maximum = max(maximum, value)
-        }
-        guard minimum.isFinite, maximum.isFinite else { return Array(repeating: 0, count: pixels.count) }
-        let span = max(maximum - minimum, Float.leastNonzeroMagnitude)
-        return pixels.map { value in
-            guard value.isFinite else { return 0 }
-            return UInt8(clamping: Int(((value - minimum) / span * 255).rounded()))
-        }
-    }
-
-    func makeCGImage() -> CGImage? {
-        let bytes = displayBytes()
-        guard bytes.count == width * height,
-              let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
-        return CGImage(width: width, height: height,
-                       bitsPerComponent: 8, bitsPerPixel: 8,
-                       bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
-                       bitmapInfo: CGBitmapInfo(rawValue: 0), provider: provider,
-                       decode: nil, shouldInterpolate: true,
-                       intent: .defaultIntent)
-    }
 }
 
 actor OMEZarrService {
@@ -250,10 +222,6 @@ actor OMEZarrService {
         return result
     }
 
-    func resetCacheStatistics() {
-        counters = OMEZarrCacheStats()
-    }
-
     /// Internal test hook. It also advances the cache generation so stale
     /// descriptors can never address values created before the reset.
     func resetCachesForTesting(limits newLimits: OMEZarrResourceLimits = .default) {
@@ -340,6 +308,15 @@ actor OMEZarrService {
         }
 
         let dataType = try ZarrDataType(array.dataType)
+        // Validate chunks before stride and coordinate arithmetic. Imported
+        // metadata can otherwise overflow before readChunk checks its buffer.
+        let elementCount = try Self.checkedProduct(array.chunks)
+        let chunkBytes = elementCount.multipliedReportingOverflow(by: dataType.byteCount)
+        guard !chunkBytes.overflow, chunkBytes.partialValue <= limits.maxDecodedChunkBytes else {
+            throw OMEZarrError.resourceLimitExceeded(resource: "decoded chunk",
+                                                     requestedBytes: chunkBytes.overflow ? Int.max : chunkBytes.partialValue,
+                                                     limitBytes: limits.maxDecodedChunkBytes)
+        }
         let normalizedIndices = normalizedFixedIndices(array: array, fixedIndices: fixedIndices,
                                                        xAxis: xAxis, yAxis: yAxis)
         let planeKey = PlaneCacheKey(array: cacheIdentity(for: array, xAxis: xAxis, yAxis: yAxis),
@@ -360,8 +337,8 @@ actor OMEZarrService {
             baseCoordinates[axisIndex] = selected / array.chunks[axisIndex]
         }
 
-        let yChunkCount = (height + array.chunks[yAxis] - 1) / array.chunks[yAxis]
-        let xChunkCount = (width + array.chunks[xAxis] - 1) / array.chunks[xAxis]
+        let yChunkCount = (height - 1) / array.chunks[yAxis] + 1
+        let xChunkCount = (width - 1) / array.chunks[xAxis] + 1
         let chunkStrides = Self.rowMajorStrides(array.chunks)
         for chunkY in 0..<yChunkCount {
             for chunkX in 0..<xChunkCount {
@@ -371,7 +348,7 @@ actor OMEZarrService {
                 coordinates[xAxis] = chunkX
                 let chunk = try readChunk(array: array,
                                           coordinates: coordinates,
-                                          dataType: dataType)
+                                          expectedBytes: chunkBytes.partialValue)
                 let yStart = chunkY * array.chunks[yAxis]
                 let xStart = chunkX * array.chunks[xAxis]
                 let yCount = min(array.chunks[yAxis], height - yStart)
@@ -523,7 +500,7 @@ actor OMEZarrService {
             let metadata: ArrayMetadata = try decode(ArrayMetadata.self, at: zarrayURL,
                                                      maxBytes: maxMetadataBytes)
             guard metadata.zarrFormat == 2 else { throw OMEZarrError.unsupportedVersion(metadata.zarrFormat) }
-            guard metadata.shape.count == metadata.chunks.count,
+            guard metadata.shape.count >= 2, metadata.shape.count == metadata.chunks.count,
                   metadata.shape.allSatisfy({ $0 > 0 }), metadata.chunks.allSatisfy({ $0 > 0 }) else {
                 throw OMEZarrError.malformedMetadata("invalid shape or chunk dimensions at \(path)")
             }
@@ -562,8 +539,11 @@ actor OMEZarrService {
             let components = path.split(separator: "/").map(String.init)
             let rowName = components.first ?? ""
             let columnName = components.dropFirst().first ?? ""
-            let row = rows.firstIndex(of: rowName) ?? Self.plateRowIndex(rowName)
-            let column = columns.firstIndex(of: columnName) ?? max(0, (Int(columnName) ?? 1) - 1)
+            let row: Int
+            if let index = rows.firstIndex(of: rowName) { row = index }
+            else { row = try Self.plateRowIndex(rowName) }
+            let columnNumber = Int(columnName) ?? 1
+            let column = columns.firstIndex(of: columnName) ?? (columnNumber > 0 ? columnNumber - 1 : 0)
             let wellAttrsURL = rootURL.appendingPathComponent(path, isDirectory: true)
                 .appendingPathComponent(".zattrs")
             let images: [WellImageMetadata]
@@ -644,17 +624,23 @@ actor OMEZarrService {
         return components.joined(separator: "/")
     }
 
-    private static func plateRowIndex(_ name: String) -> Int {
-        max(0, name.uppercased().unicodeScalars.reduce(0) { value, scalar in
-            guard scalar.value >= 65, scalar.value <= 90 else { return value }
-            return value * 26 + Int(scalar.value - 64)
-        } - 1)
+    private static func plateRowIndex(_ name: String) throws -> Int {
+        var value = 0
+        for scalar in name.uppercased().unicodeScalars where scalar.value >= 65 && scalar.value <= 90 {
+            let product = value.multipliedReportingOverflow(by: 26)
+            let next = product.partialValue.addingReportingOverflow(Int(scalar.value - 64))
+            guard !product.overflow, !next.overflow else {
+                throw OMEZarrError.malformedMetadata("plate row index overflow")
+            }
+            value = next.partialValue
+        }
+        return value > 0 ? value - 1 : 0
     }
 
     // MARK: Chunks
 
     private func readChunk(array: OMEZarrArrayDescriptor,
-                           coordinates: [Int], dataType: ZarrDataType) throws -> Data {
+                           coordinates: [Int], expectedBytes: Int) throws -> Data {
         let key = ChunkCacheKey(array: cacheIdentity(for: array), coordinates: coordinates,
                                 generation: generation(for: array.rootURL))
         if var cached = decodedChunkCache[key] {
@@ -691,32 +677,24 @@ actor OMEZarrService {
         let encoded: Data
         do { encoded = try Data(contentsOf: chunkURL, options: .mappedIfSafe) }
         catch { throw OMEZarrError.chunkMissing(array.path + "/" + name) }
-        let elementCount = try Self.checkedProduct(array.chunks)
-        let expectedBytes = elementCount.multipliedReportingOverflow(by: dataType.byteCount)
-        guard !expectedBytes.overflow else { throw OMEZarrError.corruptChunk("byte count overflow") }
-        guard expectedBytes.partialValue <= limits.maxDecodedChunkBytes else {
-            throw OMEZarrError.resourceLimitExceeded(resource: "decoded chunk",
-                                                     requestedBytes: expectedBytes.partialValue,
-                                                     limitBytes: limits.maxDecodedChunkBytes)
-        }
         let decoded: Data
         switch array.compressorID?.lowercased() {
         case nil:
-            guard encoded.count == expectedBytes.partialValue else {
-                throw OMEZarrError.corruptChunk("\(name) has \(encoded.count) bytes; expected \(expectedBytes.partialValue)")
+            guard encoded.count == expectedBytes else {
+                throw OMEZarrError.corruptChunk("\(name) has \(encoded.count) bytes; expected \(expectedBytes)")
             }
             decoded = encoded
         case "zlib":
-            var output = Data(count: expectedBytes.partialValue)
+            var output = Data(count: expectedBytes)
             let decodedCount = output.withUnsafeMutableBytes { outputBytes in
                 encoded.withUnsafeBytes { inputBytes in
                     compression_decode_buffer(
-                        outputBytes.bindMemory(to: UInt8.self).baseAddress!, expectedBytes.partialValue,
+                        outputBytes.bindMemory(to: UInt8.self).baseAddress!, expectedBytes,
                         inputBytes.bindMemory(to: UInt8.self).baseAddress!, encoded.count,
                         nil, COMPRESSION_ZLIB)
                 }
             }
-            guard decodedCount == expectedBytes.partialValue else {
+            guard decodedCount == expectedBytes else {
                 throw OMEZarrError.corruptChunk("zlib decode failed for \(name)")
             }
             decoded = output

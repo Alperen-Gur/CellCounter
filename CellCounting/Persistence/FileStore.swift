@@ -138,19 +138,4 @@ struct FileStore {
     func displayImageURL(for imageId: UUID) -> URL {
         displayImagesDir.appendingPathComponent("\(imageId.uuidString).png")
     }
-
-    /// Free disk-space estimate for the storage root (for the "X MB on disk" footer).
-    func diskUsageMB() -> Int {
-        var total: Int64 = 0
-        if let enumerator = FileManager.default.enumerator(at: root,
-                                                            includingPropertiesForKeys: [.fileSizeKey],
-                                                            options: [.skipsHiddenFiles]) {
-            for case let url as URL in enumerator {
-                if let sz = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                    total += Int64(sz)
-                }
-            }
-        }
-        return Int(total / (1024 * 1024))
-    }
 }
