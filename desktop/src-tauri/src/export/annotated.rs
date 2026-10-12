@@ -272,16 +272,30 @@ pub async fn export_batch_annotated_pngs(
     out_dir: String,
 ) -> Result<String, String> {
     let store = FileStore::from_app(&app)?;
-    let conn = open_reader(&store)?;
-    let batch_name = conn
-        .query_row(
-            "SELECT display_name FROM batches WHERE id = ?1",
-            [&batch_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| format!("batch lookup failed: {error}"))?
-        .ok_or_else(|| format!("no batch with id {batch_id}"))?;
+    // SQLite statements borrow a non-Sync connection. Finish each read scope
+    // before awaiting source reconstruction so the Tauri command remains Send.
+    let (batch_name, image_ids) = {
+        let conn = open_reader(&store)?;
+        conn.execute_batch("BEGIN DEFERRED TRANSACTION").map_err(|e| e.to_string())?;
+        let batch_name = conn
+            .query_row(
+                "SELECT display_name FROM batches WHERE id = ?1",
+                [&batch_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("batch lookup failed: {error}"))?
+            .ok_or_else(|| format!("no batch with id {batch_id}"))?;
+        let mut statement = conn
+            .prepare("SELECT id FROM images WHERE batch_id = ?1 ORDER BY imported_at DESC")
+            .map_err(|error| format!("image list failed: {error}"))?;
+        let image_ids = statement
+            .query_map([&batch_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("image list failed: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("image list failed: {error}"))?;
+        (batch_name, image_ids)
+    };
     let parent = if out_dir.trim().is_empty() {
         store.exports_dir()
     } else {
@@ -291,22 +305,21 @@ pub async fn export_batch_annotated_pngs(
         .map_err(|error| format!("could not create export parent folder: {error}"))?;
     let folder = unique_folder(&parent, &batch_name)?;
 
-    let mut statement = conn
-        .prepare("SELECT id FROM images WHERE batch_id = ?1 ORDER BY imported_at DESC")
-        .map_err(|error| format!("image list failed: {error}"))?;
-    let image_ids: Vec<String> = statement
-        .query_map([&batch_id], |row| row.get(0))
-        .map_err(|error| format!("image list failed: {error}"))?
-        .filter_map(Result::ok)
-        .collect();
-    drop(statement);
     let mut used_names = HashSet::new();
     let mut written = 0usize;
     let mut errors = Vec::new();
     for image_id in image_ids {
-        let mut context = match ExportContext::load(&conn, &store, &image_id) {
-            Ok(context) if !context.cells.is_empty() => context,
-            Ok(_) => continue,
+        let snapshot = (|| {
+            let conn = open_reader(&store)?;
+            conn.execute_batch("BEGIN DEFERRED TRANSACTION").map_err(|e| e.to_string())?;
+            let context = ExportContext::load(&conn, &store, &image_id)?;
+            if context.cells.is_empty() { return Ok(None); }
+            let request = super::display::capture(&conn, &store, &context)?;
+            Ok::<_, String>(Some((context, request)))
+        })();
+        let (mut context, display_request) = match snapshot {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => continue,
             Err(error) => {
                 errors.push(format!("{image_id}: {error}"));
                 continue;
@@ -324,10 +337,6 @@ pub async fn export_batch_annotated_pngs(
             suffix += 1;
         }
         let cutoff = context.effective_confidence(confidence.unwrap_or(0.0));
-        let display_request = match super::display::capture(&conn, &store, &context) {
-            Ok(request) => request,
-            Err(error) => { errors.push(format!("{image_id}: {error}")); continue; }
-        };
         let temporary = match super::display::prepare(app.clone(), manager.clone(), display_request).await {
             Ok(display) => display,
             Err(error) => { errors.push(format!("{image_id}: {error}")); continue; }
@@ -350,7 +359,11 @@ pub async fn export_batch_annotated_pngs(
     let _ = &db;
     if written == 0 {
         let _ = std::fs::remove_dir(&folder);
-        return Err("This batch has no analyzed images to export.".to_string());
+        return Err(if errors.is_empty() {
+            "This batch has no analyzed images to export.".to_string()
+        } else {
+            format!("No annotated PNGs were written: {}", errors.join("; "))
+        });
     }
     if !errors.is_empty() {
         return Err(format!(
