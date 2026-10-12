@@ -44,10 +44,11 @@ export const COMPARE_CSV_HEADER = [
 /**
  * Escape a CSV field the way `CompareView.csvEscape` does: wrap in double quotes
  * and double any embedded quote iff the value contains a comma, quote, or
- * newline. (`bin_label` never needs it, but condition names can.)
+ * newline. Formula-looking labels are retained as spreadsheet text.
  */
 export function csvEscape(s: string): string {
-  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+  if (/^[=+@\-]/.test(s.trimStart())) s = `'${s}`;
+  if (s.includes(",") || s.includes('"') || /[\r\n]/.test(s)) {
     return '"' + s.replace(/"/g, '""') + '"';
   }
   return s;
@@ -124,10 +125,8 @@ export type CsvSaveResult =
 //
 // The macOS original used an NSSavePanel. On Tauri that maps to
 // `@tauri-apps/plugin-dialog` (`save`) + `@tauri-apps/plugin-fs` (`writeTextFile`)
-// — neither of which is a declared dependency of the scaffold yet (see
-// `pages/home/fileSources.ts`, which loads the dialog/fs plugins optionally the
-// same way). So we load them dynamically and, if they are absent (or we are in a
-// plain browser during the future WebGPU build), fall back to a Blob download.
+// are declared dependencies. Literal dynamic imports let Vite bundle them;
+// an unavailable native host falls back to a browser Blob download.
 // ---------------------------------------------------------------------------
 
 /** Minimal shape of the dialog plugin's `save` we depend on. */
@@ -145,8 +144,7 @@ interface FsWriteModule {
 
 async function loadDialogSave(): Promise<DialogSaveModule | null> {
   try {
-    const spec = "@tauri-apps/plugin-dialog";
-    const mod = (await import(/* @vite-ignore */ spec)) as unknown as DialogSaveModule;
+    const mod = (await import("@tauri-apps/plugin-dialog")) as unknown as DialogSaveModule;
     return typeof mod.save === "function" ? mod : null;
   } catch {
     return null;
@@ -155,8 +153,7 @@ async function loadDialogSave(): Promise<DialogSaveModule | null> {
 
 async function loadFsWrite(): Promise<FsWriteModule | null> {
   try {
-    const spec = "@tauri-apps/plugin-fs";
-    const mod = (await import(/* @vite-ignore */ spec)) as unknown as FsWriteModule;
+    const mod = (await import("@tauri-apps/plugin-fs")) as unknown as FsWriteModule;
     return typeof mod.writeTextFile === "function" ? mod : null;
   } catch {
     return null;

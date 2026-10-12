@@ -8,11 +8,11 @@ export const SHORTCUTS = [
   ["⌘ / Ctrl + Alt + 1–4", "Library, Analyze, Processing, Review"],
   ["⌘ / Ctrl + Enter", "Preview or process the active Analyze image"],
   ["Esc", "Close dialog or cancel active processing"],
-  ["1 — 6", "Choose Analyze correction tool"],
+  ["1 — 9", "Choose Analyze correction tool"],
   ["⌘ / Ctrl + Z", "Undo Analyze correction"],
   ["⌘ / Ctrl + Shift + Z", "Redo Analyze correction"],
   ["⌘ / Ctrl + E", "Export Analyze measurements"],
-  ["K / X / R", "Review: accept / reject / resize focused object"],
+  ["K / X / R / S", "Review: accept / reject / resize / skip focused object"],
   ["T", "Toggle theme"],
   ["?", "Show keyboard shortcuts"],
 ] as const;
@@ -63,7 +63,7 @@ export function handleKeyboard(event: KeyboardEvent, actions: KeyActions): void 
     }
   } else if (!modifier && !event.altKey) {
     if (key === "i" && !actions.busy && (workspace || actions.route === "library")) action = actions.importImages;
-    else if (/^[1-6]$/.test(key) && workspace && hasImage && !actions.busy) action = () => actions.setTool(Number(key) - 1);
+    else if (/^[1-9]$/.test(key) && workspace && hasImage && !actions.busy) action = () => actions.setTool(Number(key) - 1);
     else if (key === "t") action = actions.toggleTheme;
     else if (event.key === "?") action = actions.showHelp;
   }

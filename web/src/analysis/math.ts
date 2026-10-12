@@ -117,7 +117,7 @@ export interface Component {
 }
 
 export function connectedComponents(mask: ArrayLike<number>, width: number, height: number, diagonal = true, signal?: AbortSignal): Component[] {
-  if (mask.length !== width * height || width <= 0 || height <= 0) throw new RangeError("Invalid binary-mask dimensions.");
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || mask.length !== width * height || width <= 0 || height <= 0 || mask.length > 4_000_000) throw new RangeError("Binary-mask dimensions must be positive integers within four million pixels.");
   const seen = new Uint8Array(mask.length);
   const components: Component[] = [];
   // Reuse one fixed-capacity queue across components; do not allocate a full
@@ -129,6 +129,7 @@ export function connectedComponents(mask: ArrayLike<number>, width: number, heig
   for (let start = 0; start < mask.length; start += 1) {
     if ((start & 0xffff) === 0) signal?.throwIfAborted();
     if (!mask[start] || seen[start]) continue;
+    if (components.length >= 50_000) throw new RangeError("Segmentation exceeds 50,000 connected regions. Crop the field or reduce foreground noise.");
     // A typed queue avoids retaining a second boxed-number array for every
     // foreground pixel while the component's result pixels are accumulated.
     let queueLength = 1;

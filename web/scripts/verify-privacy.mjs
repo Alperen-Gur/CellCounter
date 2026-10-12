@@ -15,12 +15,14 @@ async function filesUnder(directory) {
 }
 
 const forbidden = [
+  // "segment" alone also names ordinary image geometry; match SDK identifiers.
+  [/['"](?:@segment\/[^'"]+|segment(?:-analytics)?(?:\.js)?)['"]/, "Segment telemetry SDK"],
   [/navigator\.sendBeacon\s*\(/, "sendBeacon"],
   [/new\s+XMLHttpRequest\s*\(/, "XMLHttpRequest"],
   [/new\s+WebSocket\s*\(/, "WebSocket"],
   [/new\s+EventSource\s*\(/, "EventSource"],
   [/RTCPeerConnection/, "peer connection"],
-  [/\b(?:segment|mixpanel|amplitude|sentry|posthog|google-analytics)\b/i, "telemetry dependency"],
+  [/\b(?:mixpanel|amplitude|sentry|posthog|google-analytics)\b/i, "telemetry dependency"],
 ];
 
 function privacyFindings(contents, path) {
@@ -33,7 +35,7 @@ function privacyFindings(contents, path) {
 const positive = privacyFindings("navigator.sendBeacon('/telemetry', pixels); fetch('/upload')", "positive-control.ts");
 if (positive.length < 2) throw new Error("Privacy scanner positive control did not detect forbidden network paths");
 
-const sourceFiles = await filesUnder(sourceRoot);
+const sourceFiles = [...await filesUnder(sourceRoot), ...await filesUnder(new URL("../../shared/", import.meta.url))];
 const findings = [];
 for (const file of sourceFiles) {
   findings.push(...privacyFindings(await readFile(file, "utf8"), relative(root.pathname, file)));

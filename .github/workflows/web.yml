@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - "web/**"
+      - "shared/**"
       - "docs/WEB.md"
       - ".github/workflows/web.yml"
   pull_request:
     paths:
       - "web/**"
+      - "shared/**"
       - "docs/WEB.md"
       - ".github/workflows/web.yml"
   workflow_dispatch:

@@ -8,6 +8,7 @@ const tasks = [
   { id: "review", label: "Review", icon: ClipboardCheck },
 ] as const;
 const utilities = [
+  { id: "microscopy", label: "Microscopy workspace", icon: Microscope },
   { id: "lab", label: "Assays & protocols", icon: Beaker },
   { id: "compare", label: "Compare results", icon: FlaskConical },
   { id: "models", label: "Models", icon: Boxes },

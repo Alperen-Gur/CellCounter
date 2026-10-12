@@ -2,6 +2,7 @@ import type { WorkspaceImage } from "./types";
 import { sha256Hex } from "../models/hash";
 import { decodeTiff } from "../import/tiff";
 import { assertImageImportBudget } from "../import/tiffBudget";
+import { rasterHeader } from "../import/rasterHeader";
 
 const SUPPORTED_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/bmp"]);
 const SUPPORTED_SUFFIX = /\.(png|jpe?g|webp|bmp)$/i;
@@ -37,7 +38,7 @@ export async function decodeImageFile(file: File): Promise<WorkspaceImage> {
       id: crypto.randomUUID(), file: decoded.displayFile, originalFile: file, fileName: file.name, objectUrl: URL.createObjectURL(decoded.displayFile),
       width: decoded.width, height: decoded.height, importedAt: new Date().toISOString(), cells: [], condition: "Unassigned",
       pxPerUm: decoded.calibration?.pxPerUm ?? 1, sourceSha256: decoded.sourceSha256, sourceByteLength: file.size,
-      sourceMediaType: file.type || "image/tiff", calibrationSource: decoded.calibration?.source === "OME-XML" ? "ome-xml" : decoded.calibration?.source === "ImageJ" ? "imagej" : decoded.calibration?.source === "TIFF baseline" ? "tiff-baseline" : "default", calibrationConfidence: decoded.calibration?.confidence ?? "low", planeCount: decoded.imageCount,
+      sourceMediaType: file.type || "image/tiff", calibrationSource: decoded.calibration?.source === "OME-XML" ? "ome-xml" : decoded.calibration?.source === "ImageJ" ? "imagej" : decoded.calibration?.source === "TIFF baseline" ? "tiff-baseline" : "default", calibrationConfidence: decoded.calibration?.confidence ?? "low", sourceDimensions: { t: decoded.dimensions.t, z: decoded.dimensions.z, c: decoded.dimensions.c }, channelNames: decoded.dimensions.channelNames, planeCount: decoded.imageCount,
       samplesPerPixel: decoded.samplesPerPixel, bitsPerSample: decoded.bitsPerSample,
       thumbnailBlob, thumbnailUrl, sourceLoaded: true,
       groundTruth: [], rois: [], note: "", reviewConfidence: "high",
@@ -47,9 +48,16 @@ export async function decodeImageFile(file: File): Promise<WorkspaceImage> {
     throw new UnsupportedImageError(file.name);
   }
 
-  const [bitmap, sourceSha256] = await Promise.all([createImageBitmap(file).catch(() => null), file.arrayBuffer().then(sha256Hex)]);
+  const header = await rasterHeader(file);
+  assertImageImportBudget(file.size, header.width, header.height);
+  const bitmap = await createImageBitmap(file).catch(() => null);
   if (!bitmap) throw new UnsupportedImageError(file.name);
-  try { assertImageImportBudget(file.size, bitmap.width, bitmap.height); }
+  let sourceSha256: string;
+  try {
+    if ((bitmap.width !== header.width || bitmap.height !== header.height) && !(header.jpeg && bitmap.width === header.height && bitmap.height === header.width)) throw new Error("Decoded source dimensions differ from its verified raster header.");
+    assertImageImportBudget(file.size, bitmap.width, bitmap.height);
+    sourceSha256 = await sha256Hex(await file.arrayBuffer());
+  }
   catch (error) { bitmap.close(); throw error; }
   const objectUrl = URL.createObjectURL(file);
   const thumbnailBlob = await createThumbnail(file);

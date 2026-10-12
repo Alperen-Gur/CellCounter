@@ -137,9 +137,9 @@ def _resolve_model_name(raw_model: str) -> str:
     # The Rust host maps the one supported app id (`cpsam_v2`) to this exact
     # checkpoint slug. Refuse every other name: silently turning a requested
     # model into CPSAM would make provenance false.
-    if raw_model != "cpsam":
+    if raw_model not in ("cpsam", "cpsam_v2", "cpdino", "cpdino-vitb"):
         raise ValueError(
-            f"unsupported Cellpose 4 model {raw_model!r}; expected 'cpsam'"
+            f"unsupported Cellpose 4 model {raw_model!r}; expected an exact Cellpose 4 checkpoint"
         )
     return raw_model
 
@@ -221,7 +221,15 @@ def build_model(cp_models, model_name: str, args, torch_mod):
     # run; the tqdm bridge installed by main() streams progress to stderr.
     log(f"[cellpose_detect] constructing CellposeModel(pretrained_model={model_name!r}, "
         f"gpu={use_gpu_kw}) — may download weights on first run")
+    # Cellpose may silently replace an unknown pretrained slug with its default.
+    # Require the requested exact checkpoint in the runtime catalogue first.
+    supported = getattr(cp_models, "MODEL_NAMES", ())
+    if model_name != "cpsam" and model_name not in supported:
+        raise ValueError(f"The installed Cellpose runtime does not provide {model_name}; update this model runtime.")
     model = _build()
+    loaded = getattr(model, "pretrained_model", None)
+    if loaded and os.path.basename(str(loaded)) != model_name:
+        raise ValueError(f"Requested {model_name}, but runtime loaded {loaded}; refusing model substitution")
 
     # Belt-and-brace: move the underlying net to the requested device if cellpose
     # didn't honour device= itself, and reflect the choice on the model so
@@ -377,6 +385,7 @@ class DetectionRunError(Exception):
 # keys its worker pool by them. Matches build_request_json() in the Rust host and
 # cellpose_detect.py's _PER_IMAGE_KEYS byte-for-byte.
 _PER_IMAGE_KEYS = (
+    "preprocessing_preset",
     "z_project",
     "segment_channel",
     "image",

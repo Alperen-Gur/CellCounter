@@ -5,6 +5,7 @@ export interface ExportCell {
   readonly cy: number;
   readonly diameterPx: number;
   readonly diameterUm?: number;
+  readonly areaUm2?: number; readonly areaPx2?: number; readonly perimeterUm?: number; readonly perimeterPx?: number; readonly circularity?: number; readonly aspectRatio?: number; readonly solidity?: number; readonly eccentricity?: number; readonly edgeTouching?: boolean; readonly sizeClass?: string;
   readonly confidence?: number;
   readonly isManual?: boolean;
   readonly contourPx?: readonly (ExportPoint | readonly [number, number])[];

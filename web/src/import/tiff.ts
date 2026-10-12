@@ -1,3 +1,4 @@
+import { describeSourceDimensions, type SourceDimensions } from "./sourcePlanes";
 import { sha256Hex } from "../models/hash";
 
 export interface TiffCalibration {
@@ -7,6 +8,7 @@ export interface TiffCalibration {
 }
 
 export interface DecodedTiff {
+  readonly dimensions: SourceDimensions;
   readonly displayFile: File;
   readonly width: number;
   readonly height: number;
@@ -48,7 +50,7 @@ export function parseOmeCalibration(description: string): TiffCalibration | unde
   if (!xScale || (y && !yScale)) return undefined;
   const xUm = x * xScale;
   const yUm = y ? y * (yScale ?? xScale) : xUm;
-  if (Math.abs(xUm - yUm) / Math.max(xUm, yUm) > 0.05) return undefined;
+  if (Math.abs(xUm - yUm) / Math.max(xUm, yUm) > 0.000001) return undefined;
   const pxPerUm = 1 / ((xUm + yUm) / 2);
   return pxPerUm >= 0.0001 && pxPerUm <= 10_000 ? { pxPerUm, source: "OME-XML", confidence: "high" } : undefined;
 }
@@ -60,7 +62,7 @@ export function parseImageJCalibration(description: string): TiffCalibration | u
   const width = finitePositive(values.get("pixel_width") ?? values.get("pixelWidth"));
   const height = finitePositive(values.get("pixel_height") ?? values.get("pixelHeight")) ?? width;
   const scale = unitToUm(values.get("unit"));
-  if (!width || !height || !scale || Math.abs(width - height) / Math.max(width, height) > 0.05) return undefined;
+  if (!width || !height || !scale || Math.abs(width - height) / Math.max(width, height) > 0.000001) return undefined;
   const pxPerUm = 1 / (((width + height) / 2) * scale);
   return pxPerUm >= 0.0001 && pxPerUm <= 10_000 ? { pxPerUm, source: "ImageJ", confidence: "medium" } : undefined;
 }
@@ -79,7 +81,7 @@ export function parseBaselineCalibration(directory: Record<string, unknown>): Ti
   const y = rational(directory.YResolution) ?? x;
   const unit = Number(directory.ResolutionUnit);
   const umPerUnit = unit === 2 ? 25_400 : unit === 3 ? 10_000 : undefined;
-  if (!x || !y || !umPerUnit || Math.abs(x - y) / Math.max(x, y) > 0.05) return undefined;
+  if (!x || !y || !umPerUnit || Math.abs(x - y) / Math.max(x, y) > 0.000001) return undefined;
   const pxPerUm = ((x + y) / 2) / umPerUnit;
   return pxPerUm >= 0.0001 && pxPerUm <= 10_000 ? { pxPerUm, source: "TIFF baseline", confidence: "medium" } : undefined;
 }
@@ -131,6 +133,6 @@ export function decodeTiff(file: File, knownSha256?: string): Promise<DecodedTif
     if (!result.blob || !result.width || !result.height || !result.imageCount) throw new Error("TIFF worker returned an incomplete result");
     const description = result.description ?? "";
     const calibration = parseOmeCalibration(description) ?? parseImageJCalibration(description) ?? parseBaselineCalibration(result.baseline ?? {});
-    return { displayFile: new File([result.blob], file.name, { type: "image/png", lastModified: file.lastModified }), width: result.width, height: result.height, imageCount: result.imageCount, calibration, description: description || undefined, sourceSha256, samplesPerPixel: result.samplesPerPixel ?? 1, bitsPerSample: result.bitsPerSample ?? 8 };
+    return { dimensions: describeSourceDimensions(description, result.samplesPerPixel ?? 1, result.imageCount), displayFile: new File([result.blob], file.name, { type: "image/png", lastModified: file.lastModified }), width: result.width, height: result.height, imageCount: result.imageCount, calibration, description: description || undefined, sourceSha256, samplesPerPixel: result.samplesPerPixel ?? 1, bitsPerSample: result.bitsPerSample ?? 8 };
   });
 }

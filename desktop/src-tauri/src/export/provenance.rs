@@ -20,15 +20,13 @@
 //! package-managed built-in weights have an explicit nullable checksum plus a
 //! reason instead of silently omitting the key.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 
-use crate::db::models::{cells_from_json, CellDto};
+use crate::db::models::CellDto;
 use crate::db::repo::Db;
 use crate::paths::FileStore;
 
@@ -169,36 +167,24 @@ pub(crate) struct ExportContext {
     pub checkpoint_identity: String,
     pub weights_checkpoint_path: Option<PathBuf>,
     pub weights_sha256_reason: Option<String>,
+    pub run_parameters: serde_json::Value,
+    pub parameters_source: String,
+    pub checkpoint_sha256: Option<String>,
+    pub runtime_identity: serde_json::Value,
 }
 
 fn run_model_from_detector(detector_id: Option<&str>, batch_model_id: &str) -> String {
     let candidate = detector_id
-        .and_then(|value| value.strip_prefix("cellpose/"))
+        .and_then(|value| value.split_once('/').map(|(_, model)| model))
         .unwrap_or(batch_model_id);
-    if matches!(candidate, "cpsam_v2" | "cp-cyto3" | "sd-fluo")
+    if crate::detection::sidecar::is_supported_model(candidate)
         || candidate.starts_with("cp-cyto3@")
+        || candidate.starts_with("custom-")
     {
         candidate.to_string()
     } else {
-        batch_model_id.to_string()
+        candidate.to_string()
     }
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("could not open checkpoint for hashing: {error}"))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| format!("could not hash checkpoint: {error}"))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn detector_provenance(
@@ -206,7 +192,10 @@ fn detector_provenance(
     store: &FileStore,
     model_id: &str,
 ) -> (String, String, Option<PathBuf>, Option<String>) {
-    if let Some(version_id) = model_id.strip_prefix("cp-cyto3@").filter(|id| !id.is_empty()) {
+    if let Some(version_id) = model_id
+        .strip_prefix("cp-cyto3@")
+        .filter(|id| !id.is_empty())
+    {
         let runtime = "python=.venv; cellpose>=3,<4; torch=cpu; device=cpu".to_string();
         let identity = format!("cp-cyto3-derived:{version_id}");
         let raw: Option<String> = conn
@@ -238,7 +227,37 @@ fn detector_provenance(
                 runtime,
                 identity,
                 None,
-                Some("Derived checkpoint is missing or outside CellCounter's model store.".to_string()),
+                Some(
+                    "Derived checkpoint is missing or outside CellCounter's model store."
+                        .to_string(),
+                ),
+            ),
+        }
+    } else if model_id.starts_with("custom-") {
+        match crate::parity::custom_model(conn, store, model_id) {
+            Ok(model) => (
+                format!(
+                    "python={}; framework={}; device=cpu",
+                    if model["kind"] == "stardist" {
+                        ".venvsd"
+                    } else {
+                        ".venv"
+                    },
+                    model["kind"].as_str().unwrap_or("unknown")
+                ),
+                format!(
+                    "{}:{}",
+                    model["kind"].as_str().unwrap_or("custom"),
+                    model["sha256"].as_str().unwrap_or("unknown")
+                ),
+                None,
+                None,
+            ),
+            Err(reason) => (
+                "custom checkpoint unavailable".into(),
+                model_id.into(),
+                None,
+                Some(reason),
             ),
         }
     } else {
@@ -256,10 +275,14 @@ fn detector_provenance(
                 Some("StarDist stores this built-in checkpoint as a model directory; a canonical archive checksum is not available.".to_string()),
             ),
             _ => (
-                "python=.venv; cellpose>=3,<4; torch=cpu; device=cpu".to_string(),
-                "cellpose:cyto3".to_string(),
+                if crate::detection::sidecar::is_cellpose_sam(model_id) { "python=.venv4; cellpose>=4; device=cpu" }
+                else if crate::detection::sidecar::is_stardist(model_id) { "python=.venvsd; stardist; device=cpu" }
+                else if crate::detection::sidecar::is_omnipose(model_id) { "python=.venvomni; omnipose; device=cpu" }
+                else if crate::detection::sidecar::is_classical(model_id) { "python=.venv; scikit-image; device=cpu" }
+                else { "python=.venv; cellpose>=3,<4; torch=cpu; device=cpu" }.to_string(),
+                format!("{}:{}", if model_id.starts_with("cw-") { "classical" } else { "detector" }, crate::detection::sidecar::runtime_model_name(model_id).unwrap_or(model_id)),
                 None,
-                Some("Cellpose manages built-in cyto3 weights in its package cache; the exact file path is not persisted with this run.".to_string()),
+                Some(if crate::detection::sidecar::is_classical(model_id){"Classical segmentation has no learned checkpoint."}else{"Package-managed built-in checkpoint bytes were not persisted with this historical run."}.to_string()),
             ),
         }
     }
@@ -269,7 +292,11 @@ impl ExportContext {
     /// Load the context for `image_id`. Errors only when the image row is
     /// missing; a missing detection yields empty cells/stats (a still-valid
     /// export target — e.g. provenance for an un-analyzed image).
-    pub(crate) fn load(conn: &Connection, store: &FileStore, image_id: &str) -> Result<Self, String> {
+    pub(crate) fn load(
+        conn: &Connection,
+        store: &FileStore,
+        image_id: &str,
+    ) -> Result<Self, String> {
         // --- image row ---
         let image = conn
             .query_row(
@@ -290,20 +317,23 @@ impl ExportContext {
             .optional()
             .map_err(|e| format!("image lookup failed: {e}"))?
             .ok_or_else(|| format!("no image with id {image_id}"))?;
-        let (file_name, file_hash, confidence_override, batch_id, stored_ext, analysis_path) = image;
+        let (file_name, file_hash, confidence_override, batch_id, stored_ext, analysis_path) =
+            image;
 
         // --- stored path (Images/<id>.<ext>, ext from file_name) ---
-        let ext = stored_ext.unwrap_or_else(|| Path::new(&file_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("tif")
-            .to_ascii_lowercase());
+        let ext = stored_ext.unwrap_or_else(|| {
+            Path::new(&file_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("tif")
+                .to_ascii_lowercase()
+        });
         let stored_path = store.image_path(image_id, &ext);
 
         // --- 1:1 detection ---
         let detection = conn
             .query_row(
-                "SELECT detector_id, ran_at, cells_json, image_stats_json
+                "SELECT detector_id, ran_at, CASE WHEN length(CAST(cells_json AS BLOB))<=33554432 THEN cells_json ELSE NULL END, image_stats_json
                    FROM detections WHERE image_id = ?1",
                 [image_id],
                 |r| {
@@ -320,7 +350,8 @@ impl ExportContext {
 
         let (detector_id, ran_at, cells, image_stats) = match detection {
             Some((det_id, ran, cells_json, stats_json)) => {
-                let cells = cells_from_json(&cells_json);
+                let cells = crate::db::models::cells_from_json_checked(&cells_json)
+                    .map_err(|e| format!("Stored detection geometry is invalid: {e}"))?;
                 let stats: std::collections::BTreeMap<String, f64> = stats_json
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
@@ -334,11 +365,42 @@ impl ExportContext {
         // the sensible defaults — provenance is a still-valid export target for an
         // un-batched image.
         let (px_per_um, px_per_um_source, thresholds, model_id) = match batch_id {
-            Some(bid) => load_batch_calibration(conn, &bid)?.unwrap_or_else(default_batch_calibration),
+            Some(bid) => {
+                load_batch_calibration(conn, &bid)?.unwrap_or_else(default_batch_calibration)
+            }
             None => default_batch_calibration(),
         };
 
+        let saved_run: Option<String> = conn
+            .query_row(
+                "SELECT document_json FROM workflow_documents WHERE key=?1",
+                [format!("run-{image_id}")],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let saved_run = saved_run
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .filter(|run| run["version"] == 1 && run["params"].is_object());
+        let runtime_identity = saved_run
+            .as_ref()
+            .map(|run| run["runtimeIdentity"].clone())
+            .unwrap_or(serde_json::Value::Null);
+        let run_parameters = saved_run
+            .as_ref()
+            .map(|run| run["params"].clone())
+            .unwrap_or(serde_json::Value::Null);
+        let parameters_source = if saved_run.is_some() {
+            "captured analysis run"
+        } else {
+            "unknown historical run; current batch calibration supplied"
+        }
+        .to_string();
+        // Current reviewed cells may have been recalibrated after inference.
+        // Keep their batch calibration/thresholds; immutable inference settings
+        // remain separately preserved in run_parameters.
         let run_model_id = run_model_from_detector(detector_id.as_deref(), &model_id);
+        let checkpoint_sha256 = None; // Inference identity is read from the immutable saved runtime.
         let (detector_runtime, checkpoint_identity, weights_checkpoint_path, weights_sha256_reason) =
             detector_provenance(conn, store, &run_model_id);
 
@@ -362,7 +424,21 @@ impl ExportContext {
             checkpoint_identity,
             weights_checkpoint_path,
             weights_sha256_reason,
+            run_parameters,
+            parameters_source,
+            checkpoint_sha256,
+            runtime_identity,
         })
+    }
+
+    /// Import display is a max projection with its automatic source channel.
+    pub(crate) fn display_matches_run(&self) -> bool {
+        !self.run_parameters.is_null()
+            && self.run_parameters["segmentChannel"].is_null()
+            && self.run_parameters["channels"]
+                .as_array()
+                .is_some_and(|v| v.len() == 2 && v.iter().all(|n| n.as_i64() == Some(0)))
+            && self.run_parameters["zProjection"].as_str().unwrap_or("max") == "max"
     }
 
     /// The confidence floor for this image: per-image override wins over the
@@ -377,14 +453,22 @@ impl ExportContext {
     /// on-screen overlay, so every writer filters by the effective confidence
     /// (mirrors `ExportService.writeCSV`'s `confidence >= cutoff`).
     pub(crate) fn visible_cells(&self, cutoff: f64) -> Vec<&CellDto> {
-        self.cells.iter().filter(|c| c.confidence >= cutoff).collect()
+        self.cells
+            .iter()
+            .filter(|c| c.confidence >= cutoff)
+            .collect()
     }
 }
 
 /// The default batch calibration used when an image has no owning batch (or the
 /// batch row is missing): 2.6 px/µm, `[20,30]` thresholds, cyto3.
 pub(crate) fn default_batch_calibration() -> (f64, String, Vec<f64>, String) {
-    (2.6, "default".to_string(), vec![20.0, 30.0], "cp-cyto3".to_string())
+    (
+        2.6,
+        "default".to_string(),
+        vec![20.0, 30.0],
+        "cp-cyto3".to_string(),
+    )
 }
 
 /// Read a batch's calibration (px/µm + source + thresholds + model id).
@@ -453,27 +537,40 @@ pub(crate) struct Provenance {
     pub px_per_um_source: String,
     pub thresholds: Vec<f64>,
     pub confidence_floor: f64,
-    pub background_subtract: bool,
-    pub watershed_split: bool,
+    pub background_subtract: Option<bool>,
+    pub watershed_split: Option<bool>,
     pub exported_at: String,
     pub image_id: Option<String>,
     pub file_name: Option<String>,
     pub file_hash: Option<String>,
     pub detection_ran_at: Option<String>,
+    pub run_parameters: serde_json::Value,
+    pub parameters_source: String,
+    pub runtime_identity: serde_json::Value,
 }
 
 impl Provenance {
-    /// Capture from an [`ExportContext`]. `background_subtract` / `watershed_split`
-    /// aren't persisted per-detection in the fresh SQLite store, so we default
-    /// them to the Swift `AppState` defaults (false/false); the panel can pass a
-    /// captured value if it ever threads params through.
+    /// Capture immutable inference identity separately from current reviewed
+    /// measurement calibration. Historical unknown settings remain unknown.
     pub(crate) fn capture(ctx: &ExportContext, confidence_floor: f64) -> Self {
-        let (weights_sha256, weights_sha256_reason) = match ctx.weights_checkpoint_path.as_deref() {
-            Some(path) => match sha256_file(path) {
-                Ok(hash) => (Some(hash), None),
-                Err(reason) => (None, Some(reason)),
-            },
-            None => (None, ctx.weights_sha256_reason.clone()),
+        let valid_hash = |value: &serde_json::Value| {
+            value
+                .as_str()
+                .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(str::to_owned)
+        };
+        let selected = valid_hash(&ctx.runtime_identity["selectedCheckpointSha256"]);
+        let captured = ctx.runtime_identity["checkpoints"].as_array();
+        let (weights_sha256, weights_sha256_reason) = if let Some(hash) = selected {
+            (Some(hash),Some("Immutable checkpoint identity recorded at inference; imported multi-file models use their recorded aggregate identity".into()))
+        } else if let Some(checkpoints) = captured {
+            match checkpoints.as_slice(){
+                [checkpoint] => (valid_hash(&checkpoint["sha256"]),Some("Immutable checkpoint SHA-256 recorded at inference".into())),
+                [] => (None,Some("Captured runtime has no learned checkpoint".into())),
+                _ => (None,Some("This run used multiple checkpoint files; their immutable hashes are preserved in runtime_identity.checkpoints".into())),
+            }
+        } else {
+            (None,Some("Historical inference checkpoint identity was not captured; current installed files are not evidence of the checkpoint used for this run".into()))
         };
         Provenance {
             app_version: APP_VERSION.to_string(),
@@ -487,13 +584,16 @@ impl Provenance {
             px_per_um_source: ctx.px_per_um_source.clone(),
             thresholds: ctx.thresholds.clone(),
             confidence_floor,
-            background_subtract: false,
-            watershed_split: false,
+            background_subtract: ctx.run_parameters["backgroundSubtract"].as_bool(),
+            watershed_split: ctx.run_parameters["watershedSplit"].as_bool(),
             exported_at: crate::db::repo::now_iso8601(),
             image_id: Some(ctx.image_id.clone()),
             file_name: Some(ctx.file_name.clone()),
             file_hash: ctx.file_hash.clone(),
             detection_ran_at: ctx.ran_at.clone(),
+            run_parameters: ctx.run_parameters.clone(),
+            parameters_source: ctx.parameters_source.clone(),
+            runtime_identity: ctx.runtime_identity.clone(),
         }
     }
 
@@ -506,7 +606,10 @@ impl Provenance {
         lines.push(format!("# os_version: {}", self.os_version));
         lines.push(format!("# model_id: {}", self.model_id));
         lines.push(format!("# detector_runtime: {}", self.detector_runtime));
-        lines.push(format!("# checkpoint_identity: {}", self.checkpoint_identity));
+        lines.push(format!(
+            "# checkpoint_identity: {}",
+            self.checkpoint_identity
+        ));
         lines.push(format!(
             "# weights_sha256: {}",
             self.weights_sha256.as_deref().unwrap_or("null")
@@ -517,15 +620,24 @@ impl Provenance {
         lines.push(format!("# pxPerUm: {}", fmt_g(self.px_per_um)));
         lines.push(format!("# pxPerUm_source: {}", self.px_per_um_source));
         lines.push(format!("# confidence_floor: {:.4}", self.confidence_floor));
-        lines.push(format!("# thresholds: {}", fmt_thresholds_bracket(&self.thresholds)));
+        lines.push(format!(
+            "# thresholds: {}",
+            fmt_thresholds_bracket(&self.thresholds)
+        ));
         lines.push(format!(
             "# background_subtract: {}",
-            if self.background_subtract { "true" } else { "false" }
+            self.background_subtract
+                .map(|v| if v { "true" } else { "false" })
+                .unwrap_or("unknown")
         ));
         lines.push(format!(
             "# watershed_split: {}",
-            if self.watershed_split { "true" } else { "false" }
+            self.watershed_split
+                .map(|v| if v { "true" } else { "false" })
+                .unwrap_or("unknown")
         ));
+        lines.push(format!("# parameters_source: {}", self.parameters_source));
+        lines.push(format!("# run_parameters_json: {}", self.run_parameters));
         lines.push(format!("# exported_at: {}", self.exported_at));
         if let Some(id) = &self.image_id {
             lines.push(format!("# image_id: {id}"));
@@ -550,7 +662,10 @@ impl Provenance {
         map.insert("os_version".into(), json!(self.os_version));
         map.insert("model_id".into(), json!(self.model_id));
         map.insert("detector_runtime".into(), json!(self.detector_runtime));
-        map.insert("checkpoint_identity".into(), json!(self.checkpoint_identity));
+        map.insert(
+            "checkpoint_identity".into(),
+            json!(self.checkpoint_identity),
+        );
         map.insert("weights_sha256".into(), json!(self.weights_sha256));
         map.insert(
             "weights_sha256_reason".into(),
@@ -560,8 +675,14 @@ impl Provenance {
         map.insert("px_per_um_source".into(), json!(self.px_per_um_source));
         map.insert("thresholds".into(), json!(self.thresholds));
         map.insert("confidence_floor".into(), json!(self.confidence_floor));
-        map.insert("background_subtract".into(), json!(self.background_subtract));
+        map.insert(
+            "background_subtract".into(),
+            json!(self.background_subtract),
+        );
         map.insert("watershed_split".into(), json!(self.watershed_split));
+        map.insert("runtime_identity".into(), self.runtime_identity.clone());
+        map.insert("run_parameters".into(), self.run_parameters.clone());
+        map.insert("parameters_source".into(), json!(self.parameters_source));
         map.insert("exported_at".into(), json!(self.exported_at));
         if let Some(id) = &self.image_id {
             map.insert("image_id".into(), json!(id));
@@ -661,7 +782,8 @@ mod tests {
 
     #[test]
     fn latest_detection_identity_overrides_existing_batch_model_for_provenance() {
-        let root = std::env::temp_dir().join(format!("cellcounter-provenance-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("cellcounter-provenance-{}", uuid::Uuid::new_v4()));
         let store = FileStore::new(&root).unwrap();
         let checkpoint = store.models_dir().join("derived.ccmodel");
         std::fs::write(&checkpoint, b"real derived checkpoint bytes").unwrap();
@@ -674,13 +796,15 @@ mod tests {
              (id,name,created_at,display_name,model_id,px_per_um,thresholds_json,px_per_um_source)
              VALUES ('batch','batch','now','batch','cp-cyto3',2.6,'[20,30]','manual')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO images
              (id,file_name,original_path,width_px,height_px,imported_at,stored_ext,batch_id)
              VALUES ('image','image.tif','source.tif',10,10,'now','tif','batch')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO model_versions
              (id,model_id,version,created_at,trained_on_images,trained_on_corrections,checkpoint_path,metrics_json)
@@ -692,7 +816,8 @@ mod tests {
              (id,image_id,detector_id,ran_at,cells_json,min_confidence)
              VALUES ('detection','image','cellpose/cp-cyto3@derived','now','[]',0.5)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let context = ExportContext::load(&conn, &store, "image").unwrap();
         assert_eq!(context.model_id, "cp-cyto3");
@@ -711,7 +836,8 @@ mod tests {
     #[test]
     fn built_in_checkpoint_checksum_is_explicitly_nullable() {
         let conn = Connection::open_in_memory().unwrap();
-        let root = std::env::temp_dir().join(format!("cellcounter-provenance-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("cellcounter-provenance-{}", uuid::Uuid::new_v4()));
         let store = FileStore::new(&root).unwrap();
         let (_, identity, checkpoint, reason) = detector_provenance(&conn, &store, "cpsam_v2");
         assert_eq!(identity, "cellpose:cpsam");

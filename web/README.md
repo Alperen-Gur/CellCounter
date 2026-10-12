@@ -4,11 +4,11 @@
 
 Private microscopy analysis in an installable, fully client-side PWA.
 
-[![Web preview](https://img.shields.io/badge/Web-v0.2.1%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1)
+[![Web preview](https://img.shields.io/badge/Web-v0.3.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.0) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
 
 </div>
 
@@ -95,3 +95,15 @@ npm run verify:parity-analysis
 ## License
 
 MIT — see the repository-level [LICENSE](../LICENSE).
+
+## Windows 1.2.0 and Web 0.3.0 preview
+
+Local microscopy workspaces add OME-Zarr v2, multidimensional layers, registration,
+stitching, painting, lineage, replay and GIF export. Review, source selection,
+dataset snapshots and sample exports are expanded. Windows adds local model
+families and imported checkpoints. The web version stays browser-only; learned
+artifacts, proprietary readers and training remain unavailable.
+
+See the [workspace guide](../docs/PORTABLE-WORKSPACE.md),
+[Windows notes](../docs/releases/windows-v1.2.0.md) and
+[web notes](../docs/releases/web-v0.3.0.md).

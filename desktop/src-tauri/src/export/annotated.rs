@@ -35,7 +35,43 @@ fn put(buf: &mut RgbImage, x: i64, y: i64, color: (u8, u8, u8)) {
     }
 }
 
+/// Liang–Barsky clipping bounds raster work before integer conversion.
+fn clipped_line(width: u32, height: u32, from: [f64; 2], to: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
+    if width == 0 || height == 0 || from.iter().chain(to.iter()).any(|v| !v.is_finite()) { return None; }
+    let dx = to[0] - from[0]; let dy = to[1] - from[1];
+    if !dx.is_finite() || !dy.is_finite() { return None; }
+    let mut lo: f64 = 0.0; let mut hi: f64 = 1.0;
+    for (p, q) in [(-dx, from[0]), (dx, width as f64 - 1.0 - from[0]), (-dy, from[1]), (dy, height as f64 - 1.0 - from[1])] {
+        if p == 0.0 { if q < 0.0 { return None; } }
+        else { let r = q / p; if p < 0.0 { lo = lo.max(r); } else { hi = hi.min(r); } if lo > hi { return None; } }
+    }
+    let point = |t: f64| [(from[0] + t * dx).clamp(0.0, width as f64 - 1.0), (from[1] + t * dy).clamp(0.0, height as f64 - 1.0)];
+    Some((point(lo), point(hi)))
+}
+
+pub(crate) fn geometry_budget(cells: &[CellDto], width: u32, height: u32, circles: bool) -> Result<(), String> {
+    if cells.len() > 100_000 { return Err("Overlay exceeds 100,000 objects".into()); }
+    let mut work: f64 = 0.0; let mut vertices = 0usize;
+    for cell in cells {
+        if [cell.cx, cell.cy, cell.diameter_px, cell.diameter_um, cell.confidence].iter().any(|v| !v.is_finite()) || cell.diameter_px <= 0.0 { return Err("Overlay geometry must be finite with positive diameters".into()); }
+        let r = (cell.diameter_px / 2.0).max(1.0);
+        let x0 = (cell.cx - r).floor().max(0.0); let x1 = (cell.cx + r).ceil().min(width as f64 - 1.0);
+        let y0 = (cell.cy - r).floor().max(0.0); let y1 = (cell.cy + r).ceil().min(height as f64 - 1.0);
+        if circles || cell.contour_px.as_ref().map_or(true, |points| points.len() < 3) { work += (x1 - x0 + 1.0).max(0.0) * (y1 - y0 + 1.0).max(0.0); }
+        if let Some(points) = &cell.contour_px {
+            vertices = vertices.saturating_add(points.len());
+            if vertices > 1_000_000 || points.iter().flatten().any(|v| !v.is_finite()) { return Err("Overlay contour budget exceeded or coordinates invalid".into()); }
+            if !circles { for i in 0..points.len() { if let Some((a,b)) = clipped_line(width,height,points[i],points[(i+1)%points.len()]) { work += (b[0]-a[0]).abs().max((b[1]-a[1]).abs()) + 1.0; } } }
+        }
+        // Box mode and line thickness are covered conservatively as well.
+        work += 4.0 * (width as f64 + height as f64).min(4.0 * r + 4.0);
+        if work > 100_000_000.0 { return Err("Overlay exceeds its bounded rendering budget. Export fewer objects".into()); }
+    }
+    Ok(())
+}
+
 fn draw_line(buf: &mut RgbImage, from: [f64; 2], to: [f64; 2], color: (u8, u8, u8)) {
+    let Some((from, to)) = clipped_line(buf.width(), buf.height(), from, to) else { return; };
     let (mut x0, mut y0) = (from[0].round() as i64, from[1].round() as i64);
     let (x1, y1) = (to[0].round() as i64, to[1].round() as i64);
     let dx = (x1 - x0).abs();
@@ -116,6 +152,7 @@ fn render(
     if overlay_mode != "outline" && overlay_mode != "bbox" {
         return Err(format!("unsupported overlay mode: {overlay_mode}"));
     }
+    geometry_budget(cells, image.width(), image.height(), false)?;
     let mut rgb = image.to_rgb8();
     for cell in cells.iter().filter(|cell| cell.confidence >= cutoff) {
         let color = BIN_RGB[bin_index(cell.diameter_um, thresholds).min(BIN_RGB.len() - 1)];
@@ -134,14 +171,18 @@ fn render(
     Ok(output.into_inner())
 }
 
-fn render_file(
+pub(crate) fn render_file(
     path: &Path,
     cells: &[CellDto],
     thresholds: &[f64],
     cutoff: f64,
     overlay_mode: &str,
 ) -> Result<Vec<u8>, String> {
-    let image = image::open(path).map_err(|error| format!("could not open source image: {error}"))?;
+    let mut reader = image::ImageReader::open(path).map_err(|error| format!("could not open source image: {error}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().map_err(|error| format!("could not decode bounded export image: {error}"))?;
     render(image, cells, thresholds, cutoff, overlay_mode)
 }
 
@@ -187,6 +228,7 @@ fn unique_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn export_annotated_png(
     app: AppHandle,
+    manager: State<'_, crate::analysis::runner::AssayManager>,
     db: State<'_, Db>,
     image_id: String,
     cells: Vec<CellDto>,
@@ -195,8 +237,15 @@ pub async fn export_annotated_png(
     out_path: String,
 ) -> Result<String, String> {
     let store = FileStore::from_app(&app)?;
-    let conn = open_reader(&store)?;
-    let context = ExportContext::load(&conn, &store, &image_id)?;
+    let (mut context, display_request) = {
+        let conn = open_reader(&store)?;
+        conn.execute_batch("BEGIN DEFERRED TRANSACTION").map_err(|e|e.to_string())?;
+        let context = ExportContext::load(&conn, &store, &image_id)?;
+        let request = super::display::capture(&conn, &store, &context)?;
+        (context, request)
+    };
+    let temporary = super::display::prepare(app, manager, display_request).await?;
+    if let Some(display) = &temporary { context.stored_path = display.0.clone(); }
     let cutoff = context.effective_confidence(confidence.unwrap_or(0.0));
     let png = render_file(
         &context.stored_path,
@@ -215,6 +264,7 @@ pub async fn export_annotated_png(
 #[tauri::command]
 pub async fn export_batch_annotated_pngs(
     app: AppHandle,
+    manager: State<'_, crate::analysis::runner::AssayManager>,
     db: State<'_, Db>,
     batch_id: String,
     confidence: Option<f64>,
@@ -249,11 +299,12 @@ pub async fn export_batch_annotated_pngs(
         .map_err(|error| format!("image list failed: {error}"))?
         .filter_map(Result::ok)
         .collect();
+    drop(statement);
     let mut used_names = HashSet::new();
     let mut written = 0usize;
     let mut errors = Vec::new();
     for image_id in image_ids {
-        let context = match ExportContext::load(&conn, &store, &image_id) {
+        let mut context = match ExportContext::load(&conn, &store, &image_id) {
             Ok(context) if !context.cells.is_empty() => context,
             Ok(_) => continue,
             Err(error) => {
@@ -273,6 +324,15 @@ pub async fn export_batch_annotated_pngs(
             suffix += 1;
         }
         let cutoff = context.effective_confidence(confidence.unwrap_or(0.0));
+        let display_request = match super::display::capture(&conn, &store, &context) {
+            Ok(request) => request,
+            Err(error) => { errors.push(format!("{image_id}: {error}")); continue; }
+        };
+        let temporary = match super::display::prepare(app.clone(), manager.clone(), display_request).await {
+            Ok(display) => display,
+            Err(error) => { errors.push(format!("{image_id}: {error}")); continue; }
+        };
+        if let Some(display) = &temporary { context.stored_path = display.0.clone(); }
         match render_file(
             &context.stored_path,
             &context.cells,

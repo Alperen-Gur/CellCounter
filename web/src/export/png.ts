@@ -26,7 +26,7 @@ function concat(parts: readonly Uint8Array[]): Uint8Array {
 }
 
 export function encodeRgbaPng(image: RgbaImage): Uint8Array {
-  if (image.width <= 0 || image.height <= 0 || image.data.length !== image.width * image.height * 4) throw new RangeError("RGBA dimensions do not match its data.");
+  if (!Number.isSafeInteger(image.width) || !Number.isSafeInteger(image.height) || image.width <= 0 || image.height <= 0 || image.width * image.height > 4_000_000 || image.data.length !== image.width * image.height * 4) throw new RangeError("RGBA dimensions do not match its bounded data (four million pixels).");
   const ihdr = new Uint8Array(13); const header = new DataView(ihdr.buffer);
   header.setUint32(0, image.width, false); header.setUint32(4, image.height, false); ihdr.set([8, 6, 0, 0, 0], 8);
   const scanlines = new Uint8Array((image.width * 4 + 1) * image.height);
@@ -42,10 +42,21 @@ function blendPixel(data: Uint8ClampedArray, width: number, height: number, x: n
   data[offset + 3] = 255;
 }
 
-function line(data: Uint8ClampedArray, width: number, height: number, a: { x: number; y: number }, b: { x: number; y: number }, color: readonly [number, number, number, number], lineWidth: number): void {
-  const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) * 2)); const radius = Math.max(0, Math.floor(lineWidth / 2));
+function line(data: Uint8ClampedArray, width: number, height: number, a: { x: number; y: number }, b: { x: number; y: number }, color: readonly [number, number, number, number], lineWidth: number, work: { used: number }): void {
+  if (![a.x, a.y, b.x, b.y].every(Number.isFinite)) throw new Error("Overlay contours need finite coordinates.");
+  const radius = Math.max(0, Math.floor(lineWidth / 2)), dx = b.x - a.x, dy = b.y - a.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new Error("Overlay segment exceeds the coordinate range.");
+  let low = 0, high = 1;
+  for (const [p, q] of [[-dx, a.x + radius], [dx, width - 1 + radius - a.x], [-dy, a.y + radius], [dy, height - 1 + radius - a.y]]) {
+    if (p === 0) { if (q < 0) return; }
+    else { const r = q / p; if (p < 0) low = Math.max(low, r); else high = Math.min(high, r); if (low > high) return; }
+  }
+  const start = { x: a.x + dx * low, y: a.y + dy * low }, end = { x: a.x + dx * high, y: a.y + dy * high };
+  const steps = Math.max(1, Math.ceil(Math.hypot(end.x - start.x, end.y - start.y) * 2));
+  work.used += (steps + 1) * (radius * 2 + 1) ** 2;
+  if (work.used > 50_000_000) throw new Error("Overlay drawing exceeds 50 million pixel operations. Export fewer objects or ROI geometry.");
   for (let step = 0; step <= steps; step += 1) {
-    const t = step / steps; const x = a.x + (b.x - a.x) * t; const y = a.y + (b.y - a.y) * t;
+    const t = step / steps; const x = start.x + (end.x - start.x) * t; const y = start.y + (end.y - start.y) * t;
     for (let dy = -radius; dy <= radius; dy += 1) for (let dx = -radius; dx <= radius; dx += 1) blendPixel(data, width, height, x + dx, y + dy, color);
   }
 }
@@ -59,10 +70,14 @@ export function exportAnnotatedPng(
   if (source.data.length !== source.width * source.height * 4) throw new RangeError("RGBA dimensions do not match its data.");
   const data = new Uint8ClampedArray(source.data);
   const color = options.color ?? [32, 211, 147, 230];
+  const lineWidth = options.lineWidthPx ?? 2;
+  if (!Number.isFinite(lineWidth) || lineWidth < 1 || lineWidth > 16 || cells.length > 100000) throw new Error("Overlay exceeds its line-width or object budget.");
+  const work = { used: 0 }; let vertices = 0;
   for (const cell of [...cells].sort((a, b) => a.id.localeCompare(b.id))) {
     if ((cell.confidence ?? 1) < (options.minimumConfidence ?? 0)) continue;
     const points = contourPoints(cell);
-    for (let index = 0; index < points.length; index += 1) line(data, source.width, source.height, points[index], points[(index + 1) % points.length], color, options.lineWidthPx ?? 2);
+    vertices += points.length; if (vertices > 500000) throw new Error("Overlay exceeds 500,000 contour vertices.");
+    for (let index = 0; index < points.length; index += 1) line(data, source.width, source.height, points[index], points[(index + 1) % points.length], color, lineWidth, work);
   }
   return encodeRgbaPng({ data, width: source.width, height: source.height });
 }

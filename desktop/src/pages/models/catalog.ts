@@ -1,21 +1,6 @@
-/**
- * pages/models/catalog.ts — the model catalog for the Models tab.
- *
- * Owned by feature task `feat-models`. Two entries are active and runnable —
- * Cellpose `cp-cyto3` (the default) and Cellpose-SAM `cpsam` — each installed,
- * probed, and activated independently; every other entry is shown "coming
- * soon" and is non-activatable. The catalog is intentionally data-only so the
- * page body stays declarative and the "coming soon" set can grow without
- * touching render logic.
- *
- * `id` is the app-facing model id used everywhere else (store.activeModelId,
- * DetectionParams.modelId) and is exactly what reaches the backend. The
- * sidecar strips a leading `cp-` prefix (`cp-cyto3` → `cyto3`); `cpsam` has no
- * such prefix and passes through unchanged — that mapping lives in the
- * Rust/transport layer, NOT here. The Rust side routes `cpsam` installs to
- * their own `cellpose>=4` venv, independent of the base venv the other
- * Cellpose models share.
- */
+/** Installable detector entries. Exact runtime/checkpoint readiness is probed
+ * separately; a catalog entry does not imply its weights are already installed.
+ * App IDs are mapped explicitly by the native sidecar without substitutions. */
 
 export interface ModelCatalogEntry {
   /** App-facing model id (matches store.activeModelId / DetectionParams.modelId). */
@@ -30,11 +15,7 @@ export interface ModelCatalogEntry {
    * free of a render-layer import; the page renders it via `<Icon name={…} />`.
    */
   glyph: string;
-  /**
-   * Whether this model can be installed/activated. `cp-cyto3` and `cpsam` are
-   * `true`; the rest are `false` ("coming soon") and cannot be activated or
-   * installed from the UI.
-   */
+  /** Whether this detector has a supported install/activation route. */
   available: boolean;
   /** Runtime backing the model (informational). */
   backend: string;
@@ -78,6 +59,21 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     backend: "StarDist · isolated Python sidecar",
     sizeLabel: "pretrained fluorescence weights",
   },
+  { id: 'cp4-cpsam_v2', name: 'Cellpose-SAM v2', description: 'Exact cpsam_v2 checkpoint; requires a runtime that provides this checkpoint.', glyph: "scope", available: true, backend: 'Cellpose 4', sizeLabel: "local runtime" },
+  { id: 'cp4-cpdino', name: 'Cellpose-DINO ViT-L', description: 'Exact cpdino checkpoint; no substitution if absent from the runtime.', glyph: "scope", available: true, backend: 'Cellpose 4', sizeLabel: "local runtime" },
+  { id: 'cp4-cpdino-vitb', name: 'Cellpose-DINO ViT-B', description: 'Exact cpdino-vitb checkpoint.', glyph: "scope", available: true, backend: 'Cellpose 4', sizeLabel: "local runtime" },
+  { id: 'cp-cyto3-r', name: 'Cellpose cyto3 + restore', description: 'Restoration followed by cyto3 segmentation.', glyph: "scope", available: true, backend: 'Cellpose 3 restoration', sizeLabel: "local runtime" },
+  { id: 'cp-cyto2', name: 'Cellpose cyto2', description: 'Cellpose 3 cytoplasm checkpoint.', glyph: "scope", available: true, backend: 'Cellpose 3', sizeLabel: "local runtime" },
+  { id: 'cp-nuclei', name: 'Cellpose nuclei', description: 'Cellpose 3 nuclear checkpoint.', glyph: "scope", available: true, backend: 'Cellpose 3', sizeLabel: "local runtime" },
+  { id: 'sd-he', name: 'StarDist H&E', description: 'RGB H&E nuclear segmentation.', glyph: "scope", available: true, backend: 'StarDist', sizeLabel: "local runtime" },
+  { id: 'sd-dsb2018', name: 'StarDist DSB2018', description: 'Exact 2D_paper_dsb2018 checkpoint.', glyph: "scope", available: true, backend: 'StarDist', sizeLabel: "local runtime" },
+  { id: 'omni-bact-phase', name: 'Omnipose bacteria phase', description: 'bact_phase_omni checkpoint in an isolated runtime.', glyph: "scope", available: true, backend: 'Omnipose', sizeLabel: "local runtime" },
+  { id: 'omni-bact-fluor', name: 'Omnipose bacteria fluorescence', description: 'bact_fluor_omni checkpoint in an isolated runtime.', glyph: "scope", available: true, backend: 'Omnipose', sizeLabel: "local runtime" },
+  { id: 'omni-cyto2', name: 'Omnipose cyto2', description: 'cyto2_omni checkpoint in an isolated runtime.', glyph: "scope", available: true, backend: 'Omnipose', sizeLabel: "local runtime" },
+  { id: 'cw-otsu', name: 'Classical Otsu', description: 'Deterministic threshold and watershed; confidence expresses contrast.', glyph: "scope", available: true, backend: 'scikit-image CPU', sizeLabel: "local runtime" },
+  { id: 'cw-triangle', name: 'Classical triangle', description: 'Triangle threshold and watershed.', glyph: "scope", available: true, backend: 'scikit-image CPU', sizeLabel: "local runtime" },
+  { id: 'cw-adaptive', name: 'Classical adaptive', description: 'Local threshold and watershed.', glyph: "scope", available: true, backend: 'scikit-image CPU', sizeLabel: "local runtime" },
+  { id: 'cw-manual', name: 'Classical manual', description: 'Explicit intensity threshold and watershed.', glyph: "scope", available: true, backend: 'scikit-image CPU', sizeLabel: "local runtime" },
 ] as const;
 
 /** The default model a fresh install activates (see store `activeModelId`). */

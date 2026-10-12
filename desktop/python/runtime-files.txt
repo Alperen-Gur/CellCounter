@@ -25,3 +25,8 @@ _seg_npy_io.py
 _tracking.py
 _training_pairs.py
 _watershed.py
+classical_detect.py
+custom_detect.py
+omnipose_detect.py
+parity_workflows.py
+model_snapshot.py

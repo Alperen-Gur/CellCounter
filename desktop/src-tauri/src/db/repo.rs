@@ -66,8 +66,8 @@ impl Db {
         // Migrate an existing store BEFORE seeding/serving: adds the denormalised
         // detection counters to a `detections` table created by an older build
         // (or the Swift app). No-op on a fresh DB; returns true only on upgrade.
-        let migrated = schema::migrate_schema(&conn)
-            .map_err(|e| format!("migrate schema failed: {e}"))?;
+        let migrated =
+            schema::migrate_schema(&conn).map_err(|e| format!("migrate schema failed: {e}"))?;
         // Backfill the denormalised counters for pre-existing detection rows (the
         // ADD COLUMN … DEFAULT 0 leaves them zeroed) — but ONLY on upgrade, so a
         // normal open never pays the O(detections) `cells_json` re-decode. Rows
@@ -76,8 +76,7 @@ impl Db {
             backfill_detection_counts(&conn)
                 .map_err(|e| format!("backfill detection counts failed: {e}"))?;
         }
-        super::review::migrate(&conn)
-            .map_err(|e| format!("prepare review queue failed: {e}"))?;
+        super::review::migrate(&conn).map_err(|e| format!("prepare review queue failed: {e}"))?;
         schema::seed_defaults(&conn).map_err(|e| format!("seed defaults failed: {e}"))?;
         Ok(Db {
             conn: Mutex::new(conn),
@@ -86,7 +85,9 @@ impl Db {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        self.conn.lock().map_err(|_| "db mutex poisoned".to_string())
+        self.conn
+            .lock()
+            .map_err(|_| "db mutex poisoned".to_string())
     }
 
     /// The [`FileStore`] this DB was opened against — shared with the importer
@@ -278,16 +279,17 @@ pub(crate) fn row_to_image(row: &Row, store: &FileStore) -> rusqlite::Result<Ima
         confidence_override: row.get("confidence_override")?,
         notes: row.get("notes")?,
         stored_path,
-        analysis_path: row.get::<_, Option<String>>("analysis_path").unwrap_or(None),
+        analysis_path: row
+            .get::<_, Option<String>>("analysis_path")
+            .unwrap_or(None),
         thumb_path,
         cell_count,
     })
 }
 
 fn batch_image_ids(conn: &Connection, batch_id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM images WHERE batch_id = ?1 ORDER BY imported_at DESC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id FROM images WHERE batch_id = ?1 ORDER BY imported_at DESC")?;
     let ids = stmt
         .query_map(params![batch_id], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -522,11 +524,13 @@ fn remove_image_files(
     if file_name.is_empty() {
         return; // guard against removing wrong/root paths (mirrors Swift B1-3)
     }
-    let ext = stored_ext.map(str::to_string).unwrap_or_else(|| std::path::Path::new(file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("tif")
-        .to_ascii_lowercase());
+    let ext = stored_ext.map(str::to_string).unwrap_or_else(|| {
+        std::path::Path::new(file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("tif")
+            .to_ascii_lowercase()
+    });
     let _ = std::fs::remove_file(store.image_path(id, &ext));
     if let Some(path) = analysis_path {
         let path = std::path::Path::new(path);
@@ -588,10 +592,7 @@ pub fn all_images(db: State<'_, Db>) -> Result<Vec<ImageDto>, String> {
 /// proportional to the selected batch instead of deserializing/transferring the
 /// user's entire image library and filtering it in React.
 #[tauri::command]
-pub fn images_for_batch(
-    db: State<'_, Db>,
-    batch_id: String,
-) -> Result<Vec<ImageDto>, String> {
+pub fn images_for_batch(db: State<'_, Db>, batch_id: String) -> Result<Vec<ImageDto>, String> {
     let conn = db.lock()?;
     let mut stmt = conn
         .prepare(
@@ -687,9 +688,7 @@ pub fn image_matching_hash(
 pub fn duplicate_groups(db: State<'_, Db>) -> Result<Vec<Vec<ImageDto>>, String> {
     let conn = db.lock()?;
     let mut stmt = conn
-        .prepare(
-            "SELECT * FROM images WHERE file_hash IS NOT NULL ORDER BY imported_at DESC",
-        )
+        .prepare("SELECT * FROM images WHERE file_hash IS NOT NULL ORDER BY imported_at DESC")
         .map_err(|e| e.to_string())?;
     let all = stmt
         .query_map([], |r| row_to_image(r, &db.store))
@@ -704,8 +703,7 @@ pub fn duplicate_groups(db: State<'_, Db>) -> Result<Vec<Vec<ImageDto>>, String>
             by_hash.entry(h).or_default().push(img);
         }
     }
-    let mut groups: Vec<Vec<ImageDto>> =
-        by_hash.into_values().filter(|g| g.len() >= 2).collect();
+    let mut groups: Vec<Vec<ImageDto>> = by_hash.into_values().filter(|g| g.len() >= 2).collect();
     groups.sort_by(|a, b| {
         a.first()
             .map(|i| i.file_name.as_str())
@@ -1034,17 +1032,15 @@ pub fn detection_summaries(
     detection_summaries_for_connection(&conn, &image_ids, &thresholds)
 }
 
-fn commit_cell_edit_on_connection(
-    conn: &mut Connection,
+fn commit_cell_edit_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
     image_id: &str,
     detector_id: &str,
     cells: &[CellDto],
     image_stats: &Option<std::collections::BTreeMap<String, f64>>,
     corrections: &[CorrectionInput],
 ) -> Result<String, String> {
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    let (detection_id, _) =
-        upsert_detection(&tx, image_id, detector_id, cells, image_stats)?;
+    let (detection_id, _) = upsert_detection(tx, image_id, detector_id, cells, image_stats)?;
 
     // Insertion order is the edit-event order (remove originals before adding
     // merged/split results). All rows and the final mask succeed or roll back
@@ -1076,15 +1072,182 @@ fn commit_cell_edit_on_connection(
     // Compute the exact final Review count from the cells already supplied by
     // the frontend and the now-complete correction set. No stored blob parse is
     // needed, even for a merge/split/bulk-delete with many audit rows.
-    let corrected = corrected_cell_ids(&tx, &detection_id).map_err(|error| error.to_string())?;
+    let corrected = corrected_cell_ids(tx, &detection_id).map_err(|error| error.to_string())?;
     let uncorrected = uncorrected_for(cells, &corrected);
     tx.execute(
         "UPDATE detections SET uncorrected_count = ?2 WHERE id = ?1",
         params![detection_id, uncorrected],
     )
     .map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())?;
     Ok(detection_id)
+}
+fn commit_cell_edit_on_connection(
+    conn: &mut Connection,
+    image_id: &str,
+    detector_id: &str,
+    cells: &[CellDto],
+    image_stats: &Option<std::collections::BTreeMap<String, f64>>,
+    corrections: &[CorrectionInput],
+) -> Result<String, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let id = commit_cell_edit_in_transaction(
+        &tx,
+        image_id,
+        detector_id,
+        cells,
+        image_stats,
+        corrections,
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceCheck {
+    image_id: String,
+    fingerprint: String,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceEdit {
+    image_id: String,
+    cells: Vec<CellDto>,
+    corrections: Vec<CorrectionInput>,
+    label: String,
+}
+
+/// All participating source/result identities are checked and all frame writes,
+/// previous-mask versions and correction records commit in one transaction.
+#[tauri::command]
+pub fn commit_sequence_edits(
+    db: State<'_, Db>,
+    source_image_id: String,
+    checks: Vec<SequenceCheck>,
+    updates: Vec<SequenceEdit>,
+) -> Result<(), String> {
+    if checks.is_empty() || checks.len() > 512 || updates.len() > 512 {
+        return Err("Sequence exceeds 512 frames".into());
+    }
+    let mut conn = db.lock()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let source_selection = crate::parity::sequence_selection(&tx, &source_image_id)?;
+    if source_selection.is_null() {
+        return Err("Sequence anchor has no captured source plane".into());
+    }
+    let (source_scale, source_width, source_height): (f64, i64, i64) = tx
+        .query_row(
+            "SELECT b.px_per_um,i.width_px,i.height_px FROM images i JOIN batches b ON b.id=i.batch_id WHERE i.id=?1",
+            [&source_image_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut checked = std::collections::HashSet::new();
+    for check in &checks {
+        if !checked.insert(check.image_id.clone())
+            || crate::parity::review_fingerprint(&tx, &check.image_id)? != check.fingerprint
+        {
+            return Err("A sequence source, calibration, run or mask changed; refresh before applying corrections".into());
+        }
+    }
+    if !checked.contains(&source_image_id) {
+        return Err("Sequence anchor must be captured in the transaction checks".into());
+    }
+    let mut total_cells = 0usize;
+    let mut total_bytes = 0usize;
+    let mut version_bytes = 0usize;
+    let mut changed = std::collections::HashSet::new();
+    for update in updates {
+        if !checked.contains(&update.image_id) || !changed.insert(update.image_id.clone()) {
+            return Err("Sequence target is not a unique captured frame".into());
+        }
+        total_cells = total_cells.saturating_add(update.cells.len());
+        let encoded = serde_json::to_vec(&update.cells).map_err(|e| e.to_string())?;
+        total_bytes = total_bytes.saturating_add(encoded.len());
+        if total_cells > 200_000 || total_bytes > 32 * 1024 * 1024 {
+            return Err("Sequence exceeds 200,000 masks or 32 MiB".into());
+        }
+        let (detector_id,old_cells,old_stats,px_per_um,width,height):(String,String,Option<String>,f64,i64,i64)=tx.query_row("SELECT d.detector_id,d.cells_json,d.image_stats_json,b.px_per_um,i.width_px,i.height_px FROM detections d JOIN images i ON i.id=d.image_id JOIN batches b ON b.id=i.batch_id WHERE i.id=?1",[&update.image_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(|e|e.to_string())?;
+        let mut ids = std::collections::HashSet::new();
+        if !px_per_um.is_finite()
+            || px_per_um <= 0.0
+            || width != source_width || height != source_height || width <= 0 || height <= 0
+            || update.cells.iter().any(|c| {
+                !ids.insert(c.id.clone())
+                    || ![c.cx, c.cy, c.diameter_px, c.diameter_um, c.confidence]
+                        .iter()
+                        .all(|v| v.is_finite())
+                    || c.diameter_px <= 0.0
+                    || c.cx < 0.0 || c.cy < 0.0 || c.cx >= width as f64 || c.cy >= height as f64
+                    || c.contour_px.as_ref().is_some_and(|p| {
+                        p.len() > 10000 || p.iter().any(|point| !point[0].is_finite() || !point[1].is_finite() || point[0]<0.0 || point[1]<0.0 || point[0]>width as f64 || point[1]>height as f64)
+                    })
+            })
+        {
+            return Err("Invalid sequence geometry or calibration".into());
+        }
+        if (px_per_um - source_scale).abs() > 1e-9 * source_scale
+            || crate::parity::sequence_selection(&tx, &update.image_id)? != source_selection
+        {
+            return Err(
+                "Sequence target calibration or source selection differs from its anchor".into(),
+            );
+        }
+        let key = format!("variant-{}", update.image_id);
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT document_json FROM workflow_documents WHERE key=?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let mut document = match raw {
+            Some(value) => {
+                serde_json::from_str::<serde_json::Value>(&value).map_err(|e| e.to_string())?
+            }
+            None => serde_json::json!({"version":1,"imageId":update.image_id,"versions":[]}),
+        };
+        if document["version"] != 1 || document["imageId"] != update.image_id {
+            return Err("Unsupported existing mask versions".into());
+        }
+        let run: Option<String> = tx
+            .query_row(
+                "SELECT document_json FROM workflow_documents WHERE key=?1",
+                [format!("run-{}", update.image_id)],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let versions = document["versions"]
+            .as_array_mut()
+            .ok_or("Invalid mask version document")?;
+        if versions.len() >= 8 {
+            return Err("Remove an existing saved mask version before sequence correction".into());
+        }
+        versions.push(serde_json::json!({"id":new_id(),"label":update.label,"savedAt":now_iso8601(),"detectorId":detector_id,"cells":crate::db::models::cells_from_json_checked(&old_cells).map_err(|e|e.to_string())?,"imageStats":old_stats.as_ref().and_then(|v|serde_json::from_str::<serde_json::Value>(v).ok()),"run":run.and_then(|v|serde_json::from_str::<serde_json::Value>(&v).ok()),"reviewPxPerUm":px_per_um}));
+        let json = serde_json::to_string(&document).map_err(|e| e.to_string())?;
+        version_bytes = version_bytes.saturating_add(json.len());
+        if version_bytes > 64 * 1024 * 1024 {
+            return Err(
+                "Sequence saved-version writes exceed 64 MiB; use fewer target frames".into(),
+            );
+        }
+        if json.len() > 16 * 1024 * 1024 {
+            return Err("Mask versions exceed 16 MiB".into());
+        }
+        tx.execute("INSERT INTO workflow_documents(key,document_json) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET document_json=excluded.document_json",params![key,json]).map_err(|e|e.to_string())?;
+        let stats = old_stats.and_then(|v| serde_json::from_str(&v).ok());
+        commit_cell_edit_in_transaction(
+            &tx,
+            &update.image_id,
+            &detector_id,
+            &update.cells,
+            &stats,
+            &update.corrections,
+        )?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// One logical editor commit: one IPC call, one serialized detection write, one
@@ -1224,15 +1387,7 @@ pub fn save_roi(db: State<'_, Db>, image_id: String, roi: RoiDto) -> Result<(), 
            (id, image_id, kind, shape, x, y, width, height, created_at, name)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            id,
-            image_id,
-            roi.kind,
-            roi.shape,
-            roi.x,
-            roi.y,
-            roi.width,
-            roi.height,
-            created_at,
+            id, image_id, roi.kind, roi.shape, roi.x, roi.y, roi.width, roi.height, created_at,
             roi.name
         ],
     )
@@ -1279,7 +1434,15 @@ pub fn add_annotation(db: State<'_, Db>, a: GroundTruthDto) -> Result<(), String
         "INSERT OR REPLACE INTO ground_truth_annotations
            (id, image_id, cx, cy, diameter, created_at, note)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, a.image_id, a.cx, a.cy, a.diameter_um, created_at, a.note],
+        params![
+            id,
+            a.image_id,
+            a.cx,
+            a.cy,
+            a.diameter_um,
+            created_at,
+            a.note
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1664,10 +1827,7 @@ mod tests {
             "cellpose/cyto3",
             &[cell("new", 8.0, 0.9)],
             &None,
-            &[
-                correction("add", "new"),
-                correction("force-failure", "new"),
-            ],
+            &[correction("add", "new"), correction("force-failure", "new")],
         );
         assert!(result.is_err());
         let detections: i64 = conn
@@ -1683,7 +1843,11 @@ mod tests {
     fn summary_query_chunks_large_id_lists_and_returns_five_bins() {
         let mut conn = test_connection();
         let tx = conn.transaction().expect("insert transaction");
-        let cells = vec![cell("a", 2.0, 0.9), cell("b", 11.0, 0.9), cell("c", 40.0, 0.9)];
+        let cells = vec![
+            cell("a", 2.0, 0.9),
+            cell("b", 11.0, 0.9),
+            cell("c", 40.0, 0.9),
+        ];
         let cells_json = cells_to_json(&cells).expect("cells json");
         let mut ids = Vec::new();
         for index in 0..=SQLITE_IN_CHUNK {
@@ -1711,9 +1875,8 @@ mod tests {
         }
         tx.commit().expect("insert commit");
 
-        let summaries =
-            detection_summaries_for_connection(&conn, &ids, &[5.0, 10.0, 15.0, 20.0])
-                .expect("summaries");
+        let summaries = detection_summaries_for_connection(&conn, &ids, &[5.0, 10.0, 15.0, 20.0])
+            .expect("summaries");
         assert_eq!(summaries.len(), SQLITE_IN_CHUNK + 1);
         assert!(summaries
             .iter()

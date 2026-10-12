@@ -52,6 +52,7 @@ function geometry(cell: CellMeasurement): CellGeometry {
     contourPx: cell.contourPx,
     confidence: cell.confidence,
     origin: cell.origin,
+    reviewed: cell.reviewed,
   };
 }
 

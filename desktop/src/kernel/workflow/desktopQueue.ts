@@ -23,11 +23,12 @@ export const analysisQueue = new AnalysisQueue({
     const cells = calibratedCells(result.cells, batch.pxPerUm, job.params.pxPerUm, batch.thresholds);
     await deleteWorkflowDocument(`run-${item.imageId}`);
     const runToken = crypto.randomUUID();
-    const family = job.params.modelId.startsWith("sd-") ? "stardist" : "cellpose";
+    const capturedFamily=result.runtimeIdentity?.modelFamily;
+    const family = typeof capturedFamily==="string"&&["stardist","classical","omnipose","cellpose"].includes(capturedFamily)?capturedFamily:job.params.modelId.startsWith("sd-") ? "stardist" : job.params.modelId.startsWith("cw-") ? "classical" : job.params.modelId.startsWith("omni-") ? "omnipose" : "cellpose";
     const saved = await port.saveDetection(item.imageId, `${family}/${job.params.modelId}`, cells, result.imageStats);
     await saveWorkflowDocument(`run-${item.imageId}`, {
       version: 1, detectionId: saved.id, runToken, params: job.params, task: job.task,
-      calibrationSource: job.calibrationSource, ranAt: saved.ranAt,
+      calibrationSource: job.calibrationSource, ranAt: saved.ranAt, runtimeIdentity: result.runtimeIdentity,
     });
     void useAppStore.getState().refreshLibraryStats().catch(() => {});
     window.dispatchEvent(new CustomEvent("cc:detection-updated", { detail: { imageId: item.imageId } }));

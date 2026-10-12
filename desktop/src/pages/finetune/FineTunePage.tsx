@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
+import { ReviewedDatasetPanel } from "./ReviewedDatasetPanel";
 import { Icon } from "../../components/Icon";
 import { useAppStore } from "../../kernel/store/store";
 import "./finetune.css";
@@ -126,6 +127,7 @@ export default function FineTunePage() {
         <span className="ft-local"><Icon name="check" size={14} /> Local only</span>
       </header>
 
+      <ReviewedDatasetPanel onCreated={setDatasetDir}/>
       <section className="ft-card" aria-labelledby="dataset-title">
         <div className="ft-card__number">1</div>
         <div className="ft-card__body">

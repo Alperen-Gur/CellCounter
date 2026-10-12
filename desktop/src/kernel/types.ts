@@ -26,6 +26,8 @@
 export interface DetectionParams {
   /** Windows 1.1.0 allowlist: cpsam_v2 | cp-cyto3 | sd-fluo (enforced by Rust). */
   modelId: string;
+  classicalThreshold?: number;
+  preprocessingPreset?: "none" | "clahe" | "denoise" | "normalize";
   segmentChannel?: number | null; // zero-based source channel; omitted/null retains automatic behavior
   zProjection?: "max" | "mean" | "sum" | "none"; // default max
   pxPerUm: number;
@@ -72,6 +74,7 @@ export interface CellDTO {
 }
 
 export interface DetectionResultDTO {
+  runtimeIdentity?: Record<string, unknown>;
   imageWidth: number;
   imageHeight: number;
   cells: CellDTO[];

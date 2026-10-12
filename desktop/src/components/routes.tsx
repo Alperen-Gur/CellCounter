@@ -26,6 +26,7 @@ export type RouteId =
   | "review"
   | "onboarding"
   | "settings"
+  | "workspace"
   | "finetune"
   | "support";
 
@@ -48,6 +49,7 @@ const ReviewPage = lazy(() => import("../pages/review/ReviewPage"));
 const OnboardingPage = lazy(() => import("../pages/onboarding/OnboardingPage"));
 const SettingsPage = lazy(() => import("../pages/settings/SettingsPage"));
 const SupportPage = lazy(() => import("../pages/system/SupportPage"));
+const WorkspacePage=lazy(()=>import("../pages/workspace/WorkspacePage"));
 const FineTunePage = lazy(() => import("../pages/finetune/FineTunePage"));
 
 export const ROUTES: RouteDef[] = [
@@ -56,6 +58,7 @@ export const ROUTES: RouteDef[] = [
   { id: "library", path: "/library", label: "Images", icon: "image", component: LibraryPage },
   { id: "batch", path: "/batch", label: "Batches", icon: "batches", component: BatchPage },
   { id: "compare", path: "/compare", label: "Compare", icon: "compare", component: ComparePage },
+  { id: "workspace",path:"/workspace",label:"Workspace",icon:"layers",component:WorkspacePage },
   { id: "models", path: "/models", label: "Models", icon: "models", component: ModelsPage },
   { id: "finetune", path: "/finetune", label: "Fine-tune", icon: "finetune", component: FineTunePage },
   { id: "support", path: "/support", label: "Support", icon: "support", component: SupportPage },
@@ -74,7 +77,7 @@ export interface NavSection {
 /** Main grouped rail (top). */
 export const NAV_SECTIONS: NavSection[] = [
   { title: "", routeIds: ["home", "processing", "review"] },
-  { title: "Library", routeIds: ["library", "batch", "compare"] },
+  { title: "Library", routeIds: ["library", "batch", "compare", "workspace"] },
   { title: "System", routeIds: ["models", "finetune"] },
 ];
 

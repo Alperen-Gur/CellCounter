@@ -83,6 +83,7 @@ export class TauriSidecarTransport implements InferenceTransport {
     }
 
     try {
+      if (signal?.aborted) throw new DetectionErrorException({ kind: "cancelled" });
       const result = await invoke<DetectionResultDTO>("run_detection", {
         imagePath,
         params,

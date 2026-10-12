@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -32,6 +32,7 @@ pub struct AssayManager {
     // not finished reaping yet. Keep the key until completion so a reused run
     // id cannot replace the old entry or be cleared by the old task.
     active: Mutex<HashMap<String, Option<oneshot::Sender<()>>>>,
+    early_cancellations: Mutex<HashMap<String, Instant>>,
 }
 
 struct StagedPayload(Option<PathBuf>);
@@ -59,7 +60,9 @@ where
         if read == 0 {
             break;
         }
-        let remaining = MAX_OUTPUT_BYTES.saturating_add(1).saturating_sub(kept.len());
+        let remaining = MAX_OUTPUT_BYTES
+            .saturating_add(1)
+            .saturating_sub(kept.len());
         if remaining > 0 {
             kept.extend_from_slice(&buffer[..read.min(remaining)]);
         }
@@ -78,6 +81,11 @@ fn clear_active(manager: &AssayManager, run_id: &str) {
     }
 }
 
+struct ActiveRun<'a> { manager: &'a AssayManager, run_id: &'a str }
+impl Drop for ActiveRun<'_> {
+    fn drop(&mut self) { clear_active(self.manager, self.run_id); }
+}
+
 struct AssaySpec {
     script: &'static str,
     payload_flag: Option<&'static str>,
@@ -85,6 +93,10 @@ struct AssaySpec {
 
 fn assay_spec(kind: &str) -> Option<AssaySpec> {
     match kind {
+        "parity" => Some(AssaySpec {
+            script: "parity_workflows.py",
+            payload_flag: Some("--request"),
+        }),
         "intensity" => Some(AssaySpec {
             script: "intensity_assays.py",
             payload_flag: Some("--detection-json"),
@@ -114,50 +126,70 @@ fn assay_python(store: &FileStore) -> Option<PathBuf> {
         store.venv_python(),
         store.venv4_python(),
         store.venv_stardist_python(),
+        store.venv_omni_python(),
     ]
     .into_iter()
-    .find(|path| path.exists())
+    .find(|path| path.is_file())
+}
+
+fn python_for_assay(store: &FileStore, kind: &str) -> Option<PathBuf> {
+    if kind == "parity" && store.venv_io_python().is_file() { Some(store.venv_io_python()) }
+    else { assay_python(store) }
 }
 
 fn assay_flag_takes_value(kind: &str, flag: &str) -> Option<bool> {
     let allowed: &[(&str, bool)] = match kind {
         "intensity" => &[
-            ("--image", true), ("--assay", true), ("--per-cell", false),
-            ("--channel", true), ("--threshold-mode", true),
-            ("--channel-a", true), ("--channel-b", true),
-            ("--live-channel", true), ("--dead-channel", true),
-            ("--nuclear-channel", true), ("--dna-channel", true),
+            ("--image", true),
+            ("--assay", true),
+            ("--per-cell", false),
+            ("--channel", true),
+            ("--threshold-mode", true),
+            ("--channel-a", true),
+            ("--channel-b", true),
+            ("--live-channel", true),
+            ("--dead-channel", true),
+            ("--nuclear-channel", true),
+            ("--dna-channel", true),
         ],
         "area" => &[("--mode", true), ("--pxPerUm", true), ("--image", true)],
         "puncta" => &[
-            ("--image", true), ("--channel", true), ("--pxPerUm", true),
+            ("--image", true),
+            ("--channel", true),
+            ("--pxPerUm", true),
             ("--threshold", true),
         ],
         "tracking" => &[
-            ("--px-per-um", true), ("--frame-interval-min", true),
+            ("--px-per-um", true),
+            ("--frame-interval-min", true),
             ("--max-displacement-um", true),
         ],
         "neurite" => &[
-            ("--neurite-mask", true), ("--px-per-um", true),
+            ("--neurite-mask", true),
+            ("--px-per-um", true),
             ("--soma-radius-um", true),
         ],
         _ => &[],
     };
-    allowed.iter().find_map(|(candidate, takes_value)| {
-        (*candidate == flag).then_some(*takes_value)
-    })
+    allowed
+        .iter()
+        .find_map(|(candidate, takes_value)| (*candidate == flag).then_some(*takes_value))
 }
 
 fn validate_args(kind: &str, args: &[String], reserved: Option<&str>) -> Result<(), String> {
     if args.len() > MAX_ARG_COUNT {
-        return Err(format!("too many assay arguments (maximum {MAX_ARG_COUNT})"));
+        return Err(format!(
+            "too many assay arguments (maximum {MAX_ARG_COUNT})"
+        ));
     }
     for arg in args {
         if arg.len() > MAX_ARG_BYTES || arg.contains('\0') {
             return Err("an assay argument is too large or contains a null byte".to_string());
         }
         if reserved.is_some_and(|flag| arg == flag) {
-            return Err(format!("{arg} is managed by CellCounter and cannot be overridden"));
+            return Err(format!(
+                "{arg} is managed by CellCounter and cannot be overridden"
+            ));
         }
     }
     let mut index = 0;
@@ -201,7 +233,9 @@ fn pixel_rgb(image: &image::DynamicImage, x: u32, y: u32) -> [f64; 3] {
             let value = buffer.get_pixel(x, y).0[0] as f64 / u8::MAX as f64;
             [value; 3]
         }
-        image::DynamicImage::ImageRgb8(buffer) => buffer.get_pixel(x, y).0.map(|v| v as f64 / u8::MAX as f64),
+        image::DynamicImage::ImageRgb8(buffer) => {
+            buffer.get_pixel(x, y).0.map(|v| v as f64 / u8::MAX as f64)
+        }
         image::DynamicImage::ImageRgba8(buffer) => {
             let p = buffer.get_pixel(x, y).0;
             [p[0], p[1], p[2]].map(|v| v as f64 / u8::MAX as f64)
@@ -214,7 +248,9 @@ fn pixel_rgb(image: &image::DynamicImage, x: u32, y: u32) -> [f64; 3] {
             let value = buffer.get_pixel(x, y).0[0] as f64 / u16::MAX as f64;
             [value; 3]
         }
-        image::DynamicImage::ImageRgb16(buffer) => buffer.get_pixel(x, y).0.map(|v| v as f64 / u16::MAX as f64),
+        image::DynamicImage::ImageRgb16(buffer) => {
+            buffer.get_pixel(x, y).0.map(|v| v as f64 / u16::MAX as f64)
+        }
         image::DynamicImage::ImageRgba16(buffer) => {
             let p = buffer.get_pixel(x, y).0;
             [p[0], p[1], p[2]].map(|v| v as f64 / u16::MAX as f64)
@@ -228,12 +264,7 @@ fn pixel_rgb(image: &image::DynamicImage, x: u32, y: u32) -> [f64; 3] {
     }
 }
 
-fn bilinear_channel(
-    image: &image::DynamicImage,
-    x: f64,
-    y: f64,
-    channel: &str,
-) -> f64 {
+fn bilinear_channel(image: &image::DynamicImage, x: f64, y: f64, channel: &str) -> f64 {
     let x = x.clamp(0.0, image.width().saturating_sub(1) as f64);
     let y = y.clamp(0.0, image.height().saturating_sub(1) as f64);
     let x0 = x.floor() as u32;
@@ -329,7 +360,13 @@ pub async fn line_profile(
     let store = FileStore::from_app(&app)?;
     let conn = open_reader(&store)?;
     let context = ExportContext::load(&conn, &store, &image_id)?;
-    let source_path = context.analysis_path.clone().unwrap_or(context.stored_path.clone());
+    if !context.display_matches_run() {
+        return Err("Line profiles require a source raster matching the captured analysis plane. Use source-channel measurements for this multidimensional analysis.".into());
+    }
+    let source_path = context
+        .analysis_path
+        .clone()
+        .unwrap_or(context.stored_path.clone());
     let _ = &db;
     tokio::task::spawn_blocking(move || {
         let (width, height) = image::image_dimensions(&source_path)
@@ -355,21 +392,24 @@ pub async fn assay_availability(app: AppHandle, kind: String) -> Result<AssayAva
     let spec = assay_spec(&kind).ok_or_else(|| format!("unsupported assay kind: {kind}"))?;
     let store = FileStore::from_app(&app)?;
     crate::env::uv::stage_python_project(&app, &store)?;
-    let Some(python) = assay_python(&store) else {
+    let Some(python) = python_for_assay(&store, &kind) else {
         return Ok(AssayAvailability {
             available: false,
-            reason: Some("Install one of the three built-in models to provision the local Python analysis runtime.".to_string()),
+            reason: Some("Install a supported local model to provision its Python analysis runtime.".to_string()),
         });
     };
     if !store.python_script(spec.script).exists() {
         return Ok(AssayAvailability {
             available: false,
-            reason: Some(format!("{} is not staged in the local runtime", spec.script)),
+            reason: Some(format!(
+                "{} is not staged in the local runtime",
+                spec.script
+            )),
         });
     }
     let mut command = Command::new(python);
     command
-        .args(["-c", "import numpy, scipy, skimage, PIL"])
+        .args(["-c", if kind == "parity" { "import numpy, PIL" } else { "import numpy, scipy, skimage, PIL" }])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
@@ -381,10 +421,11 @@ pub async fn assay_availability(app: AppHandle, kind: String) -> Result<AssayAva
         .is_some_and(|status| status.success());
     Ok(AssayAvailability {
         available: ready,
-        reason: (!ready).then_some(
-            "The installed model runtime is missing numpy/scipy/scikit-image/Pillow; reinstall that model and retry."
-                .to_string(),
-        ),
+        reason: (!ready).then_some(if kind == "parity" {
+            "The installed source runtime is missing NumPy/Pillow; reinstall the local reader runtime and retry.".to_string()
+        } else {
+            "The installed model runtime is missing numpy/scipy/scikit-image/Pillow; reinstall that model and retry.".to_string()
+        }),
     })
 }
 
@@ -402,14 +443,28 @@ pub async fn run_assay(
     Uuid::parse_str(&run_id).map_err(|_| "assay run id must be a UUID".to_string())?;
     let spec = assay_spec(&kind).ok_or_else(|| format!("unsupported assay kind: {kind}"))?;
     validate_args(&kind, &args, spec.payload_flag)?;
-    if payload_json.as_ref().is_some_and(|payload| payload.len() > MAX_PAYLOAD_BYTES) {
+    if payload_json
+        .as_ref()
+        .is_some_and(|payload| payload.len() > MAX_PAYLOAD_BYTES)
+    {
         return Err("assay payload exceeds the 64 MiB safety limit".to_string());
     }
 
+    let (cancel, mut cancel_rx) = oneshot::channel();
+    {
+        let mut active = manager.active.lock().map_err(|_| "assay manager is unavailable".to_string())?;
+        if active.contains_key(&run_id) { return Err("an assay with this run id is already active".to_string()); }
+        let mut early = manager.early_cancellations.lock().map_err(|_| "assay manager is unavailable".to_string())?;
+        early.retain(|_, when| when.elapsed() < Duration::from_secs(120));
+        if early.remove(&run_id).is_some() { return Err(format!("{kind} assay was cancelled")); }
+        active.insert(run_id.clone(), Some(cancel));
+    }
+    // Reserve before the first await, and retain through output parsing/cleanup.
+    let _active_run = ActiveRun { manager: &manager, run_id: &run_id };
     let store = FileStore::from_app(&app)?;
     crate::env::uv::stage_python_project(&app, &store)?;
-    let python = assay_python(&store).ok_or_else(|| {
-        "No local Python analysis runtime is installed. Install one of the three built-in models first."
+    let python = python_for_assay(&store, &kind).ok_or_else(|| {
+        "No local Python analysis runtime is installed. Install a supported local model first."
             .to_string()
     })?;
     let script = store.python_script(spec.script);
@@ -424,22 +479,26 @@ pub async fn run_assay(
                 .join(format!(".assay-{}-{}.json", kind, Uuid::new_v4()));
             let write_path = path.clone();
             let validation_kind = kind.clone();
-            tokio::task::spawn_blocking(move || {
+            let staged = tokio::task::spawn_blocking(move || {
+                let staged = StagedPayload(Some(write_path.clone()));
                 serde_json::from_str::<Value>(&payload)
                     .map_err(|error| format!("invalid {validation_kind} payload JSON: {error}"))?;
                 std::fs::write(&write_path, payload)
-                    .map_err(|error| format!("could not stage {validation_kind} input: {error}"))
+                    .map_err(|error| format!("could not stage {validation_kind} input: {error}"))?;
+                Ok::<_, String>(staged)
             })
             .await
             .map_err(|error| format!("{kind} input worker failed: {error}"))??;
-            Some((flag, path))
+            Some((flag, path, staged))
         }
         (Some(_), None) if matches!(kind.as_str(), "tracking" | "puncta" | "intensity") => {
-            return Err(format!("{kind} requires a structured detection/sequence payload"));
+            return Err(format!(
+                "{kind} requires a structured detection/sequence payload"
+            ));
         }
         _ => None,
     };
-    let staged_payload = StagedPayload(payload_path.as_ref().map(|(_, path)| path.clone()));
+    if cancel_rx.try_recv().is_ok() { return Err(format!("{kind} assay was cancelled")); }
 
     let mut command = Command::new(&python);
     command
@@ -450,7 +509,7 @@ pub async fn run_assay(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if let Some((flag, path)) = payload_path.as_ref() {
+    if let Some((flag, path, _)) = payload_path.as_ref() {
         command.arg(flag).arg(path);
     }
     crate::proc::hide_console_tokio(&mut command);
@@ -467,19 +526,13 @@ pub async fn run_assay(
     })?;
     let stdout_task = tokio::spawn(read_bounded(stdout));
     let stderr_task = tokio::spawn(read_bounded(stderr));
-    let (cancel, mut cancel_rx) = oneshot::channel();
-    {
-        let mut active = manager
-            .active
-            .lock()
-            .map_err(|_| "assay manager is unavailable".to_string())?;
-        if active.contains_key(&run_id) {
-            let _ = child.start_kill();
-            return Err("an assay with this run id is already active".to_string());
-        }
-        active.insert(run_id.clone(), Some(cancel));
-    }
     let status = tokio::select! {
+        biased;
+        _ = &mut cancel_rx => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(format!("{kind} assay was cancelled"))
+        },
         waited = tokio::time::timeout(ASSAY_TIMEOUT, child.wait()) => match waited {
             Ok(result) => result.map_err(|error| format!("could not wait for {kind} assay: {error}")),
             Err(_) => {
@@ -487,14 +540,8 @@ pub async fn run_assay(
                 let _ = child.wait().await;
                 Err(format!("{kind} assay timed out after 20 minutes"))
             }
-        },
-        _ = &mut cancel_rx => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            Err(format!("{kind} assay was cancelled"))
         }
     };
-    clear_active(&manager, &run_id);
     let stdout = stdout_task
         .await
         .map_err(|error| format!("{kind} stdout reader failed: {error}"))??;
@@ -502,14 +549,21 @@ pub async fn run_assay(
         .await
         .map_err(|error| format!("{kind} stderr reader failed: {error}"))??;
     let status = status?;
-    drop(staged_payload);
-    let stdout = String::from_utf8(stdout)
-        .map_err(|_| format!("{kind} assay returned non-UTF-8 output"))?;
+    drop(payload_path);
+    let stdout =
+        String::from_utf8(stdout).map_err(|_| format!("{kind} assay returned non-UTF-8 output"))?;
     let stderr = String::from_utf8_lossy(&stderr);
     let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
         format!(
             "could not parse {kind} assay output: {error}. Details: {}",
-            stderr.chars().rev().take(1200).collect::<String>().chars().rev().collect::<String>()
+            stderr
+                .chars()
+                .rev()
+                .take(1200)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
         )
     })?;
     if !status.success() {
@@ -524,17 +578,26 @@ pub async fn run_assay(
             format!("{reason}: {hint}")
         });
     }
+    if cancel_rx.try_recv().is_ok() { return Err(format!("{kind} assay was cancelled")); }
     Ok(parsed)
 }
 
 #[tauri::command]
 pub fn cancel_assay(manager: State<'_, AssayManager>, run_id: String) -> Result<bool, String> {
-    let mut active = manager
-        .active
-        .lock()
-        .map_err(|_| "assay manager is unavailable".to_string())?;
-    let cancel = active.get_mut(&run_id).and_then(Option::take);
-    Ok(cancel.is_some_and(|sender| sender.send(()).is_ok()))
+    Uuid::parse_str(&run_id).map_err(|_| "assay run id must be a UUID".to_string())?;
+    let mut active = manager.active.lock().map_err(|_| "assay manager is unavailable".to_string())?;
+    if let Some(cancel) = active.get_mut(&run_id) {
+        return Ok(cancel.take().map_or(true, |sender| sender.send(()).is_ok()));
+    }
+    // IPC cancellation may beat synchronous source snapshotting in the caller.
+    // UUID tombstones are short-lived and bounded; never reserve a process slot.
+    let mut early = manager.early_cancellations.lock().map_err(|_| "assay manager is unavailable".to_string())?;
+    early.retain(|_, when| when.elapsed() < Duration::from_secs(120));
+    if early.len() >= 256 {
+        if let Some(oldest) = early.iter().min_by_key(|(_, when)| **when).map(|(id, _)| id.clone()) { early.remove(&oldest); }
+    }
+    early.insert(run_id, Instant::now());
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -545,12 +608,24 @@ mod tests {
     fn assay_kind_is_closed_and_payload_flags_cannot_be_injected() {
         assert!(assay_spec("tracking").is_some());
         assert!(assay_spec("arbitrary.py").is_none());
-        assert!(validate_args("tracking", &["--input".into(), "other.json".into()], Some("--input"))
-            .is_err());
-        assert!(validate_args("tracking", &["--px-per-um".into(), "2.6".into()], Some("--input"))
-            .is_ok());
-        assert!(validate_args("tracking", &["--arbitrary".into(), "value".into()], Some("--input"))
-            .is_err());
+        assert!(validate_args(
+            "tracking",
+            &["--input".into(), "other.json".into()],
+            Some("--input")
+        )
+        .is_err());
+        assert!(validate_args(
+            "tracking",
+            &["--px-per-um".into(), "2.6".into()],
+            Some("--input")
+        )
+        .is_ok());
+        assert!(validate_args(
+            "tracking",
+            &["--arbitrary".into(), "value".into()],
+            Some("--input")
+        )
+        .is_err());
     }
 
     #[test]

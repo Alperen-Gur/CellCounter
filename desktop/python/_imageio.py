@@ -226,7 +226,7 @@ def _infer_axes(shape) -> str:
     return "?" * (n - 3) + ("YXS" if shape[-1] <= 4 else "ZYX")
 
 
-def _to_hwc(arr, axes: str, z_project: str):
+def _to_hwc(arr, axes: str, z_project: str, *, quantitative=False):
     """(array, axes) → ((H, W, C) float32 array, z_count, t_count, canon_axes).
 
     Never raises for merely-odd axis strings; it degrades to inference.
@@ -301,6 +301,16 @@ def _to_hwc(arr, axes: str, z_project: str):
         mode = z_project if z_project in Z_PROJECT_MODES else "max"
         if mode == "max":
             a = a.max(axis=zi)
+        elif mode in ("sum", "mean") and quantitative:
+            # Accumulate into one output plane, rather than converting the
+            # entire Z stack to Float64. Finite Float32 samples can overflow
+            # a Float32 accumulator even when their mean is representable.
+            a = (a.sum(axis=zi, dtype=np.float64) if mode == "sum"
+                 else a.mean(axis=zi, dtype=np.float64))
+            converted = a.astype(np.float32)
+            if not np.isfinite(converted).all() or (mode == "sum" and not np.equal(converted.astype(np.float64), a).all()):
+                raise ImageIOError("source-projection-precision-unsupported", hint="This projection cannot preserve its intensity values in Float32; select an individual Z plane or a representable projection.")
+            a = converted
         elif mode == "sum":
             a = a.sum(axis=zi, dtype=np.float32)
         elif mode == "mean":
@@ -675,6 +685,7 @@ def _read_tiff(path: str):
     with tifffile.TiffFile(path) as tf:
         series = tf.series[0] if tf.series else None
         if series is not None:
+            _enforce_shape_budget(series.shape, str(getattr(series, "axes", "") or ""), series.dtype.itemsize)
             arr = series.asarray()
             axes = str(getattr(series, "axes", "") or "")
         else:
@@ -866,7 +877,7 @@ def _dispatch(path: str):
 # Public API
 # ---------------------------------------------------------------------------
 
-def load_planes(path, *, z_project="max", channel=None):
+def load_planes(path, *, z_project="max", channel=None, t_index=0, z_index=None, require_lossless_f32=False):
     """Load `path` as an (H, W, C) float32 array plus a metadata dict.
 
     See the module docstring for the full, frozen contract. Raises
@@ -895,8 +906,30 @@ def load_planes(path, *, z_project="max", channel=None):
 
     arr, axes, extras, fmt, reader = _dispatch(path)
     source_dtype = str(np.asarray(arr).dtype)
+    if require_lossless_f32:
+        raw = np.asarray(arr)
+        # Quantitative workflows must not silently round uint32/float64 input.
+        # Compare bounded chunks before projection/canonical Float32 conversion.
+        if raw.dtype.kind not in 'uif':
+            raise ImageIOError('source-dtype-unsupported', hint='Quantitative workspace planes require real numeric intensity values')
+        for chunk in np.nditer(raw, flags=['external_loop', 'buffered'], order='K', buffersize=65536):
+            converted = chunk.astype(np.float32)
+            if not np.isfinite(converted).all() or not np.equal(converted.astype(chunk.dtype), chunk).all():
+                raise ImageIOError('source-precision-unsupported', hint='This source loses intensity precision in Float32. Preserve its original file and use a Float32-compatible quantitative source.')
 
-    stack, z_count, t_count, canon_axes = _to_hwc(arr, axes, mode)
+    original_sizes = {axis: arr.shape[index] for index, axis in enumerate(axes.upper())} if len(axes) == arr.ndim else {}
+    for axis, selected in (("T", t_index), ("Z", z_index)):
+        if selected is None: continue
+        if not isinstance(selected, int) or selected < 0: raise ImageIOError("source-plane-invalid", hint="Source indices must be nonnegative integers")
+        if axis not in axes.upper():
+            if selected != 0: raise ImageIOError("source-plane-invalid", hint=f"This source has no {axis} axis")
+            continue
+        index = axes.upper().index(axis)
+        if selected >= arr.shape[index]: raise ImageIOError("source-plane-invalid", hint=f"{axis} plane {selected} is unavailable")
+        arr = np.take(arr, [selected], axis=index)
+
+
+    stack, z_count, t_count, canon_axes = _to_hwc(arr, axes, mode, quantitative=require_lossless_f32)
     channel_count = int(stack.shape[2])
 
     all_names = _fit_names(extras.get("channel_names"), channel_count)
@@ -918,8 +951,8 @@ def load_planes(path, *, z_project="max", channel=None):
     meta = {
         "channel_names": selected_names,
         "pixel_size_um": _float_or_none(extras.get("pixel_size_um")),
-        "z_count": int(z_count),
-        "t_count": int(t_count),
+        "z_count": int(original_sizes.get("Z", z_count)),
+        "t_count": int(original_sizes.get("T", t_count)),
         "source_format": fmt,
         # Additive extras.
         "is_rgb": bool(extras.get("is_rgb", False)),

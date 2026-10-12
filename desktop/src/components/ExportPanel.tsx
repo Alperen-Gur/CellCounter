@@ -30,7 +30,7 @@
  * app-data `Exports/` dir, and the panel offers "Reveal in folder".
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
@@ -69,8 +69,7 @@ interface DialogSaveModule {
 /** Load the Tauri save dialog, or null when the plugin isn't in the build. */
 async function loadDialogSave(): Promise<DialogSaveModule | null> {
   try {
-    const spec = "@tauri-apps/plugin-dialog";
-    const mod = (await import(/* @vite-ignore */ spec)) as unknown as DialogSaveModule;
+    const mod = (await import("@tauri-apps/plugin-dialog")) as unknown as DialogSaveModule;
     return typeof mod.save === "function" && typeof mod.open === "function" ? mod : null;
   } catch {
     return null;
@@ -87,6 +86,7 @@ function filterForFilename(name: string): { name: string; extensions: string[] }
     json: "JSON",
     geojson: "GeoJSON",
     pdf: "PDF",
+    md: "Markdown",
   };
   return { name: labels[ext] ?? "File", extensions: ext ? [ext] : [] };
 }
@@ -110,7 +110,7 @@ async function chooseOutPath(
   if (!dialog) return destination === "file" ? defaultName : "";
   if (destination === "directory") {
     const path = await dialog.open({
-      title: "Choose folder for annotated images",
+      title: "Choose export parent folder",
       directory: true,
       multiple: false,
     });
@@ -134,7 +134,11 @@ type FormatId =
   | "batchAnnotated"
   | "geojson"
   | "provenance"
-  | "pdf";
+  | "pdf"
+  | "markdown"
+  | "groundTruthJson"
+  | "groundTruthCsv"
+  | "sampleBundle";
 
 interface FormatDef {
   id: FormatId;
@@ -147,7 +151,7 @@ interface FormatDef {
   defaultName: string;
   destination?: "file" | "directory";
   /** Run the export, writing to the user-chosen (or fallback) absolute path. */
-  run: (outPath: string) => Promise<string>;
+  run: (outPath: string) => Promise<string | { path: string; warnings: string[] }>;
 }
 
 /** Strip the extension off a filename for a sensible export basename. */
@@ -163,7 +167,7 @@ function baseName(fileName: string): string {
 type RunState =
   | { kind: "idle" }
   | { kind: "running"; format: FormatId }
-  | { kind: "done"; format: FormatId; path: string }
+  | { kind: "done"; format: FormatId; path: string; warnings?: string[] }
   | { kind: "error"; format: FormatId; message: string };
 
 export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelProps) {
@@ -181,6 +185,7 @@ export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelPr
   const [cells, setCells] = useState<CellDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [run, setRun] = useState<RunState>({ kind: "idle" });
+  const exportBusy = useRef(false);
   // Explicit picker selection (Batch sheet). null ⇒ follow the store's current
   // index. A pinned `imageId` prop (Results) makes the picker irrelevant.
   const [pickedImageId, setPickedImageId] = useState<string | null>(null);
@@ -271,6 +276,24 @@ export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelPr
   const formats: FormatDef[] = useMemo(() => {
     const imgId = image?.id;
     return [
+      {
+        id: "sampleBundle", label: "Sample folder", icon: "folder",
+        hint: "Source, reports, geometry, cells and ground truth from one saved snapshot.",
+        enabled: !!imgId, defaultName: stem, destination: "directory",
+        run: (outDir) => invoke<{ path: string; warnings: string[] }>("export_sample_bundle", { imageId: imgId, cellIds: cells.map(cell => cell.id), confidence, overlayMode, outDir }),
+      },
+      {
+        id: "markdown", label: "Markdown report", icon: "info",
+        hint: "Readable analysis summary with source and run provenance.",
+        enabled: !!imgId, defaultName: `${stem}_report.md`,
+        run: (outPath) => invoke<string>("export_markdown_report", { imageId: imgId, cellIds: cells.map(cell => cell.id), confidence, outPath }),
+      },
+      ...(["json", "csv"] as const).map((format): FormatDef => ({
+        id: format === "json" ? "groundTruthJson" : "groundTruthCsv", label: `Ground truth ${format.toUpperCase()}`, icon: "scope",
+        hint: "Annotation coordinates in preserved source pixels.",
+        enabled: !!imgId, defaultName: `${stem}_annotations.${format}`,
+        run: (outPath) => invoke<string>("export_ground_truth", { imageId: imgId, format, outPath }),
+      })),
       {
         id: "annotatedPng",
         label: "Annotated PNG",
@@ -409,27 +432,17 @@ export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelPr
   ]);
 
   const runFormat = async (fmt: FormatDef) => {
-    if (!fmt.enabled) return;
-    let outPath: string;
-    try {
-      // Ask the user where to save; a chosen absolute path is honored verbatim
-      // by the Rust writer (bare-name fallback → app-data Exports/).
-      outPath = await chooseOutPath(fmt.defaultName, fmt.destination ?? "file");
-    } catch (err) {
-      // A cancelled Save panel is a silent no-op (not an error).
-      if (err === EXPORT_CANCELLED) return;
-      const message = err instanceof Error ? err.message : String(err);
-      setRun({ kind: "error", format: fmt.id, message });
-      return;
-    }
+    if (!fmt.enabled || loading || exportBusy.current) return;
+    exportBusy.current = true;
     setRun({ kind: "running", format: fmt.id });
     try {
-      const path = await fmt.run(outPath);
-      setRun({ kind: "done", format: fmt.id, path });
+      const outPath = await chooseOutPath(fmt.defaultName, fmt.destination ?? "file");
+      const result = await fmt.run(outPath);
+      setRun(typeof result === "string" ? { kind: "done", format: fmt.id, path: result } : { kind: "done", format: fmt.id, ...result });
     } catch (err) {
-      const message = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
-      setRun({ kind: "error", format: fmt.id, message });
-    }
+      if (err === EXPORT_CANCELLED) setRun({ kind: "idle" });
+      else setRun({ kind: "error", format: fmt.id, message: typeof err === "string" ? err : err instanceof Error ? err.message : String(err) });
+    } finally { exportBusy.current = false; }
   };
 
   const reveal = async (path: string) => {
@@ -488,7 +501,7 @@ export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelPr
               <button
                 type="button"
                 className="cc-export__btn"
-                disabled={!fmt.enabled || isRunning}
+                disabled={!fmt.enabled || loading || run.kind === "running"}
                 onClick={() => void runFormat(fmt)}
                 title={fmt.hint}
               >
@@ -532,6 +545,7 @@ export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelPr
                   </button>
                 </div>
               ) : null}
+              {run.kind === "done" && run.format === fmt.id && run.warnings?.length ? <div className="cc-export__error" role="status">{run.warnings.join(" ")}</div> : null}
               {errorMsg ? (
                 <div className="cc-export__error" role="alert">
                   <Icon name="alert" size={14} />

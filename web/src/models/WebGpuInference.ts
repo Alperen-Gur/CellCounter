@@ -18,6 +18,11 @@ import {
 } from "./errors";
 import { verifySha256 } from "./hash";
 
+/** The artifact path has no source-plane or preprocessing adapter yet. Fail before claiming ignored settings. */
+export function assertLearnedSourceSettings(parameters: DetectionParams): void {
+  if ((parameters.sourceTime ?? 0) !== 0 || (parameters.sourceZ ?? 0) !== 0 || (parameters.sourceChannel ?? 0) !== 0 || (parameters.projection ?? "first") !== "first" || (parameters.preprocessingPreset ?? "none") !== "none" || parameters.backgroundSubtract || parameters.watershedSplit || parameters.channels.some(channel => channel !== 0)) throw new Error("This browser learned-model adapter supports only the default first source plane without preprocessing or watershed. Selected channels, projections and correction preprocessing need an artifact-specific validated adapter.");
+}
+
 export interface InferenceProgress {
   readonly stage: "environment" | "model" | "decode" | "inference" | "postprocess";
   readonly completed: number;
@@ -379,11 +384,12 @@ function largestBoundaryLoop(edges: readonly number[], vertexWidth: number): Sou
 
 /** Converts a label raster using O(label-count + boundary) JS objects, not O(foreground-pixels). */
 export function labelMapToGeometry(labels: Uint32Array, width: number): CellGeometry[] {
-  if (width <= 0 || labels.length % width !== 0) throw new RangeError("Invalid label-map dimensions");
+  if (!Number.isSafeInteger(width) || width <= 0 || !labels.length || labels.length > 4_000_000 || labels.length % width !== 0) throw new RangeError("Label-map dimensions must be positive integers within four million pixels.");
   const height = labels.length / width;
   const statsByLabel = new Map<number, { count: number; sumX: number; sumY: number }>();
   const edgesByLabel = new Map<number, number[]>();
   const vertexWidth = width + 1;
+  let boundaryCount = 0;
   for (let index = 0; index < labels.length; index += 1) {
     const label = labels[index];
     if (label === 0) continue;
@@ -391,12 +397,18 @@ export function labelMapToGeometry(labels: Uint32Array, width: number): CellGeom
     const y = Math.floor(index / width);
     const stats = statsByLabel.get(label);
     if (stats) { stats.count += 1; stats.sumX += x + 0.5; stats.sumY += y + 0.5; }
-    else statsByLabel.set(label, { count: 1, sumX: x + 0.5, sumY: y + 0.5 });
+    else {
+      if (statsByLabel.size >= 50_000) throw new RangeError("Segmentation exceeds 50,000 instances. Crop the field or adjust segmentation settings.");
+      statsByLabel.set(label, { count: 1, sumX: x + 0.5, sumY: y + 0.5 });
+    }
     const edges = edgesByLabel.get(label) ?? [];
+    const before = edges.length;
     if (y === 0 || labels[index - width] !== label) edges.push((y * vertexWidth + x) * 4);
     if (x === width - 1 || labels[index + 1] !== label) edges.push((y * vertexWidth + x + 1) * 4 + 1);
     if (y === height - 1 || labels[index + width] !== label) edges.push(((y + 1) * vertexWidth + x + 1) * 4 + 2);
     if (x === 0 || labels[index - 1] !== label) edges.push(((y + 1) * vertexWidth + x) * 4 + 3);
+    boundaryCount += edges.length - before;
+    if (boundaryCount > 500_000) throw new RangeError("Segmentation exceeds 500,000 boundary edges. Crop the field or smooth foreground noise.");
     edgesByLabel.set(label, edges);
   }
   return [...edgesByLabel.entries()]
@@ -426,7 +438,7 @@ function labelsFromTensor(tensor: OrtTensorLike, expectedLength: number, modelId
   const labels = new Uint32Array(expectedLength);
   for (let index = 0; index < expectedLength; index += 1) {
     const value = Number(tensor.data[index]);
-    if (!Number.isSafeInteger(value) || value < 0) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
       throw new InferenceError("invalid-model-output", `${modelId}: label map contains an invalid label`, modelId);
     }
     labels[index] = value;
@@ -467,6 +479,7 @@ export class WebGpuInference implements InferenceEngine {
     const modelId = request.parameters.modelId;
     const manifest = getModelManifest(modelId);
     try {
+      assertLearnedSourceSettings(request.parameters);
       abortIfNeeded(request.signal, modelId);
       request.onProgress?.({ stage: "environment", completed: 0, total: 1 });
       await assertWebGpuAvailable();

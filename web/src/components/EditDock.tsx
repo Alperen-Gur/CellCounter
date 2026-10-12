@@ -1,4 +1,4 @@
-import { Combine, Crosshair, Expand, MousePointer2, Redo2, Scissors, Undo2, UserRoundPlus } from "lucide-react";
+import { Combine, Crosshair, Expand, MousePointer2, Redo2, Scissors, Undo2, UserRoundPlus, Pencil, Square } from "lucide-react";
 import type { EditTool } from "../app/types";
 
 const tools: Array<{ id: EditTool; label: string; key: number; icon: typeof Crosshair }> = [
@@ -8,6 +8,9 @@ const tools: Array<{ id: EditTool; label: string; key: number; icon: typeof Cros
   { id: "resize", label: "Resize", key: 4, icon: Expand },
   { id: "merge", label: "Merge", key: 5, icon: Combine },
   { id: "split", label: "Split", key: 6, icon: Scissors },
+  { id: "freehand", label: "Trace", key: 7, icon: Pencil },
+  { id: "prompt-point", label: "Point", key: 8, icon: Crosshair },
+  { id: "prompt-box", label: "Box", key: 9, icon: Square },
 ];
 
 export function EditDock({ active, onChange, canUndo, onUndo, canRedo, onRedo, readOnly = false }: { active: EditTool; onChange: (tool: EditTool) => void; canUndo: boolean; onUndo: () => void; canRedo: boolean; onRedo: () => void; readOnly?: boolean }) {

@@ -419,7 +419,7 @@ kbd { border: 1px solid var(--line-strong); border-radius: 4px; background: var(
 .review-list.review-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(280px,1fr)); border: 0; background: transparent; gap: 16px; }
 .review-grid .review-row { display: flex; flex-wrap: wrap; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .review-grid .review-source, .review-grid .review-actions { width: 100%; }
-.review-thumb { width: 64px; height: 64px; }
+.review-thumb { position: relative; width: 64px; height: 64px; }
 .review-actions { flex-wrap: wrap; }
 .review-actions button { min-height: 36px; padding: 6px 10px; font-size: 14px; }
 .model-copy details { margin-top: 8px; color: var(--ink-soft); font-size: 13px; }
@@ -528,3 +528,18 @@ kbd { border: 1px solid var(--line-strong); border-radius: 4px; background: var(
 .app-update p { margin: 4px 0 0; font-size: 13px; color: var(--ink-soft); }
 .app-update button { flex-shrink: 0; }
 .welcome-loading { min-height: 100dvh; padding: 48px; background: var(--bg); color: var(--ink); }
+
+.microscopy-layout { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 24px; margin-top: 20px; }
+.microscopy-controls { display: flex; flex-direction: column; gap: 10px; }
+.microscopy-controls label, .microscopy-stage details { display: block; padding: 8px 0; }
+.microscopy-layer { padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.microscopy-layer.active { outline: 2px solid var(--accent); }
+.microscopy-stage { min-width: 0; }
+.microscopy-stage canvas { width: 100%; max-height: 70vh; object-fit: contain; background: #000; touch-action: none; }
+.microscopy-stage input, .microscopy-controls input, .microscopy-controls select { max-width: 100%; }
+.advanced-panel button { margin: 4px; }
+@media (max-width: 900px) { .microscopy-layout { grid-template-columns: 1fr; } }
+
+.reviewed-dataset-panel table { width: 100%; border-collapse: collapse; }
+.reviewed-dataset-panel td, .reviewed-dataset-panel th { padding: 8px; text-align: left; border-bottom: 1px solid var(--line); }
+.reviewed-dataset-panel input { max-width: 180px; }

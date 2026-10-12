@@ -209,3 +209,13 @@ button {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --cc-bg-app:#141417;--cc-bg:#1b1b20;--cc-bg-elevated:#222228;--cc-bg-sidebar:#18181d;--cc-bg-subtle:#202026;--cc-bg-hover:#2b2b33;--cc-bg-active:#33333c;
+  --cc-border:#35353e;--cc-border-strong:#50505d;--cc-border-focus:#a2a2b1;
+  --cc-text:#f1f1f5;--cc-text-secondary:#c3c3ce;--cc-text-tertiary:#a5a5b2;--cc-text-on-accent:#16161a;
+  --cc-accent:#efeff4;--cc-accent-hover:#ffffff;--cc-accent-soft:#34343e;--cc-focus-ring:rgba(220,220,240,.4);
+  --cc-danger:#ff8b80;--cc-warning:#efbc6b;--cc-success:#75d597;--cc-bin-small-text:#91bafa;--cc-bin-mid-text:#83d7a3;--cc-bin-large-text:#edb77e;
+}
+.cc-topbar select {color:var(--cc-text);background:var(--cc-bg);border:1px solid var(--cc-border-strong);border-radius:5px;padding:5px}

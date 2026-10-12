@@ -9,14 +9,16 @@ function normalized(value: unknown): unknown {
 export function deterministicJson(value: unknown): string { return `${JSON.stringify(normalized(value), null, 2)}\n`; }
 
 function csvField(value: unknown): string {
-  const text = value === null || value === undefined ? "" : String(value);
+  let text = value === null || value === undefined ? "" : String(value);
+  if (typeof value === "string" && /^[=+@\-\t\r]/.test(text.trimStart())) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
 export function exportCellsCsv(cells: readonly ExportCell[], provenance: Readonly<Record<string, unknown>> = {}): string {
-  const comments = Object.entries(provenance).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `# ${key}: ${typeof value === "object" ? JSON.stringify(normalized(value)) : String(value)}`);
-  const header = ["id", "centroid_x_px", "centroid_y_px", "diameter_px", "diameter_um", "confidence", "is_manual"];
-  const rows = [...cells].sort((a, b) => a.id.localeCompare(b.id)).map((cell) => [cell.id, cell.cx, cell.cy, cell.diameterPx, cell.diameterUm, cell.confidence, Boolean(cell.isManual)].map(csvField).join(","));
+  const line = (value: string) => value.replaceAll("\\", "\\\\").replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+  const comments = Object.entries(provenance).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `# ${line(key)}: ${line(typeof value === "object" ? JSON.stringify(normalized(value)) : String(value))}`);
+  const header = ["id", "centroid_x_px", "centroid_y_px", "diameter_px", "diameter_um", "confidence", "is_manual", "area_px2", "area_um2", "perimeter_px", "perimeter_um", "circularity", "aspect_ratio", "solidity", "eccentricity", "edge_touching", "size_class"];
+  const rows = [...cells].sort((a, b) => a.id.localeCompare(b.id)).map((cell) => [cell.id, cell.cx, cell.cy, cell.diameterPx, cell.diameterUm, cell.confidence, Boolean(cell.isManual), cell.areaPx2, cell.areaUm2, cell.perimeterPx, cell.perimeterUm, cell.circularity, cell.aspectRatio, cell.solidity, cell.eccentricity, cell.edgeTouching, cell.sizeClass].map(csvField).join(","));
   return [...comments, header.join(","), ...rows].join("\n") + "\n";
 }
 

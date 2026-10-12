@@ -31,6 +31,8 @@ import "./styles/shell.css";
 function App() {
   const { route, navigate } = useHashRoute();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [theme,setTheme]=useState<"system"|"light"|"dark">(()=>{const saved=localStorage.getItem("cc-theme");return saved==="light"||saved==="dark"?saved:"system";});
+  useEffect(()=>{localStorage.setItem("cc-theme",theme);const media=matchMedia("(prefers-color-scheme: dark)");const apply=()=>document.documentElement.dataset.theme=theme==="system"?(media.matches?"dark":"light"):theme;apply();media.addEventListener("change",apply);return()=>media.removeEventListener("change",apply);},[theme]);
   const [collapsed, setCollapsed] = useState(false);
   const activeModelId = useAppStore((s) => s.activeModelId);
 
@@ -77,6 +79,7 @@ function App() {
             </nav>
 
             <span className="cc-topbar__spacer" />
+            <label aria-label="Presentation theme"><select aria-label="Presentation theme" value={theme} onChange={e=>setTheme(e.target.value as typeof theme)}><option value="system">System theme</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
 
             <button
               type="button"

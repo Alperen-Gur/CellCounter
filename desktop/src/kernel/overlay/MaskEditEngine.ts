@@ -38,6 +38,7 @@ export type Rect = { x: number; y: number; width: number; height: number };
 
 export type EditEvent =
   | { kind: "added"; cell: CellDTO }
+  | { kind: "replaced"; before: CellDTO[]; after: CellDTO[] }
   | { kind: "removed"; cells: CellDTO[] } // supports bulk-delete-by-rect
   | { kind: "merged"; removed: CellDTO[]; added: CellDTO }
   | { kind: "split"; removed: CellDTO; added: [CellDTO, CellDTO] }
@@ -459,6 +460,15 @@ export class MaskEditEngine {
     return event;
   }
 
+  /** Atomic bulk review or prompt edit; preserves IDs and one undo boundary. */
+  replaceCells(next: CellDTO[]): void {
+    if (next.length > 100_000 || next.some(cell => !cell.id || ![cell.cx, cell.cy, cell.diameterPx, cell.diameterUm, cell.confidence].every(Number.isFinite))) throw new Error("Invalid corrected cells");
+    if (new Set(next.map(cell => cell.id)).size !== next.length) throw new Error("Duplicate cell identity");
+    const event: EditEvent = { kind: "replaced", before: this.cells, after: next.map(cell => ({ ...cell })) };
+    this._cells = event.after.map(cell => ({ ...cell }));
+    this.commit(event);
+  }
+
   // ── undo / redo ─────────────────────────────────────────────────────────
 
   /**
@@ -522,6 +532,10 @@ export class MaskEditEngine {
    */
   private invert(event: EditEvent): EditEvent {
     switch (event.kind) {
+      case "replaced": {
+        this._cells = event.before.map(cell => ({ ...cell }));
+        return { kind: "replaced", before: event.after, after: event.before };
+      }
       case "added": {
         // Undo an add ⇒ remove the added cell.
         this._cells = this._cells.filter((c) => c.id !== event.cell.id);
@@ -566,6 +580,9 @@ export class MaskEditEngine {
   /** Re-apply `event` to `_cells` (mirrors `performRedo`). */
   private reapply(event: EditEvent): void {
     switch (event.kind) {
+      case "replaced":
+        this._cells = event.after.map(cell => ({ ...cell }));
+        break;
       case "added":
         this._cells.push({ ...event.cell });
         break;

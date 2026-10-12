@@ -12,12 +12,14 @@ use super::repo::Db;
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 fn validate_key(key: &str) -> Result<(), String> {
-    if key == "jobs" {
+    if ["jobs", "workspace", "custom-models"].contains(&key) {
         return Ok(());
     }
     if let Some(id) = key
         .strip_prefix("variant-")
         .or_else(|| key.strip_prefix("run-"))
+        .or_else(|| key.strip_prefix("channels-"))
+        .or_else(|| key.strip_prefix("advanced-"))
     {
         if id.len() == 36
             && uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.hyphenated().to_string() == id)

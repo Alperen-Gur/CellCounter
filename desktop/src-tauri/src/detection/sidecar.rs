@@ -64,18 +64,18 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, Notify};
 
+use crate::db::repo::Db;
 use crate::detection::ipc::{
     progress_event_name, Availability, DetectionErrorDto, DetectionParams, DetectionProgress,
     DetectionResultDto, SidecarError, SidecarPayload,
 };
-use crate::db::repo::Db;
 use crate::paths::FileStore;
 
 /// Sidecar scripts we own — used by the orphan sweep to identify stray
@@ -92,6 +92,10 @@ const OWNED_SCRIPTS: &[&str] = &[
     "track_cells.py",
     "neurite_outgrowth.py",
     "image_prepare.py",
+    "classical_detect.py",
+    "custom_detect.py",
+    "omnipose_detect.py",
+    "parity_workflows.py",
 ];
 
 /// Signal-ish exit codes that mean the host terminated us on purpose.
@@ -134,6 +138,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 #[derive(Default)]
 pub struct SidecarManager {
     running: Mutex<HashMap<String, RunHandle>>,
+    early_cancelled: Mutex<HashMap<String, Instant>>,
     /// Warm workers available for reuse, bucketed by config signature. A worker
     /// present here is idle; `detect()` removes it while a request is in flight.
     pool: Mutex<HashMap<String, Vec<Worker>>>,
@@ -170,6 +175,21 @@ impl SidecarManager {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+/// Reserve/upgrade atomically with bounded early cancellation tombstones.
+async fn register_run(app: &AppHandle, run_id: &str, handle: RunHandle) {
+    let manager = app.state::<SidecarManager>();
+    let mut running = manager.running.lock().await;
+    let mut early = manager.early_cancelled.lock().await;
+    early.retain(|_, time| time.elapsed() < Duration::from_secs(120));
+    if early.remove(run_id).is_some() {
+        handle.cancel_flag.store(true, Ordering::SeqCst);
+        if let KillHandle::OneShot(notify) = &handle.kill {
+            notify.notify_one();
+        }
+    }
+    running.insert(run_id.to_owned(), handle);
 }
 
 /// A warm `--serve` worker: a long-lived Python process that built its model
@@ -209,13 +229,56 @@ struct ActiveRun {
 /// The complete model allowlist for the Windows 1.0.8 release. Keeping this
 /// mapping closed is intentional: an unknown app id must fail before spawning
 /// Python, never get stripped/defaulted into a different model.
-pub const WINDOWS_MODEL_IDS: [&str; 3] = ["cpsam_v2", "cp-cyto3", "sd-fluo"];
+pub const WINDOWS_MODEL_IDS: [&str; 19] = [
+    "cpsam_v2",
+    "cp4-cpsam",
+    "cp4-cpsam_v2",
+    "cp4-cpdino",
+    "cp4-cpdino-vitb",
+    "cp-cyto3",
+    "cp-cyto3-r",
+    "cp-cyto2",
+    "cp-nuclei",
+    "sd-fluo",
+    "sd-he",
+    "sd-dsb2018",
+    "cw-otsu",
+    "cw-triangle",
+    "cw-adaptive",
+    "cw-manual",
+    "omni-bact-phase",
+    "omni-bact-fluor",
+    "omni-cyto2",
+];
+pub fn is_classical(id: &str) -> bool {
+    id.starts_with("cw-") && runtime_model_name(id).is_some()
+}
+pub fn is_omnipose(id: &str) -> bool {
+    id.starts_with("omni-") && runtime_model_name(id).is_some()
+}
 
 /// Exact Python-side model name for a supported app id.
 pub fn runtime_model_name(model_id: &str) -> Option<&'static str> {
     match model_id {
+        "custom-cellpose" => Some("custom-cellpose"),
+        "custom-stardist" => Some("custom-stardist"),
         "cpsam_v2" => Some("cpsam"),
-        "cp-cyto3" => Some("cyto3"),
+        "cp4-cpsam" => Some("cpsam"),
+        "cp4-cpsam_v2" => Some("cpsam_v2"),
+        "cp4-cpdino" => Some("cpdino"),
+        "cp4-cpdino-vitb" => Some("cpdino-vitb"),
+        "cp-cyto3" | "cp-cyto3-r" => Some("cyto3"),
+        "cp-cyto2" => Some("cyto2"),
+        "cp-nuclei" => Some("nuclei"),
+        "sd-he" => Some("2D_versatile_he"),
+        "sd-dsb2018" => Some("2D_paper_dsb2018"),
+        "cw-otsu" => Some("cw-otsu"),
+        "cw-triangle" => Some("cw-triangle"),
+        "cw-adaptive" => Some("cw-adaptive"),
+        "cw-manual" => Some("cw-manual"),
+        "omni-bact-phase" => Some("bact_phase_omni"),
+        "omni-bact-fluor" => Some("bact_fluor_omni"),
+        "omni-cyto2" => Some("cyto2_omni"),
         "sd-fluo" => Some("2D_versatile_fluo"),
         _ => None,
     }
@@ -230,11 +293,11 @@ pub fn is_supported_model(model_id: &str) -> bool {
 /// than the base cyto3 env. The frozen contract fixes the SAM id as bare
 /// `cpsam` (no `cp-` prefix), so the test is on the prefix-stripped slug.
 pub fn is_cellpose_sam(model_id: &str) -> bool {
-    model_id == "cpsam_v2"
+    model_id == "cpsam_v2" || model_id.starts_with("cp4-")
 }
 
 pub fn is_stardist(model_id: &str) -> bool {
-    model_id == "sd-fluo"
+    model_id.starts_with("sd-") || model_id == "custom-stardist"
 }
 
 /// Version-aware `import cellpose` probe for the Cellpose-SAM (`cellpose>=4`)
@@ -266,7 +329,18 @@ fn resolve_sidecar(
     store: &FileStore,
     model_id: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    if is_cellpose_sam(model_id) {
+    if model_id == "custom-cellpose" || model_id == "custom-stardist" {
+        let python = if model_id == "custom-stardist" {
+            store.venv_stardist_python()
+        } else {
+            store.venv_python()
+        };
+        let script = store.python_script("custom_detect.py");
+        if !python.is_file() || !script.is_file() {
+            return Err("Install the matching Cellpose or StarDist runtime first".into());
+        }
+        Ok((python, script))
+    } else if is_cellpose_sam(model_id) {
         let python = store.venv4_python();
         let script = store.python_script("cellpose4_detect.py");
         if !script.exists() {
@@ -286,7 +360,22 @@ fn resolve_sidecar(
             return Err("StarDist Python environment is not installed".into());
         }
         Ok((python, script))
-    } else if model_id == "cp-cyto3" {
+    } else if is_classical(model_id) || is_omnipose(model_id) {
+        let python = if is_omnipose(model_id) {
+            store.venv_omni_python()
+        } else {
+            store.venv_python()
+        };
+        let script = store.python_script(if is_omnipose(model_id) {
+            "omnipose_detect.py"
+        } else {
+            "classical_detect.py"
+        });
+        if !python.is_file() || !script.is_file() {
+            return Err("The selected detector environment is not installed".into());
+        }
+        Ok((python, script))
+    } else if ["cp-cyto3", "cp-cyto3-r", "cp-cyto2", "cp-nuclei"].contains(&model_id) {
         let python = store.venv_python();
         let script = store.python_script("cellpose_detect.py");
         if !script.exists() {
@@ -339,9 +428,16 @@ pub(crate) fn resolve_helper_python(store: &FileStore) -> Option<std::path::Path
 ///
 /// (`--restore` is cp-cyto3-r only; not in v1, so never emitted.)
 fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -> Vec<String> {
-    let model = runtime_model_name(&p.model_id)
-        .expect("build_argv is only called after model allowlist validation")
-        .to_string();
+    let custom = p.model_id.starts_with("custom-");
+    let model = if custom {
+        p.checkpoint_path
+            .clone()
+            .expect("Custom checkpoints resolve from the private registry")
+    } else {
+        runtime_model_name(&p.model_id)
+            .expect("Validated model identity")
+            .to_string()
+    };
 
     let mut args: Vec<String> = vec![
         script.to_string_lossy().into_owned(),
@@ -355,16 +451,38 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
         p.confidence_threshold.to_string(),
         "--z-project".into(),
         p.z_projection.clone(),
+        "--preprocessing-preset".into(),
+        p.preprocessing_preset
+            .clone()
+            .unwrap_or_else(|| "none".into()),
     ];
     if let Some(channel) = p.segment_channel {
         args.push("--segment-channel".into());
         args.push(channel.to_string());
     }
-    if let Some(checkpoint) = p.checkpoint_path.as_deref() {
+    if let Some(checkpoint) = p
+        .checkpoint_path
+        .as_deref()
+        .filter(|_| !p.model_id.starts_with("custom-"))
+    {
         args.push("--checkpoint".into());
         args.push(checkpoint.to_string());
     }
 
+    if p.model_id.starts_with("custom-") {
+        args.extend([
+            "--custom-kind".into(),
+            if p.model_id == "custom-stardist" {
+                "stardist"
+            } else {
+                "cellpose"
+            }
+            .into(),
+        ]);
+    }
+    if p.model_id == "cp-cyto3-r" {
+        args.push("--restore".into());
+    }
     let is_default_channels = p.channels == [0, 0];
     if !is_stardist(&p.model_id) && !is_default_channels {
         args.push("--channels".into());
@@ -394,6 +512,12 @@ fn build_argv(script: &std::path::Path, image_path: &str, p: &DetectionParams) -
     if !is_stardist(&p.model_id) && !p.use_gpu {
         args.push("--no-gpu".into());
     }
+    if p.model_id == "cw-manual" {
+        args.extend([
+            "--threshold-value".into(),
+            p.classical_threshold.unwrap_or(128.0).to_string(),
+        ]);
+    }
     args
 }
 
@@ -418,11 +542,18 @@ fn build_serve_argv(script: &std::path::Path, p: &DetectionParams) -> Vec<String
         "--pxPerUm".into(),
         p.px_per_um.to_string(),
     ];
-    if let Some(checkpoint) = p.checkpoint_path.as_deref() {
+    if let Some(checkpoint) = p
+        .checkpoint_path
+        .as_deref()
+        .filter(|_| !p.model_id.starts_with("custom-"))
+    {
         args.push("--checkpoint".into());
         args.push(checkpoint.to_string());
     }
 
+    if p.model_id == "cp-cyto3-r" {
+        args.push("--restore".into());
+    }
     let is_default_channels = p.channels == [0, 0];
     if !is_default_channels {
         args.push("--channels".into());
@@ -443,8 +574,18 @@ fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String 
     let mut map = serde_json::Map::new();
     map.insert("id".into(), serde_json::json!(id));
     map.insert("image".into(), serde_json::json!(image_path));
+    map.insert(
+        "preprocessing_preset".into(),
+        serde_json::json!(p
+            .preprocessing_preset
+            .clone()
+            .unwrap_or_else(|| "none".into())),
+    );
     map.insert("z_project".into(), serde_json::json!(p.z_projection));
-    map.insert("segment_channel".into(), serde_json::json!(p.segment_channel));
+    map.insert(
+        "segment_channel".into(),
+        serde_json::json!(p.segment_channel),
+    );
     map.insert("conf".into(), serde_json::json!(p.confidence_threshold));
     map.insert("pxPerUm".into(), serde_json::json!(p.px_per_um));
     map.insert(
@@ -458,7 +599,10 @@ fn build_request_json(id: u64, image_path: &str, p: &DetectionParams) -> String 
     if p.expected_diameter_um > 0.0 {
         map.insert("diameter".into(), serde_json::json!(p.expected_diameter_um));
     }
-    map.insert("bg_subtract".into(), serde_json::json!(p.background_subtract));
+    map.insert(
+        "bg_subtract".into(),
+        serde_json::json!(p.background_subtract),
+    );
     map.insert(
         "rolling_ball_radius".into(),
         serde_json::json!(p.rolling_ball_radius),
@@ -485,11 +629,13 @@ fn config_signature(p: &DetectionParams) -> String {
     let model = runtime_model_name(&p.model_id)
         .expect("config_signature is only called after model allowlist validation");
     format!(
-        "model={model}|checkpoint={}|gpu={}|channels={},{}",
+        "model={model}|restore={}|checkpoint={}|gpu={}|channels={},{}|identity={}",
+        p.model_id == "cp-cyto3-r",
         p.checkpoint_path.as_deref().unwrap_or("base"),
         p.use_gpu,
         p.channels[0],
-        p.channels[1]
+        p.channels[1],
+        p.runtime_identity_key.as_deref().unwrap_or("uncaptured")
     )
 }
 
@@ -508,13 +654,19 @@ fn resolve_derived_checkpoint(
     let checkpoint = std::fs::canonicalize(&raw)
         .map_err(|error| format!("The selected checkpoint is missing: {error}"))?;
     if !checkpoint.is_file() || !checkpoint.starts_with(&models_dir) {
-        return Err("The selected checkpoint is not a regular file inside CellCounter's model store.".to_string());
+        return Err(
+            "The selected checkpoint is not a regular file inside CellCounter's model store."
+                .to_string(),
+        );
     }
     Ok(Some(checkpoint.to_string_lossy().into_owned()))
 }
 
 fn enforce_windows_runtime_contract(params: &mut DetectionParams) {
     params.checkpoint_path = None;
+    params.runtime_identity_key = None;
+    params.runtime_cancel_flag = None;
+    params.runtime_cancel_notify = None;
     params.use_gpu = false;
 }
 
@@ -568,6 +720,30 @@ pub async fn run_detection(
     run_id: String,
 ) -> Result<DetectionResultDto, DetectionErrorDto> {
     let store = FileStore::from_app(&app).map_err(|_| DetectionErrorDto::ImageDecodeFailed)?;
+    let invalid = || DetectionErrorDto::SidecarFailed {
+        exit_code: 2,
+        stderr: "Invalid analysis parameters or model identity".into(),
+    };
+    uuid::Uuid::parse_str(&run_id).map_err(|_| invalid())?;
+    if params.model_id == "custom-cellpose"
+        || params.model_id == "custom-stardist"
+        || !params.px_per_um.is_finite()
+        || params.px_per_um <= 0.0
+        || !params.confidence_threshold.is_finite()
+        || !(0.0..=1.0).contains(&params.confidence_threshold)
+        || !params.small_threshold_um.is_finite()
+        || !params.large_threshold_um.is_finite()
+        || params.small_threshold_um < 0.0
+        || params.large_threshold_um <= params.small_threshold_um
+        || !params.expected_diameter_um.is_finite()
+        || params.expected_diameter_um < 0.0
+        || params.classical_threshold.is_some_and(|v| !v.is_finite())
+        || !["none", "clahe", "denoise", "normalize"]
+            .contains(&params.preprocessing_preset.as_deref().unwrap_or("none"))
+    {
+        return Err(invalid());
+    }
+
     if !["max", "mean", "sum", "none"].contains(&params.z_projection.as_str()) {
         return Err(DetectionErrorDto::SidecarFailed {
             exit_code: 2,
@@ -575,13 +751,40 @@ pub async fn run_detection(
         });
     }
     crate::env::uv::stage_python_project(&app, &store).map_err(|stderr| {
-        DetectionErrorDto::SidecarFailed { exit_code: -1, stderr }
+        DetectionErrorDto::SidecarFailed {
+            exit_code: -1,
+            stderr,
+        }
     })?;
     let requested_model_id = params.model_id.clone();
     // `checkpointPath` is an internal trust-boundary field. Never honor a value
     // deserialized from IPC; only the canonical DB lineage lookup below may set it.
     enforce_windows_runtime_contract(&mut params);
-    if requested_model_id.starts_with("cp-cyto3@") {
+    let mut custom_checkpoint_identity = None;
+    if requested_model_id.starts_with("custom-") {
+        let model = {
+            let conn = db
+                .connection()
+                .map_err(|stderr| DetectionErrorDto::SidecarFailed {
+                    exit_code: 3,
+                    stderr,
+                })?;
+            crate::parity::custom_model(&conn, &store, &requested_model_id).map_err(|stderr| {
+                DetectionErrorDto::SidecarFailed {
+                    exit_code: 3,
+                    stderr,
+                }
+            })?
+        };
+        custom_checkpoint_identity = model["sha256"].as_str().map(str::to_owned);
+        params.checkpoint_path = model["path"].as_str().map(str::to_owned);
+        params.model_id = if model["kind"] == "stardist" {
+            "custom-stardist"
+        } else {
+            "custom-cellpose"
+        }
+        .into();
+    } else if requested_model_id.starts_with("cp-cyto3@") {
         params.checkpoint_path = resolve_derived_checkpoint(&db, &store, &requested_model_id)
             .map_err(|_| DetectionErrorDto::ModelNotInstalled {
                 model_id: requested_model_id.clone(),
@@ -594,19 +797,183 @@ pub async fn run_detection(
             model_id: params.model_id.clone(),
         }
     })?;
-
+    let snapshot_model = if requested_model_id.starts_with("cp-cyto3@") {
+        "cp-cyto3"
+    } else {
+        &requested_model_id
+    };
+    let snapshot_path = crate::env::uv::runtime_snapshot_path(&store, snapshot_model);
+    let custom = requested_model_id.starts_with("custom-");
+    let snapshot_exists = snapshot_path.is_file();
+    let probe_args = if custom || (!snapshot_exists && is_classical(&params.model_id)) {
+        None
+    } else {
+        Some(
+            crate::env::uv::runtime_snapshot_args(&store, snapshot_model, true).map_err(
+                |stderr| DetectionErrorDto::SidecarFailed {
+                    exit_code: 3,
+                    stderr,
+                },
+            )?,
+        )
+    };
     // Source projection can be slow for a vendor stack. Register cancellation
     // before opening its reader, and retain its temporary TIFF until inference
     // finishes; concurrent runs never replace one another's selected plane.
     let preparation_cancelled = Arc::new(AtomicBool::new(false));
     let preparation_notify = Arc::new(Notify::new());
-    app.state::<SidecarManager>().running.lock().await.insert(run_id.clone(), RunHandle {
-        cancel_flag: preparation_cancelled.clone(),
-        kill: KillHandle::OneShot(preparation_notify.clone()),
-    });
+    params.runtime_cancel_flag = Some(preparation_cancelled.clone());
+    params.runtime_cancel_notify = Some(preparation_notify.clone());
+    register_run(
+        &app,
+        &run_id,
+        RunHandle {
+            cancel_flag: preparation_cancelled.clone(),
+            kill: KillHandle::OneShot(preparation_notify.clone()),
+        },
+    )
+    .await;
+    if preparation_cancelled.load(Ordering::SeqCst) {
+        deregister_run(&app, &run_id).await;
+        return Err(DetectionErrorDto::Cancelled);
+    }
+    let source_identity = match verified_source_identity(&db, &store, &image_path, preparation_cancelled.clone()).await {
+        Ok(identity) => identity,
+        Err(error) => { deregister_run(&app, &run_id).await; return Err(error); }
+    };
+    // Probe actual package versions and checkpoint bytes before using a cached
+    // worker. A changed environment/checkpoint/script gets a distinct pool key.
+    let mut probe = Command::new(&python);
+    if custom || (!snapshot_exists && is_classical(&params.model_id)) {
+        let package_names = if params.model_id == "custom-stardist" {
+            "['stardist','csbdeep','tensorflow','numpy']"
+        } else if is_classical(&params.model_id) {
+            "['scikit-image','scipy','numpy']"
+        } else {
+            "['cellpose','torch','numpy']"
+        };
+        probe.args(["-c",&format!("import importlib.metadata as m,json;print(json.dumps({{n:m.version(n) for n in {package_names}}}))")]);
+    } else {
+        probe.args(
+            probe_args
+                .as_ref()
+                .expect("Built-in probe arguments were validated"),
+        );
+    }
+    probe
+        .current_dir(store.python_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut probe);
+    let probe_result = tokio::select! {
+        biased;
+        _=preparation_notify.notified()=>Err(DetectionErrorDto::Cancelled),
+        value=tokio::time::timeout(Duration::from_secs(120),probe.output())=>match value {
+            Ok(Ok(output)) if output.status.success()=>Ok(output),
+            Ok(Ok(output))=>Err(DetectionErrorDto::SidecarFailed{exit_code:3,stderr:String::from_utf8_lossy(&output.stderr).into_owned()}),
+            Ok(Err(error))=>Err(DetectionErrorDto::SidecarFailed{exit_code:3,stderr:error.to_string()}),
+            Err(_)=>Err(DetectionErrorDto::SidecarFailed{exit_code:3,stderr:"Exact runtime/checkpoint verification timed out".into()}),
+        }
+    };
+    let probe_output = match probe_result {
+        Ok(output) => output,
+        Err(error) => {
+            deregister_run(&app, &run_id).await;
+            return Err(error);
+        }
+    };
+    if preparation_cancelled.load(Ordering::SeqCst) {
+        deregister_run(&app, &run_id).await;
+        return Err(DetectionErrorDto::Cancelled);
+    }
+    let identity_result = (|| -> Result<serde_json::Value, DetectionErrorDto> {
+        let mut runtime_identity = if custom || !snapshot_exists {
+            serde_json::json!({"schemaVersion":1,"packages":serde_json::from_slice::<serde_json::Value>(&probe_output.stdout).map_err(|e|DetectionErrorDto::SidecarFailed{exit_code:3,stderr:e.to_string()})?})
+        } else {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&snapshot_path).map_err(
+                |e| DetectionErrorDto::SidecarFailed {
+                    exit_code: 3,
+                    stderr: e.to_string(),
+                },
+            )?)
+            .map_err(|e| DetectionErrorDto::SidecarFailed {
+                exit_code: 3,
+                stderr: e.to_string(),
+            })?
+        };
+        runtime_identity["modelId"] = serde_json::json!(requested_model_id);
+        runtime_identity["modelFamily"] = serde_json::json!(if is_stardist(&params.model_id) { "stardist" } else if is_classical(&params.model_id) { "classical" } else if is_omnipose(&params.model_id) { "omnipose" } else { "cellpose" });
+        if let Some(checkpoint) = params.checkpoint_path.as_deref() {
+            let digest = if let Some(identity) = custom_checkpoint_identity.as_ref() {
+                identity.clone()
+            } else {
+                crate::parity::checkpoint_digest(std::path::Path::new(checkpoint)).map_err(
+                    |stderr| DetectionErrorDto::SidecarFailed {
+                        exit_code: 3,
+                        stderr,
+                    },
+                )?
+            };
+            runtime_identity["selectedCheckpointSha256"] = serde_json::json!(digest);
+        }
+        let mut key = runtime_identity.to_string();
+        key.push_str(&python.to_string_lossy());
+        for member in [
+            script.clone(),
+            store.python_script("_cellpose_common.py"),
+            store.python_script("_imageio.py"),
+            store.python_script("_preprocessing.py"),
+        ] {
+            key.push_str(
+                &crate::parity::checkpoint_digest(&member).map_err(|stderr| {
+                    DetectionErrorDto::SidecarFailed {
+                        exit_code: 3,
+                        stderr,
+                    }
+                })?,
+            );
+        }
+        use sha2::Digest;
+        params.runtime_identity_key = Some(format!("{:x}", sha2::Sha256::digest(key.as_bytes())));
+        runtime_identity["implementationSha256"] = serde_json::json!(params.runtime_identity_key);
+        if let Some(checkpoints) = runtime_identity["checkpoints"].as_array_mut() {
+            for checkpoint in checkpoints {
+                if let Some(map) = checkpoint.as_object_mut() {
+                    if let Some(path) = map.remove("path") {
+                        map.insert(
+                            "fileName".into(),
+                            serde_json::json!(path
+                                .as_str()
+                                .and_then(|p| std::path::Path::new(p).file_name())
+                                .map(|p| p.to_string_lossy().into_owned())),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(runtime_identity)
+    })();
+    let runtime_identity = match identity_result {
+        Ok(value) => value,
+        Err(error) => {
+            deregister_run(&app, &run_id).await;
+            return Err(error);
+        }
+    };
     let source = crate::images::projection::prepare(
-        &db, &store, &image_path, &params.z_projection, &preparation_notify,
-    ).await.map_err(|stderr| DetectionErrorDto::SidecarFailed { exit_code: 3, stderr });
+        &db,
+        &store,
+        &image_path,
+        &params.z_projection,
+        &preparation_notify,
+    )
+    .await
+    .map_err(|stderr| DetectionErrorDto::SidecarFailed {
+        exit_code: 3,
+        stderr,
+    });
     deregister_run(&app, &run_id).await;
     if preparation_cancelled.load(Ordering::SeqCst) {
         return Err(DetectionErrorDto::Cancelled);
@@ -617,8 +984,12 @@ pub async fn run_detection(
     // StarDist's public API is one-shot only. Do not attempt the Cellpose
     // `--serve` handshake (and do not hide a failed handshake behind a retry):
     // route it directly to the cancellable one-shot runner.
-    if is_stardist(&params.model_id) {
-        return run_one_shot(
+    if is_stardist(&params.model_id)
+        || is_classical(&params.model_id)
+        || is_omnipose(&params.model_id)
+        || params.model_id.starts_with("custom-")
+    {
+        let mut result = run_one_shot(
             &app,
             &python,
             &script,
@@ -627,16 +998,28 @@ pub async fn run_detection(
             &params,
             &run_id,
         )
-        .await;
+        .await?;
+        verify_completed_source(&app, &run_id, source_identity, preparation_cancelled.clone(), preparation_notify.clone()).await?;
+        result.runtime_identity = Some(runtime_identity);
+        return Ok(result);
     }
 
-    // Each path registers the run in the cancel registry only once it owns a
-    // process, so a cancel that arrives before then is a harmless no-op (the
-    // transport can re-issue it). Try the warm-worker path first; on any
+    // Shared cancellation state and bounded early tombstones cover the handoff
+    // between preparation and either inference runner. Try the warm-worker path first; on any
     // worker-side malfunction fall back to the one-shot spawn so detection never
     // fully breaks. A structured per-image error from the worker is surfaced
     // directly (not retried).
-    match run_via_worker(&app, &python, &script, &store, &image_path, &params, &run_id).await {
+    let mut result = match run_via_worker(
+        &app,
+        &python,
+        &script,
+        &store,
+        &image_path,
+        &params,
+        &run_id,
+    )
+    .await
+    {
         Ok(dto) => Ok(dto),
         Err(WorkerAttempt::Cancelled) => Err(DetectionErrorDto::Cancelled),
         Err(WorkerAttempt::SidecarError(dto)) => {
@@ -651,9 +1034,79 @@ pub async fn run_detection(
                 "[sidecar] warm-worker path unavailable ({reason}); \
                  falling back to one-shot spawn for run {run_id}"
             );
-            run_one_shot(&app, &python, &script, &store, &image_path, &params, &run_id).await
+            run_one_shot(
+                &app,
+                &python,
+                &script,
+                &store,
+                &image_path,
+                &params,
+                &run_id,
+            )
+            .await
         }
+    }?;
+    verify_completed_source(&app, &run_id, source_identity, preparation_cancelled.clone(), preparation_notify.clone()).await?;
+    result.runtime_identity = Some(runtime_identity);
+    Ok(result)
+}
+
+async fn verify_completed_source(app: &AppHandle, run_id: &str, source: (std::path::PathBuf, String), cancelled: Arc<AtomicBool>, notify: Arc<Notify>) -> Result<(), DetectionErrorDto> {
+    // Keep cancellation available while the final streaming source check runs;
+    // a cancellation in the inference handoff gap is consumed as a tombstone.
+    register_run(app, run_id, RunHandle { cancel_flag: cancelled.clone(), kill: KillHandle::OneShot(notify) }).await;
+    let result=verify_source_bytes(source.0,source.1,cancelled.clone()).await;
+    deregister_run(app,run_id).await;
+    if cancelled.load(Ordering::SeqCst) { return Err(DetectionErrorDto::Cancelled); }
+    result
+}
+
+async fn verified_source_identity(db: &Db, store: &FileStore, input: &str, cancelled: Arc<AtomicBool>) -> Result<(std::path::PathBuf, String), DetectionErrorDto> {
+    use rusqlite::OptionalExtension;
+    let invalid = |message: String| DetectionErrorDto::SidecarFailed { exit_code: 3, stderr: message };
+    let requested = std::path::Path::new(input);
+    let stem = requested.file_stem().and_then(|name| name.to_str()).ok_or_else(|| invalid("Analysis requires an imported source image".into()))?;
+    let record: Option<(String, String, Option<String>, Option<String>, Option<String>)> = {
+        let conn = db.connection().map_err(invalid)?;
+        conn.query_row("SELECT id,file_name,stored_ext,analysis_path,file_hash FROM images WHERE id=?1 OR analysis_path=?2", rusqlite::params![stem,input], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|error| invalid(error.to_string()))?
+    };
+    let (id, name, stored_ext, analysis, hash) = record.ok_or_else(|| invalid("Analysis requires an imported source image".into()))?;
+    let extension = std::path::Path::new(&name).extension().and_then(|ext| ext.to_str()).unwrap_or("tif");
+    let (permitted, source) = if let Some(path) = analysis {
+        (std::path::PathBuf::from(path), store.original_path(&id, extension))
+    } else {
+        let path = store.image_path(&id, stored_ext.as_deref().unwrap_or(extension));
+        (path.clone(), path)
+    };
+    if requested.canonicalize().map_err(|error| invalid(error.to_string()))? != permitted.canonicalize().map_err(|error| invalid(error.to_string()))? {
+        return Err(invalid("Analysis path does not match its imported source".into()));
     }
+    let hash = hash.filter(|value| value.len()==64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())).ok_or_else(|| invalid("This historical image has no immutable source SHA-256; reimport it before analysis".into()))?;
+    verify_source_bytes(source.clone(), hash.clone(), cancelled).await?;
+    Ok((source,hash))
+}
+
+async fn verify_source_bytes(path: std::path::PathBuf, expected: String, cancelled: Arc<AtomicBool>) -> Result<(), DetectionErrorDto> {
+    tokio::task::spawn_blocking(move || {
+        use sha2::Digest;
+        use std::io::Read;
+        let invalid = |message: String| DetectionErrorDto::SidecarFailed { exit_code: 3, stderr: message };
+        let mut file = std::fs::File::open(&path).map_err(|error| invalid(error.to_string()))?;
+        let before = file.metadata().map_err(|error| invalid(error.to_string()))?;
+        let mut hash = sha2::Sha256::new();
+        let mut bytes = [0u8;65536];
+        loop {
+            if cancelled.load(Ordering::SeqCst) { return Err(DetectionErrorDto::Cancelled); }
+            let count = file.read(&mut bytes).map_err(|error| invalid(error.to_string()))?;
+            if count == 0 { break; }
+            hash.update(&bytes[..count]);
+        }
+        let after = std::fs::metadata(&path).map_err(|error| invalid(error.to_string()))?;
+        if before.len()!=after.len() || before.modified().ok()!=after.modified().ok() || !format!("{:x}",hash.finalize()).eq_ignore_ascii_case(&expected) {
+            return Err(invalid("The preserved source changed after import; reimport it before analysis".into()));
+        }
+        Ok(())
+    }).await.map_err(|error| DetectionErrorDto::SidecarFailed { exit_code:3, stderr:error.to_string() })?
 }
 
 /// Outcome of an attempt to service a request via the warm-worker pool.
@@ -699,19 +1152,23 @@ async fn run_via_worker(
     //    minutes — exactly the (slowest, first) image a user is most likely to
     //    cancel. We register with a `Notify` kill handle the spawn loop selects
     //    on, then UPGRADE the handle to the real child once the worker is up.
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let cancel_notify = Arc::new(Notify::new());
-    {
-        let mgr = app.state::<SidecarManager>();
-        let mut running = mgr.running.lock().await;
-        running.insert(
-            run_id.to_string(),
-            RunHandle {
-                cancel_flag: cancel_flag.clone(),
-                kill: KillHandle::OneShot(cancel_notify.clone()),
-            },
-        );
-    }
+    let cancel_flag = params
+        .runtime_cancel_flag
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel_notify = params
+        .runtime_cancel_notify
+        .clone()
+        .unwrap_or_else(|| Arc::new(Notify::new()));
+    register_run(
+        app,
+        run_id,
+        RunHandle {
+            cancel_flag: cancel_flag.clone(),
+            kill: KillHandle::OneShot(cancel_notify.clone()),
+        },
+    )
+    .await;
 
     // Get a warm worker: pop an idle one from the pool (and point its pump at
     // this run), else spawn + await ready with the pump already attached. The
@@ -811,10 +1268,12 @@ async fn run_via_worker(
                 Some(h) => format!("{error}: {h}"),
                 None => error,
             };
-            Err(WorkerAttempt::SidecarError(DetectionErrorDto::SidecarFailed {
-                exit_code: 0,
-                stderr: combined,
-            }))
+            Err(WorkerAttempt::SidecarError(
+                DetectionErrorDto::SidecarFailed {
+                    exit_code: 0,
+                    stderr: combined,
+                },
+            ))
         }
         Converse::Cancelled => {
             kill_worker(&worker).await;
@@ -837,14 +1296,16 @@ async fn run_via_worker(
                      NOT re-running one-shot (would double the eval)",
                     run_id, reason
                 );
-                Err(WorkerAttempt::SidecarError(DetectionErrorDto::SidecarFailed {
-                    exit_code: -1,
-                    stderr: format!(
-                        "The detection worker stopped responding after the image was \
+                Err(WorkerAttempt::SidecarError(
+                    DetectionErrorDto::SidecarFailed {
+                        exit_code: -1,
+                        stderr: format!(
+                            "The detection worker stopped responding after the image was \
                          sent ({reason}). The image was not re-run automatically to \
                          avoid doubling the work; try running it again."
-                    ),
-                }))
+                        ),
+                    },
+                ))
             } else {
                 // The worker never accepted the request (stdin write/flush error)
                 // — safe to fall back to a fresh one-shot spawn with no risk of
@@ -858,7 +1319,10 @@ async fn run_via_worker(
 /// Result of one request/response exchange with a warm worker.
 enum Converse {
     Result(SidecarPayload),
-    SidecarError { error: String, hint: Option<String> },
+    SidecarError {
+        error: String,
+        hint: Option<String>,
+    },
     Cancelled,
     /// The exchange failed. `dispatched` records whether the request line was
     /// already written+flushed into the worker's stdin before the failure:
@@ -869,7 +1333,10 @@ enum Converse {
     ///     (EOF / read error / timeout AFTER a successful write). A one-shot
     ///     retry would then run the most expensive work in the app twice, so the
     ///     caller does NOT retry; it surfaces the failure instead.
-    Broken { reason: String, dispatched: bool },
+    Broken {
+        reason: String,
+        dispatched: bool,
+    },
 }
 
 /// Write the request line, then read stdout frames until we see our `id`.
@@ -1039,14 +1506,12 @@ async fn take_or_spawn_worker(
     {
         let mgr = app.state::<SidecarManager>();
         let mut pool = mgr.pool.lock().await;
-        if let Some(bucket) = pool.get_mut(sig) {
-            if let Some(worker) = bucket.pop() {
-                {
-                    let mut active = worker.active.lock().await;
-                    *active = Some(initial_active.clone());
-                }
-                return Ok(worker);
-            }
+        let idle = pool.get_mut(sig).and_then(|bucket| bucket.pop());
+        pool.retain(|_, bucket| !bucket.is_empty());
+        if let Some(worker) = idle {
+            drop(pool);
+            *worker.active.lock().await = Some(initial_active.clone());
+            return Ok(worker);
         }
     }
     // Slow path: spawn a new one and await ready. `params` carries the
@@ -1116,8 +1581,7 @@ async fn spawn_worker(
     // Start the pump ALREADY attached to the first run so the cold-start
     // `using device:` / stage lines printed during model build (before `ready`)
     // are forwarded to that run instead of dropped.
-    let active: Arc<Mutex<Option<ActiveRun>>> =
-        Arc::new(Mutex::new(Some(initial_active.clone())));
+    let active: Arc<Mutex<Option<ActiveRun>>> = Arc::new(Mutex::new(Some(initial_active.clone())));
 
     // Start the stderr pump: routes lines to whatever run is active. Lives for
     // the worker's lifetime, ends on stderr EOF (worker exit).
@@ -1170,11 +1634,15 @@ async fn spawn_worker(
     // A structured model/download failure is already conclusive. Do not hide
     // it behind a second one-shot download; expose its recovery hint at once.
     if let Ok(error) = serde_json::from_str::<SidecarError>(trimmed) {
-        return Err(SpawnOutcome::SidecarError(DetectionErrorDto::SidecarFailed {
-            exit_code: 4,
-            stderr: error.hint.map(|hint| format!("{}: {hint}", error.error))
-                .unwrap_or(error.error),
-        }));
+        return Err(SpawnOutcome::SidecarError(
+            DetectionErrorDto::SidecarFailed {
+                exit_code: 4,
+                stderr: error
+                    .hint
+                    .map(|hint| format!("{}: {hint}", error.error))
+                    .unwrap_or(error.error),
+            },
+        ));
     }
     let ok = serde_json::from_str::<serde_json::Value>(trimmed)
         .ok()
@@ -1251,13 +1719,33 @@ async fn emit_worker_stderr_line(
 /// it (which, via `kill_on_drop`, terminates the process).
 async fn return_worker_to_pool(app: &AppHandle, worker: Worker) {
     let cap = pool_capacity();
-    let mgr = app.state::<SidecarManager>();
-    let mut pool = mgr.pool.lock().await;
-    let bucket = pool.entry(worker.config_sig.clone()).or_default();
-    if bucket.len() < cap {
-        bucket.push(worker);
+    let manager = app.state::<SidecarManager>();
+    let mut evicted = Vec::new();
+    {
+        let mut pool = manager.pool.lock().await;
+        pool.retain(|_, bucket| !bucket.is_empty());
+        // Prefer the most recently requested model and evict old runtime keys.
+        let stale: Vec<String> = pool
+            .keys()
+            .filter(|key| *key != &worker.config_sig)
+            .cloned()
+            .collect();
+        for key in stale {
+            if let Some(bucket) = pool.remove(&key) {
+                evicted.extend(bucket);
+            }
+        }
+        let bucket = pool.entry(worker.config_sig.clone()).or_default();
+        if bucket.len() < cap {
+            bucket.push(worker);
+        } else {
+            evicted.push(worker);
+        }
     }
-    // else: bucket full — `worker` drops here, `kill_on_drop` reaps the process.
+    // Process termination never holds the pool lock.
+    for worker in evicted {
+        kill_worker(&worker).await;
+    }
 }
 
 /// Kill a worker's child immediately (cross-platform TerminateProcess/SIGKILL).
@@ -1311,34 +1799,46 @@ async fn run_one_shot(
     }
     crate::proc::hide_console_tokio(&mut cmd);
 
-    let mut child: Child = cmd
-        .spawn()
-        .map_err(|e| DetectionErrorDto::SidecarFailed {
-            exit_code: -1,
-            stderr: format!("failed to spawn sidecar: {e}"),
-        })?;
+    let cancel_flag = params
+        .runtime_cancel_flag
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel_notify = params
+        .runtime_cancel_notify
+        .clone()
+        .unwrap_or_else(|| Arc::new(Notify::new()));
+
+    // Register the run so cancel_detection can signal this child. The one-shot
+    // body owns the `Child` and `select!`s on `cancel_notify` to kill it.
+    register_run(
+        app,
+        run_id,
+        RunHandle {
+            cancel_flag: cancel_flag.clone(),
+            kill: KillHandle::OneShot(cancel_notify.clone()),
+        },
+    )
+    .await;
+
+    if cancel_flag.load(Ordering::SeqCst) {
+        deregister_run(app, run_id).await;
+        return Err(DetectionErrorDto::Cancelled);
+    }
+    let mut child: Child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            deregister_run(app, run_id).await;
+            return Err(DetectionErrorDto::SidecarFailed {
+                exit_code: -1,
+                stderr: format!("failed to spawn sidecar: {error}"),
+            });
+        }
+    };
 
     // Take the pipes out; the `Child` stays owned by this function so its
     // `wait()` needs no shared lock. Cancel reaches us via a `Notify` instead.
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
-
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let cancel_notify = Arc::new(Notify::new());
-
-    // Register the run so cancel_detection can signal this child. The one-shot
-    // body owns the `Child` and `select!`s on `cancel_notify` to kill it.
-    {
-        let mgr = app.state::<SidecarManager>();
-        let mut running = mgr.running.lock().await;
-        running.insert(
-            run_id.to_string(),
-            RunHandle {
-                cancel_flag: cancel_flag.clone(),
-                kill: KillHandle::OneShot(cancel_notify.clone()),
-            },
-        );
-    }
 
     // --- stderr: stream line-by-line as progress events ---
     let event_name = progress_event_name(run_id);
@@ -1505,6 +2005,7 @@ fn flush_stderr_line(
 
 #[tauri::command]
 pub async fn cancel_detection(app: AppHandle, run_id: String) -> Result<(), String> {
+    uuid::Uuid::parse_str(&run_id).map_err(|_| "Detection cancellation ID must be a UUID")?;
     // Snapshot the kill handle under the registry lock, then release it before
     // doing the actual kill so we never hold the registry mutex across a kill.
     let kill = {
@@ -1515,7 +2016,21 @@ pub async fn cancel_detection(app: AppHandle, run_id: String) -> Result<(), Stri
                 handle.cancel_flag.store(true, Ordering::SeqCst);
                 handle.kill.clone()
             }
-            None => return Ok(()), // already finished — nothing to cancel
+            None => {
+                let mut early = mgr.early_cancelled.lock().await;
+                early.retain(|_, time| time.elapsed() < Duration::from_secs(120));
+                if early.len() >= 256 {
+                    if let Some(oldest) = early
+                        .iter()
+                        .min_by_key(|(_, time)| **time)
+                        .map(|(key, _)| key.clone())
+                    {
+                        early.remove(&oldest);
+                    }
+                }
+                early.insert(run_id.clone(), Instant::now());
+                return Ok(());
+            }
         }
     };
     // Cross-platform terminate: TerminateProcess on Windows, SIGKILL on Unix.
@@ -1559,7 +2074,27 @@ pub async fn detection_availability(
     mut model_id: String,
 ) -> Result<Availability, String> {
     let store = FileStore::from_app(&app)?;
-    if model_id.starts_with("cp-cyto3@") {
+    let custom_requested = model_id.starts_with("custom-");
+    if custom_requested {
+        let model = {
+            let conn = db.connection()?;
+            match crate::parity::custom_model(&conn, &store, &model_id) {
+                Ok(model) => model,
+                Err(reason) => {
+                    return Ok(Availability {
+                        installed: false,
+                        reason: Some(reason),
+                    })
+                }
+            }
+        };
+        model_id = if model["kind"] == "stardist" {
+            "sd-fluo"
+        } else {
+            "cp-cyto3"
+        }
+        .into();
+    } else if model_id.starts_with("cp-cyto3@") {
         if let Err(reason) = resolve_derived_checkpoint(&db, &store, &model_id) {
             return Ok(Availability {
                 installed: false,
@@ -1575,13 +2110,16 @@ pub async fn detection_availability(
         return Ok(Availability {
             installed: false,
             reason: Some(format!(
-                "Unsupported model id `{model_id}`. Windows supports cpsam_v2, cp-cyto3, and sd-fluo."
+                "Unsupported model id `{model_id}`. Choose a model from the Windows catalogue."
             )),
         });
     }
 
     if let Err(reason) = crate::env::uv::stage_python_project(&app, &store) {
-        return Ok(Availability { installed: false, reason: Some(reason) });
+        return Ok(Availability {
+            installed: false,
+            reason: Some(reason),
+        });
     }
 
     // Route to the model-appropriate venv python, staged detect script, and
@@ -1598,6 +2136,18 @@ pub async fn detection_availability(
             store.python_script("stardist_detect.py"),
             "import stardist, csbdeep, tensorflow",
         )
+    } else if is_omnipose(&model_id) {
+        (
+            store.venv_omni_python(),
+            store.python_script("omnipose_detect.py"),
+            "import cellpose_omni, omnipose",
+        )
+    } else if is_classical(&model_id) {
+        (
+            store.venv_python(),
+            store.python_script("classical_detect.py"),
+            "import numpy, scipy, skimage, PIL",
+        )
     } else {
         (
             store.venv_python(),
@@ -1609,7 +2159,10 @@ pub async fn detection_availability(
     if !script.exists() {
         return Ok(Availability {
             installed: false,
-            reason: Some("The local analysis script could not be prepared. Restart CellCounter and retry.".into()),
+            reason: Some(
+                "The local analysis script could not be prepared. Restart CellCounter and retry."
+                    .into(),
+            ),
         });
     }
     if !python.exists() {
@@ -1624,23 +2177,33 @@ pub async fn detection_availability(
             }),
         });
     }
-    if stardist && !store.stardist_weights_dir().is_dir() {
+    if stardist
+        && !custom_requested
+        && !store
+            .models_dir()
+            .join("keras/models")
+            .join(runtime_model_name(&model_id).unwrap_or(""))
+            .is_dir()
+    {
         return Ok(Availability {
             installed: false,
             reason: Some(
-                "StarDist fluorescence weights are missing. Reinstall sd-fluo from Models."
-                    .into(),
+                "StarDist fluorescence weights are missing. Reinstall sd-fluo from Models.".into(),
             ),
         });
     }
 
     // Probe importability.
     let mut cmd = Command::new(&python);
-    cmd.args(["-c", probe])
-        .current_dir(store.python_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+    cmd.args(if custom_requested || is_classical(&model_id) {
+        vec!["-c".to_string(), probe.to_string()]
+    } else {
+        crate::env::uv::runtime_snapshot_args(&store, &model_id, true)?
+    })
+    .current_dir(store.python_dir())
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
     crate::proc::hide_console_tokio(&mut cmd);
     let output = cmd
         .output()
@@ -1780,7 +2343,12 @@ mod tests {
     fn params(model_id: &str) -> DetectionParams {
         DetectionParams {
             model_id: model_id.to_string(),
+            classical_threshold: None,
+            preprocessing_preset: None,
             checkpoint_path: None,
+            runtime_identity_key: None,
+            runtime_cancel_flag: None,
+            runtime_cancel_notify: None,
             px_per_um: 2.6,
             confidence_threshold: 0.55,
             channels: [2, 1],
@@ -1815,21 +2383,23 @@ mod tests {
             assert_eq!(value_after(&args, "--segment-channel"), Some("3"));
             assert_eq!(value_after(&args, "--z-project"), Some("sum"));
         }
-        let frame: serde_json::Value = serde_json::from_str(&build_request_json(1, "stack.tiff", &request)).unwrap();
+        let frame: serde_json::Value =
+            serde_json::from_str(&build_request_json(1, "stack.tiff", &request)).unwrap();
         assert_eq!(frame["segment_channel"], 3);
         assert_eq!(frame["z_project"], "sum");
         request.segment_channel = None;
-        let frame: serde_json::Value = serde_json::from_str(&build_request_json(2, "stack.tiff", &request)).unwrap();
+        let frame: serde_json::Value =
+            serde_json::from_str(&build_request_json(2, "stack.tiff", &request)).unwrap();
         assert!(frame["segment_channel"].is_null());
     }
 
     #[test]
     fn windows_model_allowlist_is_exact_and_ordered() {
-        assert_eq!(WINDOWS_MODEL_IDS, ["cpsam_v2", "cp-cyto3", "sd-fluo"]);
+        assert_eq!(WINDOWS_MODEL_IDS.len(), 19);
         assert_eq!(runtime_model_name("cpsam_v2"), Some("cpsam"));
         assert_eq!(runtime_model_name("cp-cyto3"), Some("cyto3"));
         assert_eq!(runtime_model_name("sd-fluo"), Some("2D_versatile_fluo"));
-        for unsupported in ["cpsam", "cyto3", "sd-he", "", "unknown"] {
+        for unsupported in ["cpsam", "cyto3", "", "unknown"] {
             assert_eq!(runtime_model_name(unsupported), None, "{unsupported}");
             assert!(!is_supported_model(unsupported));
         }
@@ -1856,13 +2426,20 @@ mod tests {
         let mut request = params("cp-cyto3");
         request.checkpoint_path = Some(r"C:\CellCounter\Models\v1.ccmodel".to_string());
         let args = build_serve_argv(std::path::Path::new("detect.py"), &request);
-        assert_eq!(value_after(&args, "--checkpoint"), Some(r"C:\CellCounter\Models\v1.ccmodel"));
+        assert_eq!(
+            value_after(&args, "--checkpoint"),
+            Some(r"C:\CellCounter\Models\v1.ccmodel")
+        );
         assert!(config_signature(&request).contains("v1.ccmodel"));
     }
 
     #[test]
     fn cellpose_argv_maps_exact_checkpoint_and_preserves_controls() {
-        let args = build_argv(std::path::Path::new("detect.py"), r"C:\data\cell 1.tif", &params("cp-cyto3"));
+        let args = build_argv(
+            std::path::Path::new("detect.py"),
+            r"C:\data\cell 1.tif",
+            &params("cp-cyto3"),
+        );
         assert_eq!(value_after(&args, "--model"), Some("cyto3"));
         assert_eq!(value_after(&args, "--image"), Some(r"C:\data\cell 1.tif"));
         assert_eq!(value_after(&args, "--channels"), Some("2,1"));
@@ -1873,7 +2450,10 @@ mod tests {
 
     #[test]
     fn cpsam_v2_maps_only_to_cpsam_checkpoint() {
-        let args = build_serve_argv(std::path::Path::new("cellpose4_detect.py"), &params("cpsam_v2"));
+        let args = build_serve_argv(
+            std::path::Path::new("cellpose4_detect.py"),
+            &params("cpsam_v2"),
+        );
         assert_eq!(value_after(&args, "--model"), Some("cpsam"));
         assert!(is_cellpose_sam("cpsam_v2"));
         assert!(!is_cellpose_sam("cpsam"));
@@ -1881,7 +2461,11 @@ mod tests {
 
     #[test]
     fn stardist_argv_never_receives_cellpose_only_flags() {
-        let args = build_argv(std::path::Path::new("stardist_detect.py"), r"D:\images\nuclei.tif", &params("sd-fluo"));
+        let args = build_argv(
+            std::path::Path::new("stardist_detect.py"),
+            r"D:\images\nuclei.tif",
+            &params("sd-fluo"),
+        );
         assert_eq!(value_after(&args, "--model"), Some("2D_versatile_fluo"));
         for forbidden in ["--channels", "--diameter", "--no-gpu"] {
             assert!(!args.iter().any(|v| v == forbidden), "{forbidden}");

@@ -71,6 +71,12 @@ interface CorrectionRow {
  */
 function correctionsFor(event: EditEvent, manualMode: boolean): CorrectionRow[] {
   switch (event.kind) {
+    case "replaced": {
+      const before = new Map(event.before.map(cell => [cell.id, cell]));
+      const after = new Map(event.after.map(cell => [cell.id, cell]));
+      return [...event.before.filter(cell => !after.has(cell.id)).map(cell => ({kind:"remove",cellId:cell.id,cx:cell.cx,cy:cell.cy,diameter:cell.diameterUm})),
+        ...event.after.filter(cell => JSON.stringify(before.get(cell.id)) !== JSON.stringify(cell)).map(cell => ({kind:before.has(cell.id) ? "resize" : "add",cellId:cell.id,cx:cell.cx,cy:cell.cy,diameter:cell.diameterUm}))];
+    }
     case "added":
       return [
         {
@@ -175,6 +181,7 @@ export interface MaskEditorApi {
   reload(): void;
 
   // mutations (all go through the engine; each persists + records corrections)
+  replaceCells(cells: CellDTO[]): void;
   addAt(pt: Pt): void;
   addFromContour(path: Pt[]): void;
   remove(ids: string[]): void;
@@ -382,6 +389,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
   // ── mutations (thin wrappers — the engine.onCommit subscription persists) ──
   const canWrite = useCallback(() => !!imageId && loadedImageId === imageId && !readOnlyRef.current && !isReviewImageBusy(imageId), [imageId, loadedImageId]);
 
+  const replaceCells = useCallback((next: CellDTO[]) => { if (canWrite()) engine?.replaceCells(next); }, [engine, canWrite]);
   const addAt = useCallback((pt: Pt) => { if (canWrite()) engine?.addAt(pt); }, [engine, canWrite]);
   const addFromContour = useCallback(
     (path: Pt[]) => { if (canWrite()) engine?.addFromContour(path); },
@@ -462,6 +470,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
       canRedo: loadedImageId === imageId && canRedo,
       loading: loading || !!imageId && loadedImageId !== imageId,
       saving, saveError, loadError, flush, reload,
+      replaceCells,
       addAt,
       addFromContour,
       remove,
@@ -486,6 +495,7 @@ export function useMaskEditor(args: UseMaskEditorArgs): MaskEditorApi {
       canRedo,
       loading,
       saving, saveError, loadError, flush, reload,
+      replaceCells,
       addAt,
       addFromContour,
       remove,

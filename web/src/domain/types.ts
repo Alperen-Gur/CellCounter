@@ -59,6 +59,10 @@ export interface AnalysisParameters {
   readonly expectedDiameterUm: number | null;
   readonly channels: readonly [number, number];
   readonly sourceChannel?: number;
+  readonly sourceTime?: number;
+  readonly sourceZ?: number;
+  readonly preprocessingPreset?: "none" | "clahe" | "anisotropicDiffusion" | "claheAndDiffusion";
+  readonly taskPreset?: "countCells" | "countNuclei" | "markerPositive" | "woundClosure";
   readonly projection?: "first" | "max" | "mean" | "sum";
   readonly thresholdMethod?: "otsu" | "triangle" | "adaptive" | "manual";
   readonly manualThreshold?: number;

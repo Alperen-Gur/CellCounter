@@ -64,4 +64,23 @@ def apply(img, args):
         else:
             out = _subtract(out)
 
+    preset = getattr(args, "preprocessing_preset", None) or "none"
+    if preset != "none":
+        import numpy as np
+        from skimage import exposure, restoration
+        from scipy import ndimage
+        def transform(plane):
+            data = plane.astype(np.float32)
+            if preset == "clahe":
+                low, high = float(data.min()), float(data.max())
+                return exposure.equalize_adapthist(np.clip((data-low)/max(high-low,1e-6),0,1), clip_limit=0.03)*255
+            if preset == "denoise":
+                return ndimage.median_filter(data,size=3)
+            if preset == "normalize":
+                low,high=np.percentile(data,(1,99)); return np.clip((data-low)/max(float(high-low),1e-6),0,1)*255
+            raise ValueError("Unknown preprocessing preset: " + preset)
+        if out.ndim == 3:
+            out = np.stack([transform(out[...,c]) for c in range(out.shape[2])],axis=2).astype(np.uint8)
+        else:
+            out = transform(out).astype(np.float32)
     return out

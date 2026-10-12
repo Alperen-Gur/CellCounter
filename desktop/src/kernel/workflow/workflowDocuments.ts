@@ -10,6 +10,7 @@ export interface SavedRun {
   task: AnalysisTask;
   calibrationSource: string;
   ranAt: string;
+  runtimeIdentity?: Record<string, unknown>;
 }
 export function loadWorkflowDocument<T>(key: string): Promise<T | null> {
   return invoke("load_workflow_document", { key });

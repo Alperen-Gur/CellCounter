@@ -44,19 +44,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watershed-min-distance", type=int, default=8)
     parser.add_argument("--small-threshold", type=float, default=20.0)
     parser.add_argument("--large-threshold", type=float, default=30.0)
+    parser.add_argument("--preprocessing-preset", choices=("none", "clahe", "denoise", "normalize"), default="none")
     return parser.parse_args()
 
 
-def load_image(path: str, z_project="max", segment_channel=None):
+def load_image(path: str, z_project="max", segment_channel=None, rgb=False):
     import numpy as np
     import _imageio
 
     stack, meta = _imageio.load_planes(path, z_project=z_project, channel=None)
     channels = int(stack.shape[2])
+    if rgb and segment_channel is not None: raise ValueError("H&E requires all RGB source channels; select Automatic")
     if segment_channel is not None:
         if segment_channel < 0 or segment_channel >= channels:
             raise ValueError(f"Source channel {segment_channel} is unavailable; this image has {channels} channels")
         image = stack[..., segment_channel]
+    elif rgb and bool(meta.get("is_rgb")) and channels >= 3:
+        image = stack[..., :3]
+    elif rgb:
+        raise ValueError("H&E requires an RGB source and automatic source-channel selection")
     elif bool(meta.get("is_rgb")) and channels >= 3:
         image = stack[..., :3].mean(axis=2)
     else:
@@ -72,6 +78,7 @@ def qc_stats(image) -> dict[str, float]:
     from scipy.ndimage import laplace
 
     gray = image.astype(np.float64, copy=False)
+    if gray.ndim==3:gray=gray.mean(axis=2)
     focus = min(1.0, max(0.0, float(laplace(gray).var()) / 10000.0))
     h, w = gray.shape
     ys = np.linspace(0, h - 1, min(128, h)).round().astype(int)
@@ -110,7 +117,7 @@ def cells_from_labels(labels, intensity, probabilities, px_per_um: float,
     from skimage.measure import perimeter, regionprops
 
     cells: list[dict] = []
-    props = regionprops(labels, intensity_image=intensity)
+    props = regionprops(labels, intensity_image=intensity.mean(axis=2) if intensity.ndim==3 else intensity)
     for index, prop in enumerate(props):
         if prop.area < 4:
             continue
@@ -167,7 +174,7 @@ def cells_from_labels(labels, intensity, probabilities, px_per_um: float,
 
 def main() -> None:
     args = parse_args()
-    if args.model != MODEL_NAME:
+    if args.model not in ("2D_versatile_fluo", "2D_versatile_he", "2D_paper_dsb2018"):
         fail(
             "unsupported-model",
             f"StarDist sidecar accepts only {MODEL_NAME}; got {args.model!r}.",
@@ -186,25 +193,22 @@ def main() -> None:
         fail("stardist-not-installed", repr(exc))
 
     try:
-        image, (width, height) = load_image(args.image, args.z_project, args.segment_channel)
+        image, (width, height) = load_image(args.image, args.z_project, args.segment_channel, rgb=args.model == "2D_versatile_he")
     except Exception as exc:
         fail("image-open-failed", str(exc), 3)
 
     stats = qc_stats(image)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    if args.bg_subtract:
-        try:
-            import _preprocessing
-            image = _preprocessing.apply(image, args)
-        except Exception as exc:
-            fail("preprocessing-failed", str(exc), 3)
-
-    log(f"loading {MODEL_NAME}")
+    try:
+        import _preprocessing
+        image = _preprocessing.apply(image,args)
+    except Exception as exc:fail('preprocessing-failed',str(exc),3)
+    log(f"loading {args.model}")
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            model = StarDist2D.from_pretrained(MODEL_NAME)
+            model = StarDist2D.from_pretrained(args.model)
             labels, details = model.predict_instances(
-                normalize(image, 1, 99.8),
+                normalize(image, 1, 99.8, axis=(0,1)),
                 # Keep detector probability fixed; `--conf` is an analysis
                 # visibility threshold applied by the host and must never
                 # destructively remove cells from the saved result.

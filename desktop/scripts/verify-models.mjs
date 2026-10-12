@@ -7,7 +7,7 @@ import {
   reportFailure,
 } from "./lib/verify-utils.mjs";
 
-const EXPECTED_IDS = ["cpsam_v2", "cp-cyto3", "sd-fluo"];
+const EXPECTED_IDS = ["cpsam_v2", "cp-cyto3", "sd-fluo", "cp4-cpsam_v2", "cp4-cpdino", "cp4-cpdino-vitb", "cp-cyto3-r", "cp-cyto2", "cp-nuclei", "sd-he", "sd-dsb2018", "omni-bact-phase", "omni-bact-fluor", "omni-cyto2", "cw-otsu", "cw-triangle", "cw-adaptive", "cw-manual"];
 
 try {
   const catalogModule = await importTypeScriptModule("src/pages/models/catalog.ts");
@@ -15,13 +15,15 @@ try {
   assert(Array.isArray(catalog), "model catalog did not export an array");
   assertEqual(JSON.stringify(catalog.map((model) => model.id)), JSON.stringify(EXPECTED_IDS), "runnable model order or membership changed");
   assert(catalog.every((model) => model.available === true), "every catalog model must be runnable");
-  assertEqual(new Set(catalog.map((model) => model.id)).size, 3, "model ids must be unique");
+  assertEqual(new Set(catalog.map((model) => model.id)).size, EXPECTED_IDS.length, "model ids must be unique");
   assertEqual(catalogModule.ACTIVE_MODEL_ID, "cp-cyto3", "default model changed");
 
   const sidecar = readText("src-tauri/src/detection/sidecar.rs");
-  assertIncludes(sidecar, 'pub const WINDOWS_MODEL_IDS: [&str; 3] = ["cpsam_v2", "cp-cyto3", "sd-fluo"];', "Rust allowlist is not exact");
+  const allowlistBlock = sidecar.match(/pub const WINDOWS_MODEL_IDS[^=]*=\s*\[([\s\S]*?)\];/)?.[1] ?? "";
+  const nativeIds = [...allowlistBlock.matchAll(/"([^"]+)"/g)].map(match => match[1]);
+  assertEqual(JSON.stringify(nativeIds.sort()), JSON.stringify([...EXPECTED_IDS, "cp4-cpsam"].sort()), "native model allowlist differs from catalog plus explicit legacy alias");
   assertIncludes(sidecar, '"cpsam_v2" => Some("cpsam")', "CPSAM mapping changed");
-  assertIncludes(sidecar, '"cp-cyto3" => Some("cyto3")', "cyto3 mapping changed");
+  assertIncludes(sidecar, '"cp-cyto3" | "cp-cyto3-r" => Some("cyto3")', "cyto3 mapping changed");
   assertIncludes(sidecar, '"sd-fluo" => Some("2D_versatile_fluo")', "StarDist mapping changed");
   assertIncludes(sidecar, "_ => None", "unknown model ids no longer fail closed");
   assertIncludes(sidecar, 'Err(format!("unsupported model id: {model_id}"))', "unknown model sidecar error is missing");
@@ -38,16 +40,15 @@ try {
   assertIncludes(pyproject, 'torch = { index = "pytorch-cpu" }', "Windows Torch install is no longer deterministically CPU-only");
 
   const cpsam = readText("python/cellpose4_detect.py");
-  assertIncludes(cpsam, 'if raw_model != "cpsam":', "Cellpose-SAM sidecar accepts substituted names");
+  assertIncludes(cpsam, 'if raw_model not in ("cpsam", "cpsam_v2", "cpdino", "cpdino-vitb"):', "Cellpose 4 sidecar must use its exact checkpoint allowlist");
   assertIncludes(cpsam, "raise ValueError", "Cellpose-SAM sidecar does not reject unknown names");
   const stardist = readText("python/stardist_detect.py");
   assertIncludes(stardist, 'MODEL_NAME = "2D_versatile_fluo"', "StarDist checkpoint changed");
-  assertIncludes(stardist, "if args.model != MODEL_NAME:", "StarDist sidecar does not reject unknown names");
+  assertIncludes(stardist, 'if args.model not in ("2D_versatile_fluo", "2D_versatile_he", "2D_paper_dsb2018"):', "StarDist sidecar must reject unknown checkpoint names");
 
   const settings = readText("src/pages/settings/SettingsPage.tsx");
-  const optionsBlock = settings.match(/const MODEL_OPTIONS[\s\S]*?\];/)?.[0] ?? "";
-  const settingsIds = [...optionsBlock.matchAll(/value:\s*"([^"]+)"/g)].map((match) => match[1]);
-  assertEqual(JSON.stringify(settingsIds), JSON.stringify(EXPECTED_IDS), "Settings exposes a different runnable model set");
+  assertIncludes(settings, "MODEL_CATALOG.filter(model => model.available)", "Settings must derive installable defaults from the shared catalog");
+  assertIncludes(settings, "value: activeModelId", "Settings must retain imported or derived model selection");
   assertIncludes(settings, "GPU unavailable in Windows", "Settings does not disclose the CPU-only runtime");
 
   const store = readText("src/kernel/store/store.ts");
@@ -61,7 +62,7 @@ try {
   assertIncludes(training, '.args(["--base-model", "cp-cyto3"])', "fine-tuning can leave the cyto3 family");
   assertIncludes(training, "Refusing to record a checkpoint outside CellCounter's model store.", "trained checkpoint insertion is not confined");
 
-  console.log("Windows model catalog verification passed (3 built-ins, confined cyto3 lineage, CPU-only runtime)");
+  console.log(`Windows model catalog verification passed (${EXPECTED_IDS.length} catalog entries, explicit native aliases, confined cyto3 lineage, CPU-only runtime)`);
 } catch (error) {
   reportFailure(error);
 }

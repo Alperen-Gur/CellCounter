@@ -110,7 +110,7 @@ fn bin_pdf_rgb(index: usize) -> (f64, f64, f64) {
 // Report snapshot (port of ReportSnapshot.make)
 // ---------------------------------------------------------------------------
 
-struct ReportSnapshot {
+pub(crate) struct ReportSnapshot {
     file_name: String,
     date_iso: String,
     app_version: String,
@@ -185,7 +185,7 @@ impl ReportSnapshot {
             file_name: ctx.file_name.clone(),
             date_iso: crate::db::repo::now_iso8601(),
             app_version: crate::export::provenance::APP_VERSION.to_string(),
-            model_name: model_display_name(&ctx.model_id),
+            model_name: model_display_name(&ctx.run_model_id),
             n_cells: n,
             median_diameter: median,
             mean_diameter: mean,
@@ -285,21 +285,19 @@ fn evaluate_f1(annotations: &[GtPoint], detections: &[&CellDto], match_radius_fa
 }
 
 /// Load ground-truth annotations for an image (px coords only — enough for F1).
-fn load_annotations(conn: &Connection, image_id: &str) -> Vec<GtPoint> {
-    let mut stmt = match conn.prepare(
-        "SELECT cx, cy FROM ground_truth_annotations WHERE image_id = ?1 ORDER BY created_at",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map([image_id], |r| {
-        Ok(GtPoint {
-            cx: r.get::<_, f64>(0)?,
-            cy: r.get::<_, f64>(1)?,
-        })
-    })
-    .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
-    .unwrap_or_default()
+fn load_annotations(conn: &Connection, image_id: &str) -> Result<Vec<GtPoint>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT cx, cy FROM ground_truth_annotations WHERE image_id = ?1 ORDER BY created_at LIMIT 100001",
+    ).map_err(|error| error.to_string())?;
+    let points = stmt.query_map([image_id], |r| {
+        Ok(GtPoint { cx: r.get::<_, f64>(0)?, cy: r.get::<_, f64>(1)? })
+    }).and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+        .map_err(|error| error.to_string())?;
+    if points.len() > 100_000 { return Err("Ground truth exceeds the report budget".into()); }
+    if points.iter().any(|point| !point.cx.is_finite() || !point.cy.is_finite()) {
+        return Err("Ground-truth coordinates must be finite".into());
+    }
+    Ok(points)
 }
 
 // ===========================================================================
@@ -311,6 +309,7 @@ fn load_annotations(conn: &Connection, image_id: &str) -> Vec<GtPoint> {
 #[tauri::command]
 pub async fn export_pdf_report(
     app: AppHandle,
+    manager: State<'_, crate::analysis::runner::AssayManager>,
     db: State<'_, Db>,
     image_id: String,
     confidence: Option<f64>,
@@ -318,29 +317,36 @@ pub async fn export_pdf_report(
 ) -> Result<String, String> {
     let _ = &db;
     let store = FileStore::from_app(&app)?;
-    let conn = open_reader(&store)?;
-    let ctx = ExportContext::load(&conn, &store, &image_id)?;
-
-    // Per-image override wins over the supplied global slider; else app default.
-    let global = confidence.unwrap_or(0.5);
-    let cutoff = ctx.effective_confidence(global);
-
-    // F1 vs ground truth (omitted when no annotations).
-    let annotations = load_annotations(&conn, &image_id);
-    let visible: Vec<&CellDto> = ctx.visible_cells(cutoff);
-    let f1 = evaluate_f1(&annotations, &visible, 1.0);
-
-    let snapshot = ReportSnapshot::make(&ctx, cutoff, f1);
-    let provenance = Provenance::capture(&ctx, cutoff);
-
-    // Pre-render the annotated image as JPEG bytes (+ dims) for embedding.
-    let annotated = render_annotated_jpeg(&ctx, cutoff);
-
-    let pdf = build_pdf(&snapshot, &provenance, annotated);
-
+    let (mut ctx, cutoff, snapshot, display_request) = {
+        let conn = open_reader(&store)?;
+        conn.execute_batch("BEGIN DEFERRED TRANSACTION").map_err(|e|e.to_string())?;
+        let ctx = ExportContext::load(&conn, &store, &image_id)?;
+        let cutoff = ctx.effective_confidence(confidence.unwrap_or(0.5));
+        let snapshot = capture_report(&conn, &ctx, cutoff)?;
+        let request = super::display::capture(&conn, &store, &ctx)?;
+        (ctx, cutoff, snapshot, request)
+    };
+    let temporary = super::display::prepare(app, manager, display_request).await?;
+    if let Some(display) = &temporary { ctx.stored_path = display.0.clone(); }
+    let pdf = render_report(&ctx, cutoff, &snapshot, true)?;
     let resolved = resolve_out_path(&store, &out_path)?;
     std::fs::write(&resolved, pdf).map_err(|e| format!("could not write report.pdf: {e}"))?;
     Ok(resolved.to_string_lossy().into_owned())
+}
+
+/// Reuse a caller-owned SQLite read snapshot for a coherent multi-file export.
+pub(crate) fn capture_report(conn: &Connection, ctx: &ExportContext, cutoff: f64) -> Result<ReportSnapshot, String> {
+    let annotations = load_annotations(conn, &ctx.image_id)?;
+    let visible = ctx.visible_cells(cutoff);
+    if annotations.len().saturating_mul(visible.len()) > 1_000_000 {
+        return Err("Ground-truth matching exceeds one million candidate pairs. Export a smaller result selection".into());
+    }
+    Ok(ReportSnapshot::make(ctx, cutoff, evaluate_f1(&annotations, &visible, 1.0)))
+}
+pub(crate) fn render_report(ctx: &ExportContext, cutoff: f64, snapshot: &ReportSnapshot, include_image: bool) -> Result<Vec<u8>, String> {
+    let provenance = Provenance::capture(ctx, cutoff);
+    let image = if include_image { Some(render_annotated_jpeg(ctx, cutoff)?) } else { None };
+    Ok(build_pdf(snapshot, &provenance, image))
 }
 
 // ---------------------------------------------------------------------------
@@ -355,9 +361,8 @@ struct AnnotatedJpeg {
 
 /// Decode the stored image, draw each visible cell as a bin-colored, faintly
 /// filled ellipse (matching `writeAnnotatedPNG` outline mode), and re-encode as
-/// JPEG. Returns `None` when the image can't be decoded (the PDF then omits the
-/// image panel rather than failing the whole report).
-fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJpeg> {
+/// JPEG. Image failures are reported so a sample bundle can record any omission.
+fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Result<AnnotatedJpeg, String> {
     // Longest-side cap for the embedded bitmap. The image renders into an ~590×1180
     // pt box at 144 dpi, so ~1600 px comfortably exceeds print resolution while
     // avoiding embedding a full 17 MB / multi-thousand-pixel TIFF verbatim (the
@@ -365,11 +370,16 @@ fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJp
     // coordinates are in SOURCE pixels, so we scale them by the same factor.
     const MAX_DIM: u32 = 1600;
 
-    let img = image::open(&ctx.stored_path).ok()?;
+    let mut reader = image::ImageReader::open(&ctx.stored_path).map_err(|error| format!("PDF source image: {error}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|error| format!("PDF image decoding: {error}"))?;
+    super::annotated::geometry_budget(&ctx.cells, img.width(), img.height(), true)?;
     let (src_w, src_h) = img.dimensions();
     let longest = src_w.max(src_h).max(1);
 
-    let (mut rgb, scale) = if longest > MAX_DIM {
+    let (mut rgb, scale_x, scale_y) = if longest > MAX_DIM {
         let s = MAX_DIM as f64 / longest as f64;
         let tw = ((src_w as f64 * s).round() as u32).max(1);
         let th = ((src_h as f64 * s).round() as u32).max(1);
@@ -377,9 +387,9 @@ fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJp
         // the realized dimensions so ellipse coords line up with the pixels.
         let resized = img.resize_exact(tw, th, image::imageops::FilterType::Lanczos3);
         let sx = tw as f64 / src_w as f64;
-        (resized.to_rgb8(), sx)
+        (resized.to_rgb8(), sx, th as f64 / src_h as f64)
     } else {
-        (img.to_rgb8(), 1.0)
+        (img.to_rgb8(), 1.0, 1.0)
     };
     let (w, h) = rgb.dimensions();
 
@@ -389,8 +399,9 @@ fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJp
     for cell in ctx.visible_cells(cutoff) {
         let idx = bin_index(cell.diameter_um, &ctx.thresholds);
         let (cr, cg, cb) = bin_rgb8(idx);
-        let r = (cell.diameter_px / 2.0 * scale).max(1.0);
-        draw_ellipse(&mut rgb, cell.cx * scale, cell.cy * scale, r, (cr, cg, cb));
+        let rx = (cell.diameter_px / 2.0 * scale_x).max(1.0);
+        let ry = (cell.diameter_px / 2.0 * scale_y).max(1.0);
+        draw_ellipse(&mut rgb, cell.cx * scale_x, cell.cy * scale_y, rx, ry, (cr, cg, cb));
     }
 
     // Encode JPEG. `DynamicImage::write_to(.., ImageFormat::Jpeg)` is the
@@ -400,9 +411,9 @@ fn render_annotated_jpeg(ctx: &ExportContext, cutoff: f64) -> Option<AnnotatedJp
     let mut cursor = std::io::Cursor::new(&mut bytes);
     image::DynamicImage::ImageRgb8(rgb)
         .write_to(&mut cursor, image::ImageFormat::Jpeg)
-        .ok()?;
+        .map_err(|error| format!("PDF image encoding: {error}"))?;
 
-    Some(AnnotatedJpeg {
+    Ok(AnnotatedJpeg {
         bytes,
         width: w,
         height: h,
@@ -417,29 +428,28 @@ fn draw_ellipse(
     buf: &mut image::RgbImage,
     cx: f64,
     cy: f64,
-    r: f64,
+    rx: f64,
+    ry: f64,
     color: (u8, u8, u8),
 ) {
     let (w, hgt) = (buf.width() as i64, buf.height() as i64);
-    let r_out = r;
-    let r_in = (r - r.max(2.0) * 0.14).max(0.0); // ring thickness ~ line width
-    let x0 = ((cx - r_out).floor() as i64).max(0);
-    let x1 = ((cx + r_out).ceil() as i64).min(w - 1);
-    let y0 = ((cy - r_out).floor() as i64).max(0);
-    let y1 = ((cy + r_out).ceil() as i64).min(hgt - 1);
+    let inner_x = (rx - rx.max(2.0) * 0.14).max(0.0);
+    let inner_y = (ry - ry.max(2.0) * 0.14).max(0.0);
+    let x0 = ((cx - rx).floor() as i64).max(0);
+    let x1 = ((cx + rx).ceil() as i64).min(w - 1);
+    let y0 = ((cy - ry).floor() as i64).max(0);
+    let y1 = ((cy + ry).ceil() as i64).min(hgt - 1);
     if x1 < x0 || y1 < y0 {
         return;
     }
-    let r_out2 = r_out * r_out;
-    let r_in2 = r_in * r_in;
     for py in y0..=y1 {
         for px in x0..=x1 {
             let dx = px as f64 + 0.5 - cx;
             let dy = py as f64 + 0.5 - cy;
-            let d2 = dx * dx + dy * dy;
-            if d2 <= r_out2 {
+            let d2 = (dx / rx).powi(2) + (dy / ry).powi(2);
+            if d2 <= 1.0 {
                 let pixel = buf.get_pixel_mut(px as u32, py as u32);
-                if d2 >= r_in2 {
+                if inner_x == 0.0 || inner_y == 0.0 || (dx / inner_x).powi(2) + (dy / inner_y).powi(2) >= 1.0 {
                     // Outline ring: opaque stroke.
                     pixel[0] = color.0;
                     pixel[1] = color.1;
@@ -883,7 +893,7 @@ fn provenance_footer_lines(p: &Provenance) -> Vec<String> {
         "generated by CellCounter {} - {}",
         p.app_version, p.model_id
     );
-    let line2 = format!("detector: cellpose - {}", p.os_version);
+    let line2 = format!("detector: {} - {}", p.model_id, p.os_version);
     let line3 = format!(
         "calibration: {} px/um ({})",
         fmt_g(p.px_per_um),

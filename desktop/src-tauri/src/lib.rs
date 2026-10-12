@@ -21,6 +21,7 @@ pub mod env;
 pub mod images;
 pub mod paths;
 pub mod proc;
+pub mod parity;
 
 use detection::sidecar::SidecarManager;
 use tauri::Manager;
@@ -55,6 +56,7 @@ pub fn run() {
             let image_scope = handle.asset_protocol_scope();
             image_scope.allow_directory(store.images_dir(), true)?;
             image_scope.allow_directory(store.thumbs_dir(), true)?;
+            image_scope.allow_directory(store.analysis_dir(), true)?;
 
             // Complete staging before the UI can request its first analysis.
             // A recoverable disk/lock problem must leave the library usable;
@@ -75,6 +77,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // ── portable analysis sidecars ──
+            parity::import_custom_model,
+            parity::mark_image_reviewed,
+            parity::parity_source,
+            parity::sequence_snapshot,
+            parity::release_source_preview,
+            parity::export_reviewed_dataset,
+            parity::workspace_read,
+            parity::import_workspace_project,
+            parity::export_workspace_bytes,
             analysis::runner::assay_availability,
             analysis::runner::run_assay,
             analysis::runner::cancel_assay,
@@ -103,6 +114,7 @@ pub fn run() {
             db::repo::get_detections,
             db::repo::detection_summaries,
             db::repo::commit_cell_edit,
+            db::repo::commit_sequence_edits,
             db::repo::record_correction,
             // ── persistence: rois ──
             db::repo::rois,
@@ -162,6 +174,9 @@ pub fn run() {
             export::geojson::export_geojson,
             export::provenance::export_provenance,
             export::report::export_pdf_report,
+            export::bundle::export_markdown_report,
+            export::bundle::export_ground_truth,
+            export::bundle::export_sample_bundle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

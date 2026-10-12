@@ -147,16 +147,19 @@ def build_model(cp_models, model_type: str, args, torch_mod):
         log("[cellpose_detect] loading explicit fine-tuned checkpoint")
         model = _build(pretrained_model=checkpoint)
     elif getattr(args, "restore", False):
-        log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
-        try:
-            model = _build(model_type=model_type, restore_type="denoise_cyto3")
-        except TypeError:
-            # Older cellpose builds don't accept restore_type on CellposeModel; degrade gracefully.
-            log("[cellpose_detect] CellposeModel doesn't accept restore_type; "
-                "falling back to plain model")
-            model = _build(model_type=model_type)
+        # Restoration uses Cellpose's restoration wrapper; never silently run
+        # ordinary cyto3 under a restoration model identity.
+        from cellpose import denoise
+        model = denoise.CellposeDenoiseModel(
+            gpu=use_gpu_kw, model_type=model_type, restore_type="denoise_cyto3"
+        )
     else:
+        if model_type not in getattr(cp_models, 'MODEL_NAMES', ()):
+            raise ValueError(f'Exact built-in Cellpose checkpoint {model_type!r} is unavailable')
         model = _build(model_type=model_type)
+        loaded=getattr(model,'pretrained_model',None)
+        if loaded is not None and model_type not in os.path.basename(str(loaded)):
+            raise ValueError(f'Runtime substituted a different checkpoint for {model_type!r}')
 
     # Pass-14: surface the device the model will actually run on. The UI
     # parses this stage line and shows the real device instead of the
@@ -329,6 +332,7 @@ class DetectionRunError(Exception):
 # channels) are intentionally NOT here — they are fixed at model-build time and
 # the host keys its worker pool by them.
 _PER_IMAGE_KEYS = (
+    "preprocessing_preset",
     "z_project",
     "segment_channel",
     "image",

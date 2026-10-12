@@ -427,6 +427,11 @@ pub fn cells_to_json(cells: &[CellDto]) -> Result<String, serde_json::Error> {
     serde_json::to_string(&payload)
 }
 
+pub(crate) fn cells_from_json_checked(json: &str) -> Result<Vec<CellDto>, serde_json::Error> {
+    serde_json::from_str::<Vec<CellPayload>>(json)
+        .map(|payload| payload.into_iter().map(CellDto::from).collect())
+}
+
 pub(crate) fn cell_from_json_checked(json: &str) -> Result<CellDto, serde_json::Error> {
     serde_json::from_str::<CellPayload>(json).map(CellDto::from)
 }

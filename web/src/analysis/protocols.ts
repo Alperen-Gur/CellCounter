@@ -2,6 +2,10 @@ export const ANALYSIS_PROTOCOL_KIND = "com.cellcounter.analysis-protocol";
 export const ANALYSIS_PROTOCOL_SCHEMA_VERSION = 1;
 
 export interface BrowserPlaneSettings {
+  readonly sourceTime?: number;
+  readonly sourceZ?: number;
+  readonly preprocessingPreset?: "none" | "clahe" | "anisotropicDiffusion" | "claheAndDiffusion";
+  readonly taskPreset?: "countCells" | "countNuclei" | "markerPositive" | "woundClosure";
   readonly sourceChannel: number;
   readonly projection: "first" | "max" | "mean" | "sum";
   readonly thresholdMethod: "otsu" | "triangle" | "adaptive" | "manual";
@@ -58,6 +62,11 @@ export function validateAnalysisProtocol(value: unknown, supportedModelIds?: rea
   if (!finite(value.manualMarkerDiameterUm) || value.manualMarkerDiameterUm <= 0) issues.push("manualMarkerDiameterUm must be greater than zero");
   if (value.browser !== undefined) {
     const browser = value.browser;
+    if (record(browser)) {
+      for (const axis of ["sourceTime", "sourceZ"]) if (browser[axis] !== undefined && (!Number.isSafeInteger(browser[axis]) || (browser[axis] as number) < 0)) issues.push(`${axis} must be a nonnegative integer`);
+      if (browser.preprocessingPreset !== undefined && !["none", "clahe", "anisotropicDiffusion", "claheAndDiffusion"].includes(String(browser.preprocessingPreset))) issues.push("Unsupported preprocessing preset");
+      if (browser.taskPreset !== undefined && !["countCells", "countNuclei", "markerPositive", "woundClosure"].includes(String(browser.taskPreset))) issues.push("Unsupported analysis task");
+    }
     if (!record(browser) || !Number.isInteger(browser.sourceChannel) || (browser.sourceChannel as number) < -1 || !["first", "max", "mean", "sum"].includes(String(browser.projection)) || !["otsu", "triangle", "adaptive", "manual"].includes(String(browser.thresholdMethod)) || !finite(browser.manualThreshold) || browser.manualThreshold < 0 || browser.manualThreshold > 1 || typeof browser.invert !== "boolean" || !finite(browser.minimumAreaPx) || browser.minimumAreaPx < 1) issues.push("browser source/projection/threshold settings are invalid");
   }
   if (issues.length) throw new AnalysisProtocolValidationError(issues);

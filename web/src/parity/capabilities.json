@@ -307,7 +307,7 @@
     "name": "Add, remove, resize, merge and split",
     "state": "available",
     "webSurface": "Workspace",
-    "note": "Source-coordinate add, remove, resize, merge and split tools update measured cells and correction history; bounded undo and redo restore cells, validation marks and ROIs.",
+    "note": "Source-coordinate add, remove, resize, merge, split and drawn freehand contours update measured cells and bounded undo/redo. Corrected results and library summaries are persisted together in one transaction.",
     "sourceEvidence": [
       "CellCounting/Views/Results/ResultsView.swift"
     ]
@@ -374,7 +374,7 @@
     "name": "Low-confidence review queue",
     "state": "available",
     "webSurface": "Review",
-    "note": "Low-confidence and all-unreviewed queues offer card/grid review in fixed pages of 100. Accepting an object records its review decision separately from model confidence, including in low-confidence fields.",
+    "note": "Low-confidence/all-unreviewed queues provide cropped cards or tiled grids in pages of 100 with accept, resize, reject, session skip/restore and one persisted decision undo across pages. Explicit field-risk heuristics triage unverified scale, atypical sizes, edge objects and reviewer confidence.",
     "sourceEvidence": [
       "CellCounting/Views/Review/ReviewQueueView.swift"
     ]
@@ -396,7 +396,7 @@
     "name": "Analysis protocol save/apply",
     "state": "available",
     "webSurface": "Analysis lab",
-    "note": "Versioned protocol JSON is validated and applied atomically; invalid model IDs or parameters return actionable errors.",
+    "note": "Versioned protocols atomically apply model, exact time/Z/channel selection, task, calibration, bins, background/split parameters and preprocessing preset. Unsupported IDs and non-finite or invalid settings return actionable errors.",
     "sourceEvidence": [
       "CellCounting/Services/AnalysisProtocolStore.swift"
     ]
@@ -419,7 +419,7 @@
     "name": "Cells and batch CSV",
     "state": "available",
     "webSurface": "Export",
-    "note": "Deterministic CSV and JSON are generated locally with stable columns and no upload.",
+    "note": "Deterministic morphology-rich cell CSV, batch/condition CSV and provenance/geometry JSON are built locally. Formula-like text is escaped for spreadsheet safety.",
     "sourceEvidence": [
       "CellCounting/Services/ExportService.swift"
     ]
@@ -476,7 +476,7 @@
     "name": "Annotated PNG and mirrored folder export",
     "state": "available",
     "webSurface": "Export",
-    "note": "The source image and corrected contours are composited at source resolution in a local canvas and downloaded as PNG.",
+    "note": "Full-resolution annotated PNG plus a bounded self-contained ZIP containing the preserved original source, selected analysis raster, overlay, PDF/Markdown reports, measurements, geometry, ground truth, ImageJ ROIs and hashed manifest. No upload path exists.",
     "sourceEvidence": [
       "CellCounting/Views/Results/ResultsExportPanel.swift"
     ]
@@ -519,8 +519,8 @@
     "area": "System",
     "name": "Support and parity disclosure",
     "state": "available",
-    "webSurface": "Capabilities",
-    "note": "This source-derived 47-item inventory is rendered in-product so browser gaps cannot disappear silently.",
+    "webSurface": "Capabilities / Help",
+    "note": "The source-derived capability inventory exposes browser-native adaptations and learned-model/vendor/training-runtime limitations explicitly.",
     "sourceEvidence": [
       "CellCounting/Views/Modals/SupportSheet.swift"
     ]
@@ -541,8 +541,8 @@
     "area": "Input",
     "name": "Source channels and Z projection",
     "state": "available",
-    "webSurface": "Inspector / Preview",
-    "note": "Classical analysis uses original TIFF samples and first/max/mean/sum homogeneous Z planes, up to 64 planes and 4 million pixels. Separate OME time/channel planes need local conversion before projection.",
+    "webSurface": "Inspector / Source preview",
+    "note": "Original common-raster/TIFF samples and single-series OME TiffData mappings support source channels, time/Z selection and first/max/mean/sum Z projections. Inputs are capped at 64 MiB, selected planes at four million pixels, projected Z at 64 and decoded TIFF blocks at 32 MiB; unsupported precision fails explicitly.",
     "sourceEvidence": [
       "CellCounting/Views/Modals/AnalysisSetupSheet.swift"
     ]
@@ -606,9 +606,9 @@
     "id": "input-omezarr",
     "area": "Input",
     "name": "OME-Zarr / OME-NGFF arrays and plates",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Local multiscale arrays, plates, wells and fields are absent from the browser. Export a supported image plane from a local microscopy viewer.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Local NGFF v2 arrays, multiscales, plates and fields are selected through a folder picker. Uncompressed, zlib and gzip chunks are decoded locally with explicit codec errors and input/plane/chunk limits; remote stores and other codecs remain unsupported.",
     "sourceEvidence": [
       "CellCounting/Services/OMEZarrService.swift"
     ]
@@ -617,9 +617,9 @@
     "id": "input-multidimensional",
     "area": "Input",
     "name": "Time, Z and channel navigation with multiscale resolution",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Full multidimensional navigation and automatic resolution selection are absent. Browser analysis supports a bounded first-plane or homogeneous Z projection only.",
+    "state": "available",
+    "webSurface": "Inspector / Microscopy workspace",
+    "note": "Raw TIFF preparation selects time, Z and channel with explicit OME TiffData mappings; Z-only first/max/mean/sum projections never mix times/channels. The layered workspace navigates local Zarr axes and chooses a viewport resolution transformed into base-array coordinates.",
     "sourceEvidence": [
       "CellCounting/Domain/MicroscopyWorkspace.swift"
     ]
@@ -628,9 +628,9 @@
     "id": "input-native-preview",
     "area": "Input",
     "name": "Complete native source-plane preview",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "The full native source-plane preview and format coverage are absent. Browser classical analysis displays its selected plane; other browser assays may use the normalized import raster.",
+    "state": "available",
+    "webSurface": "Inspector / Analysis lab / Microscopy workspace",
+    "note": "Inspect selected raw source samples from common rasters and single-series TIFF/OME-TIFF, including supported separate channel/time/Z planes. Proprietary containers, multi-file/multi-series TIFF and unsafe sample precision require explicit local conversion.",
     "sourceEvidence": [
       "CellCounting/Services/NativeSourcePreview.swift"
     ]
@@ -639,9 +639,9 @@
     "id": "workspace-layers",
     "area": "Editing",
     "name": "Image, label, point, shape, surface and track layers",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "A complete layer workspace with visibility, opacity and layer transforms is absent. Browser overlays cover object masks, reference points and rectangular regions.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Image, labels, points, shapes, tracks and 2D projected surfaces have visibility, opacity, blend, display range, color, naming and translation controls. Surface/track geometry imports as validated local JSON; dense plane cache is bounded to 96 MiB.",
     "sourceEvidence": [
       "CellCounting/Domain/MicroscopyWorkspace.swift"
     ]
@@ -650,9 +650,9 @@
     "id": "workspace-registration",
     "area": "Analysis",
     "name": "Layer registration and bounded grid mosaics",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Native translation registration, stitching and overlap-aware mosaics are absent. Prepare aligned or stitched images in a local microscopy tool before browser import.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Bounded translation registration and overlap-aware grid mosaics run locally with explicit reference, shift, columns and overlap controls. Physical calibration and source-pixel transforms remain attached; unsupported calibration mixtures fail explicitly.",
     "sourceEvidence": [
       "CellCounting/Services/ImageRegistrationService.swift"
     ]
@@ -661,9 +661,9 @@
     "id": "workspace-lineage",
     "area": "Analysis",
     "name": "Lineage construction and relationship editing",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Native lineage building and split, merge and gap-closing relationships are absent. Browser tracking assays do not provide the native lineage workspace.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Local distance-ranked automatic continuation/gap links are built from an ordered condition. Point observations and continuation/gap/division/merge relationships can be edited manually; time ordering and graph constraints are validated.",
     "sourceEvidence": [
       "CellCounting/Services/WorkspaceLineageService.swift"
     ]
@@ -672,9 +672,9 @@
     "id": "workspace-painting",
     "area": "Editing",
     "name": "Pixel label painting and training-mask export",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Pixel-class label painting with undo and 16-bit training-mask export are absent. Browser geometric corrections and label PNG exports are narrower workflows.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Semantic uint16 class-label painting has bounded stroke journals and undo, per-axis positions, brush/erase controls and uncompressed 16-bit TIFF export. Base worlds larger than four million pixels are rejected for painting.",
     "sourceEvidence": [
       "CellCounting/Views/Workspace/WorkspaceView.swift"
     ]
@@ -683,9 +683,9 @@
     "id": "workspace-replay",
     "area": "Workflow",
     "name": "Saved microscopy workspaces and recorded workflow replay",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "The native layer project format and repeatable recorded-workflow replay are absent. Browser protocols preserve analysis settings, not a full microscopy workspace.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Save local projects with generated plane snapshots, paint journals, lineage, workflows and keyframes. Original local/Zarr sources remain referenced and need reattachment when absent. Recorded visibility/opacity/position/translation/registration/stitch steps replay transactionally within resource limits.",
     "sourceEvidence": [
       "CellCounting/Services/WorkspaceWorkflowService.swift"
     ]
@@ -694,9 +694,9 @@
     "id": "workspace-animation",
     "area": "Export",
     "name": "Keyframed image-sequence GIF export",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Keyframed workspace animations and image-sequence GIF export are absent. Browser exports cover individual result images and measurement reports.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "Capture axis/visibility/center keyframes and export a bounded local GIF with up to 120 frames and a fixed GIF palette. Export is a presentation raster, while quantitative source data remain in the project/source files.",
     "sourceEvidence": [
       "CellCounting/Services/WorkspaceAnimationService.swift"
     ]
@@ -705,9 +705,9 @@
     "id": "edit-prompt-refinement",
     "area": "Editing",
     "name": "Prompt-guided mask refinement",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Native prompt-guided refinement is absent from this browser version. Use the available geometric correction tools or a supported native method.",
+    "state": "available",
+    "webSurface": "Workspace",
+    "note": "Point and box prompts explicitly run a browser adaptive connected-component correction, matching the native offline fallback family. Result geometry is saved atomically and undoable; learned micro-SAM embeddings remain unavailable without validated browser artifacts.",
     "sourceEvidence": [
       "CellCounting/Services/PromptRefinementService.swift"
     ]
@@ -716,9 +716,9 @@
     "id": "edit-sequence-propagation",
     "area": "Editing",
     "name": "Sequence propagation and drift correction",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Native correction propagation across sequences and drift correction are absent. The browser tracking assay does not replace these editing workflows.",
+    "state": "available",
+    "webSurface": "Inspector / Prompts, sequence & optimizer",
+    "note": "Select a source object, order up to 128 matching fields, then propagate masks using mutual-nearest centroid drift or interpolate between full-contour endpoints. Existing nearby masks win; stale/deleted revisions abort an atomic multi-image save. Sequence undo refuses intervening edits.",
     "sourceEvidence": [
       "CellCounting/Services/SequenceWorkflowService.swift"
     ]
@@ -727,9 +727,9 @@
     "id": "detection-advanced-preprocessing",
     "area": "Detection",
     "name": "Full native preprocessing and parameter optimization",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "The full native preprocessing and optimization workflow is absent. Browser classical detection offers local-mean subtraction and threshold controls only.",
+    "state": "available",
+    "webSurface": "Inspector / Optimizer",
+    "note": "Browser classical inference supports local-mean background subtraction, bounded CLAHE and normalized Perona\u2013Malik diffusion in native preset order. Eight classical threshold/split candidates are scored by ground-truth F1 or an explicitly labeled size/shape heuristic. Learned preprocessing/optimization still requires validated model artifacts.",
     "sourceEvidence": [
       "CellCounting/Detection/ClassicalDetectionService.swift",
       "CellCounting/Detection/DetectionService.swift"
@@ -740,8 +740,8 @@
     "area": "Workflow",
     "name": "Reviewed training library, immutable checkpoints and rollback",
     "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "Reviewed-library training datasets, model training, checkpoint validation and rollback are absent. Browser review acceptance does not train a model.",
+    "webSurface": "Library / Models",
+    "note": "Reviewed library dataset snapshots are available separately. Actual learned-model training, immutable trained checkpoints and rollback need a validated browser optimizer, checkpoint format and evaluation runtime; exporting a dataset does not train a model. This application remains entirely browser-only.",
     "sourceEvidence": [
       "CellCounting/Services/TrainingDatasetService.swift",
       "CellCounting/Services/TrainingService.swift"
@@ -764,11 +764,77 @@
     "id": "workspace-extensions",
     "area": "System",
     "name": "Curated microscopy workspace extensions",
-    "state": "unsupported",
-    "webSurface": "Help & about",
-    "note": "The native curated extension catalogue is absent from the browser. No browser extension loader or third-party code execution is provided.",
+    "state": "available",
+    "webSurface": "Microscopy workspace",
+    "note": "A bundled capability descriptor catalogue exposes only the host readers, classical detector, measurements and exporters actually wired here. It does not execute third-party plugins or advertise unavailable learned models/vendor readers.",
     "sourceEvidence": [
       "CellCounting/Services/WorkspaceExtensionRegistry.swift"
+    ]
+  },
+  {
+    "id": "edit-freehand",
+    "area": "Editing",
+    "name": "Freehand mask correction",
+    "state": "available",
+    "webSurface": "Workspace",
+    "note": "Draw a source-pixel outline with at least three points; measurements and undo use its contour, rather than an approximating circle.",
+    "sourceEvidence": [
+      "web/src/components/ImageStage.tsx"
+    ]
+  },
+  {
+    "id": "workflow-task-routing",
+    "area": "Workflow",
+    "name": "Task presets and result routing",
+    "state": "available",
+    "webSurface": "Inspector / Analysis lab",
+    "note": "Count cells, count nuclei, marker-positive and wound-closure task choices are frozen with the run. Marker and wound tasks route completed results to the matching intensity/area assay. Nuclear tasks require explicitly choosing the nuclear channel/model.",
+    "sourceEvidence": [
+      "web/src/App.tsx"
+    ]
+  },
+  {
+    "id": "workflow-training-dataset",
+    "area": "Workflow",
+    "name": "Immutable reviewed training dataset snapshot",
+    "state": "available",
+    "webSurface": "Library",
+    "note": "Explicit reviewer sign-off binds complete geometry, run parameters, source, calibration and edit revision to a SHA-256 fingerprint. Explicit biological specimen groups stay in one train/validation/test split; a bounded local ZIP contains raw source-plane float TIFFs, uint16 instance masks and immutable hashes.",
+    "sourceEvidence": [
+      "web/src/components/ReviewedDatasetPanel.tsx"
+    ]
+  },
+  {
+    "id": "export-markdown",
+    "area": "Export",
+    "name": "Markdown lab report",
+    "state": "available",
+    "webSurface": "Export",
+    "note": "Local Markdown report includes included-object counts, gold annotation totals and saved provenance; also included in the complete sample bundle.",
+    "sourceEvidence": [
+      "web/src/export/bundles.ts"
+    ]
+  },
+  {
+    "id": "export-ground-truth",
+    "area": "Export",
+    "name": "Ground-truth JSON and CSV",
+    "state": "available",
+    "webSurface": "Export",
+    "note": "Export gold source-pixel annotation coordinates, diameter and calibration/source metadata as dedicated JSON and CSV.",
+    "sourceEvidence": [
+      "web/src/components/ExportDialog.tsx"
+    ]
+  },
+  {
+    "id": "export-sample-bundle",
+    "area": "Export",
+    "name": "Complete sample ZIP",
+    "state": "available",
+    "webSurface": "Export",
+    "note": "Preserved source, captured analysis raster, full-resolution overlay, ROI geometry and PDF/Markdown/table reports are packaged locally with per-artifact SHA-256 hashes. Fixed safe archive names, a 48 MiB entry budget and bounded raster encoding prevent partial or unbounded bundles; historical TIFF analyses without a captured plane must be rerun before image exports.",
+    "sourceEvidence": [
+      "web/src/workers/workspace-export.worker.ts"
     ]
   }
 ]

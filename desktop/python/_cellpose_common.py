@@ -255,6 +255,7 @@ def build_arg_parser(description: str, default_model: str) -> argparse.ArgumentP
                    help="Force CPU inference (no MPS/CUDA).")
     p.add_argument("--device", default=None,
                    help="Optional explicit torch device override (mps, cpu, cuda).")
+    p.add_argument("--preprocessing-preset", choices=("none", "clahe", "denoise", "normalize"), default="none")
     return p
 
 

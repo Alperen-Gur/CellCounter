@@ -37,11 +37,9 @@ pub(crate) async fn prepare(
         path: image_path.to_string(),
         temporary: None,
     };
-    if projection == "max" {
-        return Ok(unchanged());
-    }
     // Standard TIFFs are preserved intact and can be projected by the detector.
-    // Only vendor imports have an already-projected `analysis_path` column.
+    // Rebuild vendor derivatives from the verified original on every run,
+    // including max: a mutable cached analysis TIFF is not source identity.
     let record: Option<(String, String)> = {
         let conn = db.connection()?;
         conn.query_row(
@@ -62,11 +60,11 @@ pub(crate) async fn prepare(
         .to_ascii_lowercase();
     let original = store.original_path(&id, &extension);
     if !original.is_file() {
-        return Err("The preserved microscopy source is missing. Reimport the original container to select a different Z projection.".to_string());
+        return Err("The preserved microscopy source is missing. Reimport the original container before analysis.".to_string());
     }
     let python = store.venv_io_python();
     if !python.is_file() {
-        return Err("Changing this container's Z projection needs the microscopy reader. Reinstall a model from Models, then retry.".to_string());
+        return Err("Analyzing this original container needs the microscopy reader. Reinstall a model from Models, then retry.".to_string());
     }
     let output_path = store
         .analysis_dir()
@@ -168,18 +166,16 @@ mod tests {
             "INSERT INTO images (id, file_name, original_path, width_px, height_px, imported_at, analysis_path)
              VALUES ('vendor', 'sample.czi', '/external/source.czi', 8, 6, '2026-09-08', ?1)", [&analysis]
         ).unwrap();
-        let unchanged = prepare(&db, &store, &analysis, "max", &cancel)
-            .await
-            .unwrap();
-        assert_eq!(unchanged.path, analysis);
-        let error = prepare(&db, &store, &analysis, "sum", &cancel)
-            .await
-            .err()
-            .unwrap();
-        assert!(
-            error.contains("preserved microscopy source is missing"),
-            "{error}"
-        );
+        for projection in ["max", "sum"] {
+            let error = prepare(&db, &store, &analysis, projection, &cancel)
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                error.contains("preserved microscopy source is missing"),
+                "{error}"
+            );
+        }
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }

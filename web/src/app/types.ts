@@ -1,7 +1,7 @@
 import type { CalibrationSource, ImageAnalysis } from "../domain/types";
 
-export type RouteId = "workspace" | "processing" | "help" | "library" | "review" | "lab" | "compare" | "models" | "capabilities" | "settings";
-export type EditTool = "inspect" | "add" | "remove" | "resize" | "merge" | "split" | "ground-truth" | "roi-include" | "roi-exclude";
+export type RouteId = "workspace" | "microscopy" | "processing" | "help" | "library" | "review" | "lab" | "compare" | "models" | "capabilities" | "settings";
+export type EditTool = "inspect" | "add" | "remove" | "resize" | "merge" | "split" | "ground-truth" | "roi-include" | "roi-exclude" | "freehand" | "prompt-point" | "prompt-box";
 export type RunState = "idle" | "preparing" | "running" | "complete" | "error";
 
 export interface WorkspaceCell {
@@ -11,6 +11,15 @@ export interface WorkspaceCell {
   diameterPx: number;
   diameterUm: number;
   areaUm2?: number;
+  areaPx2?: number;
+  perimeterUm?: number;
+  perimeterPx?: number;
+  circularity?: number;
+  aspectRatio?: number;
+  solidity?: number;
+  eccentricity?: number;
+  edgeTouching?: boolean;
+  sizeClass?: string;
   confidence: number;
   isManual?: boolean;
   reviewed?: boolean;
@@ -37,11 +46,14 @@ export interface WorkspaceImage {
   cells: WorkspaceCell[];
   condition: string;
   pxPerUm: number;
+  editRevision?: number;
   sourceSha256?: string;
   sourceByteLength?: number;
   sourceMediaType?: string;
   calibrationSource?: CalibrationSource;
   calibrationConfidence?: "high" | "medium" | "low";
+  sourceDimensions?: { t: number; z: number; c: number };
+  channelNames?: string[];
   planeCount?: number;
   samplesPerPixel?: number;
   bitsPerSample?: number;
@@ -58,5 +70,5 @@ export interface WorkspaceImage {
 export interface Notice {
   tone: "info" | "success" | "warning" | "error";
   title: string;
-  detail: string;
+  detail?: string;
 }

@@ -170,6 +170,17 @@ impl FileStore {
     /// `.venv4\Lib\site-packages\…`) stays under Windows' `MAX_PATH` just like
     /// the base venv (module doc). Kept separate so the cyto3 (`cellpose>=3,<4`)
     /// env in `.venv` is never disturbed — mirrors the native app's `venv4/`.
+    pub fn venv_omni_dir(&self) -> PathBuf {
+        self.python_dir().join(".venvomni")
+    }
+    pub fn venv_omni_python(&self) -> PathBuf {
+        self.venv_omni_dir().join(if cfg!(windows) {
+            "Scripts/python.exe"
+        } else {
+            "bin/python"
+        })
+    }
+
     pub fn venv4_dir(&self) -> PathBuf {
         self.python_dir().join(".venv4")
     }
@@ -239,7 +250,11 @@ impl FileStore {
     /// storage regardless of the user's casing (mirrors `ImageRecord.storedURL`).
     pub fn image_path(&self, id: &str, ext: &str) -> PathBuf {
         let ext = ext.trim_start_matches('.').to_ascii_lowercase();
-        let ext = if ext.is_empty() { "tif".to_string() } else { ext };
+        let ext = if ext.is_empty() {
+            "tif".to_string()
+        } else {
+            ext
+        };
         self.images_dir().join(format!("{id}.{ext}"))
     }
 
@@ -267,17 +282,12 @@ mod tests {
 
     #[test]
     fn model_environments_are_isolated_and_paths_are_platform_native() {
-        let parent = std::env::temp_dir().join(format!(
-            "cellcounter-path-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let parent =
+            std::env::temp_dir().join(format!("cellcounter-path-test-{}", uuid::Uuid::new_v4()));
         let store = FileStore::new(&parent).expect("create test store");
         assert_eq!(store.venv_dir(), parent.join("py").join(".venv"));
         assert_eq!(store.venv4_dir(), parent.join("py").join(".venv4"));
-        assert_eq!(
-            store.venv_stardist_dir(),
-            parent.join("py").join(".venvsd")
-        );
+        assert_eq!(store.venv_stardist_dir(), parent.join("py").join(".venvsd"));
         assert_ne!(store.venv_python(), store.venv4_python());
         assert_ne!(store.venv_python(), store.venv_stardist_python());
         assert_ne!(store.venv_python(), store.venv_io_python());
@@ -300,14 +310,15 @@ mod tests {
 
     #[test]
     fn image_path_normalizes_extension_without_touching_filename() {
-        let parent = std::env::temp_dir().join(format!(
-            "cellcounter-path-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let parent =
+            std::env::temp_dir().join(format!("cellcounter-path-test-{}", uuid::Uuid::new_v4()));
         let store = FileStore::new(&parent).expect("create test store");
         assert_eq!(
             store.image_path("stable-id", ".TIFF"),
-            parent.join("CellCounter").join("Images").join("stable-id.tiff")
+            parent
+                .join("CellCounter")
+                .join("Images")
+                .join("stable-id.tiff")
         );
         std::fs::remove_dir_all(&parent).expect("remove test store");
     }

@@ -4,7 +4,7 @@ import type { ModelArtifactCache } from "../models/WebGpuInference";
 import type { GroundTruthMark, WorkspaceCell, WorkspaceRoi } from "../app/types";
 
 const DATABASE_NAME = "cellcounter-web";
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 
 export interface WorkspaceImageMetadata {
   readonly id: string;
@@ -16,11 +16,15 @@ export interface WorkspaceImageMetadata {
   readonly condition: string;
   readonly pxPerUm: number;
   readonly analysisId: string | null;
+  readonly editRevision?: number;
+  readonly provenance?: Record<string, unknown>;
   readonly sourceSha256?: string;
   readonly sourceByteLength?: number;
   readonly sourceMediaType?: string;
   readonly calibrationSource?: CalibrationSource;
   readonly calibrationConfidence?: "high" | "medium" | "low";
+  readonly sourceDimensions?: { t: number; z: number; c: number };
+  readonly channelNames?: readonly string[];
   readonly planeCount?: number;
   readonly samplesPerPixel?: number;
   readonly bitsPerSample?: number;
@@ -79,7 +83,7 @@ async function openDatabase(factory: IDBFactory): Promise<IDBDatabase> {
   const request = factory.open(DATABASE_NAME, DATABASE_VERSION);
   request.onupgradeneeded = () => {
     const database = request.result;
-    for (const store of ["analysisJobs", "analysisPreviews", "maskVariants"]) if (!database.objectStoreNames.contains(store)) database.createObjectStore(store, { keyPath: "id" });
+    for (const store of ["analysisJobs", "analysisPreviews", "maskVariants", "microscopyProjects"]) if (!database.objectStoreNames.contains(store)) database.createObjectStore(store, { keyPath: "id" });
     if (!database.objectStoreNames.contains("sources")) database.createObjectStore("sources", { keyPath: "id" });
     if (!database.objectStoreNames.contains("analyses")) database.createObjectStore("analyses", { keyPath: "id" });
     if (!database.objectStoreNames.contains("batches")) database.createObjectStore("batches", { keyPath: "id" });
@@ -257,6 +261,35 @@ export class BrowserRepository {
     await this.putRecord("workspaceImages", metadata);
   }
 
+  /** Result and lightweight library summary either both commit or neither does.
+   * Expected revisions are checked inside this same transaction, including deletion. */
+  async putWorkspaceResult(metadata: WorkspaceImageMetadata, analysis?: ImageAnalysis, expected?: { revision: number; sourceSha256?: string }): Promise<void> {
+    await this.putWorkspaceResults([{ metadata, analysis, expected }]);
+  }
+
+  async putWorkspaceResults(results: readonly { metadata: WorkspaceImageMetadata; analysis?: ImageAnalysis; expected?: { revision: number; sourceSha256?: string } }[]): Promise<void> {
+    const transaction = this.database.transaction(["analyses", "workspaceImages"], "readwrite");
+    const completed = transactionComplete(transaction);
+    let conflict: Error | undefined;
+    for (const result of results) {
+      const write = () => { if (result.analysis) transaction.objectStore("analyses").put(result.analysis); transaction.objectStore("workspaceImages").put(result.metadata); };
+      if (!result.expected) { write(); continue; }
+      const request = transaction.objectStore("workspaceImages").get(result.metadata.id);
+      request.onsuccess = () => {
+        const current = request.result as WorkspaceImageMetadata | undefined;
+        if (!current || (current.editRevision ?? 0) !== result.expected!.revision || current.sourceSha256 !== result.expected!.sourceSha256) {
+          conflict = new Error("The image changed or was removed before saving. Retry against the current result.");
+          transaction.abort(); return;
+        }
+        write();
+      };
+    }
+    try { await completed; } catch (cause) { throw conflict ?? cause; }
+  }
+
+  async saveMicroscopyProject(project: { readonly id: string }): Promise<void> { await this.putRecord("microscopyProjects", project); }
+  async listMicroscopyProjects<T extends { readonly id: string }>(): Promise<T[]> { return this.listRecords<T>("microscopyProjects"); }
+
   async getWorkspaceImage(id: string): Promise<WorkspaceImageMetadata | null> {
     return this.getRecord<WorkspaceImageMetadata>("workspaceImages", id);
   }
@@ -301,14 +334,14 @@ export class BrowserRepository {
   async listVariants(imageId: string): Promise<MaskVariant[]> { return (await this.listRecords<MaskVariant>("maskVariants")).filter((variant) => variant.imageId === imageId); }
   async deleteVariant(id: string): Promise<void> { await this.deleteRecord("maskVariants", id); }
 
-  private async putRecord(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants", value: { readonly id: string }): Promise<void> {
+  private async putRecord(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants" | "microscopyProjects", value: { readonly id: string }): Promise<void> {
     const transaction = this.database.transaction(store, "readwrite");
     const completed = transactionComplete(transaction);
     transaction.objectStore(store).put(value);
     await completed;
   }
 
-  private async getRecord<T>(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants", id: string): Promise<T | null> {
+  private async getRecord<T>(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants" | "microscopyProjects", id: string): Promise<T | null> {
     const transaction = this.database.transaction(store, "readonly");
     const completed = transactionComplete(transaction);
     const result = (await requestResult(transaction.objectStore(store).get(id))) as T | undefined;
@@ -316,7 +349,7 @@ export class BrowserRepository {
     return result ?? null;
   }
 
-  private async listRecords<T extends { readonly id: string }>(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants"): Promise<T[]> {
+  private async listRecords<T extends { readonly id: string }>(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants" | "microscopyProjects"): Promise<T[]> {
     const transaction = this.database.transaction(store, "readonly");
     const completed = transactionComplete(transaction);
     const result = (await requestResult(transaction.objectStore(store).getAll())) as T[];
@@ -324,7 +357,7 @@ export class BrowserRepository {
     return result.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   }
 
-  private async deleteRecord(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants", id: string): Promise<void> {
+  private async deleteRecord(store: "analyses" | "batches" | "workspaceImages" | "analysisJobs" | "analysisPreviews" | "maskVariants" | "microscopyProjects", id: string): Promise<void> {
     const transaction = this.database.transaction(store, "readwrite");
     const completed = transactionComplete(transaction);
     transaction.objectStore(store).delete(id);

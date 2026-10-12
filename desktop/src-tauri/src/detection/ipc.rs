@@ -142,8 +142,13 @@ impl SidecarPayload {
         DetectionResultDto {
             image_width: self.width,
             image_height: self.height,
-            cells: self.cells.into_iter().map(SidecarCell::into_cell_dto).collect(),
+            cells: self
+                .cells
+                .into_iter()
+                .map(SidecarCell::into_cell_dto)
+                .collect(),
             image_stats: self.image_stats,
+            runtime_identity: None,
         }
     }
 }
@@ -159,9 +164,20 @@ impl SidecarPayload {
 pub struct DetectionParams {
     /// v1: always "cp-cyto3". The `cp-` prefix is stripped for `--model`.
     pub model_id: String,
+    #[serde(default)]
+    pub classical_threshold: Option<f64>,
+    #[serde(default)]
+    pub preprocessing_preset: Option<String>,
     /// Backend-resolved, app-confined checkpoint for a derived cp-cyto3 version.
     #[serde(default)]
     pub checkpoint_path: Option<String>,
+    /// Internal immutable runtime/script identity; never accepted from IPC.
+    #[serde(skip)]
+    pub runtime_identity_key: Option<String>,
+    #[serde(skip)]
+    pub runtime_cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    #[serde(skip)]
+    pub runtime_cancel_notify: Option<std::sync::Arc<tokio::sync::Notify>>,
     pub px_per_um: f64,
     pub confidence_threshold: f64,
     /// [cyto, nuclei]; 0=gray,1=r,2=g,3=b. Default [0,0] ⇒ `--channels` omitted.
@@ -193,6 +209,8 @@ fn default_z_projection() -> String {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectionResultDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<serde_json::Value>,
     pub image_width: i64,
     pub image_height: i64,
     pub cells: Vec<CellDto>,

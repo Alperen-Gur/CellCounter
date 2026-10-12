@@ -20,6 +20,7 @@ import { OverlayControls } from "./OverlayControls";
 import { QCBadges } from "./QCBadges";
 import { LinkedMeasurements } from "./LinkedMeasurements";
 import { MaskVersionsPanel } from "./MaskVersionsPanel";
+import { AdvancedWorkflowsPanel, PromptSurface } from "./AdvancedWorkflowsPanel";
 import { RunProvenance } from "./RunProvenance";
 import { useSavedRun } from "./useSavedRun";
 import { assertReviewImageWritable, isReviewImageBusy, useReviewImageBusy } from "./reviewWriteGuard";
@@ -79,7 +80,10 @@ export default function ResultsPage() {
   // Export sheet (per-image export of the open image) + re-run detection.
   const [exportOpen, setExportOpen] = useState(false);
 
-  const [panel, setPanel] = useState<"measurements" | "variants" | null>(null);
+  const [panel, setPanel] = useState<"measurements" | "variants" | "advanced" | null>(null);
+  const [promptMode,setPromptMode]=useState<"point"|"box"|null>(null);
+  useEffect(() => { if (panel !== "advanced") setPromptMode(null); }, [panel]);
+  useEffect(()=>setPromptMode(null),[currentImage?.id]);
   const [operationBusy, setOperationBusy] = useState(false);
   const imageBusy = useReviewImageBusy(currentImage?.id);
   const savedRun = useSavedRun(currentImage?.id, detection);
@@ -262,6 +266,7 @@ export default function ResultsPage() {
           {currentImage && <>
             <button className="rv-export-btn" disabled={operationBusy || exportOpen} onClick={() => setPanel(value => value === "measurements" ? null : "measurements")} aria-pressed={panel === "measurements"}>Measurements</button>
             <button className="rv-export-btn" disabled={operationBusy || exportOpen} onClick={() => setPanel(value => value === "variants" ? null : "variants")} aria-pressed={panel === "variants"}>Mask versions</button>
+            <button className="rv-export-btn" disabled={operationBusy || exportOpen} onClick={() => {setPromptMode(null);setPanel(value=>value=== "advanced" ? null : "advanced");}} aria-pressed={panel === "advanced"}>Advanced review</button>
             <button className="rv-export-btn" disabled={readOnly || editor.loading || loading} onClick={() => void onRerun()}>Analyze again</button>
           </>}
         </div>
@@ -299,7 +304,7 @@ export default function ResultsPage() {
               )}
               {/* Gesture layer — shares the editor with the toolbar; must live
                   INSIDE Viewport to read the source-px transform via context. */}
-              {!readOnly && !editor.loading && !loading && <EditingSurface editor={editor} />}
+              {!readOnly && !editor.loading && !loading && (promptMode ? <PromptSurface imageId={currentImage.id} box={promptMode === "box"}/> : <EditingSurface editor={editor} />)}
             </Viewport>
           ) : (
             <div className="rv-canvas__placeholder">Loading image…</div>
@@ -340,7 +345,7 @@ export default function ResultsPage() {
         </div>
 
         {currentImage && panel && <div className="rv-review-dock">
-          {panel === "measurements" ? <LinkedMeasurements key={currentImage.id} cells={sidebarCells} /> : imageSrc && <MaskVersionsPanel key={currentImage.id} image={currentImage} imageSrc={imageSrc} detection={detection} cells={displayCells} run={savedRun.run} reviewPxPerUm={pxPerUm} batchThresholds={batch?.thresholds ?? thresholds} thresholds={thresholds} disabled={readOnly || loading || editor.loading || !editor.engine || !!loadError || savedRun.loading} flush={editor.flush} onRestored={onRestored} onBusyChange={setOperationBusy} />}
+          {panel === "advanced" ? <AdvancedWorkflowsPanel key={currentImage.id} image={currentImage} images={images} detection={detection} editor={editor} pxPerUm={pxPerUm} run={savedRun.run} disabled={readOnly || loading || editor.loading || !editor.engine} imageSrc={imageSrc} onBusyChange={setOperationBusy} promptMode={promptMode} onPromptMode={setPromptMode}/> : panel === "measurements" ? <LinkedMeasurements key={currentImage.id} cells={sidebarCells} /> : imageSrc && <MaskVersionsPanel key={currentImage.id} image={currentImage} imageSrc={imageSrc} detection={detection} cells={displayCells} run={savedRun.run} reviewPxPerUm={pxPerUm} batchThresholds={batch?.thresholds ?? thresholds} thresholds={thresholds} disabled={readOnly || loading || editor.loading || !editor.engine || !!loadError || savedRun.loading} flush={editor.flush} onRestored={onRestored} onBusyChange={setOperationBusy} />}
         </div>}
         {/* Directory nav strip — ←/→ through the batch's images. */}
         {images.length > 0 && (

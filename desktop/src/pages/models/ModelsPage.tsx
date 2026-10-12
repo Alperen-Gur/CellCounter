@@ -23,6 +23,7 @@
  * imports domain vocabulary from kernel-types — nothing else.
  */
 
+import { CustomModelsPanel } from "./CustomModelsPanel";
 import { useAppStore } from "../../kernel/store/store";
 import { Icon, type IconName } from "../../components/Icon";
 import { MODEL_CATALOG, type ModelCatalogEntry } from "./catalog";
@@ -38,14 +39,13 @@ export default function ModelsPage() {
       <div className="cc-models__intro">
         <h1 className="cc-models__title">Models</h1>
         <p className="cc-models__subtitle">
-          Three carefully selected detectors cover the initial Windows release:
-          <strong> Cellpose-SAM</strong> for difficult fields,
-          <strong> cyto3</strong> for fast general segmentation, and
-          <strong> StarDist fluorescence</strong> for nuclei. Install once; all
-          inference stays on this computer.
+          Choose an exact learned checkpoint or a classical threshold method.
+          Models run locally in separate framework environments; unsupported
+          checkpoints report an explicit error during installation.
         </p>
       </div>
 
+      <CustomModelsPanel/>
       <section className="cc-models__section" aria-label="Model catalog">
         <div className="cc-models__section-head">
           <span className="cc-models__section-title">Catalog</span>

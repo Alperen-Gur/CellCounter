@@ -1,4 +1,4 @@
-# CellCounter Web 0.2.1 preview
+# CellCounter Web 0.3.0 preview
 
 CellCounter Web is a fully client-side, installable PWA for private microscopy
 analysis. Imported pixels, model artifacts, measurements, corrections, study
@@ -7,12 +7,11 @@ telemetry, image upload or application server path.
 
 ## What is available
 
-The in-product **Help → Browser capabilities** view records 69 capabilities:
-**48 available, 4 build required and 17 unsupported**,
-including the native workflows still missing from the browser. Each entry cites
-source evidence and distinguishes available, build-required and unavailable
-behavior. These source checks establish traceability; they are not proof of full
-macOS feature parity.
+The in-product **Help → Browser capabilities** view records available features
+and explicit limits. Version 0.3.0 adds local multidimensional microscopy
+workspaces, review tools and dataset/sample exports. See the
+[workspace guide](PORTABLE-WORKSPACE.md) and [release notes](releases/web-v0.3.0.md).
+These implementations do not establish full macOS parity.
 
 See the [cross-platform parity snapshot](PLATFORM-PARITY.md) for the current
 release status and the [feature matrix](FEATURES.md) for individual differences.

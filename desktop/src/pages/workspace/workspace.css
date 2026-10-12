@@ -1,0 +1,24 @@
+.workspace-page { padding: 24px; overflow: auto; height: 100%; color: var(--text-primary, #1e293b); }
+.workspace-page header { display: flex; align-items: start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.workspace-page h1 { font-size: 24px; margin: 0 0 8px; }
+.workspace-page h2 { font-size: 15px; margin: 20px 0 8px; }
+.workspace-page p { line-height: 1.5; font-size: 13px; }
+.workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.workspace-page button, .workspace-page input, .workspace-page select { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 9px; background: #fff; color: #1e293b; font: inherit; font-size: 12px; max-width: 100%; }
+.workspace-page button { cursor: pointer; }
+.workspace-page button:disabled { opacity: .5; cursor: default; }
+.workspace-page button[aria-pressed="true"] { background: #e0f2fe; border-color: #0284c7; }
+.workspace-page button:focus-visible, .workspace-page input:focus-visible, .workspace-page select:focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
+.workspace-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; }
+.workspace-layout aside { padding: 12px; border: 1px solid #dbe2eb; border-radius: 8px; overflow-wrap: anywhere; }
+.workspace-page label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; margin: 8px 0; }
+.workspace-layout aside label:not(:has(input[type="checkbox"])) { display: grid; }
+.workspace-layer { margin: 8px 0; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
+.workspace-layer.selected { border-color: #0284c7; }
+.workspace-stage { min-width: 0; }
+.workspace-stage canvas { display: block; width: 100%; height: auto; background: #111827; touch-action: none; border-radius: 8px; }
+.workspace-stage details { padding: 12px; margin-top: 12px; border: 1px solid #dbe2eb; border-radius: 8px; }
+.workspace-stage summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+.workspace-error { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 10px; border-radius: 6px; }
+@media (max-width: 1000px) { .workspace-layout { grid-template-columns: 210px minmax(0, 1fr); } }
+@media (max-width: 760px) { .workspace-layout { grid-template-columns: 1fr; } .workspace-page { padding: 14px; } }

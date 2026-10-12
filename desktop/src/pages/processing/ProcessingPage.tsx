@@ -1,11 +1,12 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { useSourcePreview } from "../results/sourceSelection";
 import { analysisQueue } from "../../kernel/workflow/desktopQueue";
 import { settingsKey, type AnalysisJob, type AnalysisTask } from "../../kernel/workflow/AnalysisQueue";
 import { useAppStore } from "../../kernel/store/store";
 import { getPort } from "../../kernel/persistence";
 import { navigate } from "../../components/useHashRoute";
 import { useKeymap } from "../../components/useKeymap";
+import { useCustomModels } from "../models/CustomModelsPanel";
 import { MODEL_CATALOG } from "../models/catalog";
 import { Viewport } from "../../kernel/viewport/Viewport";
 import { MaskOverlay } from "../../kernel/overlay/MaskOverlay";
@@ -29,6 +30,7 @@ export default function ProcessingPage() {
 }
 
 function JobSetup({ job }: { job: AnalysisJob }) {
+  const customModels=useCustomModels();
   const [params, setParams] = useState(job.params);
   const [task, setTask] = useState<AnalysisTask>(job.task);
   const [scaleSource, setScaleSource] = useState(job.calibrationSource);
@@ -43,6 +45,7 @@ function JobSetup({ job }: { job: AnalysisJob }) {
   const running = job.status === "running";
   const selectedItem = job.items.find(item => item.imageId === imageId) ?? job.items[0];
   const image = images.find(image => image.id === selectedItem?.imageId);
+  const source = useSourcePreview(image?.id, params.segmentChannel, params.zProjection ?? "max");
   const completed = job.items.filter(item => item.status === "completed").length;
   const dirty = settingsKey(job.params) !== settingsKey(params) || task !== job.task || scaleSource !== job.calibrationSource;
   useEffect(() => {
@@ -85,21 +88,23 @@ function JobSetup({ job }: { job: AnalysisJob }) {
       <div><label>Representative image<select value={selectedItem?.imageId ?? ""} onChange={event => { setImageId(event.target.value); setZoom(1); setPan({ x: 0, y: 0 }); }}>
         {!job.items.length && <option value="">No images</option>}{job.items.map(item => <option key={item.imageId} value={item.imageId}>{item.fileName}</option>)}
       </select></label>
-        <div className="workflow-preview">{image ? <Viewport imageSrc={convertFileSrc(image.storedPath)} sourceWidth={image.widthPx} sourceHeight={image.heightPx} zoom={zoom} pan={pan} onZoomChange={setZoom} onPanChange={setPan} onFit={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>
+        <div className="workflow-preview">{image && source.src ? <Viewport imageSrc={source.src} sourceWidth={image.widthPx} sourceHeight={image.heightPx} zoom={zoom} pan={pan} onZoomChange={setZoom} onPanChange={setPan} onFit={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>
           <MaskOverlay cells={cells} thresholds={[params.smallThresholdUm, params.largeThresholdUm]} overlayMode="outline" confidenceCutoff={params.confidenceThreshold} showMaskFills showOutlines maskOpacity={0.2} selectedCellIds={new Set()} />
-        </Viewport> : <p>Loading image…</p>}</div><p>{image?.widthPx} × {image?.heightPx} pixels · {cells.length} masks</p>
+        </Viewport> : <p>{source.error ?? "Preparing selected source…"}</p>}</div><p>{image?.widthPx} × {image?.heightPx} pixels · {cells.length} masks</p>
       </div>
       <fieldset disabled={running || busy}><legend>Saved analysis settings</legend>
         <label>Task<select value={task} onChange={event => setTask(event.target.value as AnalysisTask)}><option value="countCells">Cell counts and sizes</option><option value="nuclei">Nuclei</option><option value="markerPositive">Marker positivity</option><option value="woundClosure">Wound closure</option></select></label>
         {task !== "countCells" && <p className="workflow-note">Choose a model and channels appropriate to this task. Marker and wound measurements run in Results → Advanced assays after segmentation.</p>}
-        <label>Model<select value={params.modelId} onChange={event => setParams({ ...params, modelId: event.target.value })}>{MODEL_CATALOG.filter(model => model.available).map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+        <label>Model<select value={params.modelId} onChange={event => setParams({ ...params, modelId: event.target.value,segmentChannel:event.target.value==="sd-he"?null:params.segmentChannel })}>{MODEL_CATALOG.filter(model => model.available).map(model => <option key={model.id} value={model.id}>{model.name}</option>)}{customModels.map(model=><option key={model.id} value={model.id}>{model.name} (custom)</option>)}</select></label>
         <label>Pixels per µm<input type="number" min="0.000001" step="any" value={params.pxPerUm} onChange={event => { setScaleSource("manual"); setParams({ ...params, pxPerUm: Number(event.target.value) }); }} /></label>
         <p className="workflow-note">Scale source: {scaleSource}. A screenshot needs a known scale for calibrated measurements.</p>
+        {params.modelId === "cw-manual" && <label>Manual threshold (source intensity)<input type="number" value={params.classicalThreshold ?? 128} onChange={event=>setParams({...params,classicalThreshold:Number(event.target.value)})}/></label>}
         <label>Confidence<input type="number" min="0" max="1" step="0.05" value={params.confidenceThreshold} onChange={event => setParams({ ...params, confidenceThreshold: Number(event.target.value) })} /></label>
-        <label>Expected diameter (µm; 0 = automatic)<input type="number" min="0" step="1" value={params.expectedDiameterUm} onChange={event => setParams({ ...params, expectedDiameterUm: Number(event.target.value) })} /></label>
-        {([0, 1] as const).map(index => <label key={index}>{index ? "Nuclear channel" : "Cell channel"}<select value={params.channels[index]} onChange={event => { const channels: [number, number] = [...params.channels]; channels[index] = Number(event.target.value); setParams({ ...params, channels }); }}><option value="0">Grayscale</option><option value="1">Red</option><option value="2">Green</option><option value="3">Blue</option></select></label>)}
-        <label>Source channel (blank = automatic; zero-based)<input type="number" min="0" step="1" placeholder="Automatic" value={params.segmentChannel ?? ""} onChange={event => setParams({ ...params, segmentChannel: event.target.value === "" ? null : Number(event.target.value) })} /></label>
+        <label>Expected diameter (µm; 0 = automatic)<input disabled={params.modelId.startsWith("sd-")} type="number" min="0" step="1" value={params.expectedDiameterUm} onChange={event => setParams({ ...params, expectedDiameterUm: Number(event.target.value) })} /></label>
+        {!params.modelId.startsWith("sd-")&&!params.modelId.startsWith("cp4-")&&params.modelId!=="cpsam_v2"&&([0, 1] as const).map(index => <label key={index}>{index ? "Nuclear channel" : "Cell channel"}<select value={params.channels[index]} onChange={event => { const channels: [number, number] = [...params.channels]; channels[index] = Number(event.target.value); setParams({ ...params, channels }); }}><option value="0">Grayscale</option><option value="1">Red</option><option value="2">Green</option><option value="3">Blue</option></select></label>)}
+        <label>Source channel (blank = automatic; zero-based)<input type="number" min="0" step="1" placeholder="Automatic" disabled={params.modelId==="sd-he"} value={params.segmentChannel ?? ""} onChange={event => setParams({ ...params, segmentChannel: event.target.value === "" ? null : Number(event.target.value) })} /></label>
         <label>Z projection<select value={params.zProjection ?? "max"} onChange={event => setParams({ ...params, zProjection: event.target.value as NonNullable<typeof params.zProjection> })}><option value="max">Maximum</option><option value="mean">Mean</option><option value="sum">Sum</option><option value="none">Middle plane (no projection)</option></select></label>
+        <label>Preprocessing<select value={params.preprocessingPreset ?? "none"} onChange={event=>setParams({...params,preprocessingPreset:event.target.value as typeof params.preprocessingPreset})}><option value="none">None</option><option value="clahe">Local contrast (CLAHE)</option><option value="denoise">Median denoise</option><option value="normalize">Percentile normalization</option></select></label>
         <label><input type="checkbox" checked={params.backgroundSubtract} onChange={event => setParams({ ...params, backgroundSubtract: event.target.checked })} /> Subtract background</label>
         <label><input type="checkbox" checked={params.watershedSplit} onChange={event => setParams({ ...params, watershedSplit: event.target.checked })} /> Split touching cells</label>
       </fieldset>

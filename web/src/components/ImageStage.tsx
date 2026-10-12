@@ -11,6 +11,8 @@ interface ImageStageProps {
   alternativeCells?: readonly WorkspaceCell[];
   onCellPointer: (x: number, y: number) => void;
   onImport: () => void;
+  onTrace?: (points: Array<{ x: number; y: number }>) => void;
+  onPromptBox?: (start: { x: number; y: number }, end: { x: number; y: number }) => void;
   onRoi: (start: { x: number; y: number }, end: { x: number; y: number }, kind: "include" | "exclude") => void;
 }
 
@@ -41,13 +43,14 @@ function drawCell(ctx: CanvasRenderingContext2D, cell: WorkspaceCell, transform:
   ctx.shadowBlur = 0;
 }
 
-export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCellPointer, onImport, onRoi }: ImageStageProps) {
+export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCellPointer, onImport, onRoi, onTrace, onPromptBox }: ImageStageProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const transformRef = useRef<StageTransform>({ scale: 1, x: 0, y: 0 });
   const manualViewRef = useRef(false);
   const panRef = useRef<{ clientX: number; clientY: number; x: number; y: number } | undefined>(undefined);
+  const traceRef = useRef<Array<{ x: number; y: number }> | undefined>(undefined);
   const roiStartRef = useRef<{ x: number; y: number } | undefined>(undefined);
   const frameRef = useRef<number | undefined>(undefined);
   const [ready, setReady] = useState(false);
@@ -81,6 +84,7 @@ export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCe
       drawCell(ctx, cell, transform, cell.id === selectedCellId);
     });
     for (const cell of alternativeCells ?? []) drawCell(ctx, cell, transform, false, true);
+    if (traceRef.current?.length) { ctx.beginPath(); traceRef.current.forEach((p, i) => { const x = transform.x + p.x * transform.scale, y = transform.y + p.y * transform.scale; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }); ctx.strokeStyle = "#f5c868"; ctx.lineWidth = 2; ctx.stroke(); }
     for (const roi of image.rois) {
       ctx.save();
       ctx.setLineDash([7, 5]);
@@ -135,7 +139,9 @@ export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCe
       return;
     }
     const { x, y } = sourcePoint(event);
-    if (tool === "roi-include" || tool === "roi-exclude") {
+    if (x < 0 || y < 0 || x >= image.width || y >= image.height) return;
+    if (tool === "freehand") { event.currentTarget.setPointerCapture(event.pointerId); traceRef.current = [{ x, y }]; return; }
+    if (tool === "roi-include" || tool === "roi-exclude" || tool === "prompt-box") {
       event.currentTarget.setPointerCapture(event.pointerId);
       roiStartRef.current = { x, y };
       return;
@@ -144,6 +150,7 @@ export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCe
   };
 
   const pointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (traceRef.current && image) { const p = sourcePoint(event); const point = { x: Math.max(0, Math.min(image.width - 1, p.x)), y: Math.max(0, Math.min(image.height - 1, p.y)) }; const last = traceRef.current.at(-1)!; if (traceRef.current.length < 4096 && Math.hypot(point.x - last.x, point.y - last.y) >= 1) traceRef.current.push(point); schedulePaint(); return; }
     if (!panRef.current) return;
     manualViewRef.current = true;
     transformRef.current = { ...transformRef.current, x: panRef.current.x + event.clientX - panRef.current.clientX, y: panRef.current.y + event.clientY - panRef.current.clientY };
@@ -151,13 +158,15 @@ export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCe
   };
 
   const pointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (traceRef.current) { const points = traceRef.current; traceRef.current = undefined; if (points.length >= 3) onTrace?.(points); return; }
     if (panRef.current) { panRef.current = undefined; return; }
     if (!roiStartRef.current || !image) return;
     const end = sourcePoint(event);
     const start = roiStartRef.current;
     roiStartRef.current = undefined;
     const bounded = { x: Math.max(0, Math.min(image.width, end.x)), y: Math.max(0, Math.min(image.height, end.y)) };
-    if (Math.hypot(bounded.x - start.x, bounded.y - start.y) >= 3) onRoi(start, bounded, tool === "roi-include" ? "include" : "exclude");
+    if (Math.hypot(bounded.x - start.x, bounded.y - start.y) >= 3) { if (tool === "prompt-box") onPromptBox?.(start, bounded); else onRoi(start, bounded, tool === "roi-include" ? "include" : "exclude"); }
   };
 
   const zoomAtCenter = (factor: number) => {
@@ -191,7 +200,7 @@ export function ImageStage({ image, alternativeCells, tool, selectedCellId, onCe
   return (
     <section ref={hostRef} className={`image-stage tool-${tool}`}>
       {image ? (
-        <canvas ref={canvasRef} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onWheel={wheel} onDoubleClick={fit} aria-label={`${image.fileName} with ${image.cells.length} segmented objects`} />
+        <canvas ref={canvasRef} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={() => { traceRef.current = undefined; roiStartRef.current = undefined; panRef.current = undefined; schedulePaint(); }} onWheel={wheel} onDoubleClick={fit} aria-label={`${image.fileName} with ${image.cells.length} segmented objects`} />
       ) : (
         <button className="empty-study" onClick={onImport}>
           <span className="empty-icon"><ImagePlus size={22} /></span>

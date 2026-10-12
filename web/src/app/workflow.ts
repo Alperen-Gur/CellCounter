@@ -104,18 +104,24 @@ export function restoreVariant(variant: MaskVariant, current: Calibration): Imag
 }
 
 export function compareMaskVariants(current: ImageAnalysis, alternative: ImageAnalysis): { added: number; removed: number; changed: number; unchanged: number } {
+  let vertices = 0;
+  if (current.cells.length + alternative.cells.length > 100_000) throw new Error("Mask comparison supports at most 100,000 objects across both masks.");
+  for (const cells of [current.cells, alternative.cells]) for (const cell of cells) {
+    vertices += cell.contourPx.length;
+    if (vertices > 500_000 || !Number.isFinite(cell.equivalentDiameterPx) || cell.equivalentDiameterPx <= 0 || !Number.isFinite(cell.centroidPx.x) || !Number.isFinite(cell.centroidPx.y) || Math.abs(cell.centroidPx.x) > 1e9 || Math.abs(cell.centroidPx.y) > 1e9) throw new Error("Mask comparison exceeds its bounded geometry budget. Crop the field or simplify its contours.");
+  }
   const unused = new Set(alternative.cells.map((_, index) => index));
   let removed = 0; let changed = 0; let unchanged = 0;
   let bucketSize = 1;
-  for (const cell of [...current.cells, ...alternative.cells]) bucketSize = Math.max(bucketSize, cell.equivalentDiameterPx);
+  for (const cells of [current.cells, alternative.cells]) for (const cell of cells) bucketSize = Math.max(bucketSize, cell.equivalentDiameterPx);
   const buckets = new Map<string, number[]>();
   alternative.cells.forEach((cell, index) => { const key = `${Math.floor(cell.centroidPx.x / bucketSize)}:${Math.floor(cell.centroidPx.y / bucketSize)}`; const bucket = buckets.get(key) ?? []; bucket.push(index); buckets.set(key, bucket); });
+  let work = 0;
   for (const cell of current.cells) {
     let best = -1; let distance = Infinity;
     const bx = Math.floor(cell.centroidPx.x / bucketSize); const by = Math.floor(cell.centroidPx.y / bucketSize);
-    const candidates: number[] = [];
-    for (let y = by - 1; y <= by + 1; y++) for (let x = bx - 1; x <= bx + 1; x++) candidates.push(...(buckets.get(`${x}:${y}`) ?? []));
-    for (const index of candidates) {
+    for (let y = by - 1; y <= by + 1; y++) for (let x = bx - 1; x <= bx + 1; x++) for (const index of buckets.get(`${x}:${y}`) ?? []) {
+      if (++work > 5_000_000) throw new Error("Dense mask comparison exceeds five million object comparisons. Compare a smaller field.");
       if (!unused.has(index)) continue;
       const next = alternative.cells[index];
       const separation = Math.hypot(cell.centroidPx.x - next.centroidPx.x, cell.centroidPx.y - next.centroidPx.y);

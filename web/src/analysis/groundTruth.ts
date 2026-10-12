@@ -20,19 +20,34 @@ export interface GroundTruthMetrics {
 /** Maximum-cardinality one-to-one matching, preferring shorter eligible edges deterministically. */
 export function matchGroundTruth(truth: readonly IdentifiedPoint[], detections: readonly IdentifiedPoint[], tolerancePx: number): GroundTruthMetrics {
   if (!(tolerancePx >= 0) || !Number.isFinite(tolerancePx)) throw new RangeError("Ground-truth tolerance must be finite and non-negative.");
+  if (truth.length + detections.length > 100_000 || truth.length * detections.length > 1_000_000) throw new RangeError("Ground-truth matching exceeds one million point pairs. Evaluate a smaller region or fewer reference objects.");
+  for (const points of [truth, detections]) for (const point of points) if (typeof point.id !== "string" || point.id.length > 512 || !Number.isFinite(point.x) || !Number.isFinite(point.y) || Math.abs(point.x) > 1e9 || Math.abs(point.y) > 1e9) throw new RangeError("Ground-truth points require bounded ids and finite source coordinates.");
   if (new Set(truth.map(({ id }) => id)).size !== truth.length || new Set(detections.map(({ id }) => id)).size !== detections.length) throw new RangeError("Ground-truth and detection ids must be unique within each set.");
   const adjacency = truth.map((point) => detections.map((detection, index) => ({ index, distance: Math.hypot(point.x - detection.x, point.y - detection.y) }))
     .filter(({ distance }) => distance <= tolerancePx).sort((a, b) => a.distance - b.distance || detections[a.index].id.localeCompare(detections[b.index].id)));
   const detectionToTruth = new Int32Array(detections.length); detectionToTruth.fill(-1);
-  const visit = (truthIndex: number, seen: Uint8Array): boolean => {
-    for (const { index } of adjacency[truthIndex]) {
-      if (seen[index]) continue;
-      seen[index] = 1;
-      if (detectionToTruth[index] < 0 || visit(detectionToTruth[index], seen)) { detectionToTruth[index] = truthIndex; return true; }
+  // Iterative augmenting paths preserve maximum cardinality without recursion
+  // proportional to the number of objects. An epoch array avoids per-root fills.
+  const seen = new Uint32Array(detections.length);
+  let work = 0;
+  for (let truthIndex = 0; truthIndex < truth.length; truthIndex += 1) {
+    const epoch = truthIndex + 1, stack = [truthIndex], offsets = [0], path: number[] = [];
+    while (stack.length) {
+      const depth = stack.length - 1, candidates = adjacency[stack[depth]];
+      if (offsets[depth] >= candidates.length) { stack.pop(); offsets.pop(); path.pop(); continue; }
+      if (++work > 5_000_000) throw new RangeError("Dense ground-truth matching exceeds five million edge visits. Evaluate a smaller region or tighter tolerance.");
+      const { index } = candidates[offsets[depth]++];
+      if (seen[index] === epoch) continue;
+      seen[index] = epoch;
+      const owner = detectionToTruth[index];
+      if (owner < 0) {
+        detectionToTruth[index] = stack[depth];
+        for (let at = depth - 1; at >= 0; at--) detectionToTruth[path[at]] = stack[at];
+        break;
+      }
+      path.push(index); stack.push(owner); offsets.push(0);
     }
-    return false;
-  };
-  for (let truthIndex = 0; truthIndex < truth.length; truthIndex += 1) visit(truthIndex, new Uint8Array(detections.length));
+  }
   const matches = Array.from(detectionToTruth.entries()).flatMap(([detectionIndex, truthIndex]) => truthIndex < 0 ? [] : [{
     truthId: truth[truthIndex].id,
     detectionId: detections[detectionIndex].id,

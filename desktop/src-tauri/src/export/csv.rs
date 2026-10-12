@@ -187,7 +187,9 @@ pub(crate) fn build_cells_csv(
 
     // Provenance block first (self-describing), then the pass-15 config line.
     lines.push(provenance.as_csv_header());
-    lines.push(config_header_comment(thresholds, px_per_um, cutoff, model_id));
+    lines.push(config_header_comment(
+        thresholds, px_per_um, cutoff, model_id,
+    ));
     lines.push(CELLS_HEADER.join(sep));
 
     for cell in cells.iter().filter(|c| c.confidence >= cutoff) {
@@ -329,7 +331,10 @@ fn sanitize_bin_label(label: &str) -> String {
 /// thresholds) — then the fixed suffix. Port of
 /// `ExportService.writePerImageSummaryCSV`'s header assembly.
 fn summary_header(labels: &[String]) -> Vec<String> {
-    let mut header: Vec<String> = SUMMARY_HEADER_PREFIX.iter().map(|s| s.to_string()).collect();
+    let mut header: Vec<String> = SUMMARY_HEADER_PREFIX
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     header.extend(
         labels
             .iter()
@@ -437,8 +442,15 @@ fn load_batch_summary_images(
         .map_err(|e| e.to_string())?;
 
     let mut out = Vec::with_capacity(rows.len());
-    for (file_name, imported_at, confidence_override, detector_id, ran_at, cells_json, stats_json) in
-        rows
+    for (
+        file_name,
+        imported_at,
+        confidence_override,
+        detector_id,
+        ran_at,
+        cells_json,
+        stats_json,
+    ) in rows
     {
         let has_detection = cells_json.is_some();
         let cells = cells_json
@@ -494,13 +506,16 @@ fn build_summary_csv(
         px_per_um_source: px_per_um_source.to_string(),
         thresholds: thresholds.to_vec(),
         confidence_floor: global_confidence,
-        background_subtract: false,
-        watershed_split: false,
+        background_subtract: None,
+        watershed_split: None,
         exported_at: crate::db::repo::now_iso8601(),
         image_id: None,
         file_name: None,
         file_hash: None,
         detection_ran_at: None,
+        run_parameters:serde_json::Value::Null,
+        parameters_source:"Per-image analysis settings may differ; consult image provenance".into(),
+        runtime_identity:serde_json::Value::Null,
     };
 
     let mut lines: Vec<String> = Vec::new();
@@ -542,8 +557,8 @@ fn build_summary_csv(
         };
         let sd_d = if diameters.len() > 1 {
             let m = mean_d;
-            let var = diameters.iter().map(|d| (d - m) * (d - m)).sum::<f64>()
-                / diameters.len() as f64;
+            let var =
+                diameters.iter().map(|d| (d - m) * (d - m)).sum::<f64>() / diameters.len() as f64;
             var.sqrt()
         } else {
             0.0
@@ -564,9 +579,18 @@ fn build_summary_csv(
         }
 
         let denom = n_cells.max(1) as f64;
-        let n_clumps = cells.iter().filter(|c| c.likely_clump.unwrap_or(false)).count();
-        let n_debris = cells.iter().filter(|c| c.likely_debris.unwrap_or(false)).count();
-        let n_edge = cells.iter().filter(|c| c.edge_touching.unwrap_or(false)).count();
+        let n_clumps = cells
+            .iter()
+            .filter(|c| c.likely_clump.unwrap_or(false))
+            .count();
+        let n_debris = cells
+            .iter()
+            .filter(|c| c.likely_debris.unwrap_or(false))
+            .count();
+        let n_edge = cells
+            .iter()
+            .filter(|c| c.edge_touching.unwrap_or(false))
+            .count();
         let pct_clumps = 100.0 * n_clumps as f64 / denom;
         let pct_debris = 100.0 * n_debris as f64 / denom;
         let pct_edge = 100.0 * n_edge as f64 / denom;
@@ -588,9 +612,21 @@ fn build_summary_csv(
         // Blank the count columns entirely when there's no detection (a 0 would
         // wrongly read as "measured zero cells").
         let has = img.has_detection;
-        let n_cells_str = if has { n_cells.to_string() } else { String::new() };
-        let mean_d_str = if has && n_cells > 0 { format!("{mean_d:.3}") } else { String::new() };
-        let sd_d_str = if has && n_cells > 1 { format!("{sd_d:.3}") } else { String::new() };
+        let n_cells_str = if has {
+            n_cells.to_string()
+        } else {
+            String::new()
+        };
+        let mean_d_str = if has && n_cells > 0 {
+            format!("{mean_d:.3}")
+        } else {
+            String::new()
+        };
+        let sd_d_str = if has && n_cells > 1 {
+            format!("{sd_d:.3}")
+        } else {
+            String::new()
+        };
         // One count string per bin, aligned 1:1 (same order, same count) with
         // the `n_bin*` columns `summary_header` emits, so this stays correct
         // for any number of bins. Same "blank when unanalyzed" convention as
@@ -600,12 +636,29 @@ fn build_summary_csv(
         } else {
             vec![String::new(); labels.len()]
         };
-        let clumps_str = if has && n_cells > 0 { format!("{pct_clumps:.2}") } else { String::new() };
-        let debris_str = if has && n_cells > 0 { format!("{pct_debris:.2}") } else { String::new() };
-        let edge_str = if has && n_cells > 0 { format!("{pct_edge:.2}") } else { String::new() };
+        let clumps_str = if has && n_cells > 0 {
+            format!("{pct_clumps:.2}")
+        } else {
+            String::new()
+        };
+        let debris_str = if has && n_cells > 0 {
+            format!("{pct_debris:.2}")
+        } else {
+            String::new()
+        };
+        let edge_str = if has && n_cells > 0 {
+            format!("{pct_edge:.2}")
+        } else {
+            String::new()
+        };
 
         // Disambiguated display name.
-        let display_name = if name_counts.get(img.file_name.as_str()).copied().unwrap_or(0) > 1 {
+        let display_name = if name_counts
+            .get(img.file_name.as_str())
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
             let seen = name_seen.entry(img.file_name.as_str()).or_insert(0);
             *seen += 1;
             let suffix = *seen;
@@ -613,7 +666,10 @@ fn build_summary_csv(
                 img.file_name.clone()
             } else {
                 let path = std::path::Path::new(&img.file_name);
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&img.file_name);
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&img.file_name);
                 match path.extension().and_then(|e| e.to_str()) {
                     Some(ext) if !ext.is_empty() => format!("{stem}_{suffix}.{ext}"),
                     _ => format!("{stem}_{suffix}"),

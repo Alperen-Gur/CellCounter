@@ -8,8 +8,8 @@ Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
 [![macOS](https://img.shields.io/badge/macOS-v1.0.16-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.16)
-[![Windows](https://img.shields.io/badge/Windows-v1.1.2-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.2)
-[![Web](https://img.shields.io/badge/Web-v0.2.1%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1)
+[![Windows](https://img.shields.io/badge/Windows-v1.2.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.0)
+[![Web](https://img.shields.io/badge/Web-v0.3.0%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -33,8 +33,8 @@ Image analysis is local by design. CellCounter does not require an account and d
 | Platform | Release | Availability |
 |---|---|---|
 | **macOS** | [v1.0.16](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.16) | Native universal app for macOS 15 or later |
-| **Windows** | [v1.1.2](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.2) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
-| **Web** | [v0.2.1 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1) | Installable PWA with local classical segmentation; learned models remain unavailable |
+| **Windows** | [v1.2.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.0) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
+| **Web** | [v0.3.0 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.0) | Installable PWA with local classical segmentation; learned models remain unavailable |
 
 > [!NOTE]
 > The web preview keeps images in the browser and runs classical threshold/watershed segmentation, but its three
@@ -280,7 +280,7 @@ Then open it normally.
 
 ### Windows — current release
 
-[![Download](https://img.shields.io/badge/Download-Windows%20v1.1.2-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.2)
+[![Download](https://img.shields.io/badge/Download-Windows%20v1.2.0-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.0)
 
 Requires **64-bit Windows 10 or Windows 11**. Choose the `.exe` for a standard workstation installation or the
 `.msi` for managed deployment. Both contain the same native application.
@@ -292,7 +292,7 @@ families: Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. See the
 
 ### Web — private PWA preview
 
-[![Download](https://img.shields.io/badge/Download-Web%20v0.2.1%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.2.1)
+[![Download](https://img.shields.io/badge/Download-Web%20v0.3.0%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.0)
 
 The web edition is a fully client-side PWA with no account, upload, telemetry, or application server. Download
 the release archive and serve it from HTTPS or `localhost`, then install it from a current WebGPU-capable browser.
@@ -398,3 +398,15 @@ and licenses: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 ## License
 
 MIT — see [LICENSE](LICENSE). Contributions welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Windows 1.2.0 and Web 0.3.0 preview
+
+Local microscopy workspaces add OME-Zarr v2, multidimensional layers, registration,
+stitching, painting, lineage, replay and GIF export. Review, source selection,
+dataset snapshots and sample exports are expanded. Windows adds local model
+families and imported checkpoints. The web version stays browser-only; learned
+artifacts, proprietary readers and training remain unavailable.
+
+See the [workspace guide](docs/PORTABLE-WORKSPACE.md),
+[Windows notes](docs/releases/windows-v1.2.0.md) and
+[web notes](docs/releases/web-v0.3.0.md).

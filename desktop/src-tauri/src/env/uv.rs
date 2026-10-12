@@ -31,8 +31,8 @@
 //! stream every non-empty line so the Models page can render a live log exactly
 //! like the Swift installer's `output` tail.
 
-use std::process::Stdio;
 use std::fmt::Write as _;
+use std::process::Stdio;
 
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
@@ -41,7 +41,8 @@ use tokio::process::Command;
 
 use crate::detection::ipc::Availability;
 use crate::detection::sidecar::{
-    is_cellpose_sam, is_stardist, is_supported_model, CELLPOSE4_IMPORT_PROBE,
+    is_cellpose_sam, is_classical, is_omnipose, is_stardist, is_supported_model,
+    runtime_model_name, CELLPOSE4_IMPORT_PROBE,
 };
 use crate::paths::FileStore;
 
@@ -227,6 +228,12 @@ pub(crate) fn stage_python_project(_app: &AppHandle, store: &FileStore) -> Resul
 /// `invoke("env_install", { modelId })`.
 #[tauri::command]
 pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(), String> {
+    static INSTALL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _install_guard = INSTALL_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
     let store = FileStore::from_app(&app)?;
     // Stage the python project for BOTH paths: the cpsam sidecar
     // (`cellpose4_detect.py`) is staged here alongside the cyto3 scripts and
@@ -242,7 +249,7 @@ pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(),
 
     if !is_supported_model(&model_id) {
         return Err(format!(
-            "Unsupported model id `{model_id}`. Windows supports cpsam_v2, cp-cyto3, and sd-fluo."
+            "Unsupported model id `{model_id}`. Choose a model from the Windows catalogue."
         ));
     }
 
@@ -250,6 +257,8 @@ pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(),
         install_cellpose4_env(&app, &store, &model_id).await?;
     } else if is_stardist(&model_id) {
         install_stardist_env(&app, &store, &model_id).await?;
+    } else if is_omnipose(&model_id) {
+        install_omnipose_env(&app, &store, &model_id).await?;
     } else {
         install_base_env(&app, &store, &model_id).await?;
     }
@@ -412,7 +421,9 @@ async fn install_base_env(
         .kill_on_drop(true);
     crate::proc::hide_console_tokio(&mut cmd);
 
-    run_streamed_command(app, cmd, "uv sync", model_id).await
+    run_streamed_command(app, cmd, "uv sync", model_id).await?;
+    capture_runtime(app, store, model_id, &store.venv_python()).await?;
+    Ok(())
 }
 
 /// Cellpose-SAM (`cellpose>=4`) install into the ISOLATED `.venv4`. Mirrors the
@@ -494,18 +505,7 @@ async fn install_cellpose4_env(
     //    through the SAME mechanism as the uv steps so the multi-hundred-MB
     //    download shows progress; a non-zero exit FAILS the install with the
     //    captured tail (a clear install-time error beats a silent first-run stall).
-    let mut prefetch_cmd = Command::new(&venv4_python);
-    prefetch_cmd
-        .arg("-c")
-        .arg("from cellpose import models; models.CellposeModel(gpu=False, pretrained_model='cpsam')")
-        .current_dir(store.python_dir())
-        .env_remove("VIRTUAL_ENV")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    crate::proc::hide_console_tokio(&mut prefetch_cmd);
-    run_streamed_command(app, prefetch_cmd, "cellpose-sam weight prefetch", model_id).await
+    capture_runtime(app, store, model_id, &venv4_python).await
 }
 
 /// Install StarDist and its pretrained fluorescence weights in `.venvsd`.
@@ -555,20 +555,112 @@ async fn install_stardist_env(
 
     // Make installation transactional from the user's point of view: a model
     // is not reported ready until its exact weights can be constructed.
-    let mut prefetch_cmd = Command::new(&python);
-    prefetch_cmd
-        .arg("-c")
-        .arg("from stardist.models import StarDist2D; StarDist2D.from_pretrained('2D_versatile_fluo')")
+    capture_runtime(app, store, model_id, &python).await
+}
+
+async fn install_omnipose_env(
+    app: &AppHandle,
+    store: &FileStore,
+    model_id: &str,
+) -> Result<(), String> {
+    if let Some(message) = long_path_warning(&store.venv_omni_dir()) {
+        return Err(message);
+    }
+    let mut create = Command::new(uv_executable());
+    create
+        .args(["venv", "--python", PINNED_PYTHON])
+        .arg(store.venv_omni_dir())
         .current_dir(store.python_dir())
-        .env("TF_CPP_MIN_LOG_LEVEL", "2")
-        .env("KERAS_HOME", store.models_dir().join("keras"))
         .env_remove("VIRTUAL_ENV")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    crate::proc::hide_console_tokio(&mut prefetch_cmd);
-    run_streamed_command(app, prefetch_cmd, "StarDist weight prefetch", model_id).await
+    crate::proc::hide_console_tokio(&mut create);
+    run_streamed_command(app, create, "Omnipose environment", model_id).await?;
+    let mut install = Command::new(uv_executable());
+    install
+        .args(["pip", "install", "--python"])
+        .arg(store.venv_omni_python())
+        .args([
+            "omnipose>=1,<2",
+            "numpy<2",
+            "pillow",
+            "tifffile",
+            "scikit-image",
+            "scipy",
+            "torch",
+            "torchvision",
+        ])
+        .current_dir(store.python_dir())
+        .env_remove("VIRTUAL_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut install);
+    run_streamed_command(app, install, "Omnipose install", model_id).await?;
+    capture_runtime(app, store, model_id, &store.venv_omni_python()).await
+}
+
+pub(crate) fn runtime_snapshot_path(store: &FileStore, model_id: &str) -> std::path::PathBuf {
+    store.models_dir().join(format!("runtime-{model_id}.json"))
+}
+pub(crate) fn runtime_snapshot_args(
+    store: &FileStore,
+    model_id: &str,
+    probe: bool,
+) -> Result<Vec<String>, String> {
+    let kind = if is_cellpose_sam(model_id) {
+        "cellpose4"
+    } else if is_stardist(model_id) {
+        "stardist"
+    } else if is_omnipose(model_id) {
+        "omnipose"
+    } else if is_classical(model_id) {
+        "classical"
+    } else {
+        "cellpose"
+    };
+    let mut args = vec![
+        store
+            .python_script("model_snapshot.py")
+            .to_string_lossy()
+            .into_owned(),
+        "--model-id".into(),
+        model_id.into(),
+        "--runtime-name".into(),
+        runtime_model_name(model_id)
+            .ok_or("Unknown runtime checkpoint")?
+            .into(),
+        "--kind".into(),
+        kind.into(),
+        "--ready-path".into(),
+        runtime_snapshot_path(store, model_id)
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    if probe {
+        args.push("--probe".into());
+    }
+    Ok(args)
+}
+async fn capture_runtime(
+    app: &AppHandle,
+    store: &FileStore,
+    model_id: &str,
+    python: &std::path::Path,
+) -> Result<(), String> {
+    let mut cmd = Command::new(python);
+    cmd.args(runtime_snapshot_args(store, model_id, false)?)
+        .current_dir(store.python_dir())
+        .env("KERAS_HOME", store.models_dir().join("keras"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut cmd);
+    run_streamed_command(app, cmd, "Exact runtime and checkpoint capture", model_id).await
 }
 
 /// Spawn a fully-configured `Command`, stream its stdout+stderr as
@@ -643,7 +735,9 @@ where
                             emit_line(&app, stream, &model_id, &buf, &mut tail);
                             buf.clear();
                         } else {
-                            buf.push(b);
+                            if buf.len() < 64 * 1024 {
+                                buf.push(b);
+                            }
                         }
                     }
                     Err(_) => break,
@@ -708,13 +802,16 @@ pub async fn env_availability(
         return Ok(Availability {
             installed: false,
             reason: Some(format!(
-                "Unsupported model id `{model_id}`. Windows supports cpsam_v2, cp-cyto3, and sd-fluo."
+                "Unsupported model id `{model_id}`. Choose a model from the Windows catalogue."
             )),
         });
     }
 
     if let Err(reason) = stage_python_project(&app, &store) {
-        return Ok(Availability { installed: false, reason: Some(reason) });
+        return Ok(Availability {
+            installed: false,
+            reason: Some(reason),
+        });
     }
 
     // Route to the model-appropriate venv + import probe. cpsam checks `.venv4`
@@ -727,6 +824,10 @@ pub async fn env_availability(
             store.venv_stardist_python(),
             "import stardist, csbdeep, tensorflow",
         )
+    } else if is_omnipose(&model_id) {
+        (store.venv_omni_python(), "import cellpose_omni, omnipose")
+    } else if is_classical(&model_id) {
+        (store.venv_python(), "import numpy, scipy, skimage, PIL")
     } else {
         (store.venv_python(), "import cellpose")
     };
@@ -743,21 +844,30 @@ pub async fn env_availability(
             }),
         });
     }
-    if stardist && !store.stardist_weights_dir().is_dir() {
+    if stardist
+        && !store
+            .models_dir()
+            .join("keras/models")
+            .join(runtime_model_name(&model_id).unwrap_or(""))
+            .is_dir()
+    {
         return Ok(Availability {
             installed: false,
             reason: Some(
-                "StarDist fluorescence weights are missing. Reinstall sd-fluo from Models."
-                    .into(),
+                "StarDist fluorescence weights are missing. Reinstall sd-fluo from Models.".into(),
             ),
         });
     }
     let mut cmd = Command::new(&python);
-    cmd.args(["-c", probe])
-        .current_dir(store.python_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+    cmd.args(if is_classical(&model_id) {
+        vec!["-c".to_string(), probe.to_string()]
+    } else {
+        runtime_snapshot_args(&store, &model_id, true)?
+    })
+    .current_dir(store.python_dir())
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
     crate::proc::hide_console_tokio(&mut cmd);
     let output = cmd
         .output()

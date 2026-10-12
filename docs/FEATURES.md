@@ -1,7 +1,10 @@
 # CellCounter feature reference
 
-This is the public feature inventory for the currently documented releases: macOS v1.0.16, Windows v1.1.2,
-and Web v0.2.1 preview. It describes user-facing behavior and deliberately omits private implementation details.
+The tables below retain the **historical baseline** for macOS v1.0.16, Windows
+v1.1.2 and Web v0.2.1. For Windows **1.2.0** and Web **0.3.0 preview**, see the
+[portable workspace guide](PORTABLE-WORKSPACE.md) and
+[current release comparison](PLATFORM-PARITY.md), which describe the additions
+and remaining limits. Baseline tables are not the current capability inventory.
 
 Status meanings:
 
@@ -16,8 +19,8 @@ For installation and operational guidance, see the [main README](../README.md), 
 **Full macOS parity has not been reached.** The
 [release-status and parity snapshot](PLATFORM-PARITY.md) summarizes the shared
 workflow, remaining gaps, and published fixes for reported desktop
-issues. Windows inventories 45 ready, 7 adapted and 15 pending capabilities;
-Web inventories 48 available, 4 build-required and 17 unsupported capabilities.
+issues. The historical Windows inventory lists 45 ready, 7 adapted and 15 pending capabilities;
+the historical Web inventory lists 48 available, 4 build-required and 17 unsupported capabilities.
 These differently grouped inventories are not completion percentages.
 
 ## Privacy and storage

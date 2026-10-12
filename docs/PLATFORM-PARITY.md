@@ -1,97 +1,42 @@
 # Release status and feature parity
 
-Snapshot: **11 October 2026**, for macOS **1.0.16**, Windows **1.1.2**, and
-Web **0.2.1 preview**. The macOS download adds data-integrity and workspace safeguards. Windows
-1.1.2 adds batch-calibration fixes and retains the earlier preview recovery. Windows and Web share the main analysis workflow with macOS, but neither
-has complete macOS feature parity.
+Release series: **12 October 2026** — macOS **1.0.16**, Windows **1.2.0**,
+and Web **0.3.0 preview**.
 
-## Reported issues and released fixes
+Windows and Web now include local OME-Zarr v2 workspaces, multidimensional layers,
+translation registration, grid stitching, label painting, lineage, project replay
+and GIF export. Review, source-plane selection, preprocessing comparisons,
+reviewed dataset snapshots and sample exports have also expanded.
+See the [portable workspace guide](PORTABLE-WORKSPACE.md) for supported formats,
+coordinates, limits and workflow details.
 
-| Platform | Report | Published fix | Evidence and remaining confirmation |
-| --- | --- | --- | --- |
-| macOS | [Issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10): Review Queue crashes persist after the earlier large-queue update | [1.0.15](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.15): additional stale-record and invalid-measurement guards, complete orphan cleanup during an explicit data reset, and preservation of library data during startup | Universal archive built. Automated tests and interactive validation were not run for this patch. The reporter's exact crash remains unconfirmed. |
-| macOS | [Issue #11](https://github.com/Alperen-Gur/CellCounter/issues/11): slow analyzed-image navigation | [1.0.15](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.15): bounded display previews and background contour-index preparation | Compilation and packaging only; latency improvements have not been benchmarked. |
-| macOS | [Issue #12](https://github.com/Alperen-Gur/CellCounter/issues/12): support for elongated/complex cells | [1.0.15](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.15): saved Omnipose reconstruction controls | No cell-type-specific accuracy validation was performed. Windows and web capabilities are unchanged. |
-| Windows | Broken thumbnails and full previews after successful imports | [1.1.1](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.1): corrected library access and native preview recovery | Native installer packaging and checksum checks only; no automated tests or interactive validation for this patch. |
-| Windows | First analysis fails with “Sidecar scripts are not staged” | [1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.1.0): required scripts are embedded in the executable, staged before Python operations, and repaired when missing or damaged | Recovery tests and [native Windows installer CI](https://github.com/Alperen-Gur/CellCounter/actions/runs/34170823672) passed. Installation and first model setup on the reporter's physical PC have not been confirmed. |
+| Capability | Windows 1.2.0 | Web 0.3.0 preview |
+| --- | --- | --- |
+| Local microscopy workspace | Included with bounded source loading | Included entirely in the browser |
+| Review, corrections and source inspection | Native source reader; recorded selection and verified source identity | Local raster/TIFF and Zarr sources; explicit plane selection |
+| Learned segmentation | Local Cellpose, StarDist, Omnipose and imported checkpoint routes; installation and exact checkpoint verification required | Compatible qualified artifacts are not bundled |
+| Classical segmentation | Included | Included without model downloads |
+| Reviewed dataset snapshots | Grouped local TIFF/mask datasets | Grouped local TIFF/mask ZIP export with size limits |
+| Training | Existing local cyto3 training workflow | Unavailable |
+| Proprietary microscope readers | Local reader dependencies required | Unavailable |
+| Sample exports | Local folder, source, measurements, reports and hashes | Local ZIP, source, measurements, reports and hashes |
 
-Earlier macOS improvements to Models-page responsiveness, keyboard commands and
-image preview loading are included in 1.0.13 through the
-[1.0.11](releases/v1.0.11.md) and [1.0.12](releases/v1.0.12.md) changes.
+Full macOS parity has not been reached. Portable algorithms, supported codecs,
+resource limits and output formats differ. Model setup remains CPU-only on
+Windows. The web app has no local companion or image-upload service; its learned
+model artifacts, proprietary readers and actual training remain unavailable.
 
-Issue #9 is closed; the follow-up crash report is tracked in [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). Windows 1.1.2 includes corrected local image access and preview recovery. Automated tests and interactive validation were not run for this patch; behavior on the reporter's PC remains unconfirmed.
+The [Windows notes](releases/windows-v1.2.0.md) and
+[web notes](releases/web-v0.3.0.md) describe this release. The detailed
+[feature tables](FEATURES.md) retain the earlier release baseline and are labeled
+accordingly. Current in-app capability inventories describe the new implementation.
 
-## Shared workflow, different capabilities
+Production compilation and artifact checks are required before publishing these
+packages. Automated tests, interactive app checks and inference were not run for
+this change; packaging does not establish scientific accuracy or runtime parity.
+Windows installers are unsigned. Web is a static PWA archive served over HTTPS
+or localhost; publication does not create a hosted service.
 
-| Workflow | macOS 1.0.16 | Windows 1.1.2 | Web 0.2.1 |
-| --- | --- | --- | --- |
-| Import, save setup, preview, then process | Available | Available; setup shows the imported display preview | Available for classical segmentation |
-| Saved jobs, pause/resume, interruption recovery, failed-image retry | Available | Available | Available |
-| Linked image, measurement table and scatter selection | Available | Available | Available |
-| Saved mask alternatives and recorded run settings | Available | Available | Available |
-| Review uncertain objects | Paged queue with Skip and undo across pages | Paged queue with Skip and one last-decision undo across pages during the session | Accept, reject and resize; no dedicated queue Skip or decision-undo control |
-| Learned segmentation | Broader native catalog; some entries remain visibly unavailable | Cellpose-SAM, Cellpose `cyto3`, StarDist fluorescence; CPU-only | Unavailable: three learned-model artifacts are not bundled |
-| Classical threshold/watershed segmentation | Available | Not included as a standalone detector | Available locally without model downloads |
-| Training | Reviewed-library Cellpose 3.x workflow with grouped splits and held-out evaluation | Grouped image/mask-folder `cyto3` training | Unavailable |
-
-Shared workflow names do not imply identical controls, model results, data
-formats or performance. Windows `cpsam_v2` is a legacy ID for the **`cpsam`
-checkpoint**, not a distinct Cellpose-SAM v2 checkpoint. The browser's classical
-detector is explicitly labeled and does not substitute for an unavailable model.
-
-## Inventory snapshot
-
-| Inventory | Included | Adapted | Requires additional build artifacts | Unavailable | Total |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Windows | 45 ready | 7 | — | 15 pending | 67 |
-| Web | 48 available | Included in each entry's notes | 4 | 17 unsupported | 69 |
-
-These counts come from the
-[Windows inventory](../desktop/src/platform/windowsParity.ts) rendered in
-**Support → Platform parity**, and the
-[Web inventory](../web/src/parity/capabilities.json) rendered in
-**Help → Browser capabilities**. The inventories group capabilities differently;
-the totals are not completion percentages or equivalent units of work.
-“Available” entries can still have explicit limits, and source-reference checks
-do not establish performance or scientific equivalence.
-
-The four browser items requiring artifacts are the three learned detectors and
-the Cellpose GUI `_seg.npy` round-trip. Exporting a bare NumPy label array is
-already possible; it is not a Cellpose GUI session export.
-
-## Main remaining differences
-
-- **Windows:** exact selected source-plane display, the wider native model
-  catalog, OME-Zarr and layered multidimensional workspaces, registration and
-  stitching, workspace replay/animation/lineage, pixel-class painting,
-  prompt/sequence refinement, advanced preprocessing/optimization, bulk grid
-  curation, reviewed-library training snapshots, and linked source-channel
-  inspection remain unported. Inference is CPU-only and the interface is
-  intentionally light-only.
-- **Web:** learned weights, training, proprietary microscope-container readers,
-  the complete native source/plane viewer, additional models, workspace layers
-  and OME-Zarr, registration, lineage, painting, replay, animation, prompt and
-  sequence correction, advanced optimization, and workspace extensions remain
-  unavailable. Browser storage and source-size limits also differ from native
-  storage; see the [browser guide](WEB.md).
-- **macOS:** remains the broadest native implementation. This does not mean
-  every catalog entry is runnable or every export exists: for example, it does
-  not provide Windows' Cellpose GUI `_seg.npy` round-trip. Check the
-  [detailed feature matrix](FEATURES.md) for the specific workflow needed.
-
-## Updating after the reported failures
-
-On macOS, quit the old copy, install **CellCounting.app** from 1.0.16, and reopen
-**Review Queue**. Existing images and corrections are preserved; no library
-reset is required. See the [installation guide](INSTALL.md#large-review-queues).
-
-On Windows, quit CellCounter and install the 1.1.2 `.exe` or `.msi`, preferably
-using the same installer format as before. Retain application data and reopen
-the app; required scripts are staged or repaired automatically. Model setup can
-still require internet access for its first package/weight download. See the
-[Windows upgrade and troubleshooting guide](WINDOWS.md).
-
-The macOS download is universal, ad-hoc signed and not notarized. Windows
-installers are unsigned x64 packages. Those packaging properties are separate
-from the two code fixes. Web 0.2.1 is a static PWA release archive; publishing it
-does not create a hosted analysis service.
+The latest macOS release is unchanged:
+[1.0.16](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.16).
+Earlier Windows preview-recovery and calibration fixes remain included.

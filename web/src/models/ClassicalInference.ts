@@ -2,73 +2,26 @@ import { measureCells } from "../domain/measurements";
 import type { AnalysisParameters, Calibration, DetectionResultDTO } from "../domain/types";
 import { connectedComponents, otsuThreshold } from "../analysis/math";
 import { labelMapToGeometry, type InferenceEngine, type WebInferenceRequest } from "./WebGpuInference";
-import type { PixelArray } from "../analysis/types";
+import { readNativeRaster } from "../import/sourcePlanes";
+import { applyPreprocessing } from "../../../shared/preprocessing";
 
 export const CLASSICAL_MODEL_ID = "classical" as const;
-export const CLASSICAL_VERSION = "1.0.0";
+export const CLASSICAL_VERSION = "1.1.0";
 export interface PreparedPlane { width: number; height: number; values: Float32Array; }
 const MAX_PIXELS = 4_000_000;
-const MAX_SOURCE_BYTES = 256 * 1024 * 1024;
 function checkSize(width: number, height: number) {
-  if (!Number.isSafeInteger(width * height) || width <= 0 || height <= 0 || width * height > MAX_PIXELS) throw new Error("Browser segmentation supports fields up to 4 million pixels. Crop or downsample the image locally first.");
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width * height > MAX_PIXELS) throw new Error("Browser segmentation supports fields up to 4 million pixels. Crop or downsample locally first.");
 }
 function cancelled(signal?: AbortSignal) { if (signal?.aborted) throw new DOMException("Analysis cancelled", "AbortError"); }
 async function yieldTask(signal?: AbortSignal) { await new Promise((resolve) => setTimeout(resolve, 0)); cancelled(signal); }
 
-/** Read the selected original TIFF samples without passing through the display PNG. */
+/** Raw source samples; projection remains in the original source pixel geometry. */
 export async function preparePlane(request: WebInferenceRequest): Promise<PreparedPlane> {
-  const { source, parameters, signal } = request;
-  if (source.byteLength > MAX_SOURCE_BYTES) throw new Error("This source exceeds the 256 MB browser segmentation input budget.");
-  cancelled(signal);
-  let width: number; let height: number; let channels: number; let data: PixelArray;
-  const channel = parameters.sourceChannel ?? -1;
-  if (/\.tiff?$|\.ome\.tiff?$/i.test(source.fileName) || /tiff/i.test(source.mediaType)) {
-    const { fromArrayBuffer } = await import("geotiff");
-    const tiff = await fromArrayBuffer(await source.blob.arrayBuffer());
-    const first = await tiff.getImage(0);
-    width = first.getWidth(); height = first.getHeight(); channels = first.getSamplesPerPixel();
-    checkSize(width, height);
-    if (channels < 1 || channels > 16 || width * height * channels * 8 > 160 * 1024 * 1024) throw new Error("TIFF channels exceed the browser preparation memory budget.");
-    const count = await tiff.getImageCount();
-    const projection = parameters.projection ?? "first";
-    const description = String(first.getFileDirectory().ImageDescription ?? "");
-    const sizeC = Number(/SizeC=["'](\d+)/i.exec(description)?.[1] ?? channels);
-    const sizeT = Number(/SizeT=["'](\d+)/i.exec(description)?.[1] ?? 1);
-    if (projection !== "first" && (sizeT > 1 || sizeC > channels)) throw new Error("This TIFF contains separate time or channel planes. Export the desired channel/time as a Z-only TIFF before projecting in the browser.");
-    if (projection !== "first" && count > 64) throw new Error("Browser projections support at most 64 matching Z planes.");
-    data = await first.readRasters({ interleave: true }) as PixelArray;
-    if (projection !== "first" && count > 1) {
-      const output = new Float32Array(data.length);
-      for (let i = 0; i < output.length; i++) output[i] = Number(data[i]);
-      for (let plane = 1; plane < count; plane++) {
-        await yieldTask(signal);
-        const image = await tiff.getImage(plane);
-        if (image.getWidth() !== width || image.getHeight() !== height || image.getSamplesPerPixel() !== channels) throw new Error("Projection requires matching TIFF plane dimensions and samples.");
-        const values = await image.readRasters({ interleave: true }) as PixelArray;
-        for (let i = 0; i < output.length; i++) output[i] = projection === "max" ? Math.max(output[i], Number(values[i])) : output[i] + Number(values[i]);
-      }
-      if (projection === "mean") for (let i = 0; i < output.length; i++) output[i] /= count;
-      data = output;
-    }
-  } else {
-    const bitmap = await createImageBitmap(source.blob);
-    try {
-      width = bitmap.width; height = bitmap.height; channels = 4;
-      checkSize(width, height);
-      const context = new OffscreenCanvas(width, height).getContext("2d", { willReadFrequently: true });
-      if (!context) throw new Error("OffscreenCanvas is unavailable for browser analysis.");
-      context.drawImage(bitmap, 0, 0);
-      data = context.getImageData(0, 0, width, height).data;
-    } finally { bitmap.close(); }
-  }
-  if (channel >= channels || channel < -1 || !Number.isInteger(channel)) throw new Error(`Selected source channel is unavailable (${channels} samples in this image).`);
-  const values = new Float32Array(width * height);
-  for (let i = 0; i < values.length; i++) {
-    values[i] = channel >= 0 ? Number(data[i * channels + channel]) : channels >= 3 ? .2126 * Number(data[i * channels]) + .7152 * Number(data[i * channels + 1]) + .0722 * Number(data[i * channels + 2]) : Number(data[i * channels]);
-    if (!Number.isFinite(values[i])) throw new Error("Selected source plane contains non-finite intensities.");
-  }
-  cancelled(signal);
-  return { width, height, values };
+  const channel = request.parameters.sourceChannel ?? -1;
+  const raster = await readNativeRaster(request.source.blob, request.source.fileName, { t: request.parameters.sourceTime, z: request.parameters.sourceZ, projection: request.parameters.projection, channels: channel >= 0 ? [channel] : undefined }, request.signal);
+  const values = new Float32Array(raster.width * raster.height);
+  for (let i = 0; i < values.length; i++) values[i] = channel >= 0 || raster.channels < 3 ? Number(raster.data[i * raster.channels]) : .2126 * Number(raster.data[i * raster.channels]) + .7152 * Number(raster.data[i * raster.channels + 1]) + .0722 * Number(raster.data[i * raster.channels + 2]);
+  return { width: raster.width, height: raster.height, values };
 }
 
 function localMean(values: Float32Array, width: number, height: number, radius: number): Float32Array {
@@ -106,6 +59,10 @@ export function triangleThreshold(values: Float32Array): number {
 
 /** Distance-ordered seeded watershed. Every foreground pixel remains assigned to one instance. */
 export function watershedLabels(binary: Uint8Array, width: number, height: number, separation: number): Uint32Array {
+  checkSize(width, height);
+  if (binary.length !== width * height || !Number.isFinite(separation) || separation <= 0) throw new Error("Watershed needs matching dimensions and a finite positive seed separation.");
+  let seedWork = 0;
+  const countSeedWork = () => { if (++seedWork > 20_000_000) throw new Error("Watershed exceeds twenty million seed/neighborhood comparisons. Reduce the seed distance, crop the field or disable splitting."); };
   const distance = new Float32Array(binary.length);
   const labels = new Uint32Array(binary.length);
   for (let i = 0; i < distance.length; i++) distance[i] = binary[i] ? Math.min(i % width + 1, width - i % width, Math.floor(i / width) + 1, height - Math.floor(i / width)) : 0;
@@ -122,12 +79,13 @@ export function watershedLabels(binary: Uint8Array, width: number, height: numbe
       if (neighbors.some((n) => distance[n] > distance[i])) continue;
       let higher = false;
       const radius = Math.max(1, Math.floor(separation / 2));
-      for (let yy = Math.max(0, y - radius); yy <= Math.min(height - 1, y + radius) && !higher; yy++) for (let xx = Math.max(0, x - radius); xx <= Math.min(width - 1, x + radius); xx++) if (distance[yy * width + xx] > distance[i] + 1e-6) { higher = true; break; }
+      for (let yy = Math.max(0, y - radius); yy <= Math.min(height - 1, y + radius) && !higher; yy++) for (let xx = Math.max(0, x - radius); xx <= Math.min(width - 1, x + radius); xx++) { countSeedWork(); if (distance[yy * width + xx] > distance[i] + 1e-6) { higher = true; break; } }
       if (higher) continue;
-      if (seeds.some((s) => Math.hypot(s % width - x, Math.floor(s / width) - y) < separation)) continue;
+      if (seeds.some((s) => { countSeedWork(); return Math.hypot(s % width - x, Math.floor(s / width) - y) < separation; })) continue;
+      if (nextLabel >= 50_000) throw new Error("Watershed exceeds 50,000 instances. Crop the field or adjust segmentation settings.");
       seeds.push(i); labels[i] = ++nextLabel;
     }
-    if (!seeds.length) { seeds.push(ordered[0]); labels[ordered[0]] = ++nextLabel; }
+    if (!seeds.length) { if (nextLabel >= 50_000) throw new Error("Watershed exceeds 50,000 instances. Crop the field or adjust segmentation settings."); seeds.push(ordered[0]); labels[ordered[0]] = ++nextLabel; }
     // Maximum-priority flood avoids crossing a low saddle before filling each peak.
     const heap: number[] = [];
     const push = (value: number) => { let at = heap.length; heap.push(value); while (at > 0) { const parent = (at - 1) >> 1; if (distance[heap[parent]] >= distance[value]) break; heap[at] = heap[parent]; at = parent; } heap[at] = value; };
@@ -139,6 +97,18 @@ export function watershedLabels(binary: Uint8Array, width: number, height: numbe
     }
   }
   return labels;
+}
+
+export function subtractBackground(plane: PreparedPlane, radius: number): PreparedPlane {
+  if (!Number.isSafeInteger(radius) || radius < 1 || radius > 1024) throw new Error("Background radius must be 1–1024 pixels.");
+  const mean = localMean(plane.values, plane.width, plane.height, radius); const values = plane.values.slice();
+  for (let i = 0; i < values.length; i++) values[i] = Math.max(0, values[i] - mean[i]);
+  return { ...plane, values };
+}
+
+export async function prepareDetectionPlane(plane: PreparedPlane, parameters: AnalysisParameters, signal?: AbortSignal): Promise<PreparedPlane> {
+  const background = parameters.backgroundSubtract ? subtractBackground(plane, parameters.rollingBallRadiusPx) : plane;
+  return { ...plane, values: await applyPreprocessing(background.values, plane.width, plane.height, parameters.preprocessingPreset ?? "none", signal) };
 }
 
 export function segmentPlane(plane: PreparedPlane, parameters: AnalysisParameters, calibration: Calibration): DetectionResultDTO {
@@ -175,7 +145,8 @@ export class ClassicalInference implements InferenceEngine {
     const plane = await preparePlane(request);
     await yieldTask(request.signal);
     request.onProgress?.({ stage: "inference", completed: 0, total: 1 });
-    const result = segmentPlane(plane, request.parameters, request.calibration);
+    const preprocessed = await prepareDetectionPlane(plane, request.parameters, request.signal);
+    const result = segmentPlane(preprocessed, { ...request.parameters, backgroundSubtract: false }, request.calibration);
     const canvas = new OffscreenCanvas(plane.width, plane.height);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("A 2D canvas is required for the source-plane preview.");

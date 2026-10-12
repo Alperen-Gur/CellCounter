@@ -16,6 +16,6 @@ export function runAssay(kind: AssayKind, request: AssayRequest, signal?: AbortS
       if (event.data.ok) resolve(event.data.result); else reject(new Error(event.data.error ?? "Assay failed"));
     };
     worker.onerror = (event) => { signal?.removeEventListener("abort", abort); worker.terminate(); reject(new Error(event.message || "Assay worker failed")); };
-    worker.postMessage({ ...request, id, kind });
+    try { worker.postMessage({ ...request, id, kind }); } catch (cause) { signal?.removeEventListener("abort", abort); worker.terminate(); reject(cause); }
   });
 }
