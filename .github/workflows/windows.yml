@@ -99,6 +99,14 @@ jobs:
           & ./src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe run --no-project --python 3.11 --with numpy==1.26.4 --with pillow==11.3.0 --with tifffile==2025.3.30 python -m unittest discover -s python -p 'test_*.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Read installer version
+        id: version
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Build and type-check frontend
         working-directory: desktop
         run: npm run build
@@ -119,7 +127,7 @@ jobs:
       - name: Upload unsigned Windows installers
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: CellCounter-Windows-1.2.0-x64-unsigned
+          name: CellCounter-Windows-${{ steps.version.outputs.version }}-x64-unsigned
           if-no-files-found: error
           retention-days: 14
           path: |
