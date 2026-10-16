@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import { measureCells } from "../domain/measurements";
 import type { AnalysisParameters, Calibration, ImageAnalysis, ModelProvenance } from "../domain/types";
 
@@ -67,6 +68,10 @@ export class DurableQueueRunner {
   pause() { this.pauseRequested = true; }
   cancel() { this.pauseRequested = true; this.controller?.abort(); }
   async run(initial: AnalysisJob): Promise<AnalysisJob> {
+    return timeLocalOperation("queue.process", () => this.runImpl(initial));
+  }
+
+  private async runImpl(initial: AnalysisJob): Promise<AnalysisJob> {
     if (this.running) throw new Error("A processing job is already running.");
     this.running = true; this.pauseRequested = false;
     let job = { ...initial, state: "running" as AnalysisJob["state"] };

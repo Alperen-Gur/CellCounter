@@ -103,11 +103,12 @@ struct AppSidebar: View {
             .overlay(alignment: .trailing) { Rectangle().fill(Tokens.border).frame(width: 0.5) }
 
             if showingSupport {
-                SupportSheet { showingSupport = false }
+                SupportSheet(state: state) { showingSupport = false }
                     .transition(.opacity)
                     .zIndex(100)
             }
         }
+        .overlay(alignment: .bottom) { LocalTimingIndicator() }
         .animation(Tokens.Motion.easeFast, value: showingSupport)
     }
 }

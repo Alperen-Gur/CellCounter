@@ -1,9 +1,10 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import type { AssayJob, AssayKind } from "./assay.worker";
 
 export type { AssayKind };
 export type AssayRequest = Omit<AssayJob, "id" | "kind">;
 
-export function runAssay(kind: AssayKind, request: AssayRequest, signal?: AbortSignal): Promise<unknown> {
+function runAssayImpl(kind: AssayKind, request: AssayRequest, signal?: AbortSignal): Promise<unknown> {
   if (signal?.aborted) return Promise.reject(new DOMException("Assay cancelled", "AbortError"));
   const worker = new Worker(new URL("./assay.worker.ts", import.meta.url), { type: "module", name: `cellcounter-${kind}` });
   const id = crypto.randomUUID();
@@ -18,4 +19,8 @@ export function runAssay(kind: AssayKind, request: AssayRequest, signal?: AbortS
     worker.onerror = (event) => { signal?.removeEventListener("abort", abort); worker.terminate(); reject(new Error(event.message || "Assay worker failed")); };
     try { worker.postMessage({ ...request, id, kind }); } catch (cause) { signal?.removeEventListener("abort", abort); worker.terminate(); reject(cause); }
   });
+}
+
+export function runAssay(kind: AssayKind, request: AssayRequest, signal?: AbortSignal): Promise<unknown> {
+  return timeLocalOperation("analysis.assay", () => runAssayImpl(kind, request, signal));
 }

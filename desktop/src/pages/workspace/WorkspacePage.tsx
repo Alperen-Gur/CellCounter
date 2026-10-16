@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../../shared/diagnostics/performance";
 import { useCallback, useEffect, useRef, useState, type PointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
@@ -5,7 +6,7 @@ import { getPort } from '../../kernel/persistence';
 import type { ImageDTO } from '../../kernel/types';
 import { loadWorkflowDocument, saveWorkflowDocument } from '../../kernel/workflow/workflowDocuments';
 import {
-  addLineageNode, animationStates, applyTransform, buildLineage, bundledExtensions, composePlane,
+  addLineageNode, animationStates, applyTransform, buildLineage, bundledExtensions, composePlane as composePlaneRaw,
   concatenateTransform, createLayer, createWorkspace, encodeGIF, encodeLabelTIFF, exportProject,
   importProject, inverseTransform, lineageTracks, linkLineage, loadZarrPlane, openOMEZarr,
   PaintingSession, planeRange, registerTranslation, removeLineageNode, replayWorkflow,
@@ -17,6 +18,8 @@ import './workspace.css';
 
 // The native byte adapter currently crosses JSON IPC, so cap encoded chunks
 // below the portable limit to reserve space for temporary numeric JS arrays.
+const composePlane = (...args: Parameters<typeof composePlaneRaw>) => timeLocalOperation("ui.render", () => composePlaneRaw(...args));
+
 const LIMITS = { maxPixels: 4_000_000, maxWorkingBytes: 192 * 1024 * 1024, maxEncodedChunkBytes: 4 * 1024 * 1024, maxDecodedChunkBytes: 16 * 1024 * 1024 };
 const CACHE_BYTES = 64 * 1024 * 1024;
 interface SourcePlaneReply { path: string; width: number; height: number; previewWidth: number; previewHeight: number; stride: number; values: number[]; channelCount: number; tCount: number; zCount: number; pxPerUm?: number; sourceHash?: string; calibrationSource?: string }
@@ -82,7 +85,7 @@ export default function WorkspacePage() {
   const record = (step: WorkflowStep) => { if (recording) setSteps(old => { if (old.length >= 1024) { setError('Workflow recording reached 1,024 steps. Save the workflow before recording more.'); return old; } return [...old, step]; }); };
   const run = async (action: (signal: AbortSignal) => Promise<void>) => {
     if (locked.current || painting || gesture.current) return; const controller = new AbortController(); operation.current = controller; locked.current = true; setBusy(true); setError(''); setStatus('');
-    try { await action(controller.signal); } catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+    try { await timeLocalOperation("workspace.compute", () => action(controller.signal)); } catch (cause) { if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (operation.current === controller) { operation.current = undefined; locked.current = false; if (mounted.current) setBusy(false); } }
   };
   const storeGenerated = (id: string, plane: ImagePlane) => { const next = new Map(generated.current); next.set(id, plane); if (planeBytes([...next.values(), ...livePlanes.current.values()]) > CACHE_BYTES) throw new Error('Workspace rasters exceed the 64 MiB cache. Hide layers or create a smaller workspace.'); generated.current = next; };

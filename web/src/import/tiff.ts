@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import { describeSourceDimensions, type SourceDimensions } from "./sourcePlanes";
 import { sha256Hex } from "../models/hash";
 
@@ -126,6 +127,10 @@ function serializeDecode<T>(task: () => Promise<T>): Promise<T> {
 
 /** Decode the first TIFF/OME-TIFF plane locally. Multi-plane count remains visible in provenance. */
 export function decodeTiff(file: File, knownSha256?: string): Promise<DecodedTiff> {
+  return timeLocalOperation("image.decode", () => decodeTiffImpl(file, knownSha256));
+}
+
+function decodeTiffImpl(file: File, knownSha256?: string): Promise<DecodedTiff> {
   return serializeDecode(async () => {
     const source = await file.arrayBuffer();
     const sourceSha256 = knownSha256 ?? await sha256Hex(source);

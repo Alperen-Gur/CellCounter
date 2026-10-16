@@ -148,7 +148,7 @@ export default function WelcomeScene({ onOpen }: { onOpen(): void }) {
           <p className="welcome-description">A private workbench for the decisions that matter. Your images and analysis stay in this browser, on this device.</p>
           <button className="welcome-primary" onClick={onOpen}>Open workspace <ArrowRight size={18} aria-hidden="true" /></button>
           <p className="welcome-capability">Classical segmentation is ready in the browser.<br />{" "}Learned-model weights are not bundled in this version.</p>
-          <p className="welcome-version">CellCounter Web · 0.3.0</p>
+          <p className="welcome-version">CellCounter Web · 0.3.1</p>
         </div>
       </section>
     </div>

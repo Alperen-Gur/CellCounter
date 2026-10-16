@@ -1,3 +1,4 @@
+import { LocalTimingIndicator } from "./pages/system/LocalDiagnosticsPanel";
 /**
  * App.tsx — the CellCounter application shell.
  *
@@ -128,6 +129,7 @@ function App() {
 
       {/* Modal host for calibration/onboarding (reached via Calibrate or first
           run). Auto-launch is off until the tour UI is restyled to match. */}
+      <LocalTimingIndicator />
       <OnboardingRoot />
     </div>
   );

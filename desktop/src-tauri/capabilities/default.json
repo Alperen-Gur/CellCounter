@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
@@ -15,6 +17,7 @@
     "opener:default",
     "dialog:default",
     "fs:default",
-    "fs:allow-read-dir"
+    "fs:allow-read-dir",
+    "fs:allow-write-text-file"
   ]
 }

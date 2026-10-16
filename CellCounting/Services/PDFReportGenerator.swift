@@ -104,7 +104,7 @@ struct PDFReportGenerator {
                             state: AppState,
                             annotations: Any? = nil,
                             to url: URL) throws {
-        try writeReport(inputs: makeInputs(image: image, state: state), to: url)
+        try LocalTiming.measure(.exportPrepare) { try writeReport(inputs: makeInputs(image: image, state: state), to: url) }
     }
 
     /// Draw the one-page report into a fresh CG PDF context and return the bytes.

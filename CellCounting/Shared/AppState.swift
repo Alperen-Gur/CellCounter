@@ -862,6 +862,11 @@ final class AppState {
 
     /// Review writes must fail visibly on unreadable saved measurements.
     func loadReviewCells(for detection: DetectionRecord) async throws -> [DetectedCell] {
+        let timing = LocalPerformanceRecorder.shared.begin(.reviewLoad)
+        do { let cells = try await loadReviewCellsImpl(for: detection); timing?.finish(success: true); return cells }
+        catch { timing?.finish(success: false); throw error }
+    }
+    private func loadReviewCellsImpl(for detection: DetectionRecord) async throws -> [DetectedCell] {
         try await finishPendingCellEdits(for: detection)
         if let cached = cachedCells(for: detection), !cached.isEmpty { return cached }
 
@@ -1357,7 +1362,7 @@ final class AppState {
             recordedSettings.detectorVersion = ProvenanceMetadata.detectorVersion(for: family)
             recordedSettings.weightsSHA256 = ProvenanceMetadata.weightsHash(for: family, modelId: settings.modelId)
         }
-        let result = try await svc.detect(settings.detectionInput(imageURL: source))
+        let result = try await svc.detectWithLocalTiming(settings.detectionInput(imageURL: source))
         guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
         // Edits made while inference was running belong to the saved previous
         // variant. Drain them before replacing its detection record.

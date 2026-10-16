@@ -102,7 +102,7 @@ struct SplitTouchingButton: View {
                 }
                 let svc = try state.detectionService(for: settings)
                 let input = settings.detectionInput(imageURL: settings.sourceURL(for: image))
-                let result = try await svc.detect(input)
+                let result = try await svc.detectWithLocalTiming(input)
                 try Task.checkCancellation()
                 guard !image.isDeleted, image.modelContext != nil,
                       image.id == imageId, image.detection?.id == detectionId else {

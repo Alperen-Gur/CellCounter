@@ -4,7 +4,9 @@ import AppKit
 // MARK: - SupportSheet
 
 struct SupportSheet: View {
+    let state: AppState
     let onClose: () -> Void
+    @State private var showingDiagnostics = false
     @Environment(AppTheme.self) private var theme
 
     private let appVersion: String = {
@@ -109,6 +111,9 @@ struct SupportSheet: View {
                         }
                     }
 
+                    Button("Local diagnostics & performance…") { showingDiagnostics = true }
+                        .appButton(.standard, size: .sm)
+
                     // Helpful hints
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Common questions".uppercased())
@@ -147,6 +152,7 @@ struct SupportSheet: View {
                     .strokeBorder(Tokens.border, lineWidth: 0.5)
             )
             .shadow(color: .black.opacity(0.18), radius: 32, y: 8)
+            .sheet(isPresented: $showingDiagnostics) { LocalDiagnosticsSheet(state: state) }
         }
     }
 }

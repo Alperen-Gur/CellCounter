@@ -26,6 +26,8 @@ final class AnalysisJobScheduler {
         self.prepare = prepare; self.analyze = analyze
     }
     func restore() async {
+        let timing = LocalPerformanceRecorder.shared.begin(.queueLoad)
+        defer { timing?.finish() }
         guard !isLoaded else { return }
         if restoring {
             while !isLoaded { await Task.yield() }
@@ -161,6 +163,8 @@ final class AnalysisJobScheduler {
         }
     }
     private func runJob(_ id: UUID) async {
+        let timing = LocalPerformanceRecorder.shared.begin(.queueProcess)
+        defer { timing?.finish() }
         var ahead: (id: UUID, task: Task<UUID, Error>)?
         defer { ahead?.task.cancel() }
         while !Task.isCancelled, let current = job(id), current.status == .running {
@@ -237,8 +241,11 @@ final class AnalysisJobScheduler {
         mutation(&jobs[index].items[item]); jobs[index].updatedAt = Date()
     }
     private func persist() async throws {
+        let timing = LocalPerformanceRecorder.shared.begin(.queueSave)
+        var completed = false
+        defer { timing?.finish(success: completed) }
         revision &+= 1
-        do { try await store.save(jobs, revision: revision); persistenceError = nil }
+        do { try await store.save(jobs, revision: revision); persistenceError = nil; completed = true }
         catch { persistenceError = error.localizedDescription; throw error }
     }
     @discardableResult private func persistOrPause() async -> Bool {

@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../../shared/diagnostics/performance";
 /**
  * kernel/transport/TauriSidecarTransport.ts — desktop `InferenceTransport`
  * (ARCHITECTURE.md §3.1).
@@ -84,11 +85,11 @@ export class TauriSidecarTransport implements InferenceTransport {
 
     try {
       if (signal?.aborted) throw new DetectionErrorException({ kind: "cancelled" });
-      const result = await invoke<DetectionResultDTO>("run_detection", {
+      const result = await timeLocalOperation("analysis.inference", () => invoke<DetectionResultDTO>("run_detection", {
         imagePath,
         params,
         runId,
-      });
+      }));
       return result;
     } catch (raw) {
       // The Rust `Err(DetectionErrorDto)` arrives as a tagged `{ kind, … }`

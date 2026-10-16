@@ -1,3 +1,4 @@
+import { instrumentLocalOperations } from "../../../shared/diagnostics/instrument";
 import type { AnalysisJob, AnalysisPreview, MaskVariant } from "../app/workflow";
 import type { BatchAnalysis, BrowserImageSource, CalibrationSource, ImageAnalysis } from "../domain/types";
 import type { ModelArtifactCache } from "../models/WebGpuInference";
@@ -167,7 +168,13 @@ export class BrowserRepository {
         opfs = null;
       }
     }
-    return new BrowserRepository(database, opfs);
+    return instrumentLocalOperations(new BrowserRepository(database, opfs), {
+      getSource: "image.source", putSource: "image.import", getAnalysis: "review.load", putAnalysis: "review.save",
+      listWorkspaceImages: "storage.read", getWorkspaceImage: "storage.read", putWorkspaceImage: "storage.write",
+      putWorkspaceResult: "storage.write", putWorkspaceResults: "storage.write", listBatches: "storage.read",
+      listJobs: "queue.load", putJob: "queue.save", getPreview: "image.decode", putPreview: "storage.write",
+      listVariants: "review.load", putVariant: "review.save", saveMicroscopyProject: "storage.write", listMicroscopyProjects: "storage.read",
+    });
   }
 
   get usesOpfs(): boolean {

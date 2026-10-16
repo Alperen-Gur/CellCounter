@@ -6,6 +6,8 @@ import {
   type ParityState,
 } from "../../platform/windowsParity";
 import "./support.css";
+import { LocalDiagnosticsPanel } from "./LocalDiagnosticsPanel";
+import { useAppStore } from "../../kernel/store/store";
 
 const AREAS: readonly ParityArea[] = [
   "Input", "Detection", "Analysis", "Editing", "Workflow", "Export", "System",
@@ -52,6 +54,11 @@ export default function SupportPage() {
           </button>
         ) : <span role="status">All inventoried workflows are available.</span>}
       </header>
+
+      <LocalDiagnosticsPanel readSnapshot={() => {
+        const state = useAppStore.getState();
+        return { imageCount: state.libraryImageCount, batchCount: state.libraryBatchCount, reviewCandidateCount: state.reviewQueueCount, detectionErrorPresent: state.lastDetectionError !== undefined };
+      }} />
 
       <div className="cc-support__summary" aria-label="Parity summary">
         <Summary value={counts.ready} label="Ready" />

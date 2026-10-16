@@ -1,0 +1,11 @@
+.local-diagnostics { margin-block: 24px; padding: 20px; border: 1px solid var(--cc-border, #8886); border-radius: 12px; color: inherit; }
+.local-diagnostics h2 { margin: 0 0 10px; font-size: 18px; }
+.local-diagnostics p { max-width: 76ch; line-height: 1.5; }
+.local-diagnostics label { display: block; margin-block: 12px; }
+.local-diagnostics input { margin-right: 8px; }
+.local-diagnostics textarea { box-sizing: border-box; display: block; width: 100%; min-height: 280px; resize: vertical; padding: 12px; color: inherit; background: var(--cc-bg, transparent); border: 1px solid var(--cc-border, #8888); border-radius: 6px; font: 13px/1.5 ui-monospace, monospace; }
+.local-diagnostics button { margin: 8px 12px 8px 0; padding: 8px 12px; color: inherit; background: var(--cc-bg-elevated, transparent); border: 1px solid var(--cc-border, #8888); border-radius: 6px; cursor: pointer; }
+.local-diagnostics button:disabled { opacity: .5; cursor: default; }
+.local-diagnostics :is(button, textarea, input):focus-visible { outline: 2px solid var(--cc-accent, #568fce); outline-offset: 3px; }
+
+.local-timing-indicator { position: fixed; bottom: 18px; right: 18px; z-index: 900; border: 2px solid #568fce; border-radius: 8px; padding: 10px 16px; background: var(--cc-bg, #f5f6f8); color: var(--cc-text, #202731); box-shadow: 0 4px 20px #0002; cursor: pointer; }

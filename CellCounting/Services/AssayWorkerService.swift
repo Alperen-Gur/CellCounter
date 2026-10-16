@@ -23,6 +23,9 @@ actor AssayWorkerService {
     var hasActiveRequest: Bool { activeID != nil }
 
     func run(pythonURL: URL, scriptURL: URL, args: [String]) async throws -> SidecarOutcome {
+        let timing = LocalPerformanceRecorder.shared.begin(.assay)
+        defer { timing?.finish(success: Task.isCancelled ? false : nil) }
+
         let id = UUID()
         return try await withTaskCancellationHandler {
             try await acquire(id)

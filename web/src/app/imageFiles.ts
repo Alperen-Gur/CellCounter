@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import type { WorkspaceImage } from "./types";
 import { sha256Hex } from "../models/hash";
 import { decodeTiff } from "../import/tiff";
@@ -28,7 +29,7 @@ async function createThumbnail(file: File): Promise<Blob | undefined> {
   return canvas.convertToBlob({ type: "image/webp", quality: 0.76 }).catch(() => undefined);
 }
 
-export async function decodeImageFile(file: File): Promise<WorkspaceImage> {
+async function decodeImageFileImpl(file: File): Promise<WorkspaceImage> {
   const isTiff = TIFF_MIME.has(file.type) || TIFF_SUFFIX.test(file.name);
   if (isTiff) {
     const decoded = await decodeTiff(file);
@@ -100,4 +101,8 @@ export async function decodeImageFiles(files: FileList | File[]): Promise<{ imag
 export function releaseImage(image: WorkspaceImage): void {
   if (image.objectUrl) URL.revokeObjectURL(image.objectUrl);
   if (image.thumbnailUrl && image.thumbnailUrl !== image.objectUrl) URL.revokeObjectURL(image.thumbnailUrl);
+}
+
+export async function decodeImageFile(file: File): Promise<WorkspaceImage> {
+  return timeLocalOperation("image.import", () => decodeImageFileImpl(file));
 }

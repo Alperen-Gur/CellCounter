@@ -153,6 +153,8 @@ final class ReviewQueueSession {
     }
 
     private func load(using repos: Repositories) {
+        let timing = LocalPerformanceRecorder.shared.begin(.reviewLoad)
+        defer { timing?.finish(success: errorMessage == nil) }
         cursor = 0
         errorMessage = nil
         // A deleted/orphaned image must not strand navigation before the next

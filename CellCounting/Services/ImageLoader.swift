@@ -157,6 +157,9 @@ enum ImageLoader {
     nonisolated private static let memory = MemoryCaches()
 
     static func load(_ url: URL) throws -> LoadedImage {
+        try LocalTiming.measure(.imageDecode) { try loadImpl(url) }
+    }
+    private static func loadImpl(_ url: URL) throws -> LoadedImage {
         let resolvedURL = displayDecodableURL(for: url)
         let ext = resolvedURL.pathExtension.lowercased()
         guard nativeSupported.contains(ext) else { throw ImageLoadError.unsupportedFormat(ext) }
@@ -188,6 +191,9 @@ enum ImageLoader {
     /// a second time. Nil (the default) recomputes it here, preserving the old
     /// behavior for any caller that doesn't have the hash on hand.
     nonisolated static func importFile(_ url: URL, precomputedHash: String? = nil) throws -> ImportResult {
+        try LocalTiming.measure(.imageImport) { try importFileImpl(url, precomputedHash: precomputedHash) }
+    }
+    nonisolated private static func importFileImpl(_ url: URL, precomputedHash: String?) throws -> ImportResult {
         let loaded = try load(url)
         let fileName = url.lastPathComponent
 
@@ -384,6 +390,9 @@ enum ImageLoader {
     /// keeps the source orientation used by detections, and callers still lay
     /// out the canvas using the stored source dimensions rather than this size.
     nonisolated static func cachedViewerImage(at url: URL, maxPixelSize: Int) -> NSImage? {
+        LocalTiming.measure(.imagePreview) { cachedViewerImageImpl(at: url, maxPixelSize: maxPixelSize) }
+    }
+    nonisolated private static func cachedViewerImageImpl(at url: URL, maxPixelSize: Int) -> NSImage? {
         let limit = min(ViewerImageResolution.maximumPixelSize, max(1, maxPixelSize))
         let key = "\(url.absoluteString)\n\(limit)"
         if let cached = memory.viewerImages.image(for: key) { return cached }

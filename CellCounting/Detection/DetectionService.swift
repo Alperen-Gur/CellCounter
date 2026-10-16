@@ -194,3 +194,12 @@ enum DetectionError: LocalizedError {
         }
     }
 }
+
+// Preserve concrete detector identity; timing wraps the call, not the service.
+extension DetectionService {
+    func detectWithLocalTiming(_ input: DetectionInput) async throws -> DetectionResult {
+        let span = LocalPerformanceRecorder.shared.begin(.inference)
+        do { let result = try await detect(input); span?.finish(success: true); return result }
+        catch { span?.finish(success: false); throw error }
+    }
+}

@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../../shared/diagnostics/performance";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../kernel/store/store";
@@ -8,11 +9,11 @@ export type { ReviewItem } from "./reviewSession";
 export function useReviewQueue() {
   const refreshLibraryStats = useAppStore((s) => s.refreshLibraryStats);
   const session = useMemo(() => new ReviewSession({
-    page: (after) => invoke<ReviewPage>("review_page", { after, limit: 64 }),
-    decide: (item, action, diameterUm) => invoke<ReviewDecisionOutcome>("review_decision", {
+    page: (after) => timeLocalOperation("review.load", () => invoke<ReviewPage>("review_page", { after, limit: 64 })),
+    decide: (item, action, diameterUm) => timeLocalOperation("review.save", () => invoke<ReviewDecisionOutcome>("review_decision", {
       detectionId: item.detectionId, cellId: item.cell.id, action, diameterUm: diameterUm ?? null,
-    }),
-    undo: (token) => invoke<void>("review_undo", { token }),
+    })),
+    undo: (token) => timeLocalOperation("review.save", () => invoke<void>("review_undo", { token })),
   }), []);
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [contexts, setContexts] = useState<Record<string, ReviewContext>>({});
@@ -34,9 +35,9 @@ export function useReviewQueue() {
     setContexts({});
     const visible = [current, next].filter((item): item is ReviewItem => item !== null);
     void Promise.all(visible.map(async (item) => {
-      const context = await invoke<ReviewContext | null>("review_context", {
+      const context = await timeLocalOperation("review.load", () => invoke<ReviewContext | null>("review_context", {
         detectionId: item.detectionId, cellId: item.cell.id,
-      });
+      }));
       return [item.key, context] as const;
     })).then((entries) => {
       if (alive) setContexts(Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<string, ReviewContext>);

@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import type { PixelArray, Raster } from "../analysis/types";
 import { rasterHeader } from "./rasterHeader";
 
@@ -25,7 +26,7 @@ function check(width: number, height: number, channels: number, bytes: number) {
 }
 function aborted(signal?: AbortSignal) { if (signal?.aborted) throw new DOMException("Source preparation cancelled", "AbortError"); }
 /** Original raw samples at one time point, one Z or explicit Z projection. Never mixes times/channels into Z. */
-export async function readNativeRaster(source: Blob, fileName: string, selection: PlaneSelection = {}, signal?: AbortSignal): Promise<Raster> {
+async function readNativeRasterImpl(source: Blob, fileName: string, selection: PlaneSelection = {}, signal?: AbortSignal): Promise<Raster> {
   aborted(signal);
   if (!/\.tiff?$|\.ome\.tiff?$/i.test(fileName) && !/tiff/i.test(source.type)) {
     const header = await rasterHeader(source);
@@ -108,4 +109,8 @@ export async function readNativeRaster(source: Blob, fileName: string, selection
   }
   if (means) for (let i = 0; i < output.length; i++) { output[i] = means[i]; if (!Number.isFinite(output[i])) throw new Error("Mean projection exceeds the Float32 intensity range."); }
   aborted(signal); return { data: output, width, height, channels: channels.length };
+}
+
+export async function readNativeRaster(source: Blob, fileName: string, selection: PlaneSelection = {}, signal?: AbortSignal): Promise<Raster> {
+  return timeLocalOperation("image.source", () => readNativeRasterImpl(source, fileName, selection, signal));
 }

@@ -671,6 +671,9 @@ final class Repositories {
     }
 
     private func saveReviewChange<T>(detection: DetectionRecord, _ change: () -> T) throws -> T {
+        try LocalTiming.measure(.reviewSave) { try saveReviewChangeImpl(detection: detection, change) }
+    }
+    private func saveReviewChangeImpl<T>(detection: DetectionRecord, _ change: () -> T) throws -> T {
         // Flush unrelated pending changes before the synchronous transaction.
         // There is no suspension point between this checkpoint and rollback.
         try context.save()

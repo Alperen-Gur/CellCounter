@@ -1,5 +1,6 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import { validateTrainingTransfer, type ReviewedTrainingSample } from "../export/bundles";
-export function buildReviewedTrainingArtifact(samples: readonly ReviewedTrainingSample[], signal?: AbortSignal): Promise<Uint8Array> {
+function buildReviewedTrainingArtifactImpl(samples: readonly ReviewedTrainingSample[], signal?: AbortSignal): Promise<Uint8Array> {
   if (signal?.aborted) return Promise.reject(new DOMException("Export cancelled", "AbortError"));
   try { validateTrainingTransfer(samples); } catch (error) { return Promise.reject(error); }
   return new Promise((resolve, reject) => {
@@ -21,4 +22,8 @@ export function buildReviewedTrainingArtifact(samples: readonly ReviewedTraining
     worker.onmessageerror = () => finish(undefined, new Error("Training export result could not be transferred"));
     try { worker.postMessage({ id, samples }); } catch (error) { finish(undefined, error instanceof Error ? error : new Error(String(error))); }
   });
+}
+
+export function buildReviewedTrainingArtifact(samples: readonly ReviewedTrainingSample[], signal?: AbortSignal): Promise<Uint8Array> {
+  return timeLocalOperation("export.prepare", () => buildReviewedTrainingArtifactImpl(samples, signal));
 }

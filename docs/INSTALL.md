@@ -64,3 +64,38 @@ For the separate Windows application, see the [Windows guide](WINDOWS.md). This 
 ## Sharing with colleagues
 
 Some institutional mail servers reject application bundles or archives that contain them. Share the official release link instead of attaching the application to an email.
+
+## Optional local diagnostics and real-workflow benchmarks
+
+**Local diagnostics & performance** is available in Support (macOS and Windows)
+or Help (web), beginning with macOS 1.0.17, Windows 1.2.1 and Web 0.3.1 preview.
+
+Choose **Start recording**, then use real images and the normal import,
+processing, review, workspace, assay and export controls. Normal analysis retains
+its normal results. There are no synthetic workloads or automatic reruns.
+Choose a 10-minute, 30-minute or two-hour limit; a visible Stop control remains
+available while navigating. Stop early or erase the recorded timings at any time.
+
+Recording is disabled initially and must be started each app session. It stores
+only bounded numeric aggregates under fixed operation categories, in memory:
+counts, durations, failures where known, unfinished operations and recent latency
+percentiles. Foreground interface scheduling is measured during recording.
+Names, paths, image content, saved measurements, IDs, device identifiers, raw
+logs, free-form errors, wall-clock timestamps and event order are excluded.
+A crash or app exit loses unsaved results; this is not a crash-dump collector.
+
+Afterward, explicitly include the optional state summary and/or recorded timings,
+prepare the editable preview, remove any lines you do not want to share, and mark
+it inspected. Export writes exactly that text, up to 64 KiB, with no attachments
+or automatic uploads. Editing clears the inspection confirmation. Sharing is a
+separate manual action. The chosen file destination may be synced by other
+software. Counts and timings can reveal workload characteristics, so inspection
+is still important; absolute anonymity cannot be guaranteed for text users add.
+
+Timings cover instrumented real workflow boundaries and include waiting, cache
+and scheduling effects. Nested categories overlap. Unobserved operations are
+listed rather than estimated, and incomplete work is marked explicitly. Native
+exports and other boundaries that cannot classify their final outcome report it
+as unspecified. Timing summaries do not establish segmentation accuracy or expose
+CPU/GPU kernel profiles. Startup before opt-in and work before recording began
+are not measured. Keep input/settings consistent when comparing sessions.

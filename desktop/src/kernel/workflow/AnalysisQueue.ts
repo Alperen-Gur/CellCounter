@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../../shared/diagnostics/performance";
 import type { DetectionParams, DetectionResultDTO } from "../types";
 
 export type JobStatus = "draft" | "running" | "paused" | "completed" | "failed";
@@ -113,6 +114,10 @@ export class AnalysisQueue {
     await this.change(jobs => jobs.splice(0));
   }
   async run(id: string, previewImageId?: string): Promise<void> {
+    return timeLocalOperation("queue.process", () => this.runImpl(id, previewImageId));
+  }
+
+  private async runImpl(id: string, previewImageId?: string): Promise<void> {
     await this.initialize();
     if (this.active) throw new Error("Another analysis is running. Pause it before starting this job.");
     const source = this.jobs.find(job => job.id === id);

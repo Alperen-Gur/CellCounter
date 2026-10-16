@@ -1,3 +1,4 @@
+import { LocalTimingIndicator } from "./components/LocalDiagnosticsPanel";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { decodeImageFiles, releaseImage } from "./app/imageFiles";
 import { workspaceMetadata } from "./app/imageRecords";
@@ -926,7 +927,7 @@ export default function App() {
       </>}
       {route === "microscopy" && <Suspense fallback={<main className="page-view"><p>Opening the local microscopy workspace…</p></main>}><MicroscopyView images={images} repository={repository.current} /></Suspense>}
       {route === "processing" && <ProcessingPanel image={activeImage} images={images} busy={busy} modelReady={readyModels.has(settings.modelId)} jobs={jobs} onProcess={processImages} onResume={(job, retry) => void processJob(retry ? retryJob(job) : recoverJob(job))} onPause={() => { runner.current?.pause(); setNotice({ tone: "info", title: "Pause requested.", detail: " The current image will finish and save before processing pauses." }); }} onCancel={cancel} onReview={() => setRoute("review")} onAnalyze={() => setRoute("workspace")} />}
-      {route === "help" && <HelpView onWelcome={() => setWelcomeOpen(true)} onShortcuts={() => setHelpOpen(true)} onCapabilities={() => setRoute("capabilities")} />}
+      {route === "help" && <HelpView readDiagnostics={() => ({ imageCount: imageSnapshot.current.length, processingJobCount: jobs.length, storageAvailable: repository.current !== undefined })} onWelcome={() => setWelcomeOpen(true)} onShortcuts={() => setHelpOpen(true)} onCapabilities={() => setRoute("capabilities")} />}
       {route === "library" && <><LibraryView images={images} activeId={activeId} onOpen={openImage} onRemove={removeImage} onCondition={updateCondition} onImport={importImages} onImportFolder={importFolder} /><section className="page-view"><ReviewedDatasetPanel images={images} repository={repository.current} beforeSave={(id) => metadataWriter.current?.flush(id)} onStamp={(id, provenance) => setImages((current) => current.map((image) => image.id === id ? { ...image, provenance } : image))} /></section></>}
       {route === "review" && <ReviewView images={images} onUndo={undoReviewDecision} canUndo={Boolean(reviewUndo)} onOpen={(imageId, cellId) => { void openImage(imageId).then(() => setSelectedCellId(cellId)); }} onAccept={(imageId, cellId) => updateReviewCell(imageId, cellId, "accept")} onReject={(imageId, cellId) => updateReviewCell(imageId, cellId, "reject")} onResize={(imageId, cellId) => updateReviewCell(imageId, cellId, "resize")} />}
       {route === "lab" && <AnalysisLabView key={`${activeId}:${settings.taskPreset ?? "countCells"}`} initialKind={settings.taskPreset === "markerPositive" ? "intensity" : settings.taskPreset === "woundClosure" ? "area" : undefined} image={activeImage} images={images} settings={settings} onSettings={(next) => { if (busyRef.current) return; setSettings(next); if (next.pxPerUm !== settings.pxPerUm) updateActive((image) => updateCalibration(image, next.pxPerUm, "protocol")); }} onWorkspace={() => setRoute("workspace")} />}
@@ -934,6 +935,7 @@ export default function App() {
       {route === "models" && <ModelsView readyModels={readyModels} onModelFile={selectModelFile} />}
       {route === "capabilities" && <CapabilitiesView />}
       {route === "settings" && <SettingsView theme={theme} onTheme={toggleTheme} onHelp={() => setHelpOpen(true)} />}
+      <LocalTimingIndicator />
       {pendingUpdate && <UpdateNotice busy={busy || updating} onReload={() => void reloadForUpdate()} />}
       {notice && <NoticeBar notice={notice} onClose={() => setNotice(undefined)} />}
       {exportOpen && activeImage && <ExportDialog image={activeImage.analysis?.displayPlane ? { ...activeImage, originalFile: activeImage.originalFile ?? activeImage.file, file: new File([activeImage.analysis.displayPlane], activeImage.fileName, { type: "image/png" }) } : activeImage} onClose={() => setExportOpen(false)} />}

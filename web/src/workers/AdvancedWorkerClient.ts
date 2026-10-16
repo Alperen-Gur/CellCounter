@@ -1,5 +1,6 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import type { AdvancedJob } from "./advanced.worker";
-export function runAdvanced<T>(request: Omit<AdvancedJob, "id">, signal?: AbortSignal): Promise<T> {
+function runAdvancedImpl<T>(request: Omit<AdvancedJob, "id">, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) return Promise.reject(new DOMException("Operation cancelled", "AbortError"));
   const worker = new Worker(new URL("./advanced.worker.ts", import.meta.url), { type: "module", name: "cellcounter-advanced" });
   const id = crypto.randomUUID();
@@ -11,4 +12,8 @@ export function runAdvanced<T>(request: Omit<AdvancedJob, "id">, signal?: AbortS
     worker.onerror = (event) => { cleanup(); reject(new Error(event.message || "Advanced worker failed")); };
     try { worker.postMessage({ ...request, id }); } catch (cause) { cleanup(); reject(cause); }
   });
+}
+
+export function runAdvanced<T>(request: Omit<AdvancedJob, "id">, signal?: AbortSignal): Promise<T> {
+  return timeLocalOperation("workspace.compute", () => runAdvancedImpl<T>(request, signal));
 }

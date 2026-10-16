@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../../shared/diagnostics/performance";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -160,12 +161,12 @@ export function AdvancedAssaysPanel({
         ];
         payload = { cells: cells.map((cell) => ({ id: cell.id, cx: cell.cx, cy: cell.cy })) };
       }
-      const value = await invoke<unknown>("run_assay", {
+      const value = await timeLocalOperation("analysis.assay", () => invoke<unknown>("run_assay", {
         kind: assay,
         args,
         payloadJson: payload === null ? null : JSON.stringify(payload),
         runId,
-      });
+      }));
       if (activeRunId.current === runId) setResult({ kind: "done", value });
     } catch (reason) {
       if (activeRunId.current === runId) {

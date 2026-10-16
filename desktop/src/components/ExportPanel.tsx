@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 /**
  * components/ExportPanel.tsx — result export surface (feature `feat-export`).
  *
@@ -437,7 +438,7 @@ export function ExportPanel({ imageId, batchId, showImagePicker }: ExportPanelPr
     setRun({ kind: "running", format: fmt.id });
     try {
       const outPath = await chooseOutPath(fmt.defaultName, fmt.destination ?? "file");
-      const result = await fmt.run(outPath);
+      const result = await timeLocalOperation("export.prepare", () => fmt.run(outPath));
       setRun(typeof result === "string" ? { kind: "done", format: fmt.id, path: result } : { kind: "done", format: fmt.id, ...result });
     } catch (err) {
       if (err === EXPORT_CANCELLED) setRun({ kind: "idle" });

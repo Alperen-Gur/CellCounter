@@ -152,6 +152,9 @@ enum ExportService {
                                   state: AppState,
                                   overlayMode: OverlayMode,
                                   parentDir: URL) async throws -> SampleFolderResult {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         let baseName = sanitizeFilename((image.fileName as NSString).deletingPathExtension)
         let folderName = "\(baseName)_\(folderTimestamp())"
         let folder = parentDir.appendingPathComponent(folderName, isDirectory: true)
@@ -376,6 +379,9 @@ enum ExportService {
     static func writeReportMarkdown(image: ImageRecord,
                                     state: AppState,
                                     to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         let snapshot = ReportSnapshot.make(image: image, state: state)
 
         func fmt(_ v: Double?, decimals: Int = 1) -> String {
@@ -441,6 +447,9 @@ enum ExportService {
                                          separator: String = ",",
                                          provenance: ProvenanceMetadata? = nil,
                                          to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         let bins = BinMath.bins(from: thresholds)
         let header = ["id", "cx_px", "cy_px", "diameter_um", "diameter_px", "bin_label", "confidence",
                       "area_um2", "perimeter_um", "circularity", "eccentricity",
@@ -563,6 +572,9 @@ enum ExportService {
                                   confidence: Double = 0.0,
                                   provenance: ProvenanceMetadata? = nil,
                                   to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         // Snapshot the SwiftData-backed values (source URL + decoded cells) on
         // the caller's actor, then hand off to the `nonisolated` compositor.
         // Callers that want to keep the MainActor free run the compositor inside
@@ -865,6 +877,9 @@ enum ExportService {
                                          separator: String = ",",
                                          provenance: ProvenanceMetadata? = nil,
                                          to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         // Size bins are the single source of truth shared with the per-cell
         // CSV and the on-screen overlay (`BinMath.bins`). Deriving the header
         // from this array — instead of a hardcoded small/intermediate/large
@@ -1074,6 +1089,9 @@ enum ExportService {
                                                 confidence: Double = 0.0,
                                                 modelId: String,
                                                 to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         // Resolve the venv python + the helper script via the same path the
         // detection sidecars use.
         let availability = CellposeAvailability.detect()
@@ -1244,6 +1262,9 @@ enum ExportService {
                                      pxPerUm: Double,
                                      provenance: ProvenanceMetadata? = nil,
                                      to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         struct AnnotationOut: Encodable {
             let id: String
             let cx: Double
@@ -1300,6 +1321,9 @@ enum ExportService {
                                     pxPerUm: Double,
                                     provenance: ProvenanceMetadata? = nil,
                                     to url: URL) throws {
+        let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
+        defer { localTiming?.finish() }
+
         let separator = ","
         var lines: [String] = []
         // Pass-18 (Lane R): full provenance block first when supplied.

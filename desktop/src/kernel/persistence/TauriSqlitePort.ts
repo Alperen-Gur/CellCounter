@@ -16,7 +16,14 @@
  * IndexedDB / wa-sqlite implementation.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as nativeInvoke } from "@tauri-apps/api/core";
+import { timeLocalOperation, type LocalOperation } from "../../../../shared/diagnostics/performance";
+function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const operation: LocalOperation = (command.startsWith("review_") || command === "get_detection") ? (command === "review_decision" ? "review.save" : "review.load")
+    : command === "import_image" ? "image.import"
+    : /^(save|record|create|delete|upsert|update|move|set|wipe|clear|assign|remove|commit|restore|apply|cleanup)/.test(command) ? "storage.write" : "storage.read";
+  return timeLocalOperation(operation, () => nativeInvoke<T>(command, args));
+}
 
 import type {
   PersistencePort,

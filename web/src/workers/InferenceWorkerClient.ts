@@ -1,3 +1,4 @@
+import { timeLocalOperation } from "../../../shared/diagnostics/performance";
 import type { DetectionResultDTO } from "../domain/types";
 import { CancelledInferenceError } from "../models/errors";
 import type { InferenceProgress, WebInferenceRequest } from "../models/WebGpuInference";
@@ -62,6 +63,10 @@ export class InferenceWorkerClient {
   get isDisposed(): boolean { return this.disposed; }
 
   analyze(request: InferenceWorkerAnalyzeRequest): Promise<DetectionResultDTO> {
+    return timeLocalOperation("analysis.inference", () => this.analyzeImpl(request));
+  }
+
+  private analyzeImpl(request: InferenceWorkerAnalyzeRequest): Promise<DetectionResultDTO> {
     if (this.disposed) return Promise.reject(new Error("Inference worker client has been disposed"));
     if (request.signal?.aborted) return Promise.reject(new CancelledInferenceError(request.parameters.modelId));
     const id = requestId();
