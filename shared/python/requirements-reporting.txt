@@ -1,0 +1,2 @@
+# Optional vector publication figures. Scientific inference uses analysis requirements.
+matplotlib==3.10.7

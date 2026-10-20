@@ -65,6 +65,7 @@ struct AppToolbar: View {
         case .compare:        return "Compare conditions"
         case .imagesLibrary:  return "Images"
         case .workspace:      return "Workspace"
+        case .workbench:      return "Workbench"
         }
     }
 
@@ -98,6 +99,15 @@ struct AppToolbar: View {
                 .appButton(.ghost)
                 .frame(width: 28, height: 28)
         case .results:
+            Menu("Continue in Workbench") {
+                if let image = state.currentImage {
+                    Button("Copy this image and retain history…") { state.prepareLibraryMigration(imageIDs: [image.id]) }
+                }
+                if let batch = state.currentBatch {
+                    Button("Copy this batch and retain history…") { state.prepareLibraryMigration(imageIDs: Set(batch.images.map(\.id))) }
+                }
+            }
+            .disabled(state.preparingLibraryMigration || state.isPreparingImport || state.jobScheduler.activeCount > 0 || TrainingService.isTrainingActive)
             if let batch = state.currentBatch {
                 Button("Analysis setup") { state.openAnalysisSetup(for: batch) }.appButton()
             }
@@ -106,7 +116,7 @@ struct AppToolbar: View {
             }.appButton()
             Button { state.view = .home } label: { Icon("x") }
                 .appButton(.ghost).frame(width: 28, height: 28)
-        case .batch, .workspace:
+        case .batch, .workspace, .workbench:
             EmptyView()
         case .fineTune:
             Button { state.view = .home } label: { Icon("x") }

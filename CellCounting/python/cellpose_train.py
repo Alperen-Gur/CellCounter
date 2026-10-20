@@ -12,55 +12,14 @@ import json
 import logging
 import math
 from pathlib import Path
-import re
 import sys
-import time
 
 from _training_dataset import validate_manifest, load_dataset, evaluate_masks, file_hash
 
-
-class EarlyStopped(Exception):
-    pass
-
-
-class TrainingLog(logging.Handler):
-    """Cellpose 3.x emits real train and validation losses at measured epochs."""
-    def __init__(self, model, total, best_path, early_stop):
-        super().__init__()
-        self.model, self.total, self.best_path, self.early_stop = model, total, best_path, early_stop
-        self.started = time.monotonic()
-        self.best = math.inf
-        self.stale = 0
-        self.epoch = 0
-        self.history = []
-
-    def emit(self, record):
-        match = re.search(r"^(\d+), train_loss=([\deE.+-]+), test_loss=([\deE.+-]+), LR=([\deE.+-]+)", record.getMessage())
-        if not match:
-            return
-        epoch = int(match[1]) + 1
-        train_loss, val_loss, lr = map(float, match.groups()[1:])
-        if not all(math.isfinite(v) for v in (train_loss, val_loss, lr)):
-            raise ValueError("Training produced non-finite loss")
-        self.epoch = epoch
-        self.history.append(dict(epoch=epoch, trainLoss=train_loss, validationLoss=val_loss, learningRate=lr))
-        elapsed = time.monotonic() - self.started
-        eta = int(elapsed / epoch * (self.total - epoch))
-        print(f"EPOCH {epoch} train={train_loss} val={val_loss} eta={eta} lr={lr}", flush=True)
-        if val_loss < self.best:
-            self.best, self.stale = val_loss, 0
-            self.model.net.save_model(str(self.best_path))
-        else:
-            self.stale += 1
-        # Patience is measured validation checks (Cellpose checks at 0, 5, 10...).
-        if self.early_stop and self.stale >= 5:
-            raise EarlyStopped()
-
-
-def require_checkpoint(path):
-    path = Path(path)
-    if not path.is_file() or path.stat().st_size < 1024:
-        raise ValueError("Training did not produce a usable checkpoint")
+shared_runtime = Path(__file__).resolve().parents[2] / "shared" / "python"
+if shared_runtime.is_dir():
+    sys.path.insert(0, str(shared_runtime))
+from _workbench_cellpose_worker import EarlyStopped, TrainingLog, require_checkpoint
 
 
 def run(args):

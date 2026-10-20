@@ -16,7 +16,7 @@ export function calibrationScale(reference?: Calibration, moving?: Calibration):
   if (!Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) fail('invalid-calibration', 'Calibration ratios must be finite and positive.'); return { x, y };
 }
 /** Nearest sampling preserves semantic labels and avoids inventing source intensities. */
-export function samplePlane(plane: ImagePlane, x: number, y: number): number { const px = Math.floor(x); const py = Math.floor(y); if (px < 0 || py < 0 || px >= plane.width || py >= plane.height) return NaN; return plane.values[py * plane.width + px]; }
+export function samplePlane(plane: ImagePlane, x: number, y: number): number { const px = Math.floor(x); const py = Math.floor(y); if (px < 0 || py < 0 || px >= plane.width || py >= plane.height) return NaN; const index = py * plane.width + px; return plane.support && !plane.support[index] ? NaN : plane.values[index]; }
 
 /** Bounded coarse-to-fine translation search using normalized cross correlation.
  * Reports its metric; it is not affine/deformable registration or proof of alignment. */
@@ -109,5 +109,6 @@ export async function stitchGrid(planes: ImagePlane[], options: StitchOptions): 
     }
   }
   // Uncovered mosaic pixels remain zero; valid negative maximum values are preserved.
-  checkAbort(options.signal); options.onProgress?.(1); return { plane: { width, height, values, calibration: planes[0].calibration ? { ...planes[0].calibration } : undefined }, origin, transforms: transforms.map(t => ({ ...t })) };
+  const support = Uint8Array.from(coverage, count => count > 0 ? 1 : 0);
+  checkAbort(options.signal); options.onProgress?.(1); return { plane: { width, height, values, support, calibration: planes[0].calibration ? { ...planes[0].calibration } : undefined }, origin, transforms: transforms.map(t => ({ ...t })), support };
 }

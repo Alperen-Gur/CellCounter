@@ -1,0 +1,4 @@
+# Standard Workbench large-data I/O; compatible with Python 3.11 / NumPy 1.26.
+# Codec implementations come from the pinned maintained libraries.
+zarr==3.1.3
+numcodecs[crc32c]==0.15.1

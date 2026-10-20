@@ -96,7 +96,7 @@ export function AnalysisLabView({ initialKind, image, images, settings, onSettin
 
   const currentProtocol = (): AnalysisProtocolV1 => ({
     schemaVersion: 1, kind: ANALYSIS_PROTOCOL_KIND, id: crypto.randomUUID(), name: `${image?.condition ?? "Local"} analysis`, notes: image?.note ?? "",
-    createdAt: new Date().toISOString(), appVersion: "0.3.1", appBuild: "web",
+    createdAt: new Date().toISOString(), appVersion: "0.3.2", appBuild: "web",
     model: { id: settings.modelId, name: modelNames[settings.modelId], family: settings.modelId === "classical" ? "classical" : settings.modelId === "sd-fluo" ? "stardist" : "cellpose" },
     browser: { sourceTime: settings.sourceTime ?? 0, sourceZ: settings.sourceZ ?? 0, preprocessingPreset: settings.preprocessingPreset ?? "none", taskPreset: settings.taskPreset ?? "countCells", sourceChannel: settings.sourceChannel ?? -1, projection: settings.projection ?? "first", thresholdMethod: settings.thresholdMethod ?? "otsu", manualThreshold: settings.manualThreshold ?? .5, invert: settings.invert ?? false, minimumAreaPx: settings.minimumAreaPx ?? 9 },
     detection: { expectedDiameterUm: settings.diameterUm, channelsCyto: 0, channelsNuclei: 0, confidenceThreshold: settings.confidence },

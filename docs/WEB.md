@@ -1,4 +1,4 @@
-# CellCounter Web 0.3.1 preview
+# CellCounter Web 0.3.2 preview
 
 CellCounter Web is a fully client-side, installable PWA for private microscopy
 analysis. Imported pixels, model artifacts, measurements, corrections, study

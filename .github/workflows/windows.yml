@@ -107,6 +107,10 @@ jobs:
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           "version=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Stage pinned microscopy runtime
+        working-directory: desktop
+        run: node scripts/prepare-microscopy-runtime.mjs --platform win32-x64
+
       - name: Build and type-check frontend
         working-directory: desktop
         run: npm run build

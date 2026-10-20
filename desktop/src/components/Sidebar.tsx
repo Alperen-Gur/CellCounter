@@ -54,6 +54,10 @@ export function Sidebar({ activeId, collapsed, onNavigate }: SidebarProps) {
     !q || (routeById.get(id)?.label.toLowerCase().includes(q) ?? false);
 
   const renderItem = (id: RouteId) => {
+    // The desktop editor now lives inside the canonical Workbench project.
+    // Keep the standalone browser demonstration available without implying
+    // that its local sources are connected to a desktop scientific project.
+    if (id === "workspace" && "__TAURI_INTERNALS__" in window) return null;
     const route = routeById.get(id);
     if (!route || !filtered(id)) return null;
     const badge = badgeFor(id);

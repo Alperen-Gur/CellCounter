@@ -74,9 +74,41 @@ cc_install_run() {
         rm -rf "${VENV_DIR}"
     fi
 
+    local PYTHON_BOOTSTRAP=""
+    if [ -n "${CC_MIN_PYTHON_MINOR:-}" ]; then
+        # Prefer a supported interpreter already installed by the user. Never
+        # repair a 3.9/3.10 environment in place or silently keep its ABI.
+        local candidate
+        for candidate in "${CC_PYTHON_EXECUTABLE:-}" "${VENV_DIR}/bin/python3" \
+            /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 \
+            /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 \
+            /opt/homebrew/bin/python3 /usr/local/bin/python3 \
+            "$(command -v python3 2>/dev/null || true)"; do
+            if [ -n "${candidate}" ] && [ -x "${candidate}" ] &&
+                "${candidate}" -I -c "import sys; sys.exit(not (sys.version_info.major == 3 and sys.version_info.minor >= ${CC_MIN_PYTHON_MINOR}))"; then
+                PYTHON_BOOTSTRAP="${candidate}"
+                break
+            fi
+        done
+        if [ -z "${PYTHON_BOOTSTRAP}" ]; then
+            echo "!! Python 3.${CC_MIN_PYTHON_MINOR} or later is required for the Workbench and MCP."
+            echo "   Install a supported Python interpreter, then use Install or repair again."
+            exit 1
+        fi
+        if [ -d "${VENV_DIR}" ] && ! "${VENV_DIR}/bin/python3" -I -c \
+            "import sys; sys.exit(not (sys.version_info.major == 3 and sys.version_info.minor >= ${CC_MIN_PYTHON_MINOR}))"; then
+            local prior_venv="${VENV_DIR}.before-python-upgrade-$(date +%Y%m%d-%H%M%S)-$$"
+            echo "==> preserving the older Python environment at ${prior_venv}"
+            mv "${VENV_DIR}" "${prior_venv}"
+        fi
+    fi
     if [ ! -d "${VENV_DIR}" ]; then
-        echo "==> creating venv with /usr/bin/env python3"
-        /usr/bin/env python3 -m venv "${VENV_DIR}"
+        echo "==> creating venv"
+        if [ -n "${PYTHON_BOOTSTRAP}" ]; then
+            "${PYTHON_BOOTSTRAP}" -m venv "${VENV_DIR}"
+        else
+            /usr/bin/env python3 -m venv "${VENV_DIR}"
+        fi
     else
         echo "==> venv already exists; reusing"
     fi
@@ -89,7 +121,24 @@ cc_install_run() {
 
     echo "==> installing ${CC_FAMILY_LABEL} + deps (this can take a few minutes)"
     # shellcheck disable=SC2086 — CC_PIP_PACKAGES is intentionally word-split
-    pip install ${CC_PIP_PACKAGES}
+    if [ -n "${CC_PIP_PACKAGES:-}" ]; then pip install ${CC_PIP_PACKAGES}; fi
+
+    if [ -n "${CC_REQUIREMENTS_FILES:-}" ]; then
+        local requirements_name workbench_requirements
+        for requirements_name in ${CC_REQUIREMENTS_FILES}; do
+        workbench_requirements="${SCRIPTS_DIR}/${requirements_name}"
+        if [ ! -f "${workbench_requirements}" ]; then
+            # Source-only repository installer, same canonical requirements.
+            workbench_requirements="${_CC_WRAPPER_DIR}/../../shared/python/${requirements_name}"
+        fi
+        if [ ! -f "${workbench_requirements}" ]; then
+            echo "!! Workbench requirements were not bundled. Reinstall the application."
+            exit 1
+        fi
+        echo "==> installing pinned Workbench requirements: ${requirements_name}"
+        pip install -r "${workbench_requirements}"
+        done
+    fi
 
     # Optional vendor microscope-format readers (Zeiss .czi, Nikon .nd2,
     # Leica .lif, Olympus .oif/.oib/.oir). All pure-Python BSD-3-Clause.

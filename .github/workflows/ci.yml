@@ -1,10 +1,12 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - "desktop/**"
+      - "shared/**"
       - "CellCounting/**"
       - "CellCountingTests/**"
       - "scripts/verify-workflow-upgrade.sh"
@@ -13,6 +15,7 @@ on:
   pull_request:
     paths:
       - "desktop/**"
+      - "shared/**"
       - "CellCounting/**"
       - "CellCountingTests/**"
       - "scripts/verify-workflow-upgrade.sh"
@@ -68,6 +71,10 @@ jobs:
         working-directory: desktop
         run: npm run build
 
+      - name: Stage pinned microscopy runtime
+        working-directory: desktop
+        run: node scripts/prepare-microscopy-runtime.mjs
+
       # The uv externalBin sidecar must exist for the host target, or
       # tauri-build's config validation fails the cargo check below.
       - name: Fetch uv sidecar (host target)
@@ -110,6 +117,28 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Prepare pinned native microscopy worker
+        run: |
+          npm ci --prefix desktop --ignore-scripts
+          node shared/microscopy-worker/build.mjs --output "$RUNNER_TEMP/microscopy-assets"
+          python3 - <<'PYCODE'
+          import json, os, pathlib, subprocess, urllib.request
+          pins = json.loads(pathlib.Path('shared/microscopy-worker/node-runtime.json').read_text())
+          for platform in ('darwin-arm64', 'darwin-x64'):
+              artifact = pins['artifacts'][platform]
+              archive = pathlib.Path(os.environ['RUNNER_TEMP']) / artifact['file']
+              urllib.request.urlretrieve('https://nodejs.org/download/release/v' + pins['version'] + '/' + artifact['file'], archive)
+              subprocess.run(['python3', 'shared/microscopy-worker/stage-runtime.py', '--platform', platform,
+                  '--archive', str(archive), '--assets', os.environ['RUNNER_TEMP'] + '/microscopy-assets',
+                  '--output', 'shared/microscopy-worker/dist/' + platform], check=True)
+          PYCODE
 
       - name: Test native macOS app
         run: |

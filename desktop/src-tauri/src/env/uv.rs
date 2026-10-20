@@ -48,6 +48,7 @@ use crate::paths::FileStore;
 
 /// Tauri event name the install log lines are emitted on.
 pub const INSTALL_LOG_EVENT: &str = "env://install/log";
+static INSTALL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 /// One line of install output, streamed to the UI as an event payload.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -228,7 +229,6 @@ pub(crate) fn stage_python_project(_app: &AppHandle, store: &FileStore) -> Resul
 /// `invoke("env_install", { modelId })`.
 #[tauri::command]
 pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(), String> {
-    static INSTALL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     let _install_guard = INSTALL_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -262,6 +262,7 @@ pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(),
     } else {
         install_base_env(&app, &store, &model_id).await?;
     }
+    install_workbench_env(&app, &store, &model_id).await?;
     if let Err(error) = install_microscopy_io_env(&app, &store, &model_id).await {
         let _ = app.emit(
             INSTALL_LOG_EVENT,
@@ -275,6 +276,40 @@ pub async fn env_install(app: AppHandle, model_id: Option<String>) -> Result<(),
         );
     }
     Ok(())
+}
+
+/// Explicit user-requested repair of the standard analysis and MCP runtime.
+/// Detector environments remain independent and are never modified here.
+#[tauri::command]
+pub async fn workbench_runtime_install(app: AppHandle) -> Result<(), String> {
+    let _guard = INSTALL_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    let store = FileStore::from_app(&app)?;
+    stage_python_project(&app, &store)?;
+    install_workbench_env(&app, &store, "workbench").await
+}
+
+async fn install_workbench_env(app: &AppHandle, store: &FileStore, model_id: &str) -> Result<(), String> {
+    let runtime = crate::env::staging::snapshot(&store.python_dir())?;
+    let venv = store.workbench_venv_dir();
+    if let Some(message) = long_path_warning(&venv) { return Err(message); }
+    if !store.workbench_python().is_file() {
+        let mut create = Command::new(uv_executable());
+        create.args(["venv", "--python", PINNED_PYTHON]).arg(&venv)
+            .current_dir(&runtime).env_remove("VIRTUAL_ENV").env_remove("PYTHONPATH").env_remove("PYTHONHOME")
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        crate::proc::hide_console_tokio(&mut create);
+        run_streamed_command(app, create, "Workbench environment", model_id).await?;
+    }
+    let mut install = Command::new(uv_executable());
+    install.args(["pip", "install", "--python"]).arg(store.workbench_python())
+        .arg("-r").arg(runtime.join("requirements-analysis.txt"))
+        .arg("-r").arg(runtime.join("requirements-mcp.txt"))
+        .arg("-r").arg(runtime.join("requirements-zarr.txt"))
+        .arg("-r").arg(runtime.join("requirements-reporting.txt"))
+        .current_dir(&runtime).env_remove("VIRTUAL_ENV").env_remove("PYTHONPATH").env_remove("PYTHONHOME")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    crate::proc::hide_console_tokio(&mut install);
+    run_streamed_command(app, install, "Workbench analysis and MCP dependencies", model_id).await
 }
 
 async fn install_microscopy_io_env(

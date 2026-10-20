@@ -2248,10 +2248,9 @@ pub async fn detection_availability(
 /// checkout of this project, a user's own script, an editor/terminal showing the
 /// path) would be wrongly killed. By requiring the resolved script path to live
 /// under our own staged python dir, only sidecars this app actually launched
-/// (from that exact directory) are candidates. When `cmd()` is unavailable we
-/// fall back to matching the process's `exe()` path against `python_dir` (our
-/// staged venv interpreter lives under it) rather than `name()`, which is only
-/// the interpreter basename and can never contain a staged script path.
+/// (from that exact directory) are candidates. Unknown command lines are
+/// preserved: the same interpreter now also runs intentionally detached
+/// training and workbench jobs that must survive an app restart.
 ///
 /// Best-effort; never blocks startup — call it from a spawned thread in `setup`.
 pub fn sweep_orphans(python_dir: std::path::PathBuf) {
@@ -2269,15 +2268,6 @@ pub fn sweep_orphans(python_dir: std::path::PathBuf) {
         .map(|name| python_dir.join(name).to_string_lossy().into_owned())
         .collect();
 
-    // Fallback identifier for when `cmd()` is empty (platform/permission
-    // dependent on macOS): our sidecars are launched with the staged venv
-    // interpreter, which lives UNDER `python_dir` (`<python_dir>/.venv/bin/python`
-    // etc.). So an orphan whose executable path is rooted at our python_dir is
-    // ours even when its argv (and thus the script path) is unavailable. Matching
-    // `python_dir` (not a bare interpreter basename like `python3.11`) keeps this
-    // scoped to processes THIS app staged and launched.
-    let python_dir_prefix = python_dir.to_string_lossy().into_owned();
-
     // Our own pid — never target ourselves even if argv somehow matched.
     let self_pid = std::process::id();
 
@@ -2292,33 +2282,12 @@ pub fn sweep_orphans(python_dir: std::path::PathBuf) {
             continue;
         }
 
-        // Match against the full command line (interpreter + script + args).
-        // `cmd()` yields the argv vector as `&[OsString]`; join lossily so a
-        // script path shows up regardless of which argv slot it lands in.
-        let cmdline: String = process
-            .cmd()
-            .iter()
-            .map(|s| s.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let is_ours = if !cmdline.is_empty() {
-            // Preferred path: a match on the FULL staged script path under our
-            // python_dir, so we never kill an unrelated process that happens to
-            // mention the bare script basename.
-            owned_paths.iter().any(|p| cmdline.contains(p.as_str()))
-        } else {
-            // `cmd()` is empty on this platform for this process. `name()` is only
-            // the interpreter basename (e.g. `python3.11`) and can NEVER contain a
-            // staged script path, so the old name()-based fallback was a no-op.
-            // Instead match the process's executable path against our python_dir:
-            // our sidecar's interpreter is staged under it, so an exe rooted there
-            // is ours — while still being scoped to processes this app launched.
-            process
-                .exe()
-                .map(|exe| exe.to_string_lossy().contains(python_dir_prefix.as_str()))
-                .unwrap_or(false)
-        };
+        // Match a complete script argument. Interpreter ownership alone cannot
+        // distinguish a crashed interactive sidecar from a live batch worker.
+        let is_ours = process.cmd().iter().any(|argument| {
+            let argument = argument.to_string_lossy();
+            owned_paths.iter().any(|path| argument.as_ref() == path.as_str())
+        });
         if !is_ours {
             continue;
         }
@@ -2414,7 +2383,7 @@ mod tests {
             enforce_windows_runtime_contract(&mut request);
             let args = build_argv(std::path::Path::new("detect.py"), "image.tif", &request);
             assert!(!args.iter().any(|value| value == "--checkpoint"));
-            if model_id != "sd-fluo" {
+            if !is_stardist(model_id) {
                 assert!(args.iter().any(|value| value == "--no-gpu"));
             }
             assert!(!request.use_gpu);

@@ -4,3 +4,4 @@
 
 pub mod uv;
 pub(crate) mod staging;
+pub(crate) mod microscopy;

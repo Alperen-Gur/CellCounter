@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+include runtime-files.txt
+include requirements-analysis.txt
+include requirements-mcp.txt
+include requirements-zarr.txt
+include requirements-reporting.txt
+include requirements-omero.txt

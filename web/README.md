@@ -4,11 +4,11 @@
 
 Private microscopy analysis in an installable, fully client-side PWA.
 
-[![Web preview](https://img.shields.io/badge/Web-v0.3.1%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.1)
+[![Web preview](https://img.shields.io/badge/Web-v0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.1) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
 
 </div>
 
@@ -110,7 +110,7 @@ See the [workspace guide](../docs/PORTABLE-WORKSPACE.md),
 
 ## Optional local diagnostics and real-workflow timings
 
-macOS 1.0.17, Windows 1.2.1 and Web 0.3.1 preview add user-started timing
+macOS 1.0.17, Windows 1.2.1 and Web 0.3.2 preview add user-started timing
 sessions and editable diagnostic exports. Use real images and normal workflows,
 then inspect and redact the report before exporting. Nothing is uploaded
 automatically; names, paths, IDs, images and raw logs are excluded. See the

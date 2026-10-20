@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Centralizes the on-disk layout for the Python sidecar.
@@ -30,6 +31,87 @@ enum PythonRuntime {
     /// Listed explicitly so we don't accidentally pick up stray junk from
     /// the bundle.
     static let bundledScriptNames: [String] = [
+        // One shared operation engine serves the GUI, CLI and MCP.
+        "workbench.py",
+        "workbench_sdk.py",
+        "_workbench_core.py",
+        "_workbench_imaging.py",
+        "_workbench_classical.py",
+        "_workbench_classical_legacy.py",
+        "_workbench_store.py",
+        "_workbench_indexed.py",
+        "_workbench_pages.py",
+        "_workbench_catalogues.py",
+        "_workbench_schema.py",
+        "_workbench_mcp.py",
+        "_workbench_workflows.py",
+        "_workbench_volume.py",
+        "_workbench_metrics.py",
+        "_workbench_adaptation.py",
+        "_workbench_plugins.py",
+        "_workbench_packages.py",
+        "_workbench_package2.py",
+        "_workbench_models.py",
+        "_workbench_model_cards.py",
+        "_workbench_model_adapters.py",
+        "_workbench_specialist_worker.py",
+        "_workbench_discovery.py",
+        "_workbench_cellpose_worker.py",
+        "_workbench_assays.py",
+        "_workbench_assays_area.py",
+        "_workbench_neurite.py",
+        "_workbench_colony.py",
+        "_workbench_assays_specialist.py",
+        "_workbench_assay_series.py",
+        "_workbench_experiment_layouts.py",
+        "_workbench_assays_intensity.py",
+        "_workbench_assays_puncta.py",
+        "_workbench_preprocessing.py",
+        "_workbench_variants.py",
+        "_workbench_review.py",
+        "_workbench_sources.py",
+        "_workbench_lineages.py",
+        "_workbench_assay_summary.py",
+        "_workbench_jobs.py",
+        "_workbench_job_worker.py",
+        "_workbench_registration.py",
+        "_workbench_support.py",
+        "_workbench_exports.py",
+        "_workbench_label_import.py",
+        "_workbench_comparison.py",
+        "_workbench_annotations.py",
+        "_workbench_sweeps.py",
+        "_workbench_sweep_reports.py",
+        "_workbench_composite.py",
+        "_workbench_composite_exports.py",
+        "_workbench_display_presets.py",
+        "_workbench_display_preset_io.py",
+        "_workbench_distributed.py",
+        "_workbench_distribution_runner.py",
+        "_workbench_environment.py",
+        "_workbench_host_registry.py",
+        "_workbench_runtimes.py",
+        "_workbench_plugin_worker.py",
+        "_workbench_refresh.py",
+        "_workbench_refresh_reports.py",
+        "_workbench_recompute.py",
+        "_workbench_graphs.py",
+        "_workbench_graph_controls.py",
+        "_workbench_migration.py",
+        "_workbench_native_workspace.py",
+        "_workbench_sessions.py",
+        "_workbench_library.py",
+        "_workbench_temporal.py",
+        "_workbench_tracking.py",
+        "_workbench_statistics.py",
+        "_workbench_statistics_exports.py",
+        "_workbench_zarr.py",
+        "_workbench_tiled.py",
+        "_workbench_omero.py",
+        "_workbench_omero_worker.py",
+        "_workbench_microscopy_runtime.py",
+        "_workbench_workspace.py",
+        "_workbench_experiments.py",
         "cellpose_detect.py",
         "cellpose_train.py",
         "_training_dataset.py",
@@ -86,6 +168,12 @@ enum PythonRuntime {
         "_neurite.py",
         "neurite_outgrowth.py",
     ]
+
+    static func workbenchInterpreter(pythonDirectory: URL) -> URL {
+        // Canonical operations have one explicitly installed environment. Model
+        // interpreters remain separate and are never silently inherited here.
+        pythonDirectory.appendingPathComponent("venv_workbench/bin/python3")
+    }
 
     /// Installed interpreters worth trying for vendor-container preparation.
     /// Prefer the active detector's environment because its optional readers
@@ -147,6 +235,77 @@ enum PythonRuntime {
         let flat = resourceURL.appendingPathComponent(name)
         if fm.fileExists(atPath: flat.path) { return flat }
         return nil
+    }
+
+    private static var workbenchSnapshot: URL?
+    private static var workbenchSnapshotRoot: String?
+
+    /// Workers may outlive both the window and this application version. Keep
+    /// each complete official runtime in its own immutable, persistent directory
+    /// instead of importing from a bundle that an update can replace.
+    static func stageWorkbenchSnapshot(pythonDirectory: URL? = nil) throws -> URL {
+        let runtimeDirectory = pythonDirectory ?? FileStore.shared.pythonDir
+        if let workbenchSnapshot, workbenchSnapshotRoot == runtimeDirectory.path { return workbenchSnapshot }
+        let fm = FileManager.default
+        let names = bundledScriptNames.filter {
+            $0 == "workbench.py" || $0 == "workbench_sdk.py" || $0.hasPrefix("_workbench_")
+        }.sorted()
+        var files: [(name: String, data: Data)] = []
+        var digest = SHA256()
+        for name in names {
+            guard let source = bundledPythonURL(named: name) else {
+                throw StagingError.helperMissing(name: name,
+                    searched: [Bundle.main.resourceURL?.path ?? "<no Resources>"])
+            }
+            let data = try Data(contentsOf: source)
+            // Length delimiters prevent different file/name boundaries from
+            // producing the same input stream before hashing.
+            digest.update(data: Data("\(name.utf8.count):\(name):\(data.count):".utf8))
+            digest.update(data: data)
+            files.append((name, data))
+        }
+        let identity = digest.finalize().map { String(format: "%02x", $0) }.joined()
+        let root = runtimeDirectory.appendingPathComponent("workbench-runtimes", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        let canonical = root.appendingPathComponent(identity, isDirectory: true)
+        func matches(_ directory: URL) -> Bool {
+            files.allSatisfy { file in
+                (try? Data(contentsOf: directory.appendingPathComponent(file.name))) == file.data
+            }
+        }
+        if matches(canonical) {
+            let script = canonical.appendingPathComponent("workbench.py")
+            workbenchSnapshot = script
+            workbenchSnapshotRoot = runtimeDirectory.path
+            return script
+        }
+        // Never repair an existing directory in place: an older worker may
+        // still be using it. A changed snapshot gets a fresh sibling.
+        let destination = fm.fileExists(atPath: canonical.path)
+            ? root.appendingPathComponent("\(identity)-\(UUID().uuidString)", isDirectory: true)
+            : canonical
+        let temporary = root.appendingPathComponent(".stage-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: temporary, withIntermediateDirectories: false,
+                               attributes: [.posixPermissions: 0o700])
+        defer { try? fm.removeItem(at: temporary) }
+        for file in files {
+            let path = temporary.appendingPathComponent(file.name)
+            try file.data.write(to: path, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: path.path)
+        }
+        do {
+            try fm.moveItem(at: temporary, to: destination)
+        } catch {
+            // Another application instance can publish the same complete
+            // snapshot first. Reuse it only when every module matches.
+            guard matches(destination) else { throw error }
+        }
+        try fm.setAttributes([.posixPermissions: 0o500], ofItemAtPath: destination.path)
+        let script = destination.appendingPathComponent("workbench.py")
+        workbenchSnapshot = script
+        workbenchSnapshotRoot = runtimeDirectory.path
+        return script
     }
 
     /// Source URL for the bundled install script.
@@ -243,6 +402,23 @@ enum PythonRuntime {
             if try stageFile(source: src, destination: dst, fileManager: fm) {
                 NSLog("[PythonRuntime] updated bundled helper: \(name)")
             }
+        }
+
+        // Installation uses the canonical transport pin shared with the CLI
+        // and Windows host; it must not drift into a Swift or shell constant.
+        for name in ["requirements-analysis.txt", "requirements-mcp.txt", "requirements-zarr.txt", "requirements-reporting.txt", "requirements-omero.txt"] {
+            guard let source = bundledPythonURL(named: name) else {
+                throw StagingError.helperMissing(name: name, searched: ["Resources/python/\(name)"])
+            }
+            try stageFile(source: source, destination: dir.appendingPathComponent(name), fileManager: fm)
+        }
+
+        if let resources = Bundle.main.resourceURL {
+            let source = resources.appendingPathComponent("scripts/install_workbench.sh")
+            guard fm.fileExists(atPath: source.path) else {
+                throw StagingError.helperMissing(name: "install_workbench.sh", searched: [source.path])
+            }
+            try stageFile(source: source, destination: dir.appendingPathComponent("install_workbench.sh"), permissions: 0o755, fileManager: fm)
         }
 
         // install_python.sh — REQUIRED. Without it, nothing else matters.

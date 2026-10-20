@@ -45,7 +45,7 @@ final class ChildProcessTracker {
     /// Names we know we own. Used by the orphan sweep on launch.
     ///
     /// HARD RULE: every `python/*.py` file the app can spawn as a subprocess
-    /// MUST be listed here. A missing entry means a crash mid-run leaves that
+    /// MUST be listed here unless it is a durable workbench worker. A missing entry means a crash mid-run leaves that
     /// sidecar re-parented to launchd, burning a core forever, and the NEXT
     /// launch's sweep walks straight past it — the exact failure this file was
     /// written to prevent. Helper modules that are only ever `import`ed
@@ -74,8 +74,15 @@ final class ChildProcessTracker {
         "area_assays_detect.py",
         "intensity_assays.py",
         "_assay_worker.py", "_training_dataset.py",
+        "workbench.py",
         // Environment bootstrap.
         "install_python.sh",
+    ]
+
+    /// These processes deliberately survive application termination. Their
+    /// canonical job records and cooperative stop requests own their lifetime.
+    nonisolated static let detachedWorkbenchScripts: Set<String> = [
+        "_workbench_job_worker.py", "_workbench_cellpose_worker.py"
     ]
 
     private init() {}
@@ -108,6 +115,9 @@ final class ChildProcessTracker {
         registry.removeValue(forKey: key)
         kinds.removeValue(forKey: key)
     }
+
+    /// Installer callers use this to avoid mutating an interpreter in use.
+    var hasRunningProcesses: Bool { registry.values.contains { $0.isRunning } }
 
     /// Terminate every tracked Process. Called from the willTerminate hook
     /// and from explicit "Cancel all detections" paths.
@@ -252,6 +262,7 @@ final class ChildProcessTracker {
             // Only sweep orphans — anything still attached to a parent isn't ours.
             guard ppid == 1 else { continue }
             let command = String(parts[2])
+            guard !detachedWorkbenchScripts.contains(where: { command.contains($0) }) else { continue }
             let isOurs = ownedScriptBasenames.contains { command.contains($0) }
             guard isOurs else { continue }
             NSLog("[ChildProcessTracker] orphan sweep: SIGKILL pid=\(pid) (\(command.prefix(80)))")

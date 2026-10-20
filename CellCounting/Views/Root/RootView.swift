@@ -113,6 +113,12 @@ struct RootView: View {
                                     set: { if !$0 { state.analysisSetupJobId = nil } })) {
             if let id = state.analysisSetupJobId { AnalysisSetupSheet(state: state, jobId: id) }
         }
+        .alert("Library capture needs attention", isPresented: Binding(get: { state.libraryMigrationError != nil }, set: { if !$0 { state.libraryMigrationError = nil } })) {
+            Button("OK") { state.libraryMigrationError = nil }
+        } message: { Text(state.libraryMigrationError ?? "") }
+        .sheet(isPresented: $state.showLibraryMigration) {
+            WorkbenchMigrationView(session: state.workbenchSession, onOpenProject: { state.view = .workbench })
+        }
         .animation(.easeOut(duration: 0.24), value: state.showCalibration)
         .animation(.easeOut(duration: 0.24), value: state.showOnboarding)
         .animation(.easeOut(duration: 0.24), value: state.showInstallCellpose)
@@ -136,6 +142,7 @@ struct RootView: View {
         case .results:    ResultsView(state: state, fullScreenEdit: $fullScreenEdit)
         case .batch:      BatchView(state: state)
         case .workspace:  WorkspaceView(state: state, session: state.workspaceSession)
+        case .workbench:  WorkbenchView(session: state.workbenchSession, onLibraryMigration: { state.prepareLibraryMigration() }, onLegacyWorkspace: { state.view = .workspace })
         case .models:     ModelsView(state: state)
         case .fineTune:   FineTuneView(state: state)
         case .settings:   SettingsView(state: state)

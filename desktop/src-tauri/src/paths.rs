@@ -63,6 +63,10 @@ pub struct FileStore {
 }
 
 impl FileStore {
+    /// Resolve existing paths for headless tools without creating a library tree.
+    pub(crate) fn existing(app_data_parent: impl AsRef<Path>) -> Self {
+        Self { root: app_data_parent.as_ref().join("CellCounter"), python_root: app_data_parent.as_ref().join("py") }
+    }
     /// Build a [`FileStore`] with the data root at `<app_data_parent>/CellCounter`
     /// and the Python env root at the short sibling `<app_data_parent>/py`, and
     /// ensure every sub-directory exists. `app_data_parent` is normally
@@ -147,6 +151,10 @@ impl FileStore {
     /// dependency tree stays under Windows' `MAX_PATH` (see module doc).
     pub fn python_dir(&self) -> PathBuf {
         self.python_root.clone()
+    }
+    pub fn workbench_venv_dir(&self) -> PathBuf { self.python_dir().join(".venvwb") }
+    pub fn workbench_python(&self) -> PathBuf {
+        self.workbench_venv_dir().join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" })
     }
 
     /// `<app-data>/py/.venv` — the uv-managed virtual environment.

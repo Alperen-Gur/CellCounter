@@ -4,11 +4,11 @@
 
 Native, private microscopy analysis for Windows 10 and 11.
 
-[![Windows release](https://img.shields.io/badge/Windows-v1.2.1-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.1)
+[![Windows release](https://img.shields.io/badge/Windows-v1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/windows.yml?branch=main&label=Windows%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/windows.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.1) · [Installation guide](../docs/WINDOWS.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) · [Installation guide](../docs/WINDOWS.md) · [Main project](../README.md)
 
 </div>
 
@@ -51,7 +51,7 @@ fixes and the packaging-only validation boundary.
 
 ## Install
 
-[![Download](https://img.shields.io/badge/Download-Windows%20v1.2.1-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.1)
+[![Download](https://img.shields.io/badge/Download-Windows%20v1.3.0-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
 
 Choose the NSIS `.exe` for a standard workstation installation or the WiX `.msi` for managed deployment. Both
 packages contain the same application. The installers are currently unsigned, so verify the download against

@@ -7,8 +7,9 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use sha2::{Digest, Sha256};
 
 include!(concat!(env!("OUT_DIR"), "/python_runtime.rs"));
 
@@ -76,6 +77,28 @@ fn stage_files(destination: &Path, files: &[(&str, &[u8])]) -> Result<(), String
 
 pub(crate) fn stage(destination: &Path) -> Result<(), String> {
     stage_files(destination, EMBEDDED_FILES)
+}
+
+/// Keep the complete module set available to detached workbench workers.
+/// A later app version gets its own directory, so lazy imports in a running
+/// worker cannot mix versions when ordinary sidecar staging is updated.
+pub(crate) fn snapshot(runtime_root: &Path) -> Result<PathBuf, String> {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    let version = VERSION.get_or_init(|| {
+        let mut hash = Sha256::new();
+        for &(name, contents) in EMBEDDED_FILES {
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name.as_bytes());
+            hash.update((contents.len() as u64).to_le_bytes());
+            hash.update(contents);
+        }
+        format!("{:x}", hash.finalize())
+    });
+    // Short path components preserve room for Windows user-profile paths.
+    // Retain previous snapshots: a detached worker may still be using one.
+    let destination = runtime_root.join("r").join(version);
+    stage_files(&destination, EMBEDDED_FILES)?;
+    Ok(destination)
 }
 
 #[cfg(test)]

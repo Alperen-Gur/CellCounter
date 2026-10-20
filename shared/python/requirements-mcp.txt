@@ -1,0 +1,3 @@
+# Optional MCP transport; ordinary GUI and CLI requests do not import this SDK.
+# Use Python 3.11 or later. Application protocol negotiation belongs to the SDK.
+mcp==2.3.0

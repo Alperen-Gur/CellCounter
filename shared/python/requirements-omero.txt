@@ -1,0 +1,6 @@
+# Optional isolated OMERO environment. Never install into a model or Workbench venv.
+# Ice 3.6 platform wheels must be installed explicitly as documented by OMERO.
+omero-py==5.23.0
+zeroc-ice==3.6.5
+numpy==2.2.6
+Pillow==11.3.0

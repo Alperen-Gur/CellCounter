@@ -22,6 +22,9 @@ pub mod images;
 pub mod paths;
 pub mod proc;
 pub mod parity;
+pub mod workbench;
+pub mod workbench_cli;
+pub mod workbench_runtime;
 
 use detection::sidecar::SidecarManager;
 use tauri::Manager;
@@ -76,6 +79,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            workbench::workbench_request,
+            workbench::workbench_legacy_locations,
+            workbench_runtime::workbench_runtime_status,
+            workbench_runtime::workbench_connection,
+            env::uv::workbench_runtime_install,
             // ── portable analysis sidecars ──
             parity::import_custom_model,
             parity::mark_image_reviewed,

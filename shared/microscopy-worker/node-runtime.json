@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "version": "24.22.0",
+  "releaseUrl": "https://nodejs.org/en/blog/release/v24.22.0",
+  "checksumsUrl": "https://nodejs.org/download/release/v24.22.0/SHASUMS256.txt",
+  "artifacts": {
+    "win32-x64": { "file": "node-v24.22.0-win-x64.zip", "sha256": "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3", "executable": "node-v24.22.0-win-x64/node.exe" },
+    "win32-arm64": { "file": "node-v24.22.0-win-arm64.zip", "sha256": "3a5c209a5bc59e65b3bc0fa13ed5e166a26bd3d55332847f498b76b037408d61", "executable": "node-v24.22.0-win-arm64/node.exe" },
+    "darwin-arm64": { "file": "node-v24.22.0-darwin-arm64.tar.gz", "sha256": "6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5", "executable": "node-v24.22.0-darwin-arm64/bin/node" },
+    "darwin-x64": { "file": "node-v24.22.0-darwin-x64.tar.gz", "sha256": "495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91", "executable": "node-v24.22.0-darwin-x64/bin/node" },
+    "linux-x64": { "file": "node-v24.22.0-linux-x64.tar.xz", "sha256": "cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008", "executable": "node-v24.22.0-linux-x64/bin/node" },
+    "linux-arm64": { "file": "node-v24.22.0-linux-arm64.tar.xz", "sha256": "fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143", "executable": "node-v24.22.0-linux-arm64/bin/node" }
+  }
+}

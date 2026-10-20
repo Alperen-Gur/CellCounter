@@ -486,6 +486,7 @@ pub fn export_workspace_bytes(
     app: AppHandle,
     out_path: String,
     bytes: Vec<u8>,
+    no_overwrite: Option<bool>,
 ) -> Result<String, String> {
     if bytes.len() > 256 * 1024 * 1024 {
         return Err("Workspace export exceeds 256 MiB".into());
@@ -502,7 +503,13 @@ pub fn export_workspace_bytes(
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temporary, &target)
+        if no_overwrite.unwrap_or(false) {
+            // Publish without replacing an original document or another export.
+            std::fs::hard_link(&temporary, &target)?;
+            std::fs::remove_file(&temporary)
+        } else {
+            std::fs::rename(&temporary, &target)
+        }
     })();
     if let Err(e) = result {
         let _ = std::fs::remove_file(temporary);

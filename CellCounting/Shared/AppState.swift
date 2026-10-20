@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 import SwiftData
 
 enum AppView: String, Hashable, CaseIterable {
-    case home, processing, results, batch, workspace, models, fineTune, settings, queue, reviewQueue, compare, imagesLibrary
+    case home, processing, results, batch, workspace, workbench, models, fineTune, settings, queue, reviewQueue, compare, imagesLibrary
 }
 
 @MainActor
@@ -29,11 +29,15 @@ final class AppState {
     /// destroyed and recreated every time the user checks another screen.
     @ObservationIgnored
     let workspaceSession = WorkspaceSession()
+    let workbenchSession = WorkbenchSession()
 
     let jobScheduler = AnalysisJobScheduler(store: AnalysisJobStore(
         url: FileStore.shared.root.appendingPathComponent("analysis-jobs.json")))
     var analysisSetupJobId: UUID?
     var isPreparingImport = false
+    var showLibraryMigration = false
+    var preparingLibraryMigration = false
+    var libraryMigrationError: String?
 
     // Modals
     var showCalibration = false
@@ -894,6 +898,32 @@ final class AppState {
             await task.value
             try Task.checkCancellation()
             guard !detection.isDeleted, detection.modelContext != nil else { throw CancellationError() }
+        }
+    }
+
+    /// Drain pending edits before asking the same installed app binary for a
+    /// read-only snapshot. No canonical operation writes into the native store.
+    func prepareLibraryMigration(imageIDs: Set<UUID> = []) {
+        guard !preparingLibraryMigration, !isPreparingImport, jobScheduler.activeCount == 0,
+              !TrainingService.isTrainingActive, workbenchSession.canRefreshWithoutDiscardingEdits,
+              !workbenchSession.hasActiveWorkers else {
+            libraryMigrationError = "Finish pending Workbench edits and pause library analysis or training before copying the library."
+            return
+        }
+        preparingLibraryMigration = true
+        libraryMigrationError = nil
+        Task {
+            defer { preparingLibraryMigration = false }
+            do {
+                for pending in Array(pendingCellEdits.values) { try await finishPendingCellEdits(for: pending.detection) }
+                try repos.context.save()
+                workbenchSession.migration.sourceDirectory = FileStore.shared.root.path
+                workbenchSession.migration.selectedLegacyIDs = imageIDs.map(\.uuidString).sorted()
+                workbenchSession.migration.clearPreview()
+                showLibraryMigration = true
+            } catch {
+                libraryMigrationError = "Library edits could not be saved before capture: \(error.localizedDescription)"
+            }
         }
     }
 

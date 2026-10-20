@@ -14,6 +14,15 @@ final class CellposeInstaller: ObservableObject {
     @Published var done: Bool = false
     @Published var error: String? = nil
 
+    private let workbenchOnly: Bool
+    private var environmentDirectory: URL {
+        workbenchOnly ? FileStore.shared.pythonDir.appendingPathComponent("venv_workbench", isDirectory: true) : FileStore.shared.pythonVenvDir
+    }
+    private var incompleteSentinel: URL {
+        workbenchOnly ? FileStore.shared.pythonDir.appendingPathComponent(".cc-workbench-install-incomplete") : FileStore.shared.installIncompleteSentinel
+    }
+    init(workbenchOnly: Bool = false) { self.workbenchOnly = workbenchOnly }
+
     private var process: Process?
     private var streamTask: Task<Void, Never>?
 
@@ -23,7 +32,7 @@ final class CellposeInstaller: ObservableObject {
     /// behavior is unreliable, so prefer a clean slate.
     func reinstall() {
         cancel()
-        let venv = FileStore.shared.pythonVenvDir
+        let venv = environmentDirectory
         if FileManager.default.fileExists(atPath: venv.path) {
             NSLog("[CellposeInstaller] reinstall(): removing existing venv at \(venv.path)")
             try? FileManager.default.removeItem(at: venv)
@@ -43,7 +52,7 @@ final class CellposeInstaller: ObservableObject {
         // re-run (e.g. user retries from the UI without re-invoking the
         // script's pre-flight).
         let fmPreflight = FileManager.default
-        let venvPreflight = FileStore.shared.pythonVenvDir
+        let venvPreflight = environmentDirectory
         let pipCheckURL = venvPreflight.appendingPathComponent("bin/pip")
         if fmPreflight.fileExists(atPath: venvPreflight.path)
             && !fmPreflight.fileExists(atPath: pipCheckURL.path) {
@@ -60,7 +69,7 @@ final class CellposeInstaller: ObservableObject {
         let fm = FileManager.default
         do {
             try PythonRuntime.stageScripts()
-            scriptURL = FileStore.shared.pythonInstallScriptURL
+            scriptURL = workbenchOnly ? FileStore.shared.pythonDir.appendingPathComponent("install_workbench.sh") : FileStore.shared.pythonInstallScriptURL
             // Distinguish "file not there" from "file not executable" —
             // previously both surfaced as a generic permissions error.
             if !fm.fileExists(atPath: scriptURL.path) {
@@ -85,7 +94,7 @@ final class CellposeInstaller: ObservableObject {
             return
         }
 
-        let venvPath = FileStore.shared.pythonVenvDir.path
+        let venvPath = environmentDirectory.path
         let scriptsDir = FileStore.shared.pythonDir.path
         // Ensure the parent dir exists (FileStore.init already does, but
         // belt-and-braces if FileStore is invoked before init for any reason).
@@ -98,7 +107,7 @@ final class CellposeInstaller: ObservableObject {
         // a previous attempt died before pip got bootstrapped. Re-running
         // `python -m venv` over the existing dir won't reliably fix it,
         // so nuke and re-create.
-        let venvDir = FileStore.shared.pythonVenvDir
+        let venvDir = environmentDirectory
         let pipURL = venvDir.appendingPathComponent("bin/pip")
         if fm.fileExists(atPath: venvDir.path)
             && !fm.fileExists(atPath: pipURL.path) {
@@ -121,8 +130,8 @@ final class CellposeInstaller: ObservableObject {
         // `handleTermination` only when the script exits 0.
         try? fm.createDirectory(at: FileStore.shared.pythonDir,
                                 withIntermediateDirectories: true)
-        try? Data().write(to: FileStore.shared.installIncompleteSentinel)
-        UserDefaults.standard.set(false, forKey: "cc-cellpose-importable")
+        try? Data().write(to: incompleteSentinel)
+        if !workbenchOnly { UserDefaults.standard.set(false, forKey: "cc-cellpose-importable") }
         NotificationCenter.default.post(name: .ccVenvChanged, object: nil)
 
         let proc = Process()
@@ -205,17 +214,17 @@ final class CellposeInstaller: ObservableObject {
         isRunning = false
         if exitCode == 0 {
             done = true
-            progressHint = "Cellpose installed."
+            progressHint = workbenchOnly ? "Workbench and MCP installed." : "Cellpose installed."
             error = nil
             // Pass-11: invalidate the cached `import cellpose` probe so the next
             // isInstalled() query re-checks against the freshly-built venv
             // instead of returning the stale "no" from before the install ran.
-            UserDefaults.standard.removeObject(forKey: "cc-cellpose-importable")
+            if !workbenchOnly { UserDefaults.standard.removeObject(forKey: "cc-cellpose-importable") }
             // Pass-13: install finished cleanly — clear the sentinel so the
             // venv reads as healthy. We only clear on exit 0; user-cancel +
             // process-died paths leave it behind so the next launch knows.
             try? FileManager.default.removeItem(
-                at: FileStore.shared.installIncompleteSentinel)
+                at: incompleteSentinel)
             // Notify the rest of the app that the install state has changed.
             // ModelsView observes this to refresh the InstallStateCache so rows
             // flip from "Get" / "Checking…" to "Activate" without waiting for

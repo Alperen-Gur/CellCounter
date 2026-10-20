@@ -82,7 +82,7 @@ function App() {
             <span className="cc-topbar__spacer" />
             <label aria-label="Presentation theme"><select aria-label="Presentation theme" value={theme} onChange={e=>setTheme(e.target.value as typeof theme)}><option value="system">System theme</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
 
-            <button
+            {route.id !== "workbench" ? <><button
               type="button"
               className="cc-model"
               onClick={() => navigate("models")}
@@ -102,6 +102,7 @@ function App() {
               <Icon name="calibrate" size={16} />
               Calibrate
             </button>
+            </> : null}
 
             <button
               type="button"

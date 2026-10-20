@@ -22,3 +22,11 @@
 .workspace-error { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 10px; border-radius: 6px; }
 @media (max-width: 1000px) { .workspace-layout { grid-template-columns: 210px minmax(0, 1fr); } }
 @media (max-width: 760px) { .workspace-layout { grid-template-columns: 1fr; } .workspace-page { padding: 14px; } }
+.workbench .workspace-page { height: auto; padding: 0; overflow: visible; color: var(--cc-text); }
+.workbench .workspace-page button, .workbench .workspace-page input, .workbench .workspace-page select { color: var(--cc-text); background: var(--cc-bg); border-color: var(--cc-border-strong); }
+.workbench .workspace-page button[aria-pressed="true"] { background: var(--cc-bg-active); border-color: var(--cc-accent); }
+.workbench .workspace-layer { background: var(--cc-bg); border-color: var(--cc-border); }
+.workbench .workspace-layer.selected { border-color: var(--cc-accent); }
+.workbench .workspace-layout aside, .workbench .workspace-stage details { border-color: var(--cc-border); }
+.workspace-keyframe fieldset { padding: 8px; }
+.workspace-keyframe input[type="checkbox"] { width: auto; }

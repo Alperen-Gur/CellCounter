@@ -1,4 +1,4 @@
-import { timeLocalOperation } from "../../../../shared/diagnostics/performance";
+import { timeLocalOperation } from "../../../../shared/diagnostics/performance.ts";
 import type { DetectionParams, DetectionResultDTO } from "../types";
 
 export type JobStatus = "draft" | "running" | "paused" | "completed" | "failed";

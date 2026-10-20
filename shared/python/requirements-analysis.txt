@@ -1,0 +1,8 @@
+# Scientific runtime for the shared GUI, CLI and MCP workbench.
+# MCP is optional; see requirements-mcp.txt.
+numpy==1.26.4
+scipy==1.15.3
+Pillow==11.3.0
+scikit-image==0.24.0
+tifffile==2025.3.30
+packaging==25.0

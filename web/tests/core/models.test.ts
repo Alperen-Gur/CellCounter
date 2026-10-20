@@ -59,7 +59,7 @@ describe("strict WebGPU model catalog", () => {
         id: "image", fileName: "image.png", mediaType: "image/png", byteLength: 0, lastModified: null, blob: new Blob(),
       },
       calibration,
-      parameters,
+      parameters: { ...parameters, watershedSplit: false },
     })).rejects.toBeInstanceOf(ModelArtifactUnavailableError);
     expect(fetchSpy).not.toHaveBeenCalled();
   });

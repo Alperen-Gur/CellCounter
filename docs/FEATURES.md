@@ -1,10 +1,16 @@
 # CellCounter feature reference
 
+Current releases are **macOS 1.1.0**, **Windows 1.3.0** and **Web 0.3.2 preview**.
+The native releases share the project Workbench's GUI, CLI, Python SDK and MCP
+operations. See the [Workbench guide](WORKBENCH.md) and
+[current release comparison](PLATFORM-PARITY.md) for supported operations,
+dependencies and bounds. The browser retains its smaller
+[portable workspace](PORTABLE-WORKSPACE.md) and classical-analysis feature set.
+
 The tables below retain the **historical baseline** for macOS v1.0.16, Windows
-v1.1.2 and Web v0.2.1. For Windows **1.2.0** and Web **0.3.0 preview**, see the
-[portable workspace guide](PORTABLE-WORKSPACE.md) and
-[current release comparison](PLATFORM-PARITY.md), which describe the additions
-and remaining limits. Baseline tables are not the current capability inventory.
+v1.1.2 and Web v0.2.1. They describe those editions, not the current capability
+inventory. In particular, old proprietary-reader listings do not establish
+canonical Workbench support: the current Workbench has no VSI reader.
 
 Status meanings:
 
@@ -18,8 +24,7 @@ For installation and operational guidance, see the [main README](../README.md), 
 
 **Full macOS parity has not been reached.** The
 [release-status and parity snapshot](PLATFORM-PARITY.md) summarizes the shared
-workflow, remaining gaps, and published fixes for reported desktop
-issues. The historical Windows inventory lists 45 ready, 7 adapted and 15 pending capabilities;
+workflow and remaining gaps. The historical Windows inventory lists 45 ready, 7 adapted and 15 pending capabilities;
 the historical Web inventory lists 48 available, 4 build-required and 17 unsupported capabilities.
 These differently grouped inventories are not completion percentages.
 

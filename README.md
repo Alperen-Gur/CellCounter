@@ -7,9 +7,9 @@
 Private cell quantification for microscopy images.
 Segmentation, per-cell measurements, assays, correction, and export on macOS, Windows, and the web.
 
-[![macOS](https://img.shields.io/badge/macOS-v1.0.17-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.17)
-[![Windows](https://img.shields.io/badge/Windows-v1.2.1-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.1)
-[![Web](https://img.shields.io/badge/Web-v0.3.1%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.1)
+[![macOS](https://img.shields.io/badge/macOS-v1.1.0-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0)
+[![Windows](https://img.shields.io/badge/Windows-v1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
+[![Web](https://img.shields.io/badge/Web-v0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/ci.yml?branch=main&label=CI)](https://github.com/Alperen-Gur/CellCounter/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -23,8 +23,8 @@ CellCounter turns microscopy images into reviewable cell masks, measurements, si
 results. It supports counts, size classes, marker-positive fractions, colocalization, confluence, wound closure,
 foci per cell, migration, and more through a focused graphical interface.
 
-These analyses are usually done with an ImageJ macro or a CellProfiler pipeline. CellCounter does them through
-a graphical interface instead. It applies to any cell type a supported model can segment.
+The native Workbench exposes the same project operations through its graphical interface, command line,
+Python SDK and MCP server. Supported analyses depend on the selected model, acquisition and assay.
 
 Image analysis is local by design. CellCounter does not require an account and does not upload microscopy images.
 
@@ -32,9 +32,9 @@ Image analysis is local by design. CellCounter does not require an account and d
 
 | Platform | Release | Availability |
 |---|---|---|
-| **macOS** | [v1.0.17](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.17) | Native universal app for macOS 15 or later |
-| **Windows** | [v1.2.1](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.1) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
-| **Web** | [v0.3.1 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.1) | Installable PWA with local classical segmentation; learned models remain unavailable |
+| **macOS** | [v1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) | Native universal app for macOS 15 or later |
+| **Windows** | [v1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) | Native x64 `.exe` and `.msi` installers for Windows 10 and 11 |
+| **Web** | [v0.3.2 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) | Installable PWA with local classical segmentation; learned models remain unavailable |
 
 > [!NOTE]
 > The web preview keeps images in the browser and runs classical threshold/watershed segmentation, but its three
@@ -42,11 +42,22 @@ Image analysis is local by design. CellCounter does not require an account and d
 > required. Platform-specific details are available in the [Windows guide](docs/WINDOWS.md) and
 > [web guide](docs/WEB.md). See the [complete feature list](docs/FEATURES.md) for a release-by-release comparison.
 
-**Feature parity is partial.** All three platforms now provide saved setup, preview, resumable processing,
-linked measurements, and mask review. Windows retains three CPU-only learned models; the PWA currently runs
-classical segmentation. The broader model catalog, microscopy workspace and several correction/training tools
-remain macOS-specific. See [release status and remaining parity gaps](docs/PLATFORM-PARITY.md) for the current
-inventory and confirmation status of the two reported desktop issues.
+**Feature parity is partial.** macOS and Windows share the project Workbench engine, including exact masks,
+resumable workflows and scoped AI-agent access. Browser storage, processing and model capabilities remain
+limited. Historical library workflows also differ between the native applications. See
+[release status and remaining parity gaps](docs/PLATFORM-PARITY.md).
+
+## Current native Workbench release
+
+macOS 1.1.0 and Windows 1.3.0 add a shared import-to-export project workflow: 2D and 3D masks, measurements,
+assays, correction history, result freshness, saved linear and branching workflows, background jobs and
+re-executable packages. Indexed catalogues and bounded source reads support larger projects within explicit
+operation limits. The AI agent access panel prepares a connection to the installed application's CLI or MCP
+entry point; mutations use the same revision checks as the GUI.
+
+See the [Workbench guide](docs/WORKBENCH.md), [Windows release notes](docs/releases/windows-v1.3.0.md),
+and [Web 0.3.2 preview notes](docs/releases/web-v0.3.2.md). This release does not establish comparative
+scientific accuracy, performance superiority or complete parity with other microscopy tools.
 
 ## New in macOS v1.0.16 and Windows v1.1.2 — data integrity and calibration
 
@@ -63,8 +74,6 @@ Review now repairs stale queue entries, protects decisions from delayed edits an
 ## New in Web v0.2.1 preview
 
 A neutral, muted-blue workbench replaces the crowded interface. Preview and process with local classical segmentation, recover saved jobs, and review linked measurements or mask alternatives. A continuous, full-page 3D introduction follows the scroll from cell-like forms to an ordered field, with rotation, pause and reduced motion; library icons replace bespoke interface marks. See the [web release notes](docs/releases/web-v0.2.1.md).
-
-![CellCounter Web continuous landing page](docs/design/screenshots/welcome-v0.2.1.png)
 
 ## New in Windows v1.1.1 — image previews
 
@@ -110,12 +119,11 @@ See the [release notes](docs/releases/v1.0.11.md) and [native workflow details](
 
 ## Why it exists
 
-Cellpose provides its own graphical interface, and CellCounter does not replace it. It covers requirements the
-general-purpose tools do not provide directly:
+CellCounter combines segmentation with project organization, correction and assay reporting:
 
 | | |
 |---|---|
-| **Installation without environment setup** | The installer sets up the Python environment in the background. There is no conda, pip, or PATH configuration. |
+| **Managed runtime setup** | Install or repair the dedicated Workbench environment from the app. Registered models use explicitly selected local checkpoints and interpreters. |
 | **Size classes in addition to masks** | Cells are binned into size categories in micrometres, using a pixel size read from the image metadata. |
 | **Assays in addition to counts** | Marker-positive fraction, colocalization, confluence, wound closure, foci per cell, and others. |
 | **Local processing** | Analysis remains on the device, helping laboratories keep sensitive image data under their own control. |
@@ -124,17 +132,18 @@ general-purpose tools do not provide directly:
 
 ### Segmentation
 
-The macOS app offers the full set of model families summarized below. Windows v1.1.2 focuses on three validated families:
-Cellpose-SAM (legacy `cpsam_v2` ID), Cellpose `cyto3`, and StarDist fluorescence. The web preview exposes the same three-model catalog,
-with learned inference clearly marked unavailable until validated browser weights are distributed.
+The native Workbench supports registered local Cellpose 3, Cellpose 4/Cellpose-SAM, StarDist 2D,
+Omnipose and micro-SAM adapters. Each registration binds an explicit checkpoint, interpreter and backend-specific
+configuration. Compatibility and device support depend on that environment. The browser preview keeps learned
+inference unavailable because qualified browser model artifacts are not bundled.
 
-| Model | Best for |
+| Model | Typical application |
 |---|---|
-| **Cellpose-SAM** | Large or irregular cells — where `cyto3` merges neighbours into one mask |
+| **Cellpose-SAM** | General cell segmentation |
 | **Cellpose** `cyto3` `cyto2` `nuclei` | General cytoplasm and nuclei |
 | **StarDist** | Crowded, roughly convex nuclei |
 | **Omnipose** | Bacteria and elongated / filamentous cells |
-| **Threshold + watershed** | No weights, no download, no GPU — instant and deterministic |
+| **Threshold + watershed** | Classical segmentation without learned weights |
 | **Your own model** | Load a fine-tuned Cellpose checkpoint or a StarDist model directory |
 
 Plus a **second-opinion** mode: run two detectors and review only the cells where they disagree.
@@ -144,30 +153,33 @@ are marked as unavailable in the application rather than presented as runnable.
 
 ### Images
 
-The native apps read JPEG, PNG, BMP, TIFF / OME-TIFF, and common microscope containers. macOS supports Zeiss
-`.czi`, Nikon `.nd2`, Leica `.lif`, and Olympus `.oif` `.oib` `.oir`; Windows supports `.czi`, `.nd2`, `.lif`,
-`.oir`, and `.vsi`. macOS offers max, sum, and mean **Z-stack** projections plus channel selection and naming;
-Windows analyzes a chosen channel with maximum, mean, sum or middle-plane projection; its setup viewer still shows the imported display preview. The web preview supports JPEG, PNG,
-WebP, BMP, TIFF, and OME-TIFF; proprietary microscope containers should be converted locally to OME-TIFF first.
+The shared native Workbench reads common raster images and TIFF / OME-TIFF, with explicit channel and
+projection selection. Its source tools read bounded TIFF and local OME-NGFF regions and import raw regions from
+an explicitly configured OMERO server. Legacy library import has additional format-specific microscope readers;
+those routes and their optional dependencies do not imply equivalent Workbench support. Convert unsupported
+containers to OME-TIFF with their acquisition metadata. Olympus VSI is not a supported Workbench reader.
+The web preview reads JPEG, PNG, WebP, BMP, TIFF and OME-TIFF within browser resource limits.
 
 Calibration can be read from compatible OME, ImageJ, TIFF, and microscope metadata or entered manually from a
 known pixel size or scale bar. Named calibration presets, configurable size bins, and analysis protocols make
 the same settings reusable across a study.
 
-### Microscopy workspace on macOS
+### Microscopy workspace
 
-The macOS app includes a native, layer-based workspace for exploratory image analysis and presentation:
+The native Workbench includes a shared layer workspace for exploratory image analysis and presentation:
 
 - Browse multidimensional time, Z, and channel axes without loading an entire sequence into memory.
-- Open local OME-Zarr / OME-NGFF multiscale datasets and plates, with automatic resolution selection.
+- Bind local OME-NGFF multiscale sources with explicit array, level, region and position selection.
 - Align image layers, create bounded-memory tile mosaics, and build or manually correct cell lineages.
 - Paint class labels and export 16-bit training masks for use with a separate model-training workflow.
 - Record repeatable local workflows for layer, axis, registration, and stitching operations.
 - Save and reopen workspace projects, control layer visibility and opacity, and create keyframed GIF animations
   of axis, camera, visibility, and opacity changes.
 
-Workspace projects and images stay on the Mac. The extension browser exposes only bundled, curated capabilities;
-it does not download or execute third-party plugin code.
+Workspace versions retain their source bindings. Semantic class labels remain distinct from instance masks;
+scientific materialization retains parent identities and valid acquired support. The browser has a smaller
+portable workspace with documented codec and size limits. Native executable plugins are separately installed
+and explicitly enabled; loading an analysis package does not automatically execute its plugins.
 
 ### Measurements and assays
 
@@ -253,17 +265,17 @@ edition, including platform adaptations, preview features, and intentional limit
 
 ### macOS — current release
 
-[![Download](https://img.shields.io/badge/Download-macOS%20v1.0.17-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.17)
+[![Download](https://img.shields.io/badge/Download-macOS%20v1.1.0-0a7ea4?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0)
 
 Requires **macOS 15 or later**. Universal binary (Apple silicon and Intel).
 
-1. Download `CellCounter-v1.0.16.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.0.16).
+1. Download `CellCounter-v1.1.0.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0).
 2. Unzip and move **`CellCounting.app`** into Applications.
    *(The application is called CellCounter; the bundle on disk is still named `CellCounting.app`.)*
 3. The app is not notarized, so the first launch is blocked. Open **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway**. Full walkthrough: [docs/INSTALL.md](docs/INSTALL.md).
-4. Import images to inspect them immediately. When ready to detect cells, install a model from **Models**,
-   return to **Analysis setup**, preview a representative image, then process the batch. Vendor formats need
-   their compatible Python reader before import.
+4. Open **Workbench**, install or repair its dedicated runtime, and create or open a project.
+   Import images, preview an analysis and save its masks before reviewing measurements or exporting.
+   Historical library images remain available; migration copies evidence into a new project.
 
 <details>
 <summary>macOS says the app is "damaged"</summary>
@@ -280,30 +292,39 @@ Then open it normally.
 
 ### Windows — current release
 
-[![Download](https://img.shields.io/badge/Download-Windows%20v1.2.1-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.2.1)
+[![Download](https://img.shields.io/badge/Download-Windows%20v1.3.0-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
 
 Requires **64-bit Windows 10 or Windows 11**. Choose the `.exe` for a standard workstation installation or the
 `.msi` for managed deployment. Both contain the same native application.
 
 The installers are currently unsigned, so Windows SmartScreen may show an unknown-publisher warning. Verify the
-download against the supplied `SHA256SUMS.txt` before continuing. The application provides three local model
-families: Cellpose-SAM v2, Cellpose `cyto3`, and StarDist fluorescence. See the
+download against the supplied `SHA256SUMS.txt` before continuing. Install the dedicated Workbench runtime
+explicitly; register local learned models with their own checkpoint and interpreter. See the
 [Windows installation guide](docs/WINDOWS.md) for model setup, upgrades, backup, and troubleshooting.
 
 ### Web — private PWA preview
 
-[![Download](https://img.shields.io/badge/Download-Web%20v0.3.1%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.1)
+[![Download](https://img.shields.io/badge/Download-Web%20v0.3.2%20preview-5b5bd6?style=for-the-badge&logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 
 The web edition is a fully client-side PWA with no account, upload, telemetry, or application server. Download
 the release archive and serve it from HTTPS or `localhost`, then install it from a current WebGPU-capable browser.
 Its browser-native import, curation, measurement, assay, and export tools are available offline after installation.
 
-Production model weights are not included in v0.1.0, so learned segmentation is intentionally unavailable in
+Production model weights are not included in v0.3.2, so learned segmentation is intentionally unavailable in
 this preview. See the [web guide](docs/WEB.md) for supported formats, browser requirements, and current limits.
 
 ## Quick start
 
-For macOS v1.0.13:
+For the native Workbench:
+
+1. Install or repair the Workbench runtime, then create or open a local project.
+2. Import images and check the source channel, projection and calibration.
+3. Preview segmentation, save masks, and correct them on the source grid.
+4. Run measurements or assays, assign biological specimens where appropriate, and inspect result freshness.
+5. Save a reusable workflow or export scientific files and a project package.
+6. Use **AI agent and command-line access** to copy a scoped connection configuration for the same project.
+
+For the historical macOS library workflow:
 
 1. Open images with **⌘O**, or a folder with **⌘⇧O**. Choose a representative image in **Analysis setup**.
 2. Choose a task and model; confirm the pixel size and source channels. Install the model from **Models** if needed.
@@ -317,9 +338,9 @@ See the [Windows guide](docs/WINDOWS.md) and [web guide](docs/WEB.md) for their 
 ## Privacy and local processing
 
 Native analysis runs on the computer where CellCounter is installed. The web edition processes imported images
-inside the browser. CellCounter has no image-upload or remote-inference path in these releases. Network access is
-used only when the operating system or user requests supporting software or model files; microscopy images are
-not included in those requests.
+inside the browser. CellCounter has no automatic image-upload or remote-inference service. Explicit runtime/model
+installation may download software; the configured OMERO adapter reads selected source pixels from your server.
+Executable local plugins run code you have chosen to enable and are a separate trust decision.
 
 ## Statistical notes and limitations
 
@@ -330,20 +351,25 @@ not included in those requests.
 <details>
 <summary><strong>The replication unit is the biological replicate, not the cell</strong></summary>
 
-The Compare tab's Mann-Whitney U test pools every individual cell across all images in a condition and treats
+The historical Compare tab's Mann-Whitney U test pools every individual cell across all images in a condition and treats
 them as independent. For condition-level inference this is pseudoreplication: it inflates n by orders of
 magnitude and returns very small p-values for biologically trivial differences.
 
 For publication, aggregate first. Export the per-cell CSV, compute one summary per image (or per patient, or
 per well) — for example the median diameter — and test on those replicate-level values, or use a mixed-effects
 model with image or patient as a random effect. Treat the in-app pooled test as descriptive only.
+
+The shared Workbench's experimental designs instead require explicit specimen assignments and summarize
+complete biological specimens. Its paired and linear-model analyses require the corresponding subject, factor
+and blocking definitions; technical variants do not create independent biological replicates.
 </details>
 
 <details>
-<summary><strong>No multiple-comparison correction</strong></summary>
+<summary><strong>Choose multiple-comparison handling explicitly</strong></summary>
 
-Comparing more than two conditions by re-selecting pairs gives uncorrected p-values and significance markers.
-Apply Holm or Benjamini-Hochberg (or an omnibus Kruskal-Wallis first) when reporting several contrasts.
+Repeated comparisons in the historical Compare tab give uncorrected p-values. The Workbench statistics controls
+offer explicit Holm or Benjamini-Hochberg adjustment for a defined family of contrasts. Record the chosen
+method and the biological replication design when reporting results.
 </details>
 
 <details>

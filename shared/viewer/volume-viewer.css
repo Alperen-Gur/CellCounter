@@ -1,0 +1,51 @@
+.cc-volume-viewer {
+  --volume-bg: var(--cc-bg, #f7f8fa);
+  --volume-text: var(--cc-text, #17212b);
+  --volume-muted: var(--cc-text-secondary, #536371);
+  --volume-border: var(--cc-border, #d5dce2);
+  color: var(--volume-text);
+  background: var(--volume-bg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+.cc-volume-host { margin: 0; }
+.cc-volume-viewer *, .cc-volume-viewer *::before, .cc-volume-viewer *::after { box-sizing: border-box; }
+.cc-volume-status { color: var(--volume-muted); line-height: 1.5; margin: 0 0 12px; min-height: 18px; }
+.cc-volume-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 12px; }
+.cc-volume-pane { min-width: 0; border: 1px solid var(--volume-border); border-radius: 8px; overflow: hidden; }
+.cc-volume-pane h3, .cc-volume-viewer > h3 { font-size: 12px; font-weight: 600; padding: 10px 12px; margin: 0; }
+.cc-volume-stage { position: relative; background: #0e1116; height: clamp(150px, 24vw, 300px); overflow: hidden; }
+.cc-volume-gpu { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.cc-volume-gpu:active { cursor: grabbing; }
+.cc-volume-slice-stage { display: flex; align-items: center; justify-content: center; }
+.cc-volume-slice-surface { position: relative; flex: none; min-width: 1px; min-height: 1px; }
+.cc-volume-slice { width: 100%; height: 100%; display: block; image-rendering: pixelated; cursor: crosshair; }
+.cc-volume-crosshair { position: absolute; pointer-events: none; background: #ffc24a; opacity: .9; }
+.cc-volume-crosshair-v { top: 0; width: 1px; height: 100%; }
+.cc-volume-crosshair-h { left: 0; height: 1px; width: 100%; }
+.cc-volume-fallback { position: absolute; inset: 0; display: grid; place-content: center; padding: 24px; margin: 0; color: #b4c4d2; line-height: 1.6; text-align: center; }
+.cc-volume-viewer [hidden] { display: none !important; }
+.cc-volume-help { color: var(--volume-muted); font-size: 11px; line-height: 1.5; padding: 8px 12px; margin: 0; }
+.cc-volume-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding: 0 0 12px; align-items: center; }
+.cc-volume-control { display: grid; gap: 6px; grid-template-columns: 1fr auto; align-items: center; margin: 0; font-size: 11px; }
+.cc-volume-control > input { grid-column: 1 / -1; grid-row: 2; width: 100%; min-width: 0; margin: 0; }
+.cc-volume-control output { text-align: right; color: var(--volume-muted); font-variant-numeric: tabular-nums; }
+.cc-volume-slice-control { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; padding: 10px 12px; align-items: center; }
+.cc-volume-slice-control input { width: 100%; min-width: 0; margin: 0; }
+.cc-volume-slice-control output { grid-column: 1 / -1; color: var(--volume-muted); font-variant-numeric: tabular-nums; }
+.cc-volume-labels { display: flex; align-items: center; gap: 7px; }
+.cc-volume-labels input { margin: 0; }
+.cc-volume-reset { min-height: 30px; padding: 6px 10px; border: 1px solid var(--volume-border); border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+.cc-volume-reset:disabled { opacity: .5; cursor: default; }
+.cc-volume-viewer input { accent-color: #16846e; }
+.cc-volume-viewer input[type="range"] { padding: 0; border: 0; min-height: 18px; background: transparent; }
+.cc-volume-viewer .cc-volume-labels { display: flex; margin: 0; }
+.cc-volume-viewer .cc-volume-labels input[type="checkbox"] { width: auto; min-height: auto; padding: 0; }
+.cc-volume-viewer :focus-visible { outline: 2px solid #198a78; outline-offset: 2px; }
+.cc-volume-coordinates { display: block; font-variant-numeric: tabular-nums; border-top: 1px solid var(--volume-border); padding-top: 12px; }
+@media (max-width: 420px) { .cc-volume-grid { grid-template-columns: 1fr; } .cc-volume-controls { grid-template-columns: 1fr 1fr; } }
+@media (prefers-color-scheme: dark) {
+  .cc-volume-viewer { --volume-bg: var(--cc-bg, #1b2026); --volume-text: var(--cc-text, #e6edf3); --volume-muted: var(--cc-text-secondary, #a1b1bf); --volume-border: var(--cc-border, #35414c); }
+}

@@ -49,8 +49,9 @@ final class Repositories {
         seedDefaultsIfNeeded()
     }
 
-    init(inMemory: Bool = false) {
-        let schema = Schema([
+    /// Shared authoritative entity set for normal stores and read-only archive decoding.
+    static func librarySchema() -> Schema {
+        Schema([
             BatchRecord.self,
             ImageRecord.self,
             DetectionRecord.self,
@@ -64,6 +65,10 @@ final class Repositories {
             ReviewCandidateRecord.self,
             SegmentationVariantRecord.self,
         ])
+    }
+
+    init(inMemory: Bool = false) {
+        let schema = Self.librarySchema()
         if inMemory {
             do {
                 self.container = try ModelContainer(
@@ -674,6 +679,11 @@ final class Repositories {
         try LocalTiming.measure(.reviewSave) { try saveReviewChangeImpl(detection: detection, change) }
     }
     private func saveReviewChangeImpl<T>(detection: DetectionRecord, _ change: () -> T) throws -> T {
+        guard container.configurations.allSatisfy(\.allowsSave) else {
+            throw NSError(domain: "CellCounter.Review", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "This library is read-only. No review changes were applied."
+            ])
+        }
         // Flush unrelated pending changes before the synchronous transaction.
         // There is no suspension point between this checkpoint and rollback.
         try context.save()

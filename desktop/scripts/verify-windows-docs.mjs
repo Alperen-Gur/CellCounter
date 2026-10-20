@@ -17,7 +17,7 @@ try {
     "## install",
     "## upgrade",
     "## uninstall",
-    "## install the three models",
+    "## install local models",
     "## local data and privacy",
     "## backup and restore",
     "## reset",

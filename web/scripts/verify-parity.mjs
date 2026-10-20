@@ -17,6 +17,8 @@ const expectedIds = [
   "workflow-reviewed-training",
   "model-native-catalog",
   "workspace-extensions",
+  "edit-freehand", "workflow-task-routing", "workflow-training-dataset",
+  "export-markdown", "export-ground-truth", "export-sample-bundle",
 
   "model-classical", "input-projection", "workflow-preview", "workflow-queue", "workflow-linked", "workflow-variants", "workflow-shortcuts",
   "input-standard", "input-folder", "input-vendor", "input-dedup", "input-calibration-meta", "input-calibration-manual", "input-calibration-persist",
@@ -46,7 +48,7 @@ for (const capability of catalog) {
   if (!capability.webSurface) failures.push(`${capability.id}: missing web surface`);
   if (!Array.isArray(capability.sourceEvidence) || !capability.sourceEvidence.length) failures.push(`${capability.id}: missing source evidence`);
   for (const sourcePath of capability.sourceEvidence ?? []) {
-    if (!sourcePath.startsWith("CellCounting/")) failures.push(`${capability.id}: source is outside macOS tree: ${sourcePath}`);
+    if (!/^(CellCounting|web\/src|shared)\//.test(sourcePath) || sourcePath.split("/").includes("..")) failures.push(`${capability.id}: source is outside supported source trees: ${sourcePath}`);
     try { await access(resolve("..", sourcePath)); }
     catch { failures.push(`${capability.id}: source evidence does not exist: ${sourcePath}`); }
   }

@@ -1,4 +1,4 @@
-# CellCounter for Windows 1.2.1
+# CellCounter for Windows 1.3.0
 
 CellCounter for Windows is the React interface packaged as a native Tauri 2
 application. The Windows build is local-first: imported microscopy images,

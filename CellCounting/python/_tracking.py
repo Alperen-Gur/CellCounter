@@ -95,11 +95,6 @@ from typing import Any, Optional
 
 
 _DEFAULT_MAX_DISPLACEMENT_UM = 50.0
-# Sentinel cost for a candidate pair beyond max_displacement_um: large enough
-# that the Hungarian solver only ever picks it when cardinality leaves no
-# other option, small enough to stay well inside float64 range once summed
-# across a whole cost matrix.
-_FORBIDDEN_COST = 1.0e6
 
 
 def _safe_float(value: Any, default: float) -> float:
@@ -211,7 +206,7 @@ def _link_frames(prev_pts: list[dict], cur_pts: list[dict],
         return [], list(range(n)), list(range(m))
 
     import numpy as np
-    from scipy.optimize import linear_sum_assignment
+    from _workbench_tracking import gated_assignment
 
     prev_xy = np.array([[p["cx"], p["cy"]] for p in prev_pts], dtype=np.float64)
     cur_xy = np.array([[p["cx"], p["cy"]] for p in cur_pts], dtype=np.float64)
@@ -222,20 +217,9 @@ def _link_frames(prev_pts: list[dict], cur_pts: list[dict],
     dist_px = np.sqrt((diff ** 2).sum(axis=-1))
     dist_um = dist_px / px_per_um
 
-    cost = np.where(dist_um > max_displacement_um, _FORBIDDEN_COST, dist_um)
-    row_ind, col_ind = linear_sum_assignment(cost)
-
-    matches: list[tuple[int, int]] = []
-    matched_prev: set[int] = set()
-    matched_cur: set[int] = set()
-    for i, j in zip(row_ind.tolist(), col_ind.tolist()):
-        if dist_um[i, j] <= max_displacement_um:
-            matches.append((i, j))
-            matched_prev.add(i)
-            matched_cur.add(j)
-        # else: cardinality forced a beyond-threshold pairing — leave both
-        # ends unmatched (frame-t cell's track ends; frame-(t+1) cell starts
-        # a new one) rather than accept a biologically implausible link.
+    matches = gated_assignment(dist_um, max_displacement_um)
+    matched_prev = {i for i, _ in matches}
+    matched_cur = {j for _, j in matches}
 
     unmatched_prev = [i for i in range(n) if i not in matched_prev]
     unmatched_cur = [j for j in range(m) if j not in matched_cur]

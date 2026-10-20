@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Volume viewer automated smoke</title><link rel="stylesheet" href="volume-viewer.css"></head>
+<body>
+  <main id="viewer" style="width: 800px"></main>
+  <div id="fallback" style="width: 600px"></div>
+  <pre id="result">RUNNING</pre>
+  <script type="module">
+    import { createVolumeViewer } from "./volume-viewer.js";
+    const result = document.querySelector("#result");
+    const checks = [];
+    const assert = (condition, message) => {
+      if (!condition) throw new Error(message);
+      checks.push(message); result.textContent = JSON.stringify({ status: "RUNNING", checks }, null, 2);
+    };
+    const frame = () => new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 150);
+      requestAnimationFrame(() => { clearTimeout(timeout); resolve(); });
+    });
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let viewer, fallbackViewer;
+    try {
+      const dimensions = [16, 20, 12], data = new Uint8Array(16 * 20 * 12), labels = new Uint32Array(data.length);
+      for (let z = 2; z < 10; z++) for (let y = 4; y < 16; y++) for (let x = 3; x < 13; x++) {
+        const index = (z * 20 + y) * 16 + x;
+        data[index] = 255; labels[index] = 17;
+      }
+      const descriptor = { imageId: "synthetic", dtype: "uint8", order: "zyx", dimensions,
+        originalDimensions: dimensions, data, labelData: labels, displayRange: [0, 1000],
+        transform: { scale: [1, 1, 1], offset: [0, 0, 0] }, voxelSizeUm: { x: 1, y: 1, z: 2 } };
+      let state, pointer, crosshair;
+      viewer = createVolumeViewer(document.querySelector("#viewer"), {
+        onStatus: (value) => { state = value; },
+        onPlanePointer: (value) => { pointer = value; },
+        onCrosshair: (value) => { crosshair = value; },
+      });
+      viewer.setVolume(descriptor);
+      await frame();
+      assert(state.mode === "gpu", `GPU active (${state.message})`);
+      const canvas = document.querySelector(".cc-volume-gpu"), gl = canvas.getContext("webgl2");
+      assert(gl.getError() === gl.NO_ERROR, "WebGL texture upload and raymarch completed without errors");
+      const pixel = new Uint8Array(4);
+      gl.readPixels(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      assert(pixel[0] > 30 && pixel[3] === 255, "GPU raymarch renders the nonzero volume");
+      const slices = document.querySelectorAll("#viewer .cc-volume-slice");
+      assert(slices.length === 3, "Three orthogonal slices share the volume");
+      assert(slices[0].width === 16 && slices[0].height === 20 &&
+        slices[1].width === 16 && slices[1].height === 12 &&
+        slices[2].width === 20 && slices[2].height === 12, "XY/XZ/YZ dimensions use correct axes");
+      const rect = slices[1].getBoundingClientRect();
+      slices[1].dispatchEvent(new MouseEvent("click", { bubbles: true,
+        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+      assert(pointer.plane === "xz" && pointer.sampled && !pointer.editable && crosshair.length === 3,
+        "Plane click reports canonical coordinates and explicitly forbids LOD editing");
+      viewer.setCrosshair([1, 2, 3]); await frame();
+      assert(document.querySelector(".cc-volume-coordinates").textContent.includes("X 1 · Y 2 · Z 3"),
+        "External crosshair updates linked views");
+      const loss = gl.getExtension("WEBGL_lose_context");
+      if (loss) {
+        loss.loseContext(); await delay(80);
+        assert(state.mode === "slices", "Context loss preserves orthogonal slice fallback");
+        loss.restoreContext(); await delay(180); await frame();
+        assert(state.mode === "gpu", "Context restoration rebuilds GPU resources");
+      }
+      const originalGetContext = HTMLCanvasElement.prototype.getContext;
+      try {
+        HTMLCanvasElement.prototype.getContext = function(kind, ...args) {
+          return kind === "webgl2" ? null : originalGetContext.call(this, kind, ...args);
+        };
+        let fallbackState;
+        fallbackViewer = createVolumeViewer(document.querySelector("#fallback"), { onStatus: (value) => { fallbackState = value; } });
+        fallbackViewer.setVolume(descriptor);
+        await frame();
+        assert(fallbackState.mode === "slices", "Unsupported WebGL uses the real voxel slice fallback");
+        const slice = document.querySelector("#fallback .cc-volume-slice");
+        assert(slice.getContext("2d").getImageData(7, 9, 1, 1).data[0] > 100,
+          "Fallback slice contains source intensities");
+      } finally { HTMLCanvasElement.prototype.getContext = originalGetContext; }
+      viewer.dispose(); fallbackViewer.dispose();
+      assert(!document.querySelector(".cc-volume-viewer"), "Dispose removes both viewers");
+      result.textContent = JSON.stringify({ status: "PASS", checks }, null, 2);
+      document.title = "PASS — volume viewer";
+    } catch (error) {
+      viewer?.dispose(); fallbackViewer?.dispose();
+      result.textContent = JSON.stringify({ status: "FAIL", error: String(error), checks }, null, 2);
+      document.title = "FAIL — volume viewer";
+    }
+  </script>
+</body>
+</html>

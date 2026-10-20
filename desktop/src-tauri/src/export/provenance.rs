@@ -15,10 +15,9 @@
 //!   * [`resolve_out_path`] — a bare filename lands under the app-data
 //!     `Exports/` dir; an absolute path is honored as-is.
 //!
-//! Runtime identity is deterministic from the app-owned model routing contract.
-//! A derived cyto3 checkpoint is hashed from its confined model-store file;
-//! package-managed built-in weights have an explicit nullable checksum plus a
-//! reason instead of silently omitting the key.
+//! Inference checkpoint identity comes from the saved analysis run. Historical
+//! runs without a captured identity have an explicit nullable checksum and a
+//! reason; current installed weights are not evidence of past inference.
 
 use std::path::{Path, PathBuf};
 
@@ -169,7 +168,6 @@ pub(crate) struct ExportContext {
     pub weights_sha256_reason: Option<String>,
     pub run_parameters: serde_json::Value,
     pub parameters_source: String,
-    pub checkpoint_sha256: Option<String>,
     pub runtime_identity: serde_json::Value,
 }
 
@@ -177,14 +175,7 @@ fn run_model_from_detector(detector_id: Option<&str>, batch_model_id: &str) -> S
     let candidate = detector_id
         .and_then(|value| value.split_once('/').map(|(_, model)| model))
         .unwrap_or(batch_model_id);
-    if crate::detection::sidecar::is_supported_model(candidate)
-        || candidate.starts_with("cp-cyto3@")
-        || candidate.starts_with("custom-")
-    {
-        candidate.to_string()
-    } else {
-        candidate.to_string()
-    }
+    candidate.to_string()
 }
 
 fn detector_provenance(
@@ -400,7 +391,6 @@ impl ExportContext {
         // Keep their batch calibration/thresholds; immutable inference settings
         // remain separately preserved in run_parameters.
         let run_model_id = run_model_from_detector(detector_id.as_deref(), &model_id);
-        let checkpoint_sha256 = None; // Inference identity is read from the immutable saved runtime.
         let (detector_runtime, checkpoint_identity, weights_checkpoint_path, weights_sha256_reason) =
             detector_provenance(conn, store, &run_model_id);
 
@@ -426,7 +416,6 @@ impl ExportContext {
             weights_sha256_reason,
             run_parameters,
             parameters_source,
-            checkpoint_sha256,
             runtime_identity,
         })
     }
@@ -827,8 +816,19 @@ mod tests {
         assert!(context.weights_sha256_reason.is_none());
         let provenance = Provenance::capture(&context, 0.5);
         assert_eq!(provenance.model_id, "cp-cyto3@derived");
-        assert!(provenance.weights_sha256.is_some());
+        assert!(provenance.weights_sha256.is_none());
+        assert!(provenance.weights_sha256_reason.as_deref().unwrap().contains("Historical"));
         assert!(provenance.as_json().contains("\"weights_sha256\""));
+
+        let captured_hash = "ab".repeat(32);
+        let saved = json!({
+            "version": 1, "params": {},
+            "runtimeIdentity": { "selectedCheckpointSha256": captured_hash }
+        });
+        conn.execute("INSERT INTO workflow_documents VALUES ('run-image', ?1)", [saved.to_string()]).unwrap();
+        std::fs::write(&checkpoint, b"weights replaced after inference").unwrap();
+        let captured = ExportContext::load(&conn, &store, "image").unwrap();
+        assert_eq!(Provenance::capture(&captured, 0.5).weights_sha256.as_deref(), Some(captured_hash.as_str()));
 
         let _ = std::fs::remove_dir_all(root);
     }

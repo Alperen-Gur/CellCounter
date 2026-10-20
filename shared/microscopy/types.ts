@@ -3,7 +3,7 @@
 export type AxisKind = 'x' | 'y' | 'z' | 'time' | 'channel' | 'other';
 export interface WorkspaceAxis { id: string; name: string; kind: AxisKind; length: number; scale: number; unit?: string; calibrated: boolean }
 export interface Calibration { x: number; y: number; unit: string }
-export interface ImagePlane { width: number; height: number; values: Float32Array; calibration?: Calibration }
+export interface ImagePlane { width: number; height: number; values: Float32Array; calibration?: Calibration; support?: Uint8Array }
 export interface Coordinate { x: number; y: number; z?: number }
 export interface AffineTransform { a: number; b: number; c: number; d: number; tx: number; ty: number }
 export type BlendMode = 'normal' | 'additive' | 'multiply' | 'screen' | 'difference';
@@ -61,4 +61,4 @@ export interface ZarrPlaneSelection { level?: number; t?: number; z?: number; c?
 export interface RegistrationOptions extends OperationOptions { maxShift?: number; maxSamples?: number; minOverlap?: number }
 export interface RegistrationResult { transform: AffineTransform; score: number; samples: number; physicalTranslation?: { x: number; y: number; unit: string }; movingToReferenceScale: { x: number; y: number } }
 export interface StitchOptions extends OperationOptions { columns: number; overlap?: number; blend?: 'average' | 'maximum'; transforms?: AffineTransform[] }
-export interface StitchResult { plane: ImagePlane; origin: Coordinate; transforms: AffineTransform[] }
+export interface StitchResult { plane: ImagePlane; origin: Coordinate; transforms: AffineTransform[]; support: Uint8Array }

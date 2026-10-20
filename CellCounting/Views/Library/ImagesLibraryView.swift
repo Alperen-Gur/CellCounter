@@ -53,6 +53,11 @@ struct ImagesLibraryView: View {
                             }
                             .appButton(.danger, size: .sm)
                         }
+                        Button(selectedIDs.isEmpty ? "Copy library to Workbench…" : "Copy selected to Workbench…") {
+                            state.prepareLibraryMigration(imageIDs: selectedIDs)
+                        }
+                        .appButton(.standard, size: .sm)
+                        .disabled(state.preparingLibraryMigration || state.isPreparingImport || state.jobScheduler.activeCount > 0 || TrainingService.isTrainingActive)
                         // Pass-17: Find Duplicates
                         Button {
                             findDuplicates()

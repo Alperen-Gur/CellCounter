@@ -7,21 +7,29 @@ struct FileStore {
 
     let root: URL
 
+    /// Resolve the configured location without creating, migrating or opening
+    /// a library. Headless CLI/MCP startup uses only the runtime below it.
+    static func location() -> URL {
+        let fm = FileManager.default
+        let environment = ProcessInfo.processInfo.environment
+        if let override = environment["CELLCOUNTER_DATA_ROOT"] ?? environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"], override.hasPrefix("/") {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        if environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil {
+            return fm.temporaryDirectory.appendingPathComponent("CellCounter-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        }
+        return fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("CellCounter", isDirectory: true)
+    }
+
     init() {
         let fm = FileManager.default
-        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let environment = ProcessInfo.processInfo.environment
         let override = environment["CELLCOUNTER_DATA_ROOT"]
             ?? environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"]
         let isTest = environment["XCTestConfigurationFilePath"] != nil
             || environment["XCTestBundlePath"] != nil
-        if let override, override.hasPrefix("/") {
-            self.root = URL(fileURLWithPath: override, isDirectory: true)
-        } else if isTest {
-            self.root = fm.temporaryDirectory.appendingPathComponent("CellCounter-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
-        } else {
-            self.root = appSupport.appendingPathComponent("CellCounter", isDirectory: true)
-        }
+        self.root = Self.location()
 
         // Best-effort migration from a previous sandboxed install. We turned
         // off App Sandbox in pass 10; before that the data lived under

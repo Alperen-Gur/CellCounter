@@ -1,22 +1,28 @@
 # Third-party licenses
 
 CellCounter itself is released under the MIT License (see [LICENSE](LICENSE)).
-It builds on a number of open-source models and libraries. Model **weights are
-downloaded at runtime from their upstream sources** — they are not redistributed
-in this repository.
+It builds on open-source models and libraries. Model weights are not included in
+the source package. Canonical Workbench model registration uses an explicitly
+selected local checkpoint and interpreter, without downloading weights or
+installing dependencies. Legacy model setup may download upstream weights after
+the user chooses a model; those weights retain their upstream terms.
 
 ## Segmentation models
 
 | Component | Role in CellCounter | License | Upstream |
 |---|---|---|---|
-| **Cellpose** (`cyto3`, `cyto2`, `nuclei`, `cyto3+restore`) | Primary cell segmentation. This is what the shipping app runs. | BSD-3-Clause | Stringer & Pachitariu, MouseLand/cellpose |
+| **Cellpose** | Registered Cellpose 3 inference/training; compatible legacy models | BSD-3-Clause | Stringer & Pachitariu, MouseLand/cellpose |
 | **Cellpose-SAM** (CPSAM) | Optional SAM-based segmenter | BSD-3-Clause | MouseLand/cellpose |
-| **StarDist** (2D versatile fluo / H&E / DSB2018) | Planned integration ("Coming soon") | BSD-3-Clause | stardist/stardist |
-| **Segment Anything (SAM)** / **MobileSAM** | Planned integration ("Coming soon") | Apache-2.0 | facebookresearch/segment-anything, ChaoningZhang/MobileSAM |
-| **μSAM** (Segment Anything for Microscopy: LM / EM generalist) | Planned integration ("Coming soon") | MIT | computational-cell-analytics/micro-sam |
-| **patho-sam** | Planned integration ("Coming soon") | see upstream | computational-cell-analytics/patho-sam |
+| **StarDist 2D** | Optional registered local weights, configuration and thresholds | BSD-3-Clause | stardist/stardist |
+| **μSAM** (Segment Anything for Microscopy) | Optional registered local checkpoint and explicit inference mode | MIT | computational-cell-analytics/micro-sam |
+| **Omnipose** | Optional registered checkpoint and explicit architecture in a separate interpreter | See the installed version's upstream license and dependencies | kevinjohncutler/omnipose |
 
 ## Runtime libraries (Python sidecar)
+
+Desktop releases also bundle Node.js 24.22.0 for the shared microscopy workspace
+worker. Node.js is MIT-licensed and includes third-party notices; the complete
+upstream `LICENSE` is retained as `node/LICENSE` in each packaged microscopy
+runtime. The runtime archive is pinned and verified during packaging.
 
 | Library | License |
 |---|---|
@@ -32,17 +38,14 @@ in this repository.
 | oiffile (Olympus `.oif`/`.oib`) | BSD-3-Clause |
 | oirfile (Olympus `.oir`) | BSD-3-Clause |
 
-All of the above are permissive (BSD / MIT / Apache-2.0) and compatible with
-CellCounter's MIT license.
-
-Vendor microscope formats are read with the pure-Python BSD-3 readers listed
-above rather than Bio-Formats. Bio-Formats is GPL-2.0, and its permissive
-subset does not include any of the vendor readers — every one of them lives in
-its GPL component — so linking it would require relicensing this app. The same
-applies to several packages that appear permissive but depend on GPL readers:
-`bioio-czi` (GPL-3.0), `bioio-lif` (via `readlif`, GPL-3.0), `bioio-bioformats`
-(via `bffile`, GPL-2.0), `aicspylibczi`, `pyometiff` and `czitools`. None of
-those are used here.
+The Python SDK contains CellCounter's shared runtime source and pinned dependency
+requirements. Optional MCP, reporting and local OME-Zarr environments install
+their own upstream distributions and license notices. The OMERO client is an
+explicitly configured separate environment; its client, Ice runtime and server
+licenses remain applicable. These optional environments and model checkpoints
+are not bundled into the SDK wheel. Vendor compatibility readers use the packages
+listed above; registration of a local interpreter does not relicense its packages
+or models.
 
 ## No AGPL / Ultralytics components
 

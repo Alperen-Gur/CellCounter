@@ -101,59 +101,9 @@ def load_dataset(manifest, loader):
 
 
 def evaluate_masks(predictions, truths):
-    """Micro P/R/F1 and mean per-image Cellpose AP50 (TP/(TP+FP+FN)).
-
-    Diameter error is the absolute difference of image mean equivalent-area
-    diameters, in source pixels; no physical calibration is inferred.
-    Uses maximum bipartite matching, independent of arbitrary instance IDs.
-    """
-    if not predictions or len(predictions) != len(truths):
-        raise ValueError("Every held-out image requires a successful prediction")
-    total_tp = total_fp = total_fn = 0
-    aps, diameters = [], []
-    for predicted, truth in zip(predictions, truths):
-        pred, gt = np.asarray(predicted), np.asarray(truth)
-        if pred.shape != gt.shape or pred.ndim != 2:
-            raise ValueError("Prediction shape differs from ground truth")
-        if (not np.issubdtype(pred.dtype, np.integer) or
-                not np.issubdtype(gt.dtype, np.integer) or np.any(pred < 0) or np.any(gt < 0)):
-            raise ValueError("Evaluation requires nonnegative integer instance masks")
-        pids, pcounts = np.unique(pred[pred > 0], return_counts=True)
-        gids, gcounts = np.unique(gt[gt > 0], return_counts=True)
-        if not len(gids):
-            raise ValueError("A held-out image has no annotated cells")
-        pc = dict(zip(pids.tolist(), pcounts.tolist()))
-        gc = dict(zip(gids.tolist(), gcounts.tolist()))
-        overlap = (pred > 0) & (gt > 0)
-        pairs, intersections = np.unique(np.stack((pred[overlap], gt[overlap]), axis=1), axis=0, return_counts=True)
-        edges = {int(pid): [] for pid in pids}
-        for (pid, gid), intersection in zip(pairs, intersections):
-            iou = int(intersection) / (pc[pid] + gc[gid] - int(intersection))
-            if iou >= 0.5:
-                edges[int(pid)].append(int(gid))
-        # At IoU >= .5 label partitions have very sparse candidate edges.
-        matches = {}
-        def match(pid, seen):
-            for gid in sorted(edges[pid]):
-                if gid in seen:
-                    continue
-                seen.add(gid)
-                if gid not in matches or match(matches[gid], seen):
-                    matches[gid] = pid
-                    return True
-            return False
-        tp = sum(match(int(pid), set()) for pid in pids)
-        fp, fn = len(pids) - tp, len(gids) - tp
-        total_tp += tp; total_fp += fp; total_fn += fn
-        aps.append(tp / (tp + fp + fn))
-        pd = float(np.mean(2 * np.sqrt(pcounts / np.pi))) if len(pcounts) else 0.0
-        gd = float(np.mean(2 * np.sqrt(gcounts / np.pi)))
-        diameters.append(abs(pd - gd))
-    precision = total_tp / max(1, total_tp + total_fp)
-    recall = total_tp / max(1, total_tp + total_fn)
-    return dict(ap50=float(np.mean(aps)), f1=2 * total_tp / max(1, 2 * total_tp + total_fp + total_fn),
-                precision=precision, recall=recall, meanDiamError=float(np.mean(diameters)),
-                testImages=len(truths), truePositives=total_tp, falsePositives=total_fp, falseNegatives=total_fn)
+    """Use the same instance matching and metric definitions as the workbench."""
+    from _workbench_metrics import evaluate_masks as shared_evaluate_masks
+    return shared_evaluate_masks(predictions, truths)
 
 
 def prepare_preview(image_path, output, z_project="max", channel=None, rgb_luminance=False):

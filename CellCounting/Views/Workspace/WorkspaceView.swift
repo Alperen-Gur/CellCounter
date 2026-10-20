@@ -28,11 +28,22 @@ struct WorkspaceView: View {
 
     private var workspaceColumns: some View {
         HStack(spacing: 0) {
-            layerSidebar.frame(width: 246)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Retained legacy layers").font(.headline)
+                    ForEach(session.workspace.layers) { layer in
+                        Button { session.selectLayer(layer.id) } label: {
+                            HStack { Text(layer.name); Spacer(); if session.selectedLayerID == layer.id { Image(systemName: "checkmark") } }
+                        }.buttonStyle(.plain)
+                    }
+                    Text("This compatibility reader preserves the original document and legacy rendering semantics. Continue editing through an explicit import in the shared layered workspace.")
+                        .font(.caption).foregroundStyle(Tokens.textSecondary)
+                }.padding(14)
+            }.frame(width: 246)
             Divider().overlay(Tokens.divider)
-            workspaceCanvas.frame(maxWidth: .infinity, maxHeight: .infinity)
+            workspaceCanvas.frame(maxWidth: .infinity, maxHeight: .infinity).allowsHitTesting(false)
             Divider().overlay(Tokens.divider)
-            inspector.frame(width: 354)
+            inspector.frame(width: 354).disabled(true)
         }
     }
 
@@ -42,7 +53,6 @@ struct WorkspaceView: View {
             actions.cancel = { session.cancelCurrentWork() }
         } else {
             actions.openSelection = { presentWorkspaceOpen() }
-            actions.newItem = { session.reset() }
             actions.save = { presentWorkspaceSave() }
             if !session.workspace.layers.isEmpty {
                 actions.export = { presentAnimationSave() }
@@ -69,27 +79,29 @@ struct WorkspaceView: View {
     private var header: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Microscopy workspace")
+                Text("Legacy workspace compatibility")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(Tokens.text)
-                Text(session.workspace.name)
+                Text("Legacy workspace · " + session.workspace.name)
                     .font(.system(size: 11.5))
                     .foregroundStyle(Tokens.textTertiary)
             }
             Spacer()
-            Button("Images…") { presentImages() }
-                .appButton(.standard, size: .sm)
-                .accessibilityHint("Open local microscopy images as layers")
-            Button("Current batch") { session.importCurrentBatch(state: state) }
-                .appButton(.standard, size: .sm)
-                .disabled(state.currentBatch == nil)
-            Button("OME-Zarr…") { presentZarr() }
-                .appButton(.standard, size: .sm)
+            Button("Continue in shared workspace") {
+                state.workbenchSession.sharedSession.presentWorkspace = true
+                state.view = .workbench
+            }.appButton(.standard, size: .sm)
             Menu {
-                Button("New workspace") { session.reset() }
-                Button("Open workspace…") { presentWorkspaceOpen() }
+                Button("Open legacy document…") { presentWorkspaceOpen() }
                 Divider()
-                Button("Save workspace…") { presentWorkspaceSave() }
+                Button("Export original document…") { presentWorkspaceSave() }
+                if let selectedID = session.selectedLayerID, session.workspace.paintDocuments[selectedID] != nil {
+                    Button("Export original semantic labels…") { presentLabelSave(layerID: selectedID) }
+                }
+                Button("Export original raster sequence GIF…") { presentAnimationSave() }
+                    .disabled(session.workspace.layers.isEmpty)
+                Divider()
+                Text("Editing and new analyses use the shared workspace.")
             } label: {
                 HStack(spacing: 5) { Icon("file", size: 12); Text("Project") }
             }
@@ -548,7 +560,7 @@ struct WorkspaceView: View {
     private var extensionInspector: some View {
         VStack(alignment: .leading, spacing: 12) {
             inspectorTitle("Curated extensions",
-                           subtitle: "Built-in capabilities with a versioned contract. Executable third-party plugins remain disabled.")
+                           subtitle: "Built-in capabilities for the library workspace. Install executable analysis plugins in a Workbench project.")
             ForEach(WorkspaceExtensionKind.allCases, id: \.self) { kind in
                 let matches = session.extensions.filter { $0.kind == kind }
                 if !matches.isEmpty {
@@ -667,7 +679,10 @@ struct WorkspaceView: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = session.workspace.name + ".ccworkspace.json"
         panel.allowedContentTypes = [.json]
-        if panel.runModal() == .OK, let url = panel.url { session.saveWorkspace(to: url) }
+        if panel.runModal() == .OK, let url = panel.url {
+            guard !FileManager.default.fileExists(atPath: url.path) else { session.errorMessage = "Choose a new export destination; the original document is preserved."; return }
+            session.saveWorkspace(to: url)
+        }
     }
 
     private func presentWorkspaceOpen() {
@@ -684,6 +699,7 @@ struct WorkspaceView: View {
         panel.nameFieldStringValue = "training-labels.tiff"
         panel.allowedContentTypes = [.tiff]
         if panel.runModal() == .OK, let url = panel.url {
+            guard !FileManager.default.fileExists(atPath: url.path) else { session.errorMessage = "Choose a new filename; existing exports remain unchanged."; return }
             session.exportTrainingLabel(layerID: layerID, to: url)
         }
     }
@@ -693,6 +709,7 @@ struct WorkspaceView: View {
         panel.nameFieldStringValue = "CellCounter-workspace.gif"
         panel.allowedContentTypes = [.gif]
         if panel.runModal() == .OK, let url = panel.url {
+            guard !FileManager.default.fileExists(atPath: url.path) else { session.errorMessage = "Choose a new filename; existing exports remain unchanged."; return }
             session.exportRasterSequenceGIF(to: url, fps: animationFPS)
         }
     }
@@ -715,8 +732,6 @@ private struct WorkspaceCanvas: View {
     let zoom: Double
     let paintEnabled: Bool
 
-    @State private var liveStroke: [WorkspaceCoordinate] = []
-
     var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -738,14 +753,18 @@ private struct WorkspaceCanvas: View {
                             }
                         }
                         workspaceOverlays(size: fit.size, selectedImageSize: image.size)
-                        paintOverlay(size: fit.size, selectedImageSize: image.size,
-                                     layerID: selected.id)
+                        WorkspacePaintOverlay(imageSize: image.size,
+                            strokes: (session.workspace.paintDocuments[selected.id]?.strokes ?? []).filter { visible($0.position) },
+                            enabled: paintEnabled, classValue: session.paintClassValue,
+                            radius: session.paintRadius, erases: session.paintErases) { points in
+                                session.ensurePaintDocument(for: selected.id, width: Int(image.size.width), height: Int(image.size.height))
+                                session.appendPaintStroke(layerID: selected.id, points: points)
+                            }
                     }
                     .frame(width: fit.width, height: fit.height)
                     .position(x: fit.midX, y: fit.midY)
                     .contentShape(Rectangle())
-                    .gesture(paintEnabled ? paintGesture(rect: fit, imageSize: image.size,
-                                                         layerID: selected.id) : nil)
+
                 } else {
                     VStack(spacing: 10) {
                         Icon("image", size: 34).foregroundStyle(Tokens.textTertiary)
@@ -809,63 +828,6 @@ private struct WorkspaceCanvas: View {
         }
         .frame(width: size.width, height: size.height)
         .allowsHitTesting(false)
-    }
-
-    private func paintOverlay(size: CGSize, selectedImageSize: CGSize,
-                              layerID: UUID) -> some View {
-        Canvas { context, _ in
-            let scaleX = size.width / max(1, selectedImageSize.width)
-            let scaleY = size.height / max(1, selectedImageSize.height)
-            let document = session.workspace.paintDocuments[layerID]
-            for stroke in document?.strokes ?? [] where visible(stroke.position) {
-                draw(stroke: stroke, context: &context, scaleX: scaleX, scaleY: scaleY)
-            }
-            if !liveStroke.isEmpty {
-                let preview = WorkspacePaintStroke(classValue: session.paintClassValue,
-                                                   radiusPx: session.paintRadius,
-                                                   points: liveStroke,
-                                                   position: session.workspace.position,
-                                                   erases: session.paintErases)
-                draw(stroke: preview, context: &context, scaleX: scaleX, scaleY: scaleY)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .allowsHitTesting(false)
-    }
-
-    private func draw(stroke: WorkspacePaintStroke, context: inout GraphicsContext,
-                      scaleX: Double, scaleY: Double) {
-        guard let first = stroke.points.first else { return }
-        var path = Path()
-        path.move(to: CGPoint(x: first.x * scaleX, y: first.y * scaleY))
-        for point in stroke.points.dropFirst() {
-            path.addLine(to: CGPoint(x: point.x * scaleX, y: point.y * scaleY))
-        }
-        let color: Color = stroke.erases ? .white.opacity(0.35)
-            : (stroke.classValue == 1 ? .cyan.opacity(0.52) : .orange.opacity(0.52))
-        context.stroke(path, with: .color(color),
-                       style: StrokeStyle(lineWidth: max(1, stroke.radiusPx * 2 * scaleX),
-                                          lineCap: .round, lineJoin: .round))
-    }
-
-    private func paintGesture(rect: CGRect, imageSize: CGSize, layerID: UUID) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-            .onChanged { value in
-                let x = min(max(0, value.location.x / rect.width * imageSize.width), imageSize.width - 1)
-                let y = min(max(0, value.location.y / rect.height * imageSize.height), imageSize.height - 1)
-                let point = WorkspaceCoordinate(x: x, y: y)
-                let minimumSpacing = max(0.75, session.paintRadius * 0.08)
-                if let last = liveStroke.last, hypot(point.x - last.x, point.y - last.y) < minimumSpacing {
-                    return
-                }
-                liveStroke.append(point)
-            }
-            .onEnded { _ in
-                session.ensurePaintDocument(for: layerID,
-                                            width: Int(imageSize.width), height: Int(imageSize.height))
-                session.appendPaintStroke(layerID: layerID, points: liveStroke)
-                liveStroke.removeAll(keepingCapacity: true)
-            }
     }
 
     private func visible(_ position: WorkspacePosition) -> Bool {

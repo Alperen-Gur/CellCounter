@@ -29,6 +29,7 @@ function validateWorkflow(source) {
   requireText("Get-FileHash -Path $archive -Algorithm SHA256", "uv download is not checksum-verified");
   requireText("releases/download/$env:UV_VERSION/uv-x86_64-pc-windows-msvc.zip", "uv download does not use the pinned version variable");
   requireText("npm ci", "locked frontend dependency install is missing");
+  requireText("node scripts/prepare-microscopy-runtime.mjs --platform win32-x64", "pinned microscopy runtime staging is missing");
   requireText("npm run verify:windows", "portable Windows contract checks are missing");
   requireText("npm run build", "frontend production build is missing");
   requireText("cargo test --manifest-path src-tauri/Cargo.toml --locked", "locked Rust tests are missing");

@@ -8,6 +8,9 @@ struct CellCountingApp: App {
     @State private var showShortcuts: Bool = false
 
     @MainActor init() {
+        NativeLibraryArchiveExporter.handleCommandLineIfRequested()
+        WorkbenchCommandLine.handleIfRequested()
+
         // Open the existing library without deleting it based on preferences.
         // Legacy review rows are repaired after startup by the repository index.
 
