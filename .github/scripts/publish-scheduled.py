@@ -39,9 +39,9 @@ def main():
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "Unexpected repository")
     check_only = os.environ.get("CHECK_ONLY", "false").lower() == "true"
     now = dt.datetime.now(dt.timezone.utc)
-    if not check_only and not (NOT_BEFORE <= now < DEADLINE):
-        print("Outside the approved publication window; no push or release publication.")
-        return
+    if not check_only:
+        require(now >= NOT_BEFORE, "Publication window has not opened; no source or releases were published")
+        require(now < DEADLINE, "Publication deadline was missed; no source or releases were published. Review the staged releases and recover publication manually")
     plan = json.loads(os.environ["RELEASE_PLAN"])
     sha = plan["sourceSha"]
     require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "Invalid pinned source SHA")
