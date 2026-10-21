@@ -2,6 +2,11 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      native_only:
+        description: Run only the native macOS checks
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -29,6 +34,7 @@ concurrency:
 jobs:
   build-check:
     name: build (${{ matrix.os }})
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.native_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +182,7 @@ jobs:
   # honest. Only the license file's own explanatory text is exempt.
   license-guard:
     name: license-guard (no AGPL)
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.native_only }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

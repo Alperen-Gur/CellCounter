@@ -116,25 +116,38 @@ struct AnalysisEfficiencyTests {
             try await service.run(pythonURL: fixture.python, scriptURL: fixture.assay,
                                   args: ["--wait", fixture.marker.path])
         }
-        try await waitFor { FileManager.default.fileExists(atPath: fixture.marker.path) }
-        let activePID = try String(contentsOf: fixture.marker, encoding: .utf8)
-        let queued = Task {
-            try await service.run(pythonURL: fixture.python, scriptURL: fixture.assay, args: [])
+        var queued: Task<SidecarOutcome, Error>?
+        do {
+            // A cold interpreter on a loaded CI machine can take longer than
+            // ten seconds. Startup latency is not the cancellation invariant.
+            try await waitFor("worker readiness", timeout: .seconds(60)) {
+                FileManager.default.fileExists(atPath: fixture.marker.path)
+            }
+            let activePID = try String(contentsOf: fixture.marker, encoding: .utf8)
+            let waiting = Task {
+                try await service.run(pythonURL: fixture.python, scriptURL: fixture.assay, args: [])
+            }
+            queued = waiting
+            try await waitFor("queued request") { await service.pendingRequestCount == 1 }
+            waiting.cancel()
+            do { _ = try await waiting.value; Issue.record("Queued assay unexpectedly completed") }
+            catch is CancellationError { }
+            #expect(await service.hasActiveRequest)
+            #expect(await service.pendingRequestCount == 0)
+            active.cancel()
+            do { _ = try await active.value; Issue.record("Active assay unexpectedly completed") }
+            catch DetectionError.cancelled { }
+            catch is CancellationError { }
+            let recovered = try await service.run(pythonURL: fixture.python, scriptURL: fixture.assay, args: [])
+            let echo = try JSONDecoder().decode(AssayEcho.self, from: recovered.stdout)
+            #expect(String(echo.pid) != activePID)
+            #expect(echo.count == 1)
+        } catch {
+            queued?.cancel()
+            active.cancel()
+            await service.shutdown()
+            throw error
         }
-        try await waitFor { await service.pendingRequestCount == 1 }
-        queued.cancel()
-        do { _ = try await queued.value; Issue.record("Queued assay unexpectedly completed") }
-        catch is CancellationError { }
-        #expect(await service.hasActiveRequest)
-        #expect(await service.pendingRequestCount == 0)
-        active.cancel()
-        do { _ = try await active.value; Issue.record("Active assay unexpectedly completed") }
-        catch DetectionError.cancelled { }
-        catch is CancellationError { }
-        let recovered = try await service.run(pythonURL: fixture.python, scriptURL: fixture.assay, args: [])
-        let echo = try JSONDecoder().decode(AssayEcho.self, from: recovered.stdout)
-        #expect(String(echo.pid) != activePID)
-        #expect(echo.count == 1)
         await service.shutdown()
     }
 
@@ -152,16 +165,17 @@ struct AnalysisEfficiencyTests {
         await service.shutdown()
     }
 
-    private func waitFor(_ condition: () async -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+    private func waitFor(_ phase: String, timeout: Duration = .seconds(10),
+                         _ condition: () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
         while !(await condition()) {
-            if ContinuousClock.now >= deadline { throw AssayTestError.timeout }
+            if ContinuousClock.now >= deadline { throw AssayTestError.timeout(phase) }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
 }
 
-private enum AssayTestError: Error { case timeout, missingBundledWorker }
+private enum AssayTestError: Error { case timeout(String), missingBundledWorker }
 private struct AssayEcho: Decodable { let pid: Int; let count: Int }
 private struct AssayFixture {
     let directory: URL
@@ -185,8 +199,9 @@ private struct AssayFixture {
             global count
             count += 1
             if "--wait" in sys.argv:
-                with open(sys.argv[-1], "w") as handle:
+                with open(sys.argv[-1] + ".tmp", "w") as handle:
                     handle.write(str(os.getpid()))
+                os.replace(sys.argv[-1] + ".tmp", sys.argv[-1])
                 time.sleep(30)
             print(json.dumps({"pid": os.getpid(), "count": count}))
         """.write(to: assay, atomically: true, encoding: .utf8)
