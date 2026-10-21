@@ -85,7 +85,10 @@ def stage(source: Path, destination: Path, platform: str, identity: str, entitle
 
 def main() -> None:
     source_root = Path(os.environ["SRCROOT"])
-    products = Path(os.environ["BUILT_PRODUCTS_DIR"]).resolve()
+    # Archive builds expose the app through a BUILT_PRODUCTS_DIR symlink into
+    # InstallationBuildProductsLocation. Validate against the actual target
+    # destination so that legitimate archive relocation keeps the same bound.
+    products = Path(os.environ.get("TARGET_BUILD_DIR") or os.environ["BUILT_PRODUCTS_DIR"]).resolve()
     resources = products / os.environ["UNLOCALIZED_RESOURCES_FOLDER_PATH"] / "microscopy-runtime"
     if not resources.resolve().is_relative_to(products):
         raise RuntimeError("The runtime destination must be inside this build's app resources")
