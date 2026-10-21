@@ -154,6 +154,7 @@ jobs:
             -scheme CellCounting \
             -destination 'platform=macOS' \
             -only-testing:CellCountingTests \
+            -parallel-testing-enabled NO \
             -resultBundlePath "$RUNNER_TEMP/CellCounterTests.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
