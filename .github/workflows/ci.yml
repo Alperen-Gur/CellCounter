@@ -7,6 +7,10 @@ on:
         description: Run only the native macOS checks
         type: boolean
         default: false
+      native_workers_only:
+        description: Run only the native Python worker checks
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -34,7 +38,7 @@ concurrency:
 jobs:
   build-check:
     name: build (${{ matrix.os }})
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.native_only }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.native_only && !inputs.native_workers_only) }}
     strategy:
       fail-fast: false
       matrix:
@@ -125,12 +129,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
+        if: ${{ !inputs.native_workers_only }}
         with:
           node-version: '24.22.0'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
       - name: Prepare pinned native microscopy worker
+        if: ${{ !inputs.native_workers_only }}
         run: |
           npm ci --prefix desktop --ignore-scripts
           node shared/microscopy-worker/build.mjs --output "$RUNNER_TEMP/microscopy-assets"
@@ -147,6 +153,7 @@ jobs:
           PYCODE
 
       - name: Test native macOS app
+        if: ${{ !inputs.native_workers_only }}
         run: |
           export TEST_RUNNER_CELLCOUNTER_DATA_ROOT="$(mktemp -d)"
           xcodebuild test \
@@ -162,7 +169,7 @@ jobs:
             DEVELOPMENT_TEAM=""
 
       - name: Preserve native test failure diagnostics
-        if: failure()
+        if: ${{ failure() && !inputs.native_workers_only }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-macos-test-results
@@ -171,6 +178,10 @@ jobs:
           if-no-files-found: warn
 
       - name: Verify training and assay workers
+        env:
+          # Source checkout keeps canonical kernels separate; shipped apps stage
+          # these files beside their legacy compatibility wrappers.
+          PYTHONPATH: ${{ github.workspace }}/shared/python
         run: |
           python3 -m venv /tmp/cellcounter-test-env
           /tmp/cellcounter-test-env/bin/pip install numpy scipy scikit-image tifffile pillow
@@ -183,7 +194,7 @@ jobs:
   # honest. Only the license file's own explanatory text is exempt.
   license-guard:
     name: license-guard (no AGPL)
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.native_only }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.native_only && !inputs.native_workers_only) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
