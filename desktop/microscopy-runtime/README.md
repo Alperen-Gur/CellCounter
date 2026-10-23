@@ -1,5 +1,11 @@
-This directory holds generated, release-staged runtime assets. It contains no downloaded runtime in the source repository.
+# Packaged microscopy runtime
 
-Compile the shared microscopy worker with `shared/microscopy-worker/build.mjs` into a new assets directory, then use `stage-runtime.py` with the pinned local official Node archive and the matching Windows target. Stage into a new directory and copy its complete contents here before release packaging. The runtime manifest, JS modules, pinned Node executable and its license ship together. Neither application launch nor the staging tools download or install dependencies.
+Release packaging places the Node runtime and compiled microscopy worker here.
 
-Release builds require `microscopy-runtime.json`. Development without it can use an explicitly configured canonical runtime manifest; otherwise the corresponding workspace operations report that the runtime is unavailable.
+Build the worker with `shared/microscopy-worker/build.mjs` into a new assets
+directory. Run `stage-runtime.py` with the pinned official Node archive and the
+matching Windows target, then copy the staged directory's contents here. Include
+the runtime manifest, JavaScript modules, Node executable and license together.
+
+Release builds need `microscopy-runtime.json`. During development, configure a
+local runtime manifest to run workspace operations.

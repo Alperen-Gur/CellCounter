@@ -1,137 +1,105 @@
 # CellCounter architecture
 
-CellCounter has a native macOS application, a Windows desktop application and a
-browser preview. The desktop Workbench shares a scientific operation runtime
-across its graphical interface, command-line interface, Python SDK and Model
-Context Protocol (MCP) server. The browser shares portable image and workspace
-components but does not run the filesystem-backed Python Workbench.
+CellCounter has a native macOS app, a Windows desktop app and a browser preview.
+The desktop Workbench shares its analysis runtime with the CLI, Python SDK and
+MCP server. The browser uses shared image and workspace components with its own
+local processing and storage.
 
-This document describes the public source structure. For supported features and
-limits, use the [feature matrix](FEATURES.md), [platform comparison](PLATFORM-PARITY.md)
-and [Workbench guide](WORKBENCH.md).
+For usage, see [features](FEATURES.md), [platforms](PLATFORM-PARITY.md) and the
+[Workbench guide](WORKBENCH.md).
 
 ## Applications and shared components
 
 | Component | Location | Responsibility |
 | --- | --- | --- |
-| Native macOS application | [`CellCounting/`](../CellCounting/) | SwiftUI interface, SwiftData image library, native services and Workbench client |
-| Windows application | [`desktop/`](../desktop/) | React/TypeScript interface, Tauri/Rust host, SQLite image library and Workbench client |
-| Browser preview | [`web/`](../web/) | Static React PWA, browser storage and local worker-based processing |
-| Scientific runtime and SDK | [`shared/python/`](../shared/python/) | Operation schemas, project persistence, scientific analysis, CLI, SDK and MCP |
-| Typed operation contracts | [`shared/workbench/`](../shared/workbench/) | TypeScript request/response and domain contracts used by desktop clients |
-| Portable microscopy engine | [`shared/microscopy/`](../shared/microscopy/) | Source coordinates, layers, annotations, painting, registration, lineage and animation |
-| Microscopy worker | [`shared/microscopy-worker/`](../shared/microscopy-worker/) | Validated Node worker protocol and runtime packaging |
-| Volume viewer | [`shared/viewer/`](../shared/viewer/) | Shared sampled-volume display and host communication |
+| Native macOS app | [`CellCounting/`](../CellCounting/) | SwiftUI interface, SwiftData library, native services and Workbench client |
+| Windows app | [`desktop/`](../desktop/) | React/TypeScript interface, Tauri/Rust host, SQLite library and Workbench client |
+| Browser preview | [`web/`](../web/) | React PWA, browser storage and worker-based processing |
+| Analysis runtime and SDK | [`shared/python/`](../shared/python/) | Operations, projects, analysis, CLI, SDK and MCP |
+| Operation contracts | [`shared/workbench/`](../shared/workbench/) | TypeScript requests, responses and domain types |
+| Microscopy engine | [`shared/microscopy/`](../shared/microscopy/) | Coordinates, layers, annotations, painting, registration, lineage and animation |
+| Microscopy worker | [`shared/microscopy-worker/`](../shared/microscopy-worker/) | Node worker protocol and runtime packaging |
+| Volume viewer | [`shared/viewer/`](../shared/viewer/) | Volume display and host communication |
 
 ## Shared Workbench operations
 
-The macOS client sends operation requests through
+macOS sends requests through
 [`WorkbenchService.swift`](../CellCounting/Services/WorkbenchService.swift).
-The Windows client uses
-[`client.ts`](../desktop/src/kernel/workbench/client.ts) and the
-[Rust Workbench bridge](../desktop/src-tauri/src/workbench.rs).
-The installed applications also route `--workbench` commands to their configured
-scientific runtime.
+Windows uses [`client.ts`](../desktop/src/kernel/workbench/client.ts) and the
+[Rust bridge](../desktop/src-tauri/src/workbench.rs). Installed apps also forward
+`--workbench` commands to their configured runtime.
 
-The common dispatcher is [`workbench.py`](../shared/python/workbench.py).
-[`workbench_sdk.py`](../shared/python/workbench_sdk.py) provides the Python client,
-and [`_workbench_mcp.py`](../shared/python/_workbench_mcp.py) provides the MCP
-adapter. Scientific behavior belongs to the shared runtime rather than a separate
-implementation in each client.
+[`workbench.py`](../shared/python/workbench.py) dispatches operations.
+[`workbench_sdk.py`](../shared/python/workbench_sdk.py) provides the Python client;
+[`_workbench_mcp.py`](../shared/python/_workbench_mcp.py) provides MCP access.
+Analysis lives in this runtime, so clients use the same implementation.
 
-A request carries a schema version, operation, arguments, request ID, actor and,
-for scientific mutations, an expected project revision. The runtime validates the
-operation schema and rejects stale changes. An exact retry uses the original
-request identity and envelope. Client-session navigation has its own revision
-and does not advance the scientific project revision.
-
-Clients discover available operations and their argument schemas at runtime.
-Optional dependencies, executable bindings and source limits affect readiness;
-a visible operation or model entry alone does not establish that it can run.
-The [Workbench guide](WORKBENCH.md) documents request envelopes, compact MCP
-discovery, errors and configuration examples.
+Requests contain a schema version, operation, arguments, request ID and actor.
+Writes include the expected project revision. Stale writes return a conflict;
+retrying the same request uses its original envelope. Session navigation has a
+separate revision. Clients discover operations and argument schemas at runtime.
+See the [Workbench guide](WORKBENCH.md) for requests, errors and setup examples.
 
 ## Projects and application libraries
 
-Workbench projects are user-selected directories containing `workbench.sqlite`
-and content-addressed files in `artifacts/`. Source bytes, exact labels,
-measurements, workflows and scientific history remain linked by retained
-identities and hashes. Measurements use source pixels or explicitly recorded
-processed intensities; display sampling and channel colors do not change them.
+Projects contain `workbench.sqlite` and an `artifacts/` folder. Sources, masks,
+measurements, workflows and edit history are linked by IDs and hashes.
+Measurements use source pixels or saved processed intensities. Display colors
+and rendering settings affect the view.
 
-New projects use indexed storage with paged library, history and measurement
-reads. Page cursors belong to a specific revision and filter set. Displaying a
-page does not make it the complete experiment, and selecting an off-page object
-does not require treating a sampled table as authoritative geometry.
+Indexed storage provides paged image, history and measurement reads. Cursors
+refer to a project revision and filter set. Selection and mask picking work
+independently of the currently loaded table page.
 
-The existing macOS and Windows image libraries have separate persistence
-implementations. The Windows library uses the schema in
-[`desktop/src-tauri/src/db/`](../desktop/src-tauri/src/db/) and application-data
-paths in [`paths.rs`](../desktop/src-tauri/src/paths.rs); it does not attach to the
-macOS SwiftData database. Previewed migration copies supported library evidence
-into a Workbench project while retaining the original library.
+The original application libraries use platform-specific storage. Windows uses
+[`desktop/src-tauri/src/db/`](../desktop/src-tauri/src/db/) and the locations in
+[`paths.rs`](../desktop/src-tauri/src/paths.rs); macOS uses SwiftData. Library
+migration previews and copies data into a project, preserving the original.
 
-Portable project packages retain scientific snapshots and hash-verified
-artifacts. Host-local runtime configuration and client-session metadata do not
-travel with the current indexed package format. Restoration uses a new
-destination, verifies retained content and leaves model/plugin execution
-disabled. See [storage and packages](WORKBENCH.md#large-libraries-and-streamed-packages).
+Portable packages contain a project snapshot and hash-verified artifacts.
+Restoration writes a new destination and verifies the contents. Configure and
+enable restored models or plugins locally before running them. See
+[storage and packages](WORKBENCH.md#large-libraries-and-streamed-packages).
 
 ## Scientific runtimes and workers
 
-Desktop library detection and the Workbench use separately managed analysis
-environments. Learned methods require their compatible packages and exact model
-checkpoints; the Workbench does not install them implicitly during an operation.
-Optional reporting, OME-Zarr and OMERO dependencies have explicit setup paths.
+Desktop library detection and the Workbench have separately managed analysis
+environments. Set up model packages and checkpoints in a compatible environment.
+Reporting, OME-Zarr and OMERO dependencies have their own setup instructions.
 
-Analysis and adaptation can run through local background workers. Saved jobs
-retain checkpoints, settings and source bindings. Interruption does not authorize
-silently restarting a process or rebasing a saved job after scientific inputs
-change. Workflow review gates and dependency refresh use the same retained
-operation state.
+Local workers run analysis and adaptation in the background. Jobs save settings,
+source references and checkpoints, so work can continue after an interruption.
+Review gates and dependency refresh use the same job state.
 
-The shared layer engine is compiled from TypeScript and runs in a pinned Node
-runtime for desktop integrations. Its manifests bind the packaged code and
-runtime files. Browser integrations use the compatible browser components
-without launching Node or Python.
+The TypeScript layer engine runs in a packaged Node runtime on desktop. Its
+manifest identifies the worker and engine files. Browser builds run the browser
+components directly.
 
-The Windows library's frontend separates inference and persistence through
-[`InferenceTransport`](../desktop/src/kernel/transport/InferenceTransport.ts)
-and [`PersistencePort`](../desktop/src/kernel/persistence/PersistencePort.ts).
-Rust owns filesystem access, library persistence, environment setup and process
-lifecycle. Python workers return structured scientific results and progress.
-These library interfaces coexist with the project Workbench dispatcher.
+The Windows library separates inference and persistence with
+[`InferenceTransport`](../desktop/src/kernel/transport/InferenceTransport.ts) and
+[`PersistencePort`](../desktop/src/kernel/persistence/PersistencePort.ts). Rust
+handles files, storage, environments and processes. Python workers return
+analysis results and progress.
 
 ## Browser execution
 
-The browser preview has its own local application state and storage. TIFF
-decoding, segmentation, assays and full-resolution exports run in dedicated
-Web Workers. IndexedDB stores metadata; supported browsers use OPFS for source
-blobs. Startup can restore metadata and thumbnails before decoding an active
-source.
+TIFF decoding, segmentation, assays and exports run in Web Workers. IndexedDB
+stores metadata, and browsers with OPFS support keep source files there. Startup
+loads metadata and thumbnails before decoding an active image.
 
-The static build supplies classical segmentation. Learned-model browser entries
-require qualified artifacts and remain unavailable in the published preview.
-There is no desktop companion, filesystem-backed Workbench, installed-app CLI or
-MCP server. Browser workspace planes, imports and exports have independent memory
-and format limits; see the [browser guide](WEB.md) and
-[portable workspace guide](PORTABLE-WORKSPACE.md).
+The static build provides classical segmentation and a browser workspace editor.
+See the [browser guide](WEB.md) and [portable workspace guide](PORTABLE-WORKSPACE.md)
+for usage and development.
 
 ## Permissions and external services
 
-Ordinary image analysis is local. Runtime and model installation can download
-upstream packages and weights. Optional OMERO imports read from explicitly
-configured servers; they do not upload image results.
+Image analysis runs locally. Model and runtime setup can download upstream
+packages and weights. OMERO imports read from configured servers.
 
-MCP connections start read-only and restrict project/path access. Writes,
-executable operations, runtime configuration and network profiles require their
-applicable grants. Actor labels are retained provenance, not authenticated
-reviewer identities. Executable plugins run in configured local environments;
-the plugin mechanism is not a security sandbox.
-
-Credentials, local interpreter bindings and execution grants stay outside
-portable scientific packages. No ordinary operation silently installs software
-or enables restored executable content.
+MCP starts read-only. Grant write access, external paths, executable operations
+and network profiles as needed. Plugins run in configured local Python
+environments with the user's permissions. Credentials, interpreter bindings and
+access grants stay local to the host.
 
 ## Development references
 
@@ -141,7 +109,6 @@ or enables restored executable content.
 - [Python SDK installation and usage](../shared/python/README.md)
 - [Contribution guidelines](../CONTRIBUTING.md)
 
-Current dependency requirements and build commands are maintained in the
-application manifests and [CI workflows](../.github/workflows/). Changes to
-operation contracts should preserve explicit revision, provenance and permission
-semantics across the clients that expose them.
+Application manifests and [CI workflows](../.github/workflows/) contain build
+commands and dependency versions. Keep operation behavior consistent across
+clients when changing shared contracts.

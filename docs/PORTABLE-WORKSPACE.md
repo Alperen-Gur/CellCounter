@@ -1,106 +1,59 @@
 # Portable microscopy workspace
 
-This guide covers the portable layer engine and the **Web 0.3.2 preview**
-workspace. **Windows 1.3.0** integrates the shared layer editor into project
-Workbench operations; use the [Workbench guide](WORKBENCH.md#layer-workspaces-and-semantic-journals)
-for its source bindings, storage and automation. Earlier standalone desktop
-workspace documents remain available through the compatibility import path.
-
-Layer operations and browser documents have the limits below. They are separate
-from the desktop Workbench's full-resolution scientific labels and volume
-measurements. See the [platform comparison](PLATFORM-PARITY.md) for availability.
+Work with image layers, annotations, labels and tracks in a portable workspace.
+This guide covers the browser workspace and shared layer tools. For Windows
+Workbench projects, see [layer workspaces](WORKBENCH.md#layer-workspaces-and-semantic-journals).
 
 ## Sources and coordinates
 
-In the browser, open **Microscopy** and add a library image or choose a local OME-Zarr directory.
-Source files remain on the computer. Zarr sources support version 2 arrays,
-uncompressed, zlib and gzip chunks, spatial pyramids, and plate fields. Blosc,
-Zarr v3, remote datasets and ambiguous multi-image pyramids are not supported.
-Choose a supported array or convert it locally first.
+In the browser, open **Microscopy** and add a library image or a local OME-Zarr
+directory. The Zarr v2 reader opens spatial pyramids and plate fields with
+uncompressed, zlib or gzip chunks.
 
-Time, Z and channel controls select source planes. Pyramid display levels retain
-their relationship to source coordinates; a coarser preview does not change the
-meaning of an annotation. Physical pixel sizes are used only when calibration
-is present. Combining a calibrated layer with an uncalibrated one requires
-resolving the missing calibration first.
+Use the time, Z and channel controls to select a plane. Annotations stay in source
+coordinates as you switch pyramid levels. Set calibration before combining
+layers for physical measurements.
 
-Layer transforms are independent of image measurements. Registration estimates
-a translation using image correlation and reports a score; inspect the alignment
-before using it. Grid stitching creates a derived raster. Neither operation
-changes the original files or proves biological correspondence.
+Use translation registration to align images, or grid stitching to create a
+combined raster. Check the alignment before continuing. Original files stay
+unchanged.
 
 ## Layers, annotations and painting
 
-Image, label, point, shape, track and surface layers share the workspace view.
-Display ranges, colors, opacity and blending affect the display. Surface layers
-are shown as projected wireframes, not a volumetric reconstruction.
+Add image, label, point, shape, track and surface layers. Adjust display range,
+color, opacity and blending in the layer controls. Surface layers appear as
+wireframe projections.
 
-Painting records semantic class labels and supports session undo. Export labels
-as a 16-bit TIFF to preserve integer class values. A colored display PNG or GIF
-is a presentation image and must not be used as a numeric training mask.
+Paint class labels with session undo. Export labels as a 16-bit TIFF to preserve
+their integer values; use PNG or GIF for presentations.
 
-Lineage links carry explicit continuation, gap, division or merge relationships.
-Automatic links are proximity proposals; review them and edit ambiguous links.
-A link must move forward in time and cannot create a cycle.
+Create continuation, gap, division and merge links between objects. Review
+automatic proximity links and edit them where needed. Links move forward in
+time.
 
 ## Save, replay and animation
 
-Save a portable workspace document to retain layers, positions, transforms,
-annotations, paint journals, lineage, recorded operations and animation
-keyframes. Browser portable documents can embed up to 16 MiB of explicitly
-supplied plane snapshots. Desktop Workbench packages use their own
-[storage and package limits](WORKBENCH.md#large-libraries-and-streamed-packages). Keep the
-original datasets: a snapshot does not embed every time point or Z plane, and
-external sources must be reattached to navigate them after reopening.
+Save a workspace document to keep layers, transforms, annotations, painting,
+lineage, recorded operations and animation keyframes. Keep the original datasets
+with it, and reattach external sources when reopening on another computer.
 
-Recorded workflows contain supported workspace operations, rather than arbitrary
-scripts. Replay applies to a copy and commits only if all steps succeed.
-Generated rasters and live source planes remain subject to memory limits.
+Recorded workflows let you repeat workspace operations. Replay runs on a copy
+and saves the result when every step succeeds.
 
-Animation interpolates keyframe positions and view settings. GIF export uses a
-fixed color palette and centisecond timing; it is intended for presentation.
-Reduce frame size, duration or frame rate if the memory limit is reached.
+Add keyframes to animate positions and view settings, then export a GIF. Reduce
+frame size, duration or frame rate if export runs out of memory.
 
 ## Review and training snapshots
 
-An image review sign-off binds to its source, geometry, calibration and analysis
-settings. Changing these invalidates the sign-off. Exporting a reviewed dataset
-requires complete contours and verified calibration; geometry summaries alone
-are insufficient.
+Review sign-offs record the source, geometry, calibration and analysis settings.
+Changing these marks the image for review again.
 
-Assign biological specimen groups explicitly. All fields from one specimen
-must stay in the same dataset split. The browser snapshot exporter requires
-independent training, validation and test groups, rejects duplicate source
-planes and overlapping instance masks, and writes source-plane Float32 TIFFs,
-16-bit instance masks, hashes and a manifest. Browser ZIP exports are bounded to
-48 MiB of uncompressed artifacts. A reviewed dataset export does not train a
-model or create a checkpoint.
+To export a training dataset, finish the contours, check calibration and assign
+biological specimen groups. Keep all fields from the same specimen in one split,
+then choose training, validation and test groups.
 
-## Platform limits
-
-The web application is entirely browser-only and does not use a local native
-companion. The browser processes bounded source planes locally. TIFF analysis is limited
-to four million pixels per plane, sixteen channels and sixty-four Z planes per
-projection. Ambiguous multi-series or multi-file OME-TIFF mappings are rejected.
-Large images can be opened at a coarser supported Zarr level or prepared locally.
-
-Browser learned-model inference still requires compatible, qualified model
-artifacts. Native Python models, proprietary microscope-container readers and
-fine-tuning are not supplied by the static browser application. Classical
-segmentation and adaptive prompt refinement are labeled with the method actually
-used; they do not silently stand in for a learned model.
-
-Windows uses local Python environments for its detector families. Checkpoint
-availability is checked separately from interface availability. Legacy saved
-`cpsam_v2` analyses retain their historical `cpsam` checkpoint identity; the
-explicit Cellpose 4 checkpoint entries use their own identities.
-
-Windows library image overlays and illustrated reports reconstruct the recorded source
-plane through the local Python image reader and verify its source hash. They
-require that reader environment and a supported source within its limits.
-Historical results without a recorded source selection cannot produce an aligned
-overlay; sample bundles report the omission explicitly.
+The exporter checks duplicate planes and overlapping masks, then writes Float32
+source TIFFs, 16-bit instance masks and a manifest with hashes.
 
 For installation and troubleshooting, see the [Windows guide](WINDOWS.md) or
-[browser guide](WEB.md). The [feature matrix](FEATURES.md) distinguishes these
-workspace tools from the other analysis surfaces.
+[browser guide](WEB.md). See [features](FEATURES.md) for the rest of the workbench.

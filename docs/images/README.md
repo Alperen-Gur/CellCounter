@@ -1,14 +1,8 @@
-# CellCounter media
+# Documentation media
 
-This directory contains public screenshots and other media used by the project documentation.
+Public screenshots and images used in the documentation go here.
 
-## Contribution guidelines
-
-- Use representative, non-sensitive sample images with confirmed publication rights.
-- Do not include patient-derived material, personal information, local file paths, account details, or private
-  project names.
-- Crop captures to the application window and remove unrelated desktop content.
-- Prefer PNG for still images and concise alternative text wherever the image is embedded.
-- Keep animations short and optimized so the documentation remains quick to load.
-
-By contributing media, you confirm that it can be redistributed with this repository under the project license.
+- Use sample images you have permission to publish under the project license.
+- Remove personal data, private project names, account details and local paths.
+- Crop screenshots to the app window.
+- Prefer PNG, add useful alt text and keep animations small.
