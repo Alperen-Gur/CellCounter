@@ -47,21 +47,24 @@ describe("strict WebGPU model catalog", () => {
     await expect(assertWebGpuAvailable()).rejects.toBeInstanceOf(NoWebGpuError);
   });
 
-  it("fails build-required artifacts without fetching or substituting a model", async () => {
+  it.each(MODEL_CATALOG)("rejects unavailable $id before cache access or download", async (manifest) => {
     Object.defineProperty(globalThis.navigator, "gpu", {
       configurable: true,
       value: { requestAdapter: vi.fn().mockResolvedValue({}) },
     });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const inference = new WebGpuInference();
+    const cache = { get: vi.fn(), put: vi.fn(), delete: vi.fn() };
+    const inference = new WebGpuInference(cache);
     await expect(inference.analyze({
       source: {
         id: "image", fileName: "image.png", mediaType: "image/png", byteLength: 0, lastModified: null, blob: new Blob(),
       },
       calibration,
-      parameters: { ...parameters, watershedSplit: false },
+      parameters: { ...parameters, modelId: manifest.id, watershedSplit: false },
     })).rejects.toBeInstanceOf(ModelArtifactUnavailableError);
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(cache.get).not.toHaveBeenCalled();
+    expect(cache.put).not.toHaveBeenCalled();
   });
 
   it("maps unsupported operators to an explicit compatibility error", () => {
