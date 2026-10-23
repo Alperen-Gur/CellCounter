@@ -1,5 +1,6 @@
 import type { MeasurementPage } from "../../../../shared/workbench/pagingProtocol";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { WorkbenchImage } from "../../../../shared/workbench/protocol";
 import {
   DEFAULT_VOLUME_PARAMETERS, type Vec3, type VolumeDisplay, type VolumeInspection,
@@ -29,11 +30,15 @@ type Props = {
   navigation?: SessionNavigation;
   onWorkflowChange: (configuration: { imageId: string; parameters: VolumeParameters; channel: number; timeIndex: number; plane?: VolumePlane; index?: number }) => void;
   onEditingChange: (editing: boolean) => void;
+  onCalibrationEditingChange: (editing: boolean) => void;
+  calibrationTarget: HTMLElement | null;
+  measurementsTarget: HTMLElement | null;
+  contextTarget: HTMLElement | null;
 };
 const fmt = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 3 });
 const planeAxis = (plane: VolumePlane) => plane === "xy" ? 2 : plane === "xz" ? 1 : 0;
 
-export default function WorkbenchVolumePanel({ image, revision, busy, read, act, runRead, temporalWriteBlocked, exportLineage, exportComposite, compositeExportBlocked, mutatePreset, presetFiles, displayTransition, navigation, onWorkflowChange, onEditingChange }: Props) {
+export default function WorkbenchVolumePanel({ image, revision, busy, read, act, runRead, temporalWriteBlocked, exportLineage, exportComposite, compositeExportBlocked, mutatePreset, presetFiles, displayTransition, navigation, onWorkflowChange, onEditingChange, onCalibrationEditingChange, calibrationTarget, measurementsTarget, contextTarget }: Props) {
   const [timeIndex, setTimeIndex] = useState(image.preferredVolumeSelection?.timeIndex ?? 0);
   const [channel, setChannel] = useState(image.preferredVolumeSelection?.channel ?? 0);
   const [inspection, setInspection] = useState<VolumeInspection>();
@@ -103,8 +108,10 @@ export default function WorkbenchVolumePanel({ image, revision, busy, read, act,
     (calibration.time === "" ? null : Number(calibration.time)) !== inspection.timeStepSeconds));
 
   useEffect(() => {
-    onEditingChange(Boolean(dirty || previewing || polygon.length || brushCenter || selected.length || calibrationDirty));
-  }, [dirty, previewing, polygon.length, brushCenter, selected.length, calibrationDirty, onEditingChange]);
+    onEditingChange(Boolean(dirty || previewing || polygon.length || brushCenter || selected.length));
+  }, [dirty, previewing, polygon.length, brushCenter, selected.length, onEditingChange]);
+  useEffect(() => { onCalibrationEditingChange(calibrationDirty); }, [calibrationDirty, onCalibrationEditingChange]);
+  useEffect(() => () => onCalibrationEditingChange(false), [onCalibrationEditingChange]);
   useEffect(() => () => onEditingChange(false), [onEditingChange]);
 
   useEffect(() => {
@@ -264,15 +271,16 @@ export default function WorkbenchVolumePanel({ image, revision, busy, read, act,
   const renderedVolume = currentComposite ?? sourceDisplay;
 
   return <section className="workbench-volume-panel" aria-label="Volumetric analysis">
+    {contextTarget ? createPortal(<>
     {error ? <p className="workbench-error" role="alert">{error}</p> : null}
     <div className="workbench-volume-toolbar">
-      <label>Time point<select disabled={busy || loading} value={timeIndex} onChange={(event) => setTimeIndex(Number(event.target.value))}>
+      <label>Time point<select disabled={busy || loading || Boolean(dirty || previewing || polygon.length || brushCenter || selected.length || calibrationDirty)} value={timeIndex} onChange={(event) => setTimeIndex(Number(event.target.value))}>
         {Array.from({ length: image.timeCount || 1 }, (_, value) => <option key={value} value={value}>{value + 1}</option>)}</select></label>
-      <label>Analysis channel<select disabled={busy || loading} value={channel} onChange={(event) => setChannel(Number(event.target.value))}>
+      <label>Analysis channel<select disabled={busy || loading || Boolean(dirty || previewing || polygon.length || brushCenter || selected.length || calibrationDirty)} value={channel} onChange={(event) => setChannel(Number(event.target.value))}>
         {Array.from({ length: image.channels }, (_, value) => <option key={value} value={value}>{value + 1}</option>)}</select></label>
       <p role="status">{loading ? "Loading volume…" : previewing ? "Unsaved segmentation preview" :
         `${dimensions.join(" × ")} source voxels · ${measurements?.cellCount ?? 0} saved objects`}</p>
-    </div>
+    </div></>, contextTarget) : null}
     <VolumeRenderer descriptor={renderedVolume} crosshair={crosshair} onCrosshair={navigate}
       onPlanePick={(pickedPlane, voxel) => { setPlane(pickedPlane); navigate(voxel); }} />
     <p role="status">{compositeForFrame?.loading ? "Preparing the 3D composite…" : currentComposite
@@ -386,8 +394,9 @@ export default function WorkbenchVolumePanel({ image, revision, busy, read, act,
           <div className="workbench-actions"><button className="cc-btn" onClick={() => void preview()}>Preview 3D</button>
             <button className="cc-btn workbench-primary" onClick={() => void act("volume.analysis.run", { ...selection, parameters, cellLimit: 200 })}>Run 3D analysis</button></div>
         </fieldset>
+        {calibrationTarget ? createPortal(<section aria-label="Voxel calibration">
         <h3>Voxel calibration</h3>
-        <fieldset disabled={busy || loading}>
+        <fieldset disabled={busy || loading || Boolean(dirty || previewing || polygon.length || brushCenter || selected.length)}>
           {(["x", "y", "z"] as const).map((axis) => <label key={axis}>{axis.toUpperCase()} voxel size (µm)<input type="number" step="any" min="0" placeholder="Unknown"
             value={calibration[axis]} onChange={(event) => setCalibration((old) => ({ ...old, [axis]: event.target.value }))} /></label>)}
           <label>Time interval (seconds)<input type="number" step="any" min="0" placeholder="Unknown" value={calibration.time} onChange={(event) => setCalibration((old) => ({ ...old, time: event.target.value }))} /></label>
@@ -395,8 +404,14 @@ export default function WorkbenchVolumePanel({ image, revision, busy, read, act,
             voxelSizeUm: { x: calibration.x === "" ? null : Number(calibration.x), y: calibration.y === "" ? null : Number(calibration.y), z: calibration.z === "" ? null : Number(calibration.z) },
             timeStepSeconds: calibration.time === "" ? null : Number(calibration.time),
           })}>Apply voxel calibration</button>
+          <button type="button" className="cc-btn" disabled={!inspection || !calibrationDirty} onClick={() => {
+            if (inspection) setCalibration({ x: inspection.voxelSizeUm.x == null ? "" : String(inspection.voxelSizeUm.x),
+              y: inspection.voxelSizeUm.y == null ? "" : String(inspection.voxelSizeUm.y),
+              z: inspection.voxelSizeUm.z == null ? "" : String(inspection.voxelSizeUm.z),
+              time: inspection.timeStepSeconds == null ? "" : String(inspection.timeStepSeconds) });
+          }}>Discard calibration changes</button>
           <p>Empty fields remain unknown. Physical volume requires all three spatial axes.</p>
-        </fieldset>
+        </fieldset></section>, calibrationTarget) : null}
       </div>
     </div>
     <div className="workbench-table"><table><caption>{previewing ? "Unsaved 3D preview" : "Saved 3D measurements"} · {measurements?.cellCount ?? 0} objects</caption>
@@ -408,9 +423,10 @@ export default function WorkbenchVolumePanel({ image, revision, busy, read, act,
     <div className="workbench-actions"><button className="cc-btn" disabled={busy || loading || !page || (!previewing && measurementPage?.sourceRevision !== revision)} onClick={() => changeMeasurementPage(page - 1)}>Previous 100</button>
       <span>Page {page + 1}</span>{!previewing ? <button className="cc-btn" disabled={busy || loading || !savedFrame} onClick={() => changeMeasurementPage(0)}>Refresh measurement pages</button> : null}<button className="cc-btn" disabled={busy || loading || (previewing ? (page + 1) * 100 >= (measurements?.cells.length ?? 0) : !measurementPage?.nextCursor || measurementPage.sourceRevision !== revision)} onClick={() => changeMeasurementPage(page + 1)}>Next 100</button></div>
     {previewing && (measurements?.cellCount ?? 0) > (measurements?.cells.length ?? 0) ? <p>The full bounded volume preview contains all labels; this temporary table shows the first {measurements?.cells.length} of {measurements?.cellCount} objects. Save analysis to page all object records.</p> : null}
+    {measurementsTarget ? createPortal(<section aria-label="Tracking and lineage">
     <details><summary>Time tracking</summary>
-      <p>Centroid matching produces one-to-one tracks. It does not infer divisions.</p>
-      <fieldset disabled={busy || loading}>
+      <p>Centroid matching produces one-to-one tracks. Use lineage inference below to review possible divisions.</p>
+      <fieldset disabled={busy || loading || temporalWriteBlocked || Boolean(dirty || previewing || polygon.length || brushCenter || selected.length || calibrationDirty)}>
         <div className="workbench-editor-grid">
           <label>Maximum displacement<input type="number" min="0.01" step="any" value={maxDistance} onChange={(event) => setMaxDistance(Number(event.target.value))} /></label>
           <label>Distance units<select value={units} onChange={(event) => setUnits(event.target.value as "voxel" | "um")}><option value="voxel">Voxels</option><option value="um">Micrometres</option></select></label>
@@ -446,6 +462,6 @@ export default function WorkbenchVolumePanel({ image, revision, busy, read, act,
       exportLineage={exportLineage}
       timeCount={image.timeCount || 1} revision={revision}
       busy={busy || temporalWriteBlocked || Boolean(dirty || previewing || polygon.length || brushCenter || selected.length || calibrationDirty)}
-      read={read} act={act} runRead={runRead} />
+      read={read} act={act} runRead={runRead} /></section>, measurementsTarget) : null}
   </section>;
 }

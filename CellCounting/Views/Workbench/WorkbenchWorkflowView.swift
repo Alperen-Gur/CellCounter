@@ -22,6 +22,7 @@ private struct WorkbenchWorkflowPluginNode: Identifiable {
 
 struct WorkbenchWorkflowView: View {
     @Bindable var session: WorkbenchSession
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var name = "Image analysis"
     @State private var includeExport = false
@@ -98,7 +99,7 @@ struct WorkbenchWorkflowView: View {
                 WorkbenchSavedRecordAccess(session: session, catalogues: ["workflows", "jobs", "sweeps", "jobWorkers", "distributions"])
                 Spacer()
                 Button("Refresh", action: session.loadWorkflows).disabled(session.busy)
-                Button("Done") { dismiss() }
+                if !embedded { Button("Done") { dismiss() } }
             }
             Text("A workflow uses fixed settings and saves each completed image. Resume interrupted jobs from the last completed checkpoint.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -320,7 +321,9 @@ struct WorkbenchWorkflowView: View {
                 Text(session.status).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(22).frame(width: 1020, height: 730)
+        .padding(embedded ? 16 : 22)
+        .frame(width: embedded ? nil : 1020, height: embedded ? nil : 730)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             imageIDs = Set(session.selectedImageID.map { [$0] } ?? [])
             distributionExpanded = session.distribution.localTask != nil

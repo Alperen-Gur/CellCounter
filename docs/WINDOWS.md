@@ -1,324 +1,281 @@
 # CellCounter for Windows 1.3.0
 
-CellCounter for Windows is the React interface packaged as a native Tauri 2
-application. The Windows build is local-first: imported microscopy images,
-measurements, corrections, and inference stay on the PC. The live **Support →
-Platform parity** screen is the source of truth for features that are ready,
-Windows-adapted, or not yet available.
+CellCounter for Windows provides local microscopy analysis and a project
+Workbench shared with the macOS application. The GUI, installed CLI, Python SDK
+and MCP server use the same project operations, revision checks and history.
 
-Version 1.2.0 adds portable microscopy workspaces, expanded local detectors, source-plane review and dataset/sample exports. See the [workspace guide](PORTABLE-WORKSPACE.md). See the [release notes](releases/windows-v1.2.0.md).
-
-Version 1.1.1 corrects local image access and recovers broken thumbnails and full-image previews from existing imports. Original images and analyses are retained. See the [release notes](releases/windows-v1.1.1.md).
-
-Version 1.1.0 fixes the first-analysis **“Sidecar scripts are not staged”** error and adds saved analysis setup, representative previews, resumable processing, linked measurements, and reversible mask versions. Model IDs remain the same three supported families. The expanded capability inventory now also lists native workflows that have not been ported; this release does not claim full macOS parity.
-
-The release inventory records **45 ready, 7 adapted and 15 pending** capabilities.
-See the [cross-platform status](PLATFORM-PARITY.md) for the shared workflow,
-remaining differences and evidence for the reported desktop fixes, or the
-[feature matrix](FEATURES.md) for individual functions.
+Download the current installers from the
+[Windows 1.3.0 release](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0).
+See [current features](FEATURES.md), the [platform comparison](PLATFORM-PARITY.md)
+and the [Workbench guide](WORKBENCH.md) for supported functions and bounds.
 
 ## System requirements
 
-- 64-bit Windows 10 or Windows 11. The 1.2.0 workflow and bundled `uv` helper
-  target `x86_64-pc-windows-msvc`; Windows on ARM is not an initial release
-  target.
-- Microsoft Edge WebView2 Runtime. The installer embeds Microsoft's small
-  WebView2 bootstrapper and can install the runtime silently, which may require
-  an internet connection if WebView2 is absent.
-- Internet access for the first installation of each detection model. Image
-  analysis is local after its environment and weights are cached.
-- Enough free disk space for the application, copied source images, thumbnails,
-  exports, and three separate Python/model environments. These can use several
-  gigabytes; keep additional working space available during installation.
-- The Windows v1.2.0 model runtimes are intentionally CPU-only. A GPU driver is
-  not required, and the app does not present an acceleration control it cannot
-  honor. A separately validated CUDA runtime may be added in a later release.
+- **64-bit Windows 10 or Windows 11.** The installers target x64; Windows on ARM
+  is not a supported native target.
+- **Microsoft Edge WebView2 Runtime.** The installer includes its bootstrapper;
+  downloading the runtime may require internet access if it is absent.
+- **Internet access for selected runtime/model downloads.** Analysis runs locally
+  after the required components are installed.
+- **Free disk space for source images, projects, exports and model environments.**
+  Python environments and weights can occupy several gigabytes in addition to
+  your scientific data.
+- The bundled Windows model-installation paths use **CPU inference**. Registered
+  models require a compatible explicitly selected environment; installed package
+  names alone do not establish CUDA support.
 
-End users do not need to install Node.js, Rust, Python, or `uv`. Those are build
-requirements only; the application bundles `uv` and provisions its own Python
-environments.
+The application includes the tools needed to provision its dedicated Workbench
+environment and supported model environments. Normal installation does not require
+a separate Node.js or Rust installation. Advanced registered models, plugins and
+OMERO access require their own explicit local setup.
 
 ## Choose an installer
 
-Every validated Windows build produces both formats and a `SHA256SUMS.txt` file:
+The release provides two installers and a `SHA256SUMS.txt` file:
 
-- **NSIS `.exe`** — the default choice for an individual workstation. It
-  installs for the current Windows user and does not require administrator
-  rights under normal policy.
-- **WiX `.msi`** — intended for Windows Installer tooling and managed lab or IT
-  deployment. Organization policy may require elevation.
+| Installer | Use |
+| --- | --- |
+| `CellCounter_1.3.0_x64-setup.exe` | NSIS installer for an individual workstation; normally installs for the current user. |
+| `CellCounter_1.3.0_x64_en-US.msi` | MSI package for Windows Installer tooling or managed institutional deployment. |
 
-Use the same format for later upgrades when possible. Both packages contain the
-same CellCounter executable, bundled Python scripts, native icon, and pinned
-`uv` helper.
+Both packages contain the same application and bundled resources. Use the same
+installer format for later upgrades when possible; organization policy may require
+administrator approval.
 
-CI artifacts are currently unsigned. Windows SmartScreen may therefore show an
-unknown-publisher warning. Only continue when the file came from the official
-CellCounter release or GitHub Actions run and its SHA-256 matches
-`SHA256SUMS.txt`. In PowerShell:
+The current installers are **unsigned**. SmartScreen may show an unknown-publisher
+warning. Verify the download source and SHA-256 before deciding whether to continue.
+In PowerShell:
 
 ```powershell
-Get-FileHash .\CellCounter_1.2.0_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CellCounter_1.3.0_x64-setup.exe -Algorithm SHA256
 ```
 
-Compare the printed hash with the matching `nsis/...` or `msi/...` entry in the
-manifest. Do not bypass SmartScreen for an unverified copy.
+Compare the hash with the matching filename in `SHA256SUMS.txt`. Do not override
+a warning for an uncertain source or a mismatched checksum.
 
 ## Install
 
-1. Download the `.exe` or `.msi` plus `SHA256SUMS.txt` and verify the hash.
-2. Close any running CellCounter window.
-3. Run the installer. With an unsigned `.exe`, Windows may require **More info →
-   Run anyway** after verification. An `.msi` may be installed through your
-   organization's normal software-management tool.
-4. Launch **CellCounter** from the Start menu.
-5. Open **Models** and install at least one of the three supported models before
-   starting detection.
+1. Download the chosen installer and `SHA256SUMS.txt` from the official release,
+   then verify the hash.
+2. Close CellCounter if an older copy is running.
+3. Run the installer, following your organization's software policy. For a
+   verified unsigned executable, Windows may offer **More info → Run anyway**.
+4. Open **CellCounter** from the Start menu.
+5. Open **Workbench → AI agent access** and choose **Install or repair runtime**.
+   Wait for installation to finish, then use **Check runtime readiness**.
+6. Create a project, import supported images, confirm calibration and source
+   settings, then preview classical segmentation.
 
-The installer can bootstrap WebView2, but model packages and weights are
-downloaded only when you choose **Install** on a model card.
+Classical Workbench analysis needs no learned checkpoint. Install or configure a
+model only when you intend to use it. The Workbench runtime, existing library model
+environments and optional OMERO runtime are separate.
+
+For an agent connection, select the project and permissions in **AI agent access**,
+then choose **Generate connection configuration**. Read-only is the default;
+project writes, external folders and executable methods have separate grants.
+See [MCP setup](WORKBENCH.md#mcp-connection).
 
 ## Upgrade
 
-1. Close CellCounter and make a backup of the app-data directory described
-   below.
-2. Install the newer package using the same installer format as before.
-3. Launch the app and confirm that the expected model cards report **Installed**.
+1. Stop analysis/background workers, close CellCounter and make the backups
+   described below.
+2. Install the newer release using the same installer format as before.
+3. Reopen the application and check runtime/model readiness before new analysis.
 
-The WiX package uses the fixed upgrade code
-`9d098d8e-800d-416c-a340-9b6754ea88d0`, so future MSI releases retain one Windows
-product lineage. Installers reject version downgrades. Application data lives
-outside the installation directory and is not intentionally replaced during an
-upgrade, but a backup remains the safest rollback path.
+Application data is stored separately from installed program files. Upgrading does
+not intentionally replace the library or reset its data. Installers reject version
+downgrades; keep a backup when you need a rollback path.
 
 ## Uninstall
 
-Open **Windows Settings → Apps → Installed apps**, find **CellCounter**, and
-choose **Uninstall**. Managed MSI installations can also be removed with the
-organization's normal Windows Installer tooling.
+Use **Windows Settings → Apps → Installed apps → CellCounter → Uninstall**.
+Managed MSI deployments can use the organization's Windows Installer tooling.
 
-The package has no custom data-removal hook, so uninstalling the program does
-not remove the app-data directory. This protects microscopy work during a
-reinstall. To remove the data too, first use the reset guidance below, then
-delete the remaining model/environment folders only after making any required
-backup.
+Uninstalling the program does **not remove the app-data directory**. Back up
+scientific data before deliberately removing any remaining data or environments.
 
 ## Install local models
 
-The catalog includes the following original model entries, plus Cellpose 3/4 variants,
-restoration, StarDist variants, Omnipose, classical segmentation and imported
-Cellpose/StarDist checkpoints. Availability requires installation and exact
-checkpoint verification; an interface entry alone does not establish readiness.
+### Registered Workbench models
 
-Original model entries:
+Use the Workbench's registered-model controls to select the supported backend,
+exact checkpoint/configuration files and compatible local Python interpreter.
+Run its compatibility probe, inspect the environment information and explicitly
+enable the model. Current adapters include Cellpose 3/4, StarDist 2D, Omnipose and
+micro-SAM; they perform selected-plane 2D inference.
 
-| App model ID | Pipeline | Local environment |
+The Workbench does not silently install model dependencies or download substitute
+weights. Environment capture records observed versions; it is not an installable
+environment lockfile. See [plugins and local learned models](WORKBENCH.md#plugins-and-local-learned-models).
+
+### Existing library model installation
+
+Open **Models**, choose a supported card and use **Install**. Keep the application
+open while its installation log is running. Packages and weights are downloaded
+from the relevant upstream providers. There is **no silent model substitution**.
+
+The original model entries remain:
+
+| App model ID | Checkpoint identity | Local environment |
 | --- | --- | --- |
-| `cpsam_v2` | Cellpose-SAM using the exact `cpsam` checkpoint; the app ID is a legacy alias, not a newer checkpoint claim | `py\.venv4` |
-| `cp-cyto3` | Cellpose 3 using the exact `cyto3` checkpoint | `py\.venv` |
-| `sd-fluo` | StarDist using the exact `2D_versatile_fluo` checkpoint | `py\.venvsd` plus app-scoped weights |
+| `cpsam_v2` | Historical app alias for the `cpsam` checkpoint, not a claim of a newer checkpoint | `py\.venv4` |
+| `cp-cyto3` | Cellpose 3 `cyto3` | `py\.venv` |
+| `sd-fluo` | StarDist `2D_versatile_fluo` | `py\.venvsd` |
 
-Open **Models**, choose one of these cards, and select **Install**. Keep the app
-open while the live installation log is running. Each model is independently
-provisioned; installing one does not rewrite another model's environment. An
-unknown ID fails explicitly, with no silent model substitution.
-
-Model installation uses the network to obtain a Python runtime, pinned package
-family, and model weights from their upstream package/model providers. Imported
-images are not sent with those requests.
+Other catalogue entries require their own compatible environment and exact model
+files. A visible card alone does not mean the model is ready.
 
 ## Microscopy formats and advanced workflows
 
 ### Inspect, preview and process
 
-Import creates a saved analysis setup and opens **Processing**. You can inspect the imported image before installing a model. Choose the source channel, Z projection, calibration and analysis parameters, then preview a representative image before processing the whole batch. Detection uses the selected source settings; source-plane inspection is available with explicit selection and display sampling.
+Create/open a Workbench project, import images, confirm source coordinates and
+calibration, then preview before saving analysis. Correct exact masks, review
+measurements and export scientific files or an analysis package.
 
-Jobs run one image at a time. **Pause** finishes and saves the current image; **Stop** cancels the current operation and leaves the remaining work paused. Reopening the application restores interrupted jobs as paused. Resume skips completed results that still match the saved settings; changed settings or replaced results invalidate reuse. Failed images can be retried without discarding successful work.
+Saved workflows support branching graphs, parameter sweeps and review gates.
+Background jobs retain checkpoints for resume. The Jobs controls report when a
+stop request will take effect; do not assume it discards a completed result.
 
-Results provide a linked measurement table/scatter plot and saved mask comparisons with synchronized viewing. Restoring an older mask preserves the current one first. Recorded analysis settings remain distinct from current review settings, and unknown provenance is shown as unknown. Images queued for processing cannot be edited concurrently.
-
-Review uses bounded pages for large batches. **Keep**, **Reject**, **Edit diameter** and **Skip** are wired to their displayed shortcuts. **Undo / Ctrl+Z** reverses the last decision during this app session, including across page changes. It refuses to overwrite a result changed elsewhere.
+Existing library processing remains available, with saved setup, representative
+previews, linked result tables and mask alternatives. Its interrupted jobs reopen
+as paused. Migration to a Workbench project previews a copy and retains historical
+evidence without deleting the original library.
 
 ### Formats, assays and training
 
-PNG, JPEG, BMP, TIFF/OME-TIFF, ND2, CZI, LIF, OIR, and VSI inputs remain local.
-For proprietary containers, CellCounter keeps the untouched original and makes
-a bounded, lossless projected analysis TIFF plus a display PNG. Missing vendor
-reader dependencies and images above the safe decode budget fail with an
-actionable message; they are never silently converted through another format.
-Large acquisitions should be cropped or projected to OME-TIFF first.
+The shared Workbench supports documented TIFF/OME-TIFF, common raster and
+TIFF/NGFF-region routes. Optional readers and the existing library importer have
+different coverage; support in one route does not establish support in all others.
+VSI is not a built-in shared Workbench format. Unsupported or oversized sources
+need a compatible prepared input.
 
-The Results screen includes local intensity, area/wound/spheroid, puncta,
-tracking, neurite, spatial-statistics, and line-profile workflows. Long-running
-advanced assays and fine-tuning runs have explicit cancellation and clean up
-their staged input/checkpoint files.
-
-Fine-tuning is limited to the `cp-cyto3` family. Choose image/mask pairs in
-**Fine-tune**, train and evaluate locally, then explicitly activate the saved
-version. A derived version is recorded as `cp-cyto3@<version-id>` and does not
-become a fourth built-in model. Checkpoints must remain regular files inside the
-app-owned `Models` directory. Windows v1.2.0 trains on CPU and does not offer a
-mixed-precision control.
-
-Training now requires at least three specimen groups and six epochs. Use a `groups.json` mapping from relative image filename to specimen ID, or supported patient-prefix filenames such as `OM-04-…`. Groups stay together across train/validation/test splits, duplicate source images are rejected, and malformed pairs fail explicitly. This pair-folder workflow is different from macOS’s immutable reviewed-library dataset builder.
+Workbench assays declare required channels, labels and dimensions. Biological
+replicate statistics require explicit specimen assignments. Training/adaptation
+is limited to supported methods and requires suitable masks and specimen-grouped
+data; configuring a model does not automatically train it. See the
+[Workbench guide](WORKBENCH.md) for exact controls and limits.
 
 ## Local data and privacy
 
-CellCounter stores its Windows data below these identifier-scoped directories:
+During built-in local detection, images do not upload to an inference service.
+Model/runtime installation makes network downloads. Explicit OMERO access connects
+to its configured server; trusted executable plugins or separately configured
+methods have their own behavior.
+
+The existing library and application-managed environments are stored under:
 
 - `%APPDATA%\com.alperengur.cellcounter\CellCounter`
-  - `store.sqlite` — batches, measurements, corrections, ROIs, presets, and
-    provenance, saved analysis jobs and mask versions
-  - `Images` — application-owned copies of imported source images
-  - `Originals` — untouched proprietary microscope containers
-  - `Analysis` — lossless projected TIFFs used by detection and assays
-  - `Thumbnails` — local previews
-  - `Models` — app-scoped downloaded and fine-tuned weights, including
-    StarDist's Keras cache
-  - `Exports` — locally generated CSV, PDF, ROI, GeoJSON, and provenance files
+  - `store.sqlite`: library records, saved jobs, measurements and corrections
+  - `Images`, `Originals` and `Analysis`: imported sources and prepared data
+  - `Thumbnails`: previews
+  - `Models`: downloaded and adapted weights
+  - `Exports`: generated files
 - `%APPDATA%\com.alperengur.cellcounter\py`
-  - `.venv` — `cp-cyto3`
-  - `.venv4` — `cpsam_v2`
-  - `.venvsd` — `sd-fluo`
-  - `.venvio` — isolated, hash-locked microscopy container readers
-  - staged, bundled sidecar scripts
+  - `.venvwb`: dedicated Workbench environment
+  - model-specific environments such as `.venv`, `.venv4` and `.venvsd`
+  - isolated reader environment and bundled analysis scripts
 
-Microscopy images never upload or leave this PC as part of detection. The app
-does make outbound downloads when WebView2 or a selected model runtime is not
-already present. There is no server inference path in the Windows 1.2.0 build.
+**Workbench projects live in the folders you choose**, separately from this
+application-data directory. Externally selected interpreters, checkpoints and
+OMERO configuration can also live elsewhere.
+
+Optional diagnostics are prepared, inspected and exported locally. There is no
+automatic upload. See [local diagnostics](INSTALL.md#optional-local-diagnostics).
 
 ## Backup and restore
 
-1. Close CellCounter completely so `store.sqlite` and any model installation
-   process are no longer writing.
-2. In File Explorer, enter `%APPDATA%\com.alperengur.cellcounter` in the address
-   bar.
-3. Copy the entire directory to protected storage. Keeping `CellCounter` and
-   `py` together preserves the database, imported copies, exports, environments,
-   and model caches as one snapshot.
-4. To restore, install the same or a compatible newer CellCounter version, close
-   it, replace the identifier-scoped directory with the backup, and relaunch.
+1. Stop background analysis/model installation and close CellCounter.
+2. Copy the entire `%APPDATA%\com.alperengur.cellcounter` directory to protected
+   storage. Keep the `CellCounter` and `py` folders together.
+3. Back up each Workbench project folder separately. Retain external source data,
+   model files and host-local runtime configuration needed to rerun the analysis.
+4. For a portable scientific copy, export an analysis package before closing.
+   Package restore verifies retained artifacts; executable methods require
+   explicit reconfiguration/enabling on the destination computer.
 
-Do not copy only `store.sqlite`: its image records refer to files in `Images`,
-and an incomplete backup can leave records without their source pixels.
+To restore the existing library, install the same or a compatible newer version,
+close the application, restore its complete identifier-scoped directory, then
+reopen. Copying only `store.sqlite` leaves its source-image references incomplete.
 
 ## Reset
 
-**Settings → Data & reset → Reset all data** deletes batches, imported display,
-original and analysis image copies, thumbnails, detections, ROIs, ground truth,
-and corrections after a confirmation. It preserves conditions,
-calibration/bin presets, settings, downloaded models, and local Python
-environments. This operation cannot be undone.
+**Settings → Data & reset → Reset all data** removes the existing library's
+batches, imported image copies, thumbnails, detections, ROIs, ground truth,
+corrections, saved jobs and mask versions after confirmation. It preserves
+conditions, calibration/bin presets, settings, downloaded models and local Python
+environments. Reset is unavailable during a saved processing job and cannot be undone.
 
-Saved analysis jobs, run documents and mask versions are also removed. Reset is unavailable while a saved job is processing.
-
-To perform a complete manual factory reset, first uninstall CellCounter, make
-any required backup, and then delete
-`%APPDATA%\com.alperengur.cellcounter`. Manual deletion removes model downloads
-as well as microscopy data; do it only while the app is closed.
+This library reset is not a backup or a way to reset separately selected Workbench
+project folders. Manage those projects deliberately. To remove all remaining
+application-managed data, first back it up, close/uninstall the application, then
+remove the identifier-scoped app-data directory. That manual deletion also removes
+its downloaded models and environments.
 
 ## Troubleshooting
 
-### Imported images show broken thumbnails or previews
-
-Install Windows 1.2.0 and reopen CellCounter. Local image access now uses the
-actual library folders, and failed previews can be regenerated from the imported
-source. Existing images do not need to be reimported or reset. This patch has
-been packaged but its behavior on the reporter's PC remains unconfirmed.
-
-### First analysis says “Sidecar scripts are not staged”
-
-Install version 1.2.0 and reopen CellCounter. The application now carries its required analysis scripts inside the executable and prepares them before model checks or analysis. Missing or damaged staged scripts are repaired automatically. Existing images and model environments are retained; a library reset is not needed.
-
-If preparation still fails, keep the specific error and check free disk space and write access to `%APPDATA%\com.alperengur.cellcounter\py`. A file-lock or disk error is reported with recovery guidance. Reinstall the application from the official release if its executable itself is missing or damaged; reinstalling models alone does not repair an older application’s first-run staging bug.
-
 ### The installer is blocked by SmartScreen
 
-Confirm the download source and SHA-256 first. Current CI artifacts are
-unsigned, so a verified file may still show an unknown publisher. Do not bypass
-the warning when the checksum or origin is uncertain.
+Check that the download is from the official release and matches its SHA-256.
+The current unsigned installers can show an unknown publisher even when intact.
+Follow institutional policy or ask your administrator if installation is blocked.
 
 ### The window is blank or does not open
 
-Repair or install Microsoft Edge WebView2 Runtime, then relaunch. If the
-installer could not bootstrap it, check the workstation's proxy/firewall policy
-or ask IT to deploy WebView2 separately.
+Repair or install Microsoft Edge WebView2 Runtime, then reopen CellCounter.
+A proxy or deployment policy may prevent its bootstrap download; an administrator
+can install WebView2 separately.
+
+### The Workbench runtime is unavailable
+
+Use **Workbench → AI agent access → Install or repair runtime**, then check
+readiness. Retain the specific dependency error, and check internet access, disk
+space and write access to the application-data directory. Installing a library
+model does not replace this dedicated environment.
 
 ### A model install fails
 
-Keep the Models log visible and retain its final error. Confirm internet access,
-available disk space, and write access to
-`%APPDATA%\com.alperengur.cellcounter\py`. Security software may need to allow
-the bundled `uv` process to download Python packages. Retry the same model card;
-the app will not fall back to a different checkpoint.
+Keep the model name and final installation error. Check internet access, free
+space and write access to the `py` directory. Security software may restrict the
+bundled provisioning tool. Retry or repair the chosen model; replacing it with
+another checkpoint changes the analysis method.
+
+### Imported images show broken thumbnails or previews
+
+Reopen the current release and check whether the retained source is available.
+Do not reset or reimport the library as a first step. If the app reports a missing
+or unreadable source, keep the exact error and verify your backup/restore paths.
+
+### First analysis says “Sidecar scripts are not staged”
+
+Reinstall the current application from the official release, reopen it, and retry.
+Its bundled scripts are staged/repaired before use. Check disk space and write
+access to the `py` directory if preparation still fails. A model reinstall alone
+does not repair a damaged application download.
 
 ### Detection is slow
 
-Windows v1.2.0 uses local CPU inference. Initial
-inference can be slower while a runtime warms its model; later images with the
-same Cellpose configuration reuse warm workers. Saved jobs process one image at a time to bound concurrent work. GPU acceleration is not advertised by this release.
-
-### Capabilities differ from macOS
-
-The Windows build does not yet provide the native OME-Zarr/layer workspace, registration/stitching, workspace animation/replay/lineage, pixel-class painting, prompt refinement, mask propagation/drift correction, bulk grid curation, advanced optimizer, additional model variants, or reviewed-library training snapshots. Source-plane display also remains limited as described above. Use **Support → Platform parity** for the explicit inventory; an existing related assay or protocol does not imply those separate workflows are present.
+The bundled model installers use CPU inference, and first inference can include
+model startup or a weight download. Reuse the installed environment and saved
+processing workflow. For a registered method, inspect its actual backend rather
+than assuming a GPU package is active.
 
 ### Imported images or models appear missing after restore
 
-Exit the app and verify that both the `CellCounter` and `py` sibling directories
-were restored under the exact identifier-scoped path. A database-only copy is
-not a complete backup.
+Verify the complete `CellCounter` and `py` directories under the exact
+identifier-scoped path. Also reopen the intended Workbench project folder:
+restoring application data alone does not restore projects saved elsewhere.
 
 ## Validation boundary
 
-Version 1.2.0 uses the manual packaging-only workflow: production compilation,
-native installer generation and checksum checks. Automated tests and interactive
-app validation were not run for this patch.
+Supported limits are documented in the [feature reference](FEATURES.md) and
+[Workbench guide](WORKBENCH.md). Check segmentation and calibration on representative
+images before relying on a new assay. Institutional deployment should confirm
+installation, upgrade, backup/restore and model availability on its physical Windows
+workstations, including local security and WebView2 policies.
 
-By default, the Windows workflow runs on GitHub's `windows-latest` x64 image with pinned
-Node.js, Rust, npm/Cargo lockfiles, and a checksum-pinned `uv` archive. It runs
-the portable release audits, production frontend build, Rust tests, native MSI
-and NSIS builds, installer discovery, SHA-256 generation, and artifact upload.
+CellCounter does not provide a universal accuracy guarantee or automatic biological
+interpretation. Source formats, model environments and workstation configuration
+can affect available operations.
 
-Before calling a public release fully qualified, a physical Windows test must
-still exercise both installer UIs, upgrade/uninstall behavior, SmartScreen or a
-real signing certificate, WebView2 bootstrap policy, model downloads,
-CPU inference on representative public and vendor-format images, assay and
-fine-tune cancellation, derived-checkpoint activation, provenance checksum
-capture, and data restore. CI proves the packages build and contain the declared
-resources; it cannot prove native reader DLL behavior, organization policy, or
-real workstation performance.
-
-## Optional local diagnostics and real-workflow benchmarks
-
-**Local diagnostics & performance** is available in Support (macOS and Windows)
-or Help (web), beginning with macOS 1.0.17, Windows 1.2.1 and Web 0.3.1 preview.
-
-Choose **Start recording**, then use real images and the normal import,
-processing, review, workspace, assay and export controls. Normal analysis retains
-its normal results. There are no synthetic workloads or automatic reruns.
-Choose a 10-minute, 30-minute or two-hour limit; a visible Stop control remains
-available while navigating. Stop early or erase the recorded timings at any time.
-
-Recording is disabled initially and must be started each app session. It stores
-only bounded numeric aggregates under fixed operation categories, in memory:
-counts, durations, failures where known, unfinished operations and recent latency
-percentiles. Foreground interface scheduling is measured during recording.
-Names, paths, image content, saved measurements, IDs, device identifiers, raw
-logs, free-form errors, wall-clock timestamps and event order are excluded.
-A crash or app exit loses unsaved results; this is not a crash-dump collector.
-
-Afterward, explicitly include the optional state summary and/or recorded timings,
-prepare the editable preview, remove any lines you do not want to share, and mark
-it inspected. Export writes exactly that text, up to 64 KiB, with no attachments
-or automatic uploads. Editing clears the inspection confirmation. Sharing is a
-separate manual action. The chosen file destination may be synced by other
-software. Counts and timings can reveal workload characteristics, so inspection
-is still important; absolute anonymity cannot be guaranteed for text users add.
-
-Timings cover instrumented real workflow boundaries and include waiting, cache
-and scheduling effects. Nested categories overlap. Unobserved operations are
-listed rather than estimated, and incomplete work is marked explicitly. Native
-exports and other boundaries that cannot classify their final outcome report it
-as unspecified. Timing summaries do not establish segmentation accuracy or expose
-CPU/GPU kernel profiles. Startup before opt-in and work before recording began
-are not measured. Keep input/settings consistent when comparing sessions.
+See the [1.3.0 release notes](releases/windows-v1.3.0.md) for release-specific changes.

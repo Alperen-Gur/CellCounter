@@ -641,13 +641,18 @@ def _advance_job_unit(store, document, request, actor, *, job_id=None, result_bu
 def _execute(request):
     entry, arguments, actor = validate_request(request)
     operation = request["operation"]
+    if operation == "navigation.catalog":
+        from _workbench_navigation import catalogue
+        return _success(request, catalogue())
     if operation == "operations.discover":
         from _workbench_discovery import discover
         return _success(request, discover(arguments))
     if operation == "capabilities":
+        from _workbench_navigation import summary as navigation_summary
         deps = imaging.dependencies()
         return _success(request, {
             "engineVersion": ENGINE_VERSION, "operations": operation_catalog(),
+            "navigation": navigation_summary(),
             "dependencies": deps,
             "segmentation": {"available": all(deps.values()), "methods": ["otsu", "manual", "triangle", "li", "yen", "mean", "adaptive"],
                              "planeMethods": ["otsu", "manual", "triangle", "li", "yen", "mean", "adaptive"],

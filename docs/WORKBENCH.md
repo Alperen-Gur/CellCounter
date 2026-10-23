@@ -1,9 +1,36 @@
-# Local analysis workbench
+# CellCounter Workbench
 
 The Workbench uses one local project format and one operation dispatcher for the
-desktop interface, command line and Model Context Protocol (MCP) clients. A mask
-edit from one client changes the measurements read by the others. Project
-revisions prevent a client with an old view from silently overwriting a later edit.
+desktop interface, command line, Python SDK and Model Context Protocol (MCP)
+clients. A mask edit from one client changes the measurements read by the others.
+Project revisions prevent a client with an old view from silently overwriting a
+later edit. This guide covers the desktop Workbench; the
+[browser preview](WEB.md) has a separate, smaller capability set.
+
+Start with the [desktop workflow](#desktop-workflow), [CLI example](#cli-example),
+[Python SDK](#python-sdk) or [MCP connection](#mcp-connection).
+
+- **Analysis:** [channel displays](#multi-channel-fluorescence-display),
+  [tracking and lineage](#tracking-and-lineage),
+  [preprocessing and assays](#preprocessing-independent-masks-and-assays), and
+  [annotations](#annotations-and-intensity-profiles).
+- **Reproducible workflows:** [saved jobs](#saved-workflows-and-resumable-jobs),
+  [branching workflows](#branching-workflows), [parameter sweeps](#parameter-sweeps),
+  [review](#review-and-quality-control) and [result refresh](#refreshing-results-after-corrections).
+- **Experiments and reporting:** [biological replicates](#experiments-and-biological-replicates),
+  [statistical designs](#experimental-designs-and-statistical-reports),
+  [experimental layouts](#reusable-experimental-layouts-and-exclusions) and
+  [exports](#saved-data-and-export).
+- **Data and integrations:** [library migration](#import-an-existing-cellcounter-library),
+  [large TIFF regions](#large-tiff-sources-and-regions),
+  [OMERO](#read-only-omero-import), [plugins and models](#plugins-and-local-learned-models),
+  [layer workspaces](#layer-workspaces-and-semantic-journals),
+  [streamed packages](#large-libraries-and-streamed-packages) and
+  [portable distributed tasks](#portable-distributed-tasks).
+- **Reference:** [runtime setup](#standalone-runtime),
+  [runtime configuration](#runtime-configuration-and-plugin-environments),
+  [agent discovery](#operation-discovery-and-compact-mcp),
+  [current scope and troubleshooting](#current-scope-and-troubleshooting).
 
 ## Desktop workflow
 
@@ -38,11 +65,27 @@ of an object. Undo restores geometry and uses the current calibration.
 X, Y and Z voxel sizes are independent; physical volume requires all three.
 Empty calibration fields clear that dimension to unknown.
 
-Tracking links analyzed time points using bounded one-to-one centroid matching.
-Choose a maximum displacement, voxel or physical units, and an allowed missing-frame
-gap. Manual link/unlink operations correct correspondences. This tracker does not
-infer divisions or lineages. Mask or calibration changes mark captured tracks
-stale until tracking is recomputed.
+## Tracking and lineage
+
+The basic tracker links analyzed time points using bounded one-to-one centroid
+matching. Choose a maximum displacement, voxel or physical units, and an allowed
+missing-frame gap. Manual link/unlink operations correct correspondences. This
+basic mode creates tracks without division inference. Mask or calibration
+changes mark captured tracks stale until tracking is recomputed.
+
+For drift-aware association and heuristic division inference, use
+`temporal.track.preview` and `temporal.track.run`. The preview reports ambiguity
+and exact source bindings; inferred divisions remain unconfirmed biological
+hypotheses until reviewed. Drift offsets describe sample translation relative to
+the first selected frame. No intermediate observations are invented inside gaps.
+`temporal.catalogue` reports the available controls and limits.
+
+`temporal.propagate.preview` shows translated exact-label corrections, clipping,
+collisions and proposed replacements across selected frames.
+`temporal.propagate.run` applies the reviewed group with retained before/after
+evidence. Propagation does not segment images or infer missing identities across
+divisions or merges. Undo requires all target outputs to still match the retained
+group. Changed masks make the previous temporal graph historical until recomputed.
 
 Initialize a lineage graph from current tracks to record cell divisions and
 correct continuations. A division connects one parent to two daughters at a later
@@ -788,14 +831,18 @@ Processed images explicitly identify their transformed intensity units and retai
 their preprocessing recipes.
 Object measurements come from the saved label pixels, not their display contours.
 
-The ZIP contains source images, exact NumPy label arrays, correction snapshots,
-`measurements.csv`, `volume-measurements.csv`, `volume-summary.json`, saved tracks,
-`summary.json`, `experiment-summary.json`, `project.json`, `provenance.json` and a SHA-256
-manifest. Its `sourceRevision` identifies the snapshot being exported; recording
-the export advances the live project's revision once. Existing ZIPs are never
-overwritten. `package.inspect` validates a package and reports local dependency
-availability. `package.restore` reopens it into a new project directory, retaining
-source data, masks, workflows and history. The restored project gets a new ID.
+`project.export` writes a scientific snapshot with source data, exact label
+arrays, correction history, measurements, tracks, workflows and provenance.
+New indexed projects use the [streamed Package2 format](#large-libraries-and-streamed-packages);
+older projects retain their compatible analysis ZIP format. Package structure and
+limits depend on that format, rather than the visible library page.
+
+The package's `sourceRevision` identifies the exported snapshot; recording the
+export advances the live project's revision once. Existing ZIPs are never
+overwritten. `package.inspect` verifies package metadata and reports dependencies;
+Package2 artifact bytes are verified during restore. `package.restore` reopens it
+into a new project directory, retaining source data, masks, workflows and history.
+The restored project gets a new ID.
 It never overwrites an existing project, installs dependencies or starts code.
 Restored executable plugins and model bindings require explicit enabling.
 Unfinished training and analysis workers are marked interrupted; their processes
@@ -882,10 +929,11 @@ probability thresholds, minimum object area and device selection. Saved workflow
 freeze these controls with the checkpoint, interpreter and backend identifiers.
 
 Cellpose 3 checkpoints are limited to 512 MiB; Cellpose 4 checkpoints may be up to
-2 GiB and are copied and hashed as streams. Package restoration permits this
-larger member only when the project explicitly identifies it as a retained
-Cellpose 4 checkpoint, or the exact retained micro-SAM primary checkpoint described below. Other artifact limits remain unchanged, and complete
-packages retain their 2 GiB compressed and 4 GiB expanded limits.
+2 GiB and are copied and hashed as streams. Legacy analysis ZIP restoration permits
+this larger member only when the project explicitly identifies it as a retained
+Cellpose 4 checkpoint, or the exact retained micro-SAM primary checkpoint described
+below. Legacy packages remain limited to 2 GiB compressed and 4 GiB expanded.
+Current indexed projects use [Package2's streamed limits](#large-libraries-and-streamed-packages).
 
 Approve reviewed masks using `adaptation.reference.set` and assign their images
 to biological specimens. `adaptation.suggest` proposes a mixture of diverse and
@@ -971,19 +1019,22 @@ review the reasons and prepare a refresh plan.
 shows the latest logical analyses, with current, stale or blocked status. A
 changed paired reference, such as a nuclear mask used by a nuclear:cytoplasmic
 assay, is a dependency change even when the measured image's own mask is unchanged.
-Stale segmentation, registration, tracking or lineage inputs are reported as
-separate actions; refreshing measurements does not rerun those algorithms or
-replace corrected masks.
+The default transitive plan includes supported processing, tracking, lineage,
+assay/plugin-measurement and statistical dependencies in order. It reapplies stored
+registration transforms rather than estimating new alignment and does not rerun
+segmentation. See [refreshing a dependency chain](#refreshing-a-dependency-chain)
+for mask-transfer rules and blockers.
 
-The shared GUI/CLI/MCP sequence is:
+For a narrower measurement-only plan, the shared GUI/CLI/MCP sequence is:
 
-1. Call `refresh.preview` with optional `imageIds`. It selects the latest logical
-   stale assays and measurement-plugin outputs. To choose particular saved runs,
+1. Call `refresh.preview` with `dependencyMode: "measurements"` and optional
+   `imageIds`. It selects the latest logical stale assays and measurement-plugin
+   outputs. To choose particular saved runs,
    provide `runRefs` entries with `kind` (`assay` or `plugin-measurement`) and
    `runId`. `includeCurrent:true` explicitly allows recalculating current results.
 2. Review the selected work, blocked items and the returned `previewFingerprint`.
-   Submit the same selection to `refresh.create` with that fingerprint, the
-   current revision and an optional `name`. Blockers prevent creation unless
+   Submit the same selection and dependency mode to `refresh.create` with that
+   fingerprint, the current revision and an optional `name`. Blockers prevent creation unless
    `skipBlocked:true` is explicitly supplied; skipped items remain in the plan.
 3. Use the returned refresh ID with `refresh.advance` to complete one checkpoint,
    or `refresh.worker.start` to run remaining checkpoints in a local background
@@ -1169,6 +1220,63 @@ supports up to 100,000 acquisitions with paged readers. This is a supported limi
 not a measured performance claim.
 
 ## Shared project sessions and agent navigation
+
+### Task navigation in current source builds
+
+The unified task navigation described here is available in current source builds.
+The published macOS 1.1.0 / Windows 1.3.0 downloads and Python 0.1.0 wheel predate
+this addition. Check `capabilities` or `operations.discover` for
+`navigation.catalog` before using it with an installed runtime.
+
+`navigation.catalog` is a read-only operation that does not require a project.
+It returns the same six task IDs used by the desktop hosts, with canonical
+operation references and their revision, execution and network requirements.
+
+| Task ID | Navigation label | Main tools |
+| --- | --- | --- |
+| `preparation` | Images | Import, catalogue, calibration, preprocessing, registration and layer workspaces |
+| `segmentation` | Segmentation | Models, model adaptation, plane/volume segmentation and exact-label corrections |
+| `measurements` | Measurements | Assays, annotations, tracking, lineage and statistics |
+| `review` | Review | Quality control, comparisons and review decisions |
+| `workflows` | Workflows | Experiments, plates, graphs, sweeps, jobs, distribution and result refresh |
+| `export` | Results & export | Summaries, exports, portable packages and project storage |
+
+From the repository root:
+
+```sh
+python3 shared/python/workbench.py call navigation.catalog
+```
+
+Task assignments appear as `navigationTask` in operation discovery. An operation
+without an explicit task remains discoverable and has no inferred destination.
+Use `operations.discover` for exact argument schemas and capability-specific
+inspect/probe operations for readiness. MCP adds the connection's current access
+requirements to the catalogue; task discovery never grants write, network or
+executable permissions.
+
+Graphical sessions can publish an optional `selection.task` using one of these
+IDs. A task-only update or navigation request preserves the selected image,
+channel, time point, orthogonal slice and layer workspace. An applied
+acknowledgement validates the complete resulting selection; unavailable spatial
+context must be resolved rather than silently marked current. Requests from
+older clients that omit `task` retain their spatial replacement behavior and
+preserve any task already recorded by a newer client.
+
+After reading `session.list` and `session.get`, an agent can request a task using
+the host's current session revision and the current project revision:
+
+```sh
+python3 shared/python/workbench.py --project /absolute/experiment.ccproject \
+  call session.navigate --request-id show-review-1 \
+  --args '{"sessionId":"graphical-session-id","expectedSessionRevision":3,"observedProjectRevision":8,"selection":{"task":"review"}}'
+```
+
+The request changes no scientific result. The host reports whether navigation
+was applied, deferred or refused. Pending task-only requests keep the requested
+`{"task":"review"}` selection, so a host can distinguish task navigation from
+a request to replace spatial context and preserve in-progress drafts.
+
+### Project changes and session revisions
 
 `project.changes` reads committed project effects after `afterRevision`. Its
 `nextRevision` is the next cursor; consume further pages while `hasMore` is true.
@@ -1481,6 +1589,8 @@ The fixed local runtime probe uses the existing executable-operation opt-in.
 These grants do not authorize arbitrary remote writes or shell commands.
 
 
+### Review gates and corrected branches
+
 Branching workflows can include a **Review** node after segmentation. Reaching
 that node stops the existing background worker and records the exact source,
 selection and mask awaiting review. Recommendations are retained separately from
@@ -1506,6 +1616,8 @@ and tracks are not carried into those new objects. Arbitrary merge semantics are
 not implied.
 
 
+### Operation discovery and compact MCP
+
 Agent clients can discover only the operations they need with
 `operations.discover`: filter by `prefix`, text `query` or `mutating`, request
 `includeSchemas: true` for exact arguments, and follow `nextCursor`. Pages default
@@ -1520,6 +1632,8 @@ All path, executable, profile and saved-workflow checks still apply. Discovery
 reports permission restrictions; it does not claim that optional runtimes or
 network services are ready. Existing `--tool-mode operations` connections retain
 direct operation names and receive bounded `tools/list` pages.
+
+### Runtime configuration and plugin environments
 
 The Python SDK uses the same validated host runtime setup as CLI startup:
 
@@ -1569,6 +1683,8 @@ default, without enabling code or changing saved jobs. Package restoration keeps
 model and plugin execution disabled until explicitly authorized locally.
 
 
+### Reusable experimental layouts and exclusions
+
 Reusable experimental layouts use the same typed categorical/numeric factors as statistical designs. Save slots with `experiment.layout.save`, inspect `experiment.layout.apply.preview`, and apply its fingerprint with `experiment.layout.apply.run`. Each slot creates one new biological specimen across all of its fields. Every application creates fresh specimen/plate identities; repeated subjects and blocks are linked only through explicit mappings. Layouts and preview-bound statistical design drafts can be saved before images or sufficient replicates exist. Draft inference reports its blockers and cannot be saved as a valid result.
 
 `experiment.layout.application.statistics` produces a normal statistical definition draft from the retained factor rows. `acquisition.session.save` separately records instruments, operators, optional timezone-qualified acquisition timestamps and exact source membership. It does not change assignments or biological n; an absent acquisition time remains unknown. Sessions and layouts retain immutable versions.
@@ -1576,6 +1692,8 @@ Reusable experimental layouts use the same typed categorical/numeric factors as 
 In the desktop Workflows task, open **Experiments, specimens and plates** for layout versions, image bindings, acquisition sessions and exclusions. Layout application previews show new specimens and both new and replaced assignments. Blank subject/block mappings create new identities; exact existing IDs must be supplied to reuse them. Image choices remain explicit across paged library searches. The Statistics design editor can load a retained application using its selected outcome, and uses the same factor controls as the layout editor. A design with missing inputs can be retained as a draft; inference requires a ready saved version.
 
 Use `experiment.exclusion.set` to record or clear a specimen or field exclusion with a reason. Summary/statistical inputs retain the effective decisions and their fingerprints, while old reports remain historical. Excluded fields do not make the remaining fields additional replicates. Archive visibility is independent of exclusion. A dependency refresh that replaces an acquisition representation carries its active field exclusion forward with an explicit predecessor link.
+
+### Registered segmentation models
 
 The registered model catalogue also supports exact local StarDist 2D, Omnipose and micro-SAM inference. `model.catalog` describes each backend's registration files and controls; `model.register` retains the selected checkpoint and, for StarDist, its configuration and optional thresholds. Omnipose architecture and micro-SAM architecture/AMG/AIS/APG mode are explicit. Model-specific inference schemas preserve extra acquired input channels where required; measured fluorescence remains on the declared anchor channel. These adapters do not install packages, download weights, substitute model aliases or advertise fine-tuning support. Saved workflows, sweeps and portable task definitions bind the complete weight/configuration identity. Micro-SAM primary checkpoints, like Cellpose 4 checkpoints, may be up to 2 GiB; ordinary model weights remain limited to 512 MiB and separate model JSON to 1 MiB.
 
@@ -1593,15 +1711,19 @@ Format2 project exports use Package2: a scientific-only indexed snapshot and str
 
 Measurement-bearing analysis, correction, calibration, model, plugin and external-label operations accept `cellLimit` (1–1,000). This limits returned rows only. `cellCount` remains the complete count, while `returnedCellCount` and `cellsTruncated` identify the returned subset. Saved labels and measurements remain complete. Display the complete raster using `mask.overlay`, select exact objects through `mask.pick`/`measurements.lookup`, and read their table through `measurements.page`. Analysis previews retain their complete bounded overlay or volume display even when preview rows are limited.
 
+### Additional segmentation and assay workflows
+
 Classical plane segmentation supports Otsu, manual, triangle, Li, Yen, mean and adaptive thresholds, explicit bright/dark polarity or a recorded automatic background heuristic, and optional hole filling. Adaptive controls require an odd source-pixel neighbourhood and an explicit automatic or manual offset policy. Adaptive estimation requires rectangular acquired support; unsupported fill never contributes to its neighbourhood. These options use the same threshold kernel as the compatible legacy detector routes. Existing Otsu/manual settings keep their previous normalized defaults.
 
 A graph's raw-intensity assays can consume source or preprocessed pixels without creating masks. These branches retain assay results and report no object count. N:C and neurite assays bind explicit nuclear and soma branches, respectively; paired mask sources must satisfy the canonical exact-grid requirements. Raw branches, segmentation alternatives and their sweep results remain distinct technical analyses.
 
 Scratch-wound series participate in dependency-ordered refresh. Their replacement runs preserve ordered observations, explicit timestamps, common acquired support and predecessor links. Replicate statistics can use a declared series slope in pixel area per second, calibrated area per second, or normalized closure per second. The supported inference input is one current compatible series per biological specimen; multiple independent technical series require an explicit future aggregation policy and currently block the design. Frames never become biological replicates. Comparable declared time windows, processing, measured extents, calibration and coverage are required; different absolute ROI origins do not by themselves make specimens incompatible. Exact source positions remain retained provenance.
 
-Large projects use `project.snapshot` for selected images and recent catalogue descriptors. `cataloguePages` reports total, returned count, partial state and the next revision-bound cursor for every catalogue. Use `project.catalogue` to page, `project.catalogue.get` for an exact retained identity/version, or `project.catalogue.getMany` for up to200 explicit current identities. Assignments use image IDs; exclusion identities are `image:<id>` or `specimen:<id>`. A recent page is never a complete experiment or selection.
+### Retained catalogue navigation
 
-A snapshot can pin up to64 open catalogue entries with `selectedCatalogueEntries`; missing entries are explicit. Active background/training jobs are reported separately from paged history, and `project.activity` reads that activity without replacing scientific drafts. Cursors reject changed revisions rather than silently mixing snapshots. Descriptor byte budgets can return fewer entries than requested; exact detail reads remain available.
+Large projects use `project.snapshot` for selected images and recent catalogue descriptors. `cataloguePages` reports total, returned count, partial state and the next revision-bound cursor for every catalogue. Use `project.catalogue` to page, `project.catalogue.get` for an exact retained identity/version, or `project.catalogue.getMany` for up to 200 explicit current identities. Assignments use image IDs; exclusion identities are `image:<id>` or `specimen:<id>`. A recent page is never a complete experiment or selection.
+
+A snapshot can pin up to 64 open catalogue entries with `selectedCatalogueEntries`; missing entries are explicit. Active background/training jobs are reported separately from paged history, and `project.activity` reads that activity without replacing scientific drafts. Cursors reject changed revisions rather than silently mixing snapshots. Descriptor byte budgets can return fewer entries than requested; exact detail reads remain available.
 
 The Windows task sections provide a shared retained-record browser. “Use in
 controls” makes an older record available in the existing selector without

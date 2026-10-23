@@ -17,6 +17,7 @@ struct WorkbenchVolumeControls: View {
             Picker("Channel", selection: Binding(get: { volume.channel }, set: { session.changeVolumeFrame(channel: $0) })) {
                 ForEach(0..<volume.channels, id: \.self) { Text("Channel \($0 + 1)").tag($0) }
             }
+            if session.task == .segmentation {
             Divider()
             Text("3D segmentation").font(.headline)
             Picker("Method", selection: $volume.method) {
@@ -36,6 +37,8 @@ struct WorkbenchVolumeControls: View {
             }
             Text("Threshold and 3D watershed use source intensities. Rendering uses a sampled display volume.")
                 .font(.caption).foregroundStyle(.secondary)
+            }
+            if session.task == .preparation {
             Divider()
             Text("Voxel calibration").font(.headline)
             calibratedField("X (µm/voxel)", known: $volume.knownX, value: $volume.voxelXUm)
@@ -45,7 +48,8 @@ struct WorkbenchVolumeControls: View {
             Text("Unchecked values are unknown. Apply to clear an incorrect calibration.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Apply voxel calibration", action: session.applyVolumeCalibration).disabled(!validCalibration)
-            if volume.timeCount > 1 { tracks }
+            }
+            if session.task == .measurements, volume.timeCount > 1 { tracks }
         }
         .sheet(isPresented: $showingLineage) {
             WorkbenchLineageView(session: session, lineage: session.lineage)

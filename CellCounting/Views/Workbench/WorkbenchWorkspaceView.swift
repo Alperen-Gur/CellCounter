@@ -251,7 +251,7 @@ struct WorkbenchWorkspaceView: View {
                     Text("Bind an exact selected-level region of at most four million pixels. The shared NGFF reader resolves T/Z/C on demand and checks retained read identities; overview pixels are never used as scientific source data.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text("Register a local OME-Zarr source under Images & preparation → Sources before binding it here.")
+                    Text("Register a local OME-Zarr source under Images → Prepare → Sources and regions before binding it here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

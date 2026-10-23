@@ -22,9 +22,11 @@ def fail(code, message, details=None):
 
 def operations():
     from _workbench_schema import _object, _op, _ID
+    from _workbench_navigation import TASK_IDS
     revision = {"type": "integer", "minimum": 0}
     index = {"type": "integer", "minimum": 0, "maximum": 64000000}
-    selection = _object({"imageId": _ID, "workspaceId": _ID,
+    selection = _object({"task": {"type": "string", "enum": list(TASK_IDS)},
+                         "imageId": _ID, "workspaceId": _ID,
                          "target": {"type": "string", "enum": ["plane", "volume"]},
                          "channel": index, "timeIndex": index,
                          "plane": {"type": "string", "enum": ["xy", "xz", "yz"]}, "index": index})
@@ -159,6 +161,14 @@ def _validate_selection(document, selection):
         fail("selection-unavailable", "The selected layer workspace is unavailable.")
 
 
+def _merge_selection(current, selected):
+    """Task-only changes keep spatial context; older clients keep their task."""
+    if set(selected) == {"task"}:
+        return {**copy.deepcopy(current), **copy.deepcopy(selected)}
+    task = {"task": current["task"]} if "task" in current else {}
+    return {**task, **copy.deepcopy(selected)}
+
+
 def _describe(session, document):
     from _workbench_schema import WorkbenchError
     result = copy.deepcopy(session)
@@ -262,7 +272,9 @@ def execute(store, request, actor):
                     if operation in ("session.update", "session.navigate"):
                         _validate_selection(document, args["selection"])
                         if operation == "session.update":
-                            session["selection"] = copy.deepcopy(args["selection"])
+                            selection = _merge_selection(session["selection"], args["selection"])
+                            _validate_selection(document, selection)
+                            session["selection"] = selection
                             session["observedProjectRevision"] = actual
                         else:
                             if session["clientKind"] not in ("native", "desktop"):
@@ -280,7 +292,9 @@ def execute(store, request, actor):
                             _validate_selection(document, navigation["selection"])
                             if navigation["observedProjectRevision"] != actual:
                                 fail("navigation-stale", "Scientific state changed after this navigation request. Refuse it and request a current selection.")
-                            session["selection"] = copy.deepcopy(navigation["selection"])
+                            selection = _merge_selection(session["selection"], navigation["selection"])
+                            _validate_selection(document, selection)
+                            session["selection"] = selection
                             session["observedProjectRevision"] = actual
                         navigation.update({"status": args["outcome"], "acknowledgedAt": now, "acknowledgedBy": copy.deepcopy(actor)})
                         if args.get("reason"):

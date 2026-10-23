@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "CellCounter: a desktop app for counting and size-classifying cells in microscopy images"
+title: "CellCounter: a local microscopy workbench for image analysis and quantification"
 message: "If you use this software, please cite it and the segmentation model you ran (e.g. Cellpose)."
 type: software
 authors:

@@ -70,26 +70,45 @@ struct AppSidebar: View {
                 }
                 .padding(.horizontal, 10).padding(.bottom, 14).padding(.top, 2)
 
-                NavItemView(icon: "home",  label: "Home",  isActive: state.view == .home)  { state.view = .home }
-                NavItemView(icon: "clock", label: "Processing", count: state.jobScheduler.activeCount > 0 ? state.jobScheduler.activeCount : nil,
-                            isActive: state.view == .queue) { state.view = .queue }
-                ReviewNavItem(state: state)
-
-                SidebarSectionLabel(text: "Library")
-                let imageCount = state.libraryImageCount
-                let batchCount = state.libraryBatchCount
-                NavItemView(icon: "image",   label: "Images",  count: imageCount > 0 ? imageCount : nil, isActive: state.view == .imagesLibrary) { state.view = .imagesLibrary }
-                NavItemView(icon: "library", label: "Batches", count: batchCount > 0 ? batchCount : nil, isActive: state.view == .batch)          { state.view = .batch }
-                NavItemView(icon: "compare", label: "Compare", isActive: state.view == .compare) { state.view = .compare }
-                NavItemView(icon: "workspace", label: "Layered workspace", isActive: state.view == .workbench && state.workbenchSession.layeredWorkspace.editorOpen) {
-                    state.workbenchSession.sharedSession.presentWorkspace = true
+                SidebarSectionLabel(text: "Microscopy")
+                NavItemView(icon: "workspace", label: "Workbench", isActive: state.view == .workbench) {
                     state.view = .workbench
                 }
-                NavItemView(icon: "workspace", label: "Workbench", isActive: state.view == .workbench) { state.view = .workbench }
+                if state.view == .workbench, state.workbenchSession.hasProject {
+                    Text(state.workbenchSession.projectName)
+                        .font(.caption).foregroundStyle(Tokens.textSecondary)
+                        .lineLimit(2).padding(.horizontal, 10).padding(.vertical, 6)
+                }
 
-                SidebarSectionLabel(text: "System")
-                NavItemView(icon: "cpu",      label: "Models",    isActive: state.view == .models)   { state.view = .models }
-                NavItemView(icon: "sparkles", label: "Fine-tune", isActive: state.view == .fineTune) { state.view = .fineTune }
+                SidebarSectionLabel(text: "Existing data")
+                Menu {
+                    Text("Existing library — compatibility tools")
+                    Button("Library overview") { state.view = .home }
+                    Button("Images") { state.view = .imagesLibrary }
+                    Button("Batches") { state.view = .batch }
+                    Button("Review queue") { state.view = .reviewQueue }
+                    Button("Compare conditions") { state.view = .compare }
+                    Button("Processing jobs (\(state.jobScheduler.activeCount) active)") { state.view = .queue }
+                    Divider()
+                    Button("Models and installation") { state.view = .models }
+                    Button("Fine-tuning") { state.view = .fineTune }
+                    Button("Inspect or export workspace") { state.view = .workspace }
+                    Divider()
+                    Button("Copy library data into a project…") { state.prepareLibraryMigration() }
+                        .disabled(state.preparingLibraryMigration || state.jobScheduler.activeCount > 0 || TrainingService.isTrainingActive)
+                } label: {
+                    HStack(spacing: 10) {
+                        Icon("library", size: 16)
+                        Text("Existing library").font(.system(size: 13))
+                        Spacer(minLength: 0)
+                        if state.jobScheduler.activeCount > 0 {
+                            Text("\(state.jobScheduler.activeCount)").font(.caption.monospacedDigit())
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                }
+                .menuStyle(.borderlessButton)
+                .help("Review existing library data and jobs, or copy them into a microscopy project.")
 
                 Spacer()
 

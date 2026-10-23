@@ -107,7 +107,7 @@ nonisolated struct ShortcutHelpGroup: Identifiable {
         .init(id: .selectAll, title: "Select All", key: "a", display: "⌘A"),
         .init(id: .deleteSelection, title: "Delete or Reject Selection…", key: .delete, display: "⌘⌫"),
         .init(id: .openSelection, title: "Open Selection", key: .return, display: "⌘Return"),
-        .init(id: .newItem, title: "New Item…", key: "n", display: "⌘N"),
+        .init(id: .newItem, title: "New Item in Current Context…", key: "n", modifiers: [.command, .shift], display: "⌘⇧N"),
         .init(id: .save, title: "Save…", key: "s", display: "⌘S"),
         .init(id: .export, title: "Export…", key: "e", display: "⌘E"),
         .init(id: .exportBundle, title: "Export Image and Measurements…", key: "e", modifiers: [.command, .shift], display: "⌘⇧E"),
@@ -129,23 +129,22 @@ nonisolated struct ShortcutHelpGroup: Identifiable {
         .init(id: .undo, title: "Undo", key: "z", display: "⌘Z"),
         .init(id: .redo, title: "Redo", key: "z", modifiers: [.command, .shift], display: "⌘⇧Z / ⌘Y"),
     ]
-    static let navigation: [(AppView, String, String)] = [
-        (.home, "Home", "1"), (.batch, "Batches", "2"), (.imagesLibrary, "Images Library", "3"),
-        (.models, "Models", "4"), (.queue, "Processing", "5"), (.reviewQueue, "Review Queue", "6"),
-        (.compare, "Compare", "7"), (.fineTune, "Fine-tune", "8"), (.workspace, "Microscopy Workspace", "9"),
-    ]
+    static let navigation: [(WorkbenchTask, String, String)] = WorkbenchTask.allCases.enumerated().map {
+        ($0.element, $0.element.title, String($0.offset + 1))
+    }
     static var groups: [ShortcutHelpGroup] {
         [
-            .init(title: "Global", rows: [("⌘O", "Open images"), ("⌘⇧O", "Open folder"),
-                ("⌘,", "Settings"), ("⌘⇧K", "Calibrate scale"), ("⌘⇧P", "Analysis protocols"),
-                ("⌘⇧G", "Export GeoJSON"), ("⌘/", "Keyboard shortcuts")]),
+            .init(title: "Global", rows: [("⌘N", "New microscopy project"), ("⌘O", "Open microscopy project"),
+                ("⌘⇧O", "Import images into project"), ("⌘⌥⇧O", "Import image folder into project"),
+                ("⌘,", "Settings"), ("⌘⇧K", "Image calibration"), ("⌘⇧P", "Workflows"),
+                ("⌘⇧G", "Export existing library GeoJSON"), ("⌘/", "Keyboard shortcuts")]),
             .init(title: "Navigate", rows: navigation.map { ("⌘⌥\($0.2)", $0.1) }),
             .init(title: "Current screen — enabled when available", rows: definitions.map { ($0.display, $0.title) }),
-            .init(title: "Focused image canvas", rows: [("Space", "Toggle overlay"), ("X / Z", "Toggle mask fills / outlines"),
+            .init(title: "Existing library image canvas", rows: [("Space", "Toggle overlay"), ("X / Z", "Toggle mask fills / outlines"),
                 ("V / A / R / M", "Select / add / remove / merge cells"), ("C / G / T", "Manual count / reference point / trace boundary"),
                 ("P / B", "Point prompt / box prompt"), ("Delete", "Remove selected cells"),
                 ("← / →", "Previous / next image"), ("Esc", "Clear selection and exit editing")]),
-            .init(title: "Review queue", rows: [("K / R / E", "Keep / reject / edit diameter when the review canvas has focus"),
+            .init(title: "Existing library review queue", rows: [("K / R / E", "Keep / reject / edit diameter when the review canvas has focus"),
                 ("→", "Skip current cell"), ("Return", "Save diameter edit"), ("Esc", "Cancel diameter edit or return Home")]),
             .init(title: "Dialogs", rows: [("Return", "Confirm the visible default action"), ("Esc", "Dismiss when the operation allows it")]),
         ]
@@ -193,8 +192,14 @@ struct AppKeyboardCommands: Commands {
             Button("Settings…") { state.view = .settings }.keyboardShortcut(",", modifiers: .command).disabled(blockNavigation)
         }
         CommandGroup(replacing: .newItem) {
-            Button("Open Images…", action: openImages).keyboardShortcut("o", modifiers: .command).disabled(blockNavigation || state.isPreparingImport)
-            Button("Open Folder…", action: openFolder).keyboardShortcut("o", modifiers: [.command, .shift]).disabled(blockNavigation || state.isPreparingImport)
+            Button("New Microscopy Project…") { showWorkbench(); state.workbenchSession.presentCreateProject() }
+                .keyboardShortcut("n", modifiers: .command).disabled(blockNavigation || !canChangeProject)
+            Button("Open Microscopy Project…") { showWorkbench(); state.workbenchSession.presentOpenProject() }
+                .keyboardShortcut("o", modifiers: .command).disabled(blockNavigation || !canChangeProject)
+            Button("Import Images…", action: openImages)
+                .keyboardShortcut("o", modifiers: [.command, .shift]).disabled(blockNavigation || !canImportImages)
+            Button("Import Image Folder…", action: openFolder)
+                .keyboardShortcut("o", modifiers: [.command, .option, .shift]).disabled(blockNavigation || !canImportImages)
             Divider()
             command(.newItem); command(.openSelection); command(.save)
             Divider()
@@ -215,7 +220,7 @@ struct AppKeyboardCommands: Commands {
         }
         CommandMenu("Navigate") {
             ForEach(Array(KeyboardShortcutRegistry.navigation.enumerated()), id: \.offset) { _, entry in
-                Button(entry.1) { state.view = entry.0 }
+                Button(entry.1) { showWorkbench(task: entry.0) }
                     .keyboardShortcut(KeyEquivalent(Character(entry.2)), modifiers: [.command, .option])
                     .disabled(blockNavigation)
             }
@@ -224,7 +229,10 @@ struct AppKeyboardCommands: Commands {
         CommandMenu("Analysis") {
             command(.run); command(.preview); command(.pauseResume); command(.cancel)
             Divider()
-            Button("Calibrate Scale…") { state.showCalibration = true }
+            Button("Image Calibration…") {
+                if state.view == .workbench || state.view == .settings { showWorkbench(task: .preparation) }
+                else { state.showCalibration = true }
+            }
                 .keyboardShortcut("k", modifiers: [.command, .shift]).disabled(blockNavigation)
             command(.keep); command(.edit)
         }
@@ -279,31 +287,22 @@ struct AppKeyboardCommands: Commands {
             NSApp.sendAction(Selector(redo ? "redo:" : "undo:"), to: nil, from: nil)
         } else { perform(redo ? .redo : .undo) }
     }
+    private var canChangeProject: Bool {
+        state.workbenchSession.canRefreshWithoutDiscardingEdits && !state.workbenchSession.hasActiveWorkers
+    }
+    private var canImportImages: Bool {
+        !state.workbenchSession.busy && (!state.workbenchSession.hasProject || canChangeProject)
+    }
+    private func showWorkbench(task: WorkbenchTask? = nil) {
+        if let task { state.workbenchSession.task = task }
+        state.view = .workbench
+    }
     private func openImages() {
-        presentOpenPanel(allowedExtensions: Array(ImageLoader.supported), allowFolders: false, allowMultiple: true) {
-            state.importAndAnalyze(urls: $0)
-        }
+        showWorkbench(task: .preparation)
+        state.workbenchSession.presentImportImages()
     }
     private func openFolder() {
-        presentOpenPanel(allowedExtensions: Array(ImageLoader.supported), allowFolders: true, allowMultiple: false) { urls in
-            guard let folder = urls.first else { return }
-            Task { @MainActor in
-                let extensions = ImageLoader.supported
-                let images = await Task.detached(priority: .userInitiated) {
-                    guard let enumerator = FileManager.default.enumerator(at: folder,
-                        includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return [URL]() }
-                    return enumerator.compactMap { $0 as? URL }.filter {
-                        extensions.contains($0.pathExtension.lowercased())
-                            && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-                    }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-                }.value
-                if images.isEmpty {
-                    let alert = NSAlert()
-                    alert.messageText = "No supported images in this folder"
-                    alert.informativeText = "Choose a folder containing microscopy images, such as TIFF, PNG or JPEG files."
-                    alert.runModal()
-                } else { state.importAndAnalyze(urls: images) }
-            }
-        }
+        showWorkbench(task: .preparation)
+        state.workbenchSession.presentImportFolder()
     }
 }

@@ -1,16 +1,20 @@
 import { useCataloguePins } from "./WorkbenchCatalogueBrowser";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { openWorkbench } from "../../components/workbenchNavigation";
+import type { WorkbenchTaskId } from "../../../../shared/workbench/navigation";
 import type { ProjectSnapshot } from "../../../../shared/workbench/protocol";
 import type { StorageActions, StorageExportFormat, StorageRegion, TiledAnalysis, TiledObject, TiledPlan } from "../../../../shared/workbench/storageProtocol";
 import WorkbenchZarrSelection, { WorkbenchZarrRegion } from "./WorkbenchZarrSelection";
 import { activeJobWorker, workerTargetId, workerTargetKind } from "../../../../shared/workbench/workerProtocol";
 
 type Props = { snapshot: ProjectSnapshot; busy: boolean; writeBlocked: boolean; actions: StorageActions;
+  analysisTarget: HTMLElement | null; measurementsTarget: HTMLElement | null; exportTarget: HTMLElement | null; activeTask: WorkbenchTaskId;
   read: <T>(operation: string, args?: Record<string, unknown>) => Promise<T> };
 const fmt = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 const regionFields = ["x", "y", "width", "height"] as const;
 
-export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions, read }: Props) {
+export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions, read, analysisTarget, measurementsTarget, exportTarget, activeTask }: Props) {
   const sources = snapshot.zarrSources ?? [];
   const analyses = snapshot.tiledAnalyses ?? [];
   const [sourceId, setSourceId] = useState("");
@@ -76,11 +80,11 @@ export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions
   };
   const create = () => actions.mutate<{ analysis: TiledAnalysis }>("tiled.analysis.create", { ...planArgs, ...(analysisName.trim() ? { name: analysisName.trim() } : {}) }, result => setAnalysisId(result.analysis.id));
 
-  return <details className="workbench-automation">
-    <summary>OME-Zarr sources and tiled analysis</summary>
+  return <><details className="workbench-automation">
+    <summary>OME-Zarr sources</summary>
     <p>Choose a local NGFF image group, resolution level and exact T/C/Z plane. Extract a source-resolution region or process a larger region in durable tiles.</p>
-    {pinError ? <p className="workbench-error" role="alert">{pinError}</p> : null}
-    {error ? <p className="workbench-error" role="alert">{error}</p> : null}
+    {activeTask === "preparation" && pinError ? <p className="workbench-error" role="alert">{pinError}</p> : null}
+    {activeTask === "preparation" && error ? <p className="workbench-error" role="alert">{error}</p> : null}
     <button className="cc-btn" disabled={blocked} onClick={() => void actions.chooseDirectory("zarr.import", undefined, source => setSourceId(source.id))}>Open local OME-Zarr…</button>
     <WorkbenchZarrSelection sources={sources} value={selection} disabled={busy} onChange={value => { setSourceId(value.sourceId); setArrayPath(value.arrayPath); setTimeIndex(value.timeIndex); setChannel(value.channel); setZIndex(value.zIndex); }} />
     {source ? <div className="workbench-actions"><button className="cc-btn" disabled={blocked} onClick={() => void actions.chooseDirectory("zarr.rebind", sourceId)}>Relocate identical source…</button>
@@ -96,7 +100,18 @@ export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions
       <p>{fmt(region.width * region.height)} source pixels. Ordinary image extraction is limited to 16 million pixels; tiled analysis has a separate bounded plan.</p>
       <label>Extracted image name<input value={imageName} maxLength={200} onChange={event => setImageName(event.target.value)} placeholder="Use source and region name" /></label>
       <button className="cc-btn" disabled={blocked || !validRegion || !validSelection || region.width * region.height > 16_000_000 || !source?.available} onClick={() => void actions.mutate("zarr.extract", { ...selection, ...region, ...(imageName.trim() ? { name: imageName.trim() } : {}) })}>Extract exact region for analysis</button>
-      <details><summary>Create tiled analysis</summary>
+
+    </fieldset> : null}
+
+  </details>
+  {analysisTarget ? createPortal(<section aria-label="Tiled segmentation">
+    <h3>Tiled segmentation</h3>
+    {activeTask === "segmentation" && pinError ? <p className="workbench-error" role="alert">{pinError}</p> : null}
+    {activeTask === "segmentation" && error ? <p className="workbench-error" role="alert">{error}</p> : null}
+    <p>{source ? `Source: ${source.name} · level ${arrayPath} · time ${timeIndex + 1}, channel ${channel + 1}, Z ${zIndex + 1} · region ${region.width} × ${region.height} at ${region.x}, ${region.y}.` : "Choose an OME-Zarr source and region in Images before creating a tiled analysis."}</p>
+    <button type="button" className="cc-btn" onClick={() => openWorkbench({ kind: "task", task: "preparation" })}>Choose source and region in Images</button>
+    {array ? <>      <details><summary>Create tiled analysis</summary>
+        <fieldset disabled={busy}>
         <p>Global threshold-connected components across tiles. Shared-edge objects are reconciled before minimum-area filtering. This method processes one plane; it does not run tiled watershed or learned models.</p>
         <div className="workbench-editor-grid">
           <label>Threshold method<select value={method} onChange={event => setMethod(event.target.value as typeof method)}><option value="otsu">Global Otsu</option><option value="manual">Manual raw-intensity threshold</option></select></label>
@@ -113,8 +128,8 @@ export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions
           <details><summary>Processing limits and scientific notes</summary><ul>{currentPlan.notes.map(note => <li key={note}>{note}</li>)}</ul><p>Maximum 4,096 tiles, one billion region pixels, one million local components and 8 GiB retained artifacts.</p></details></> : plan ? <p>The plan is no longer current. Preview the edited settings at this project revision.</p> : null}
         <label>Saved analysis name<input value={analysisName} maxLength={200} onChange={event => setAnalysisName(event.target.value)} placeholder="Use source name" /></label>
         <button className="cc-btn" disabled={blocked || !currentPlan} onClick={() => void create()}>Create tiled analysis</button>
-      </details>
-    </fieldset> : null}
+        </fieldset>
+      </details></> : null}
     <section aria-label="Saved tiled analyses"><h3>Saved tiled analyses</h3>
       <label>Analysis<select disabled={busy} value={analysisId} onChange={event => setAnalysisId(event.target.value)}>{!analyses.length ? <option value="">Create a tile plan first</option> : null}{analyses.map(item => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}</select></label>
       {analysis ? <><p>{analysis.status} · {analysis.phase} · {analysis.progress.completed} / {analysis.progress.total} checkpoints · {fmt(analysis.retainedBytes / 1024 ** 2)} MiB retained</p>
@@ -133,6 +148,15 @@ export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions
         </div>
         {activeWorker && !thisWorker ? <p>Another background operation owns this project. Stop it from Background execution before changing this analysis.</p> : null}
         {analysis.objectCount != null ? <p>{fmt(analysis.objectCount)} globally reconciled objects{analysis.status === "completed" ? "" : " · publication or verification may still be pending"}.</p> : null}
+
+
+      </> : null}
+    </section>
+  </section>, analysisTarget) : null}
+  {measurementsTarget && analysis ? createPortal(<section aria-label="Tiled analysis measurements">
+    <h3>Tiled analysis · {analysis.name}</h3>
+    {activeTask === "measurements" && error ? <p className="workbench-error" role="alert">{error}</p> : null}
+    <button type="button" className="cc-btn" onClick={() => openWorkbench({ kind: "task", task: "segmentation" })}>Choose another tiled analysis in Segmentation</button>
         <details><summary>Object measurements and retained tiles</summary>
           <div className="workbench-actions"><button className="cc-btn" disabled={busy || analysis.objectCount == null} onClick={() => void operation(() => objects())}>Read object measurements</button><button className="cc-btn" disabled={busy} onClick={() => void operation(() => tiles())}>Read tile checkpoints</button></div>
           {objectPage?.analysisId === analysisId ? <><p>{objectPage.offset + 1}–{objectPage.offset + objectPage.objects.length} of {objectPage.total} objects · read at revision {objectPage.revision}{objectPage.revision !== snapshot.project.revision ? " (refresh to read current retained outputs)" : ""}</p>
@@ -141,16 +165,20 @@ export default function WorkbenchStorage({ snapshot, busy, writeBlocked, actions
           {tilePage?.analysisId === analysisId ? <><div className="workbench-table-wrap"><table><thead><tr><th>Tile</th><th>Source region</th><th>Checkpoint</th><th>Local components</th></tr></thead><tbody>{tilePage.tiles.map(item => <tr key={item.index}><td>{item.index + 1}</td><td>{item.x}, {item.y} · {item.width} × {item.height}</td><td>{item.status}</td><td>{fmt(item.componentCount)}</td></tr>)}</tbody></table></div>
             <p>Read at revision {tilePage.revision}.</p><button className="cc-btn" disabled={busy || !tilePage.offset} onClick={() => void operation(() => tiles(Math.max(0, tilePage.offset - 50)))}>Previous tiles</button><button className="cc-btn" disabled={busy || tilePage.nextOffset == null} onClick={() => void operation(() => tiles(tilePage.nextOffset!))}>Next tiles</button></> : null}
         </details>
-        <details><summary>Exact label region and export</summary>
+  </section>, measurementsTarget) : null}
+  {exportTarget && analysis ? createPortal(<details><summary>Tiled analysis results</summary>
+    <p>{analysis.name} · {analysis.status}</p>
+    {activeTask === "export" && error ? <p className="workbench-error" role="alert">{error}</p> : null}
+        <details><summary>Retained label region</summary>
           <p>Read up to one million retained label pixels. Coordinates use the selected source level, not the display overview.</p>
           <div className="workbench-editor-grid">{regionFields.map(key => <label key={key}>Label region {key}<input disabled={busy} type="number" value={labelRegion[key]} min={key === "x" || key === "y" ? 0 : 1} onChange={event => setLabelRegion(previous => ({ ...previous, [key]: Number(event.target.value) }))} /></label>)}</div>
           <button className="cc-btn" disabled={busy || !validLabels} onClick={() => void operation(async () => { const result = await read<{ dataUrl: string; overlayDataUrl?: string }>("tiled.analysis.labels.region", { analysisId, ...labelRegion, maxSize: 768 }); setLabelPreview({ ...result, key: labelKey, revision: snapshot.project.revision }); })}>Read retained label region</button>
           {labelPreview?.key === labelKey ? <><img src={labelPreview.overlayDataUrl ?? labelPreview.dataUrl} alt="Display of the exact retained label region" style={{ maxWidth: "100%", maxHeight: 420, objectFit: "contain" }} /><p>Retained labels read at revision {labelPreview.revision}; display is scaled.</p></> : null}
+
+        </details>
           <button className="cc-btn" disabled={busy} onClick={() => void operation(async () => setFormats((await read<{ formats: StorageExportFormat[] }>("tiled.analysis.export.catalogue")).formats))}>Show result export formats</button>
           {formats.map(format => <p key={format.id}><button className="cc-btn" disabled={blocked || analysis.status !== "completed"} onClick={() => void actions.exportResults(analysis, format)}>Export {format.name}…</button> {format.description}</p>)}
           <p>Export verifies the external source identities again. Existing exported files remain immutable.</p>
-        </details>
-      </> : null}
-    </section>
-  </details>;
+  </details>, exportTarget) : null}
+  </>;
 }

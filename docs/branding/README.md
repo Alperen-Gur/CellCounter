@@ -5,5 +5,5 @@ variants are installed in `CellCounting/Assets.xcassets/AppIcon.appiconset/`.
 Xcode compiles that catalog into the application icon. The three pale cells,
 segmentation outlines, and deep teal tile are designed to remain legible in the Dock.
 
-Created with the built-in image-generation tool, then exported with a transparent
-exterior matte and resized for the macOS catalog. No stock image was used.
+The master uses a transparent exterior matte. Keep its proportions and contrast
+when exporting additional sizes.

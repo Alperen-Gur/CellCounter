@@ -22,7 +22,7 @@ private struct PendingCellEdit {
 @MainActor
 final class AppState {
     // Routing
-    var view: AppView = .home
+    var view: AppView = .workbench
 
     /// Workspace lifetime follows the app, not the conditional navigation branch.
     /// Large decoded caches can therefore be trimmed deliberately instead of being
@@ -509,7 +509,9 @@ final class AppState {
            let f = ModelFamily(rawValue: raw) {
             self.modelFilter = f
         }
-        self.showOnboarding = !UserDefaults.standard.bool(forKey: "cc-onboarded")
+        // The Workbench empty state owns first-run project setup. The existing
+        // library tour remains available explicitly without changing its preference.
+        self.showOnboarding = false
 
         // restore current batch
         if let str = UserDefaults.standard.string(forKey: "cc-current-batch"),

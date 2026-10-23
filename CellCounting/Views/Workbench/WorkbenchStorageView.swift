@@ -2,9 +2,22 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum WorkbenchStorageScope {
+    case sources, segmentation, measurements, export
+    var title: String {
+        switch self {
+        case .sources: "OME-Zarr sources"
+        case .segmentation: "Tiled segmentation"
+        case .measurements: "Tiled object measurements"
+        case .export: "Tiled results and export"
+        }
+    }
+}
+
 struct WorkbenchStorageView: View {
     @Bindable var session: WorkbenchSession
     @Bindable var storage: WorkbenchStorageState
+    var scope: WorkbenchStorageScope = .sources
     @Environment(\.dismiss) private var dismiss
     private var writesBlocked: Bool { session.busy || session.hasActiveWorkers || !session.canRefreshWithoutDiscardingEdits }
     private var planCurrent: Bool { storage.plan != .null && storage.planRevision == session.revision && storage.plannedArguments == storage.planArguments }
@@ -13,21 +26,37 @@ struct WorkbenchStorageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("OME-Zarr sources and tiled analysis").font(.title2)
+                Text(scope.title).font(.title2)
                 WorkbenchSavedRecordAccess(session: session, catalogues: ["zarrSources", "tiledAnalyses"])
                 Spacer()
-                Button("Open local OME-Zarr…") { chooseSource(rebind: false) }.disabled(writesBlocked)
+                if scope == .sources {
+                    Button("Open local OME-Zarr…") { chooseSource(rebind: false) }.disabled(writesBlocked)
+                }
                 Button("Refresh", action: session.loadStorage).disabled(session.busy)
                 Button("Done") { dismiss() }.disabled(session.busy)
             }
-            Text("Choose an NGFF image group, resolution level and exact T/C/Z plane. Extract a source-resolution region or process a larger region through durable tile checkpoints.")
+            Text(scope == .sources
+                ? "Choose an NGFF image group, resolution level, acquisition plane and exact source region. Tiled segmentation uses this same selection under Segmentation."
+                : "Tiled analyses retain full-resolution source coordinates and durable checkpoints. Source and region settings are shared with Images.")
                 .font(.callout).foregroundStyle(.secondary)
             if let error = session.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    sourceSelection
-                    if storage.array != .null { regionAndPlan }
-                    savedAnalyses
+                    if scope == .sources {
+                        sourceSelection
+                        if storage.array != .null { regionAndPlan }
+                    } else {
+                        if scope == .segmentation {
+                            GroupBox("Selected source region") {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("\(storage.source["name"].string ?? "No OME-Zarr source selected") · \(storage.width) × \(storage.height) pixels")
+                                    Button("Choose source and region in Images") { session.task = .preparation; dismiss() }
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                            }
+                            if storage.array != .null { GroupBox("Create tiled segmentation") { tiledPlan.padding(6) } }
+                        }
+                        savedAnalyses
+                    }
                 }.padding(.trailing, 6)
             }
             HStack {
@@ -70,7 +99,8 @@ struct WorkbenchStorageView: View {
                         Button("Extract exact region for analysis", action: session.extractZarrRegion)
                             .disabled(writesBlocked || !storage.validRegion || Double(storage.width) * Double(storage.height) > 16_000_000 || storage.source["available"].bool != true)
                     }
-                    DisclosureGroup("Create tiled analysis") { tiledPlan.padding(.top, 10) }
+                    Text("Use Segmentation → Tiled analysis to process this region through durable checkpoints.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }.padding(6).disabled(session.busy)
             }
         }
@@ -136,6 +166,7 @@ struct WorkbenchStorageView: View {
                         .font(.caption).foregroundStyle(analysis["sourceInputsCurrent"].bool == false ? Color.orange : Color.secondary)
                     Text(analysis["sourceVerifiedAt"].string.map { "Last complete source verification: \($0)" } ?? "The final source verification pass has not completed.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if scope == .segmentation {
                     HStack {
                         if ["pending", "running"].contains(status) {
                             Button("Run next checkpoint") { session.controlTiledAnalysis("advance") }.disabled(writesBlocked)
@@ -154,11 +185,16 @@ struct WorkbenchStorageView: View {
                     } else if session.hasActiveWorkers {
                         Text("Another background operation owns this project. Stop it from its existing execution controls before changing this analysis.").font(.caption).foregroundStyle(.orange)
                     }
+                    }
                     if let count = analysis["objectCount"].integer {
                         Text("\(count) globally reconciled objects\(status == "completed" ? "" : " · publication or verification may still be pending")").font(.callout)
                     }
-                    DisclosureGroup("Object measurements and retained tiles") { retainedResults.padding(.top, 8) }
-                    DisclosureGroup("Exact label region and export") { labelsAndExport.padding(.top, 8) }
+                    if scope == .measurements { retainedResults.padding(.top, 8) }
+                    if scope == .export { labelsAndExport.padding(.top, 8) }
+                    if scope == .segmentation {
+                        Text("Inspect object tables under Measurements → Tiled measurements. Export completed results under Results & export → Tiled results.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }.padding(6)
         }

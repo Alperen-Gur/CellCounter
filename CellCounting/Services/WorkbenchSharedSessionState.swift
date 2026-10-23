@@ -23,7 +23,7 @@ final class WorkbenchSharedSessionState {
 
 extension WorkbenchSession {
     var viewSessionSelection: WorkbenchJSON {
-        var selection: [String: WorkbenchJSON] = [:]
+        var selection: [String: WorkbenchJSON] = ["task": .string(task.rawValue)]
         if let image = selectedImage {
             selection["imageId"] = .string(image.id)
             selection["target"] = .string(viewingVolume ? "volume" : "plane")
@@ -99,7 +99,7 @@ extension WorkbenchSession {
                 if request["observedProjectRevision"].integer != currentRevision {
                     try await self.acknowledgeNavigation("refused", revision: currentRevision,
                         reason: "The project changed after this navigation request. Request navigation against the current revision.")
-                } else if !mayRefresh || self.hasActiveWorkers || !self.sharedSession.visible {
+                } else if ((!mayRefresh || self.hasActiveWorkers) && !self.isTaskOnlyNavigation(request["selection"])) || !self.sharedSession.visible {
                     if request["status"].string != "deferred" {
                         try await self.acknowledgeNavigation("deferred", revision: currentRevision,
                             reason: "The native view has a draft, active background work, or is not visible. Its current selection is preserved.")
@@ -108,7 +108,7 @@ extension WorkbenchSession {
                 } else if request["status"].string == "pending" {
                     try await self.applyRequestedNavigation()
                 }
-            } else if mayRefresh, self.sharedSession.pendingRevision == nil, let revision = self.revision,
+            } else if let revision = self.revision, self.sharedSession.pendingRevision == nil,
                       let id = self.sharedSession.id,
                       self.sharedSession.record["selection"] != self.viewSessionSelection || self.sharedSession.record["observedProjectRevision"].integer != self.revision {
                 self.sharedSession.record = try await self.call("session.update", arguments: [
@@ -121,7 +121,7 @@ extension WorkbenchSession {
 
     func resolveRequestedNavigation(apply: Bool) {
         guard !busy, sharedSession.hasPendingNavigation else { return }
-        if apply && (!canRefreshWithoutDiscardingEdits || hasActiveWorkers) {
+        if apply && (!canRefreshWithoutDiscardingEdits || hasActiveWorkers) && !isTaskOnlyNavigation(sharedSession.navigation["selection"]) {
             sharedSession.notice = "Finish or discard the draft and pause background work before applying navigation."; return
         }
         perform(apply ? "Applying requested navigation…" : "Refusing requested navigation…", refreshOnConflict: false) {
@@ -139,16 +139,26 @@ extension WorkbenchSession {
         guard let id = sharedSession.id else { return }
         sharedSession.record = try await call("session.get", arguments: ["sessionId": .string(id)])["result"]["session"]
         let current = sharedSession.record["projectRevision"].integer ?? revision ?? 0
-        guard sharedSession.navigation["observedProjectRevision"].integer == current, revision == current else {
+        guard sharedSession.visible else {
+            try await acknowledgeNavigation("deferred", revision: current,
+                reason: "The Workbench is no longer visible. Return to it before applying navigation.")
+            return
+        }
+        guard sharedSession.navigation["observedProjectRevision"].integer == current,
+              isTaskOnlyNavigation(sharedSession.navigation["selection"]) || revision == current else {
             try await acknowledgeNavigation("refused", revision: current, reason: "The native view or navigation request has an older project revision. Refresh and issue a current request.")
             return
         }
         let selection = sharedSession.navigation["selection"]
+        let previousTask = task
         do {
             try await loadNavigationSelection(selection)
             try await acknowledgeNavigation("applied", revision: current, reason: "Applied in the visible native Workbench after preserving all drafts.")
-            sharedSession.notice = "Requested navigation applied. Analysis and saved selections were not changed."
+            sharedSession.notice = "Requested navigation applied. Your analysis and edit drafts are preserved."
         } catch {
+            if let requestedTask = selection["task"].string.flatMap(WorkbenchTask.init(rawValue:)), task == requestedTask {
+                task = previousTask
+            }
             try? await acknowledgeNavigation("refused", revision: current, reason: String("The native view could not display this selection: \(error.localizedDescription)".prefix(1000)))
             throw error
         }

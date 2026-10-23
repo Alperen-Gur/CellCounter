@@ -2,70 +2,76 @@
 
 # CellCounter Web
 
-Private microscopy analysis in an installable, fully client-side PWA.
+Microscopy analysis in a local, installable browser application.
 
 [![Web preview](https://img.shields.io/badge/Web-v0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
+[Download preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
 
 </div>
 
----
+CellCounter Web 0.3.2 is a static progressive web application (PWA). Import images,
+run classical segmentation, correct objects and export measurements on your
+device. It requires no account or image-upload service. The release archive can
+be served over HTTPS or localhost; it does not provide a hosted deployment.
 
-CellCounter Web brings the microscopy workspace to modern browsers without an account, image upload,
-telemetry, or application server. Imported images, measurements, corrections, study metadata, and exports stay
-on the device.
+## Features
 
-> [!IMPORTANT]
-> Version 0.2.1 includes local classical threshold/watershed segmentation, but production weights for its
-> three learned segmentation models are not bundled. The interface reports learned inference as unavailable instead of substituting another model.
-> Use the native macOS or Windows release when live model inference is required.
+- **Import:** PNG, JPEG, WebP, BMP, TIFF and supported OME-TIFF images, including
+  folders and available calibration metadata.
+- **Segmentation:** local Otsu, triangle, adaptive and manual thresholding, with
+  selected channels, Z projections and optional watershed.
+- **Review:** image navigation, contour editing, add/remove/resize/merge/split
+  corrections, linked measurement selection and reversible mask alternatives.
+- **Measurements:** calibrated morphology, fluorescence and supported assays,
+  with condition summaries and provenance.
+- **Microscopy workspace:** bounded OME-Zarr v2 planes, layers, annotations,
+  semantic painting, translation registration, grid stitching and lineage edits.
+- **Export:** CSV, JSON, ImageJ ROI, GeoJSON, annotated images, label masks,
+  NumPy label maps and PDF reports.
+- **Local projects:** browser-managed storage, lazy image restoration, offline
+  support after installation, and light and dark interfaces.
 
-The browser now shares saved preview/processing/review workflows with the native
-apps, but full parity is not complete. Training, proprietary microscope readers,
-the native microscopy workspace and several correction tools remain unavailable.
-See the [parity snapshot](../docs/PLATFORM-PARITY.md) and
-[complete feature comparison](../docs/FEATURES.md); **Help → Browser capabilities**
-provides the same inventory's per-feature limitations in the app.
+See the [browser guide](../docs/WEB.md) for format and storage limits, the
+[portable workspace guide](../docs/PORTABLE-WORKSPACE.md) for layer operations,
+and the [release notes](../docs/releases/web-v0.3.2.md) for this version.
 
-## Highlights
+## Preview limitations
 
-- A continuous landing page with a full-viewport point illustration that changes with native scrolling,
-  clear section links, motion controls and immediate workspace access
+Learned-model weights are not supplied as qualified browser artifacts. Model
+entries report unavailable inference explicitly. Classical segmentation does not
+substitute for Cellpose or StarDist.
 
-- Research workbench with Library, Analyze, Processing and Review navigation, a larger image canvas,
-  a tabbed inspector and an on-demand measurement panel
-- Local Otsu, triangle, adaptive and manual thresholding, with explicit source channel/Z projection
-- Saved whole-image previews, matching-preview reuse, paused/resumable jobs and failed-image retry
-- Linked image/table/scatter selection and reversible saved mask alternatives
+The browser does not include the desktop Python Workbench, installed-app CLI or
+MCP server, model training, or proprietary ND2, CZI, LIF, OIR and VSI readers.
+Convert unsupported acquisitions locally to a supported OME-TIFF first. Browser
+workspaces process bounded source planes; their projected surface display is
+separate from the desktop Workbench's scientific volume analysis.
 
-- PNG, JPEG, WebP, BMP, TIFF, and OME-TIFF import, including folders
-- Image navigation, contours, selection, add/remove/resize/merge/split corrections, and undo/redo
-- Calibrated morphology, intensity, colocalization, confluence, wound, spheroid, puncta, spatial, tracking,
-  neurite, and line-profile analysis
-- Local project storage with lazy image restoration and offline PWA support
-- CSV, JSON, ImageJ ROI, GeoJSON, annotated image, label mask, NumPy label map, and PDF exports
-- Responsive, keyboard-accessible light and dark interfaces
+Use the [desktop releases](../README.md#download) when these capabilities are
+required. The [platform comparison](../docs/PLATFORM-PARITY.md) and
+[feature matrix](../docs/FEATURES.md) describe the differences.
 
-Proprietary microscope containers such as ND2, CZI, LIF, OIR, and VSI are not available in the browser. Convert
-them locally to OME-TIFF before import. See the [browser guide](../docs/WEB.md) for the complete format and
-capability notes.
+## Data and privacy
 
-## Privacy
-
-All image processing happens in the browser. CellCounter Web does not include an upload or remote-inference
-route. Projects are stored in browser-managed local storage and can be removed from **Settings**. When production
-model assets become available, they will be loaded from the same origin and verified before local use.
+Image processing runs in the browser. CellCounter Web includes no telemetry,
+image-upload route or remote-inference service. Projects are held in
+browser-managed storage; clearing site data can remove them. Export important
+results and retain original source files. Optional diagnostics are reviewed and
+exported by the user, with no automatic submission.
 
 ## Run locally
 
 Requirements:
 
-- Node.js `^20.19.0` or `>=22.12.0`
-- A current browser with Web Workers, IndexedDB, and `createImageBitmap`; WebGPU is only needed for learned models
-- HTTPS for production use; `localhost` is sufficient for development
+- Node.js `^20.19.0` or `>=22.12.0` with npm.
+- A current browser with Web Workers, IndexedDB and `createImageBitmap`.
+- HTTPS for deployment; `localhost` is sufficient for development. WebGPU is
+  needed only for compatible learned-model artifacts.
+
+From `web/`:
 
 ```sh
 npm ci
@@ -78,9 +84,10 @@ Create a production build:
 npm run build
 ```
 
-The static PWA is emitted to `dist/` and can be served from any HTTPS origin. No application server is required.
+The static PWA is emitted to `dist/`. Serve its contents from the web root; no
+application server is required. See [deployment guidance](../docs/WEB.md).
 
-## Verify
+## Development checks
 
 ```sh
 npm test -- --run
@@ -92,26 +99,10 @@ npm run verify:parity
 npm run verify:parity-analysis
 ```
 
+See [architecture](../docs/ARCHITECTURE.md) and
+[contributing](../CONTRIBUTING.md) for shared code and contribution guidance.
+
 ## License
 
-MIT — see the repository-level [LICENSE](../LICENSE).
-
-## Windows 1.2.0 and Web 0.3.0 preview
-
-Local microscopy workspaces add OME-Zarr v2, multidimensional layers, registration,
-stitching, painting, lineage, replay and GIF export. Review, source selection,
-dataset snapshots and sample exports are expanded. Windows adds local model
-families and imported checkpoints. The web version stays browser-only; learned
-artifacts, proprietary readers and training remain unavailable.
-
-See the [workspace guide](../docs/PORTABLE-WORKSPACE.md),
-[Windows notes](../docs/releases/windows-v1.2.0.md) and
-[web notes](../docs/releases/web-v0.3.0.md).
-
-## Optional local diagnostics and real-workflow timings
-
-macOS 1.0.17, Windows 1.2.1 and Web 0.3.2 preview add user-started timing
-sessions and editable diagnostic exports. Use real images and normal workflows,
-then inspect and redact the report before exporting. Nothing is uploaded
-automatically; names, paths, IDs, images and raw logs are excluded. See the
-[usage guide](../docs/INSTALL.md#optional-local-diagnostics-and-real-workflow-benchmarks).
+CellCounter is MIT licensed. See [LICENSE](../LICENSE) and
+[third-party notices](../THIRD_PARTY_LICENSES.md) for included dependencies.

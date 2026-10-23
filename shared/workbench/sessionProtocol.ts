@@ -1,4 +1,7 @@
+import type { WorkbenchTaskId } from "./navigation";
+
 export interface SessionSelection {
+  task?: WorkbenchTaskId;
   imageId?: string; workspaceId?: string; target?: "plane" | "volume"; channel?: number; timeIndex?: number;
   plane?: "xy" | "xz" | "yz"; index?: number;
 }

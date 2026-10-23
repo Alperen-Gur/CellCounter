@@ -6,7 +6,7 @@ import SwiftData
 
 struct SettingsView: View {
     @Bindable var state: AppState
-    @State private var section: SettingsSection = .general
+    @State private var section: SettingsSection = .appearance
     @State private var sectionSearch = ""
     @FocusState private var searchFocused: Bool
 
@@ -55,6 +55,18 @@ enum SettingsSection: String, CaseIterable {
         }
     }
 
+    var isExistingLibrary: Bool { [.general, .bins, .conditions, .calibration, .models, .output].contains(self) }
+    var projectTask: WorkbenchTask {
+        switch self {
+        case .general, .models: .segmentation
+        case .bins: .measurements
+        case .conditions: .workflows
+        case .calibration: .preparation
+        case .output: .export
+        default: .preparation
+        }
+    }
+
     var searchTerms: String {
         switch self {
         case .general: return "General default model background preprocessing rolling ball parallel preparation watershed"
@@ -94,11 +106,13 @@ private struct SettingsSidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ForEach(sections, id: \.self) { sec in
-                NavItemView(icon: sec.icon, label: sec.label,
-                            isActive: selection == sec) {
-                    selection = sec
-                }
+            SidebarSectionLabel(text: "Application")
+            ForEach(sections.filter { !$0.isExistingLibrary }, id: \.self) { sec in
+                NavItemView(icon: sec.icon, label: sec.label, isActive: selection == sec) { selection = sec }
+            }
+            SidebarSectionLabel(text: "Existing library defaults")
+            ForEach(sections.filter(\.isExistingLibrary), id: \.self) { sec in
+                NavItemView(icon: sec.icon, label: sec.label, isActive: selection == sec) { selection = sec }
             }
             Spacer()
         }
@@ -116,7 +130,19 @@ private struct SettingsBody: View {
 
     var body: some View {
         ScrollView {
-            Group {
+            VStack(alignment: .leading, spacing: 16) {
+                if section.isExistingLibrary {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Existing library defaults").font(.headline)
+                        Text("These settings apply to the existing library. Microscopy projects retain their own analysis settings and export destinations.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button("Open project \(section.projectTask.title.lowercased())") {
+                            state.workbenchSession.task = section.projectTask
+                            state.view = .workbench
+                        }
+                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Tokens.bgSunken, in: RoundedRectangle(cornerRadius: 8))
+                }
                 switch section {
                 case .general:     GeneralSection(state: state)
                 case .appearance:  AppearanceSection(state: state)
@@ -246,7 +272,7 @@ private struct GeneralSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: "General",
-                           subtitle: "Defaults applied to every new analysis.")
+                           subtitle: "Defaults for analyses in the existing library. Project settings are configured in the Workbench.")
             SetRow(label: "Default model",
                    desc: "Used at first launch when no model has been activated yet") {
                 Menu {
@@ -342,7 +368,7 @@ private struct AppearanceSection: View {
                 }
             }
 
-            Text("CELL OVERLAYS")
+            Text("EXISTING LIBRARY CELL OVERLAYS")
                 .tracking(0.04 * 13)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Tokens.textSecondary)
@@ -1189,7 +1215,7 @@ private struct ModelsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeading(title: "Models",
-                           subtitle: "Storage and behavior of downloaded models. To browse or activate, open the Models tab in the sidebar.")
+                           subtitle: "Storage and behavior of existing library models. Browse or activate them under Existing library → Models and installation.")
             SetRow(label: "Download location",
                    desc: FileStore.shared.modelsDir.path) {
                 Button("Reveal") {
@@ -1217,7 +1243,7 @@ private struct ModelsSection: View {
             if storageGroups.isEmpty {
                 Text(isRefreshingStorage
                      ? "Calculating model storage…"
-                     : "Nothing installed yet — pick a model on the Models tab.")
+                     : "Nothing installed yet — choose Existing library → Models and installation.")
                     .font(.system(size: 12))
                     .foregroundStyle(Tokens.textTertiary)
                     .padding(.horizontal, 14)
@@ -1484,7 +1510,7 @@ private struct AboutSection: View {
                     Text(versionLine)
                         .font(.system(size: 13))
                         .foregroundStyle(Tokens.textTertiary)
-                    Text("Counts and size-bins cells in microscope images. Local-only — your data never leaves this Mac.")
+                    Text("Microscopy analysis, review and reproducible workflows. Images and projects are processed locally; optional integrations use the connections you configure.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(Tokens.textTertiary)
                 }
@@ -1493,7 +1519,8 @@ private struct AboutSection: View {
 
             VStack(spacing: 0) {
                 // Replay onboarding
-                AboutRow(label: "Replay onboarding", trailing: .replay, isExpanded: false) {
+                AboutRow(label: "Existing library tour", trailing: .replay, isExpanded: false) {
+                    state.view = .home
                     state.showOnboarding = true
                 }
 
@@ -1661,7 +1688,7 @@ private struct AboutSection: View {
         state.expectedDiameterUm = 0   // back to Auto (bin-derived size prior)
         state.activeModelId = "cp-cyto3"
         state.modelFilter = .all
-        state.showOnboarding = true
+        state.showOnboarding = false
         state.refreshFromDefaults()
     }
 }

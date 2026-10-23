@@ -53,24 +53,27 @@ struct AppToolbar: View {
 
     private var title: String {
         switch state.view {
-        case .home:       return "Home"
-        case .processing: return "Processing"
-        case .results:    return state.currentBatch?.displayName ?? "Results"
-        case .batch:      return "Batches"
-        case .models:     return "Models"
-        case .fineTune:   return "Fine-tune"
+        case .home:       return "Existing library"
+        case .processing: return "Existing library · Processing"
+        case .results:    return "Existing library · " + (state.currentBatch?.displayName ?? "Results")
+        case .batch:      return "Existing library · Batches"
+        case .models:     return "Existing library · Models"
+        case .fineTune:   return "Existing library · Fine-tuning"
         case .settings:   return "Settings"
-        case .queue:          return "Processing"
-        case .reviewQueue:    return "Review queue"
-        case .compare:        return "Compare conditions"
-        case .imagesLibrary:  return "Images"
-        case .workspace:      return "Workspace"
-        case .workbench:      return "Workbench"
+        case .queue:          return "Existing library · Processing"
+        case .reviewQueue:    return "Existing library · Review queue"
+        case .compare:        return "Existing library · Compare conditions"
+        case .imagesLibrary:  return "Existing library · Images"
+        case .workspace:      return "Existing library · Workspace"
+        case .workbench:      return "Microscopy workbench"
         }
     }
 
     var body: some View {
         HStack(spacing: 10) {
+            if ![AppView.workbench, .settings].contains(state.view) {
+                Button("Workbench") { state.view = .workbench }.appButton(.ghost)
+            }
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
                 .tracking(-0.01 * 15)
@@ -123,11 +126,11 @@ struct AppToolbar: View {
                 .appButton(.ghost).frame(width: 28, height: 28)
         case .queue:
             EmptyView()
-        case .compare, .imagesLibrary, .models:
+        case .models:
             ModelToolbarPill(state: state, family: activeFamily)
-            if !state.canRunDetection {
-                ModelNotInstalledPill { openInstallSheetForActive() }
-            }
+            if !state.canRunDetection { ModelNotInstalledPill { openInstallSheetForActive() } }
+        case .compare, .imagesLibrary:
+            EmptyView()
         case .processing, .settings, .reviewQueue:
             EmptyView()
         }

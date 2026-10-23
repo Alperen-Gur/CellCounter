@@ -40,7 +40,7 @@
 .workbench-project-results { border-top: 1px solid var(--cc-border); padding: 0 16px 16px; }
 .workbench-package { border: 1px solid var(--cc-border); border-radius: 8px; padding: 0 16px 16px; margin-bottom: 20px; }
 .workbench-reference-list { max-height: 280px; overflow: auto; }
-.workbench-plugin-output { max-height: 360px; overflow: auto; padding: 16px; font-size: 12px; background: var(--cc-bg-secondary); }
+.workbench-plugin-output { max-height: 360px; overflow: auto; padding: 16px; font-size: 12px; background: var(--cc-bg-subtle); }
 .workbench-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 .workbench-metric-grid dt { color: var(--cc-text-secondary); font-size: 12px; }
 .workbench-metric-grid dd { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
@@ -69,15 +69,15 @@
 @media (max-width: 1100px) { .workbench-layout { grid-template-columns: 160px minmax(0, 1fr); } .workbench-inspector { grid-column: 1 / -1; display: block; padding: 0 16px 16px; border-top: 1px solid var(--cc-border); } .workbench-heading { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 700px) { .workbench { padding: 12px; } .workbench-layout { display: block; } .workbench-images ul { max-height: 180px; overflow: auto; } .workbench-viewer { border-inline: 0; padding: 12px 0; } }
 .workbench-recipe { display: grid; gap: 1rem; padding-inline-start: 1.5rem; }
-.workbench-recipe > li { padding: .75rem; border: 1px solid var(--border-color, #444); border-radius: .5rem; }
+.workbench-recipe > li { padding: .75rem; border: 1px solid var(--cc-border); border-radius: .5rem; }
 .workbench-recipe-preview { display: grid; grid-template-columns: minmax(160px, 400px) 1fr; gap: 1rem; margin-block: 1rem; }
 .workbench-recipe-preview img { width: 100%; object-fit: contain; background: #000; }
 @media (max-width: 760px) { .workbench-recipe-preview { grid-template-columns: 1fr; } }
-.workbench-review-dialog { width: min(1200px, 95vw); height: 92vh; max-height: 95vh; overflow: auto; border-radius: .75rem; padding: 1.5rem; color: var(--text-primary, #eee); background: var(--bg-primary, #1a1d21); }
+.workbench-review-dialog { width: min(1200px, 95vw); height: 92vh; max-height: 95vh; overflow: auto; border-radius: .75rem; padding: 1.5rem; color: var(--cc-text); background: var(--cc-bg-elevated); }
 .workbench-review-dialog::backdrop { background: #101114; }
 .workbench-review-image { display: block; width: 100%; max-height: 65vh; object-fit: contain; background: #000; }
 .workbench-source-overview svg { display: block; width: 100%; max-height: 65vh; background: #000; touch-action: none; }
-.workbench-lineage-chart { max-height: 65vh; overflow: auto; border: 1px solid var(--border-color, #444); border-radius: .5rem; margin-block: 1rem; }
+.workbench-lineage-chart { max-height: 65vh; overflow: auto; border: 1px solid var(--cc-border); border-radius: .5rem; margin-block: 1rem; }
 .workbench-lineage-chart svg { display: block; min-width: 700px; }
 .workbench-lineage-chart text { fill: currentColor; font-size: 11px; }
 .workbench-lineage-chart circle[role="button"] { cursor: pointer; }
@@ -108,7 +108,7 @@
 .workbench-selection-context > div:first-child { display: grid; gap: .35rem; min-width: 0; flex: 1 1 18rem; overflow-wrap: anywhere; }
 .workbench-selection-context span { color: var(--cc-text-secondary); font-size: .8125rem; }
 .workbench-selection-context .workbench-context-label { font-size: .75rem; }
-.workbench .workbench-draft-notice { padding: .75rem 1rem; border-left: 3px solid var(--cc-accent); background: var(--cc-bg-secondary); }
+.workbench .workbench-draft-notice { padding: .75rem 1rem; border-left: 3px solid var(--cc-accent); background: var(--cc-bg-subtle); }
 .workbench .workbench-project-details { margin: .25rem 0 1rem; }
 .workbench-project-details summary { cursor: pointer; }
 .workbench-project-details .workbench-project-path { margin-top: .5rem; }
@@ -160,3 +160,18 @@
 .workbench-catalogue-browser li small { display: block; }
 .workbench-catalogue-browser .cc-btn { flex-shrink: 0; }
 @media (max-width: 640px) { .workbench-catalogue-browser li { align-items: flex-start; flex-wrap: wrap; } }
+
+/* Use the same controls and surfaces throughout every project task. */
+.workbench label input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.workbench select, .workbench textarea {
+  width: 100%; min-height: 36px; box-sizing: border-box; border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md); padding: 7px 10px; color: var(--cc-text); background: var(--cc-bg); font: inherit;
+}
+.workbench input[type="checkbox"], .workbench input[type="radio"] { width: auto; min-height: 0; }
+.workbench textarea { resize: vertical; }
+.workbench summary { cursor: pointer; }
+.workbench-task-navigation { position: sticky; top: 0; z-index: 5; padding-block: var(--cc-space-3); background: var(--cc-bg); border-bottom: 1px solid var(--cc-border); }
+.workbench-image-calibration { max-width: 640px; }
+.workbench-volume-toolbar { padding-block: var(--cc-space-2); border-bottom: 1px solid var(--cc-border); }
+.workbench-volume-toolbar label { margin-block: var(--cc-space-2); }
+.workbench textarea:focus-visible { outline: 2px solid var(--cc-border-focus); outline-offset: 3px; }

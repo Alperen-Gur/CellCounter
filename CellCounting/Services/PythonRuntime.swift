@@ -35,6 +35,7 @@ enum PythonRuntime {
         "workbench.py",
         "workbench_sdk.py",
         "_workbench_core.py",
+        "_workbench_navigation.py",
         "_workbench_imaging.py",
         "_workbench_classical.py",
         "_workbench_classical_legacy.py",

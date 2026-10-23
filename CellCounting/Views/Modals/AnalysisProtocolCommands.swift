@@ -6,12 +6,18 @@ struct AnalysisProtocolCommands: Commands {
     var shortcutsPresented = false
 
     var body: some Commands {
-        CommandMenu("Protocols") {
-            Button("Analysis Protocols\u{2026}") {
-                state.showAnalysisProtocols = true
+        CommandMenu("Workflows") {
+            Button("Project Workflows") {
+                state.workbenchSession.task = .workflows
+                state.view = .workbench
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
-            .disabled(shortcutsPresented || shortcutsPresented || KeyboardShortcutContext.hasOverlay(state) || KeyboardShortcutContext.hasNativeSheet)
+            .disabled(shortcutsPresented || KeyboardShortcutContext.hasOverlay(state) || KeyboardShortcutContext.hasNativeSheet)
+
+            Button("Existing Library Analysis Protocols\u{2026}") {
+                state.showAnalysisProtocols = true
+            }
+            .disabled(state.view == .workbench || state.view == .settings || shortcutsPresented || KeyboardShortcutContext.hasOverlay(state) || KeyboardShortcutContext.hasNativeSheet)
 
             Divider()
 

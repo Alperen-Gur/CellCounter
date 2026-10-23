@@ -1,11 +1,18 @@
 # Portable microscopy workspace
 
-This guide describes the microscopy workspaces in **Windows 1.2.0** and
-**Web 0.3.0 preview**. Portable implementations have the limits described below.
+This guide covers the portable layer engine and the **Web 0.3.2 preview**
+workspace. **Windows 1.3.0** integrates the shared layer editor into project
+Workbench operations; use the [Workbench guide](WORKBENCH.md#layer-workspaces-and-semantic-journals)
+for its source bindings, storage and automation. Earlier standalone desktop
+workspace documents remain available through the compatibility import path.
+
+Layer operations and browser documents have the limits below. They are separate
+from the desktop Workbench's full-resolution scientific labels and volume
+measurements. See the [platform comparison](PLATFORM-PARITY.md) for availability.
 
 ## Sources and coordinates
 
-Open **Microscopy** and add a library image or choose a local OME-Zarr directory.
+In the browser, open **Microscopy** and add a library image or choose a local OME-Zarr directory.
 Source files remain on the computer. Zarr sources support version 2 arrays,
 uncompressed, zlib and gzip chunks, spatial pyramids, and plate fields. Blosc,
 Zarr v3, remote datasets and ambiguous multi-image pyramids are not supported.
@@ -38,9 +45,11 @@ A link must move forward in time and cannot create a cycle.
 
 ## Save, replay and animation
 
-Save a project to retain layers, positions, transforms, annotations, paint
-journals, lineage, recorded operations and animation keyframes. Portable project
-files can embed up to 16 MiB of explicitly supplied plane snapshots. Keep the
+Save a portable workspace document to retain layers, positions, transforms,
+annotations, paint journals, lineage, recorded operations and animation
+keyframes. Browser portable documents can embed up to 16 MiB of explicitly
+supplied plane snapshots. Desktop Workbench packages use their own
+[storage and package limits](WORKBENCH.md#large-libraries-and-streamed-packages). Keep the
 original datasets: a snapshot does not embed every time point or Z plane, and
 external sources must be reattached to navigate them after reopening.
 
@@ -86,13 +95,12 @@ availability is checked separately from interface availability. Legacy saved
 `cpsam_v2` analyses retain their historical `cpsam` checkpoint identity; the
 explicit Cellpose 4 checkpoint entries use their own identities.
 
-Windows image overlays and illustrated reports reconstruct the recorded source
+Windows library image overlays and illustrated reports reconstruct the recorded source
 plane through the local Python image reader and verify its source hash. They
 require that reader environment and a supported source within its limits.
 Historical results without a recorded source selection cannot produce an aligned
 overlay; sample bundles report the omission explicitly.
 
-These additions have received source review and static checks. Application
-launches, inference, automated tests and scientific accuracy evaluation have not
-been performed for this change. Production compilation and packaging are required for the release artifacts;
-these checks do not establish runtime or scientific accuracy.
+For installation and troubleshooting, see the [Windows guide](WINDOWS.md) or
+[browser guide](WEB.md). The [feature matrix](FEATURES.md) distinguishes these
+workspace tools from the other analysis surfaces.

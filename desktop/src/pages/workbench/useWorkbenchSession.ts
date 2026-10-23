@@ -5,13 +5,14 @@ import { activeJobWorker, type JobWorker } from "../../../../shared/workbench/wo
 import type { TrainingJob } from "../../../../shared/workbench/modelProtocol";
 
 type State = { path: string; projectId?: string; revision?: number; selection: SessionSelection; busy: boolean; blockedReason?: string; workers: JobWorker[]; trainingActive: boolean };
+type NavigationDecision = { outcome: "applied" | "deferred" | "refused"; reason?: string; commit?: () => void };
 type Props = {
   state: () => State;
   enqueue: (action: () => Promise<void>) => Promise<void>;
   observe: (changes: ProjectChanges, startedAt: number) => Promise<boolean>;
   workers: (workers: JobWorker[]) => void;
   activity: (value: { activeJobWorkers: JobWorker[]; activeTrainingJobs: TrainingJob[]; activeWorkerCount: number; activeTrainingJobCount: number }) => void;
-  navigate: (navigation: SessionNavigation) => Promise<{ outcome: "applied" | "deferred" | "refused"; reason?: string }>;
+  navigate: (navigation: SessionNavigation) => Promise<NavigationDecision>;
 };
 const selectionIdentity = (selection: SessionSelection) => JSON.stringify(Object.entries(selection).sort(([a], [b]) => a.localeCompare(b)));
 
@@ -70,18 +71,23 @@ export default function useWorkbenchSession(props: Props) {
           if (navigation && ["pending", "deferred"].includes(navigation.status)) {
             const now = latest.current.state();
             const projectRevision = value.projectRevision ?? changes.projectRevision;
-            let outcome: { outcome: "applied" | "deferred" | "refused"; reason?: string };
-            if (now.blockedReason || now.revision !== projectRevision) {
+            let outcome: NavigationDecision;
+            const taskOnly = Boolean(navigation.selection.task) && Object.keys(navigation.selection).every(key => key === "task");
+            if ((!taskOnly && now.blockedReason) || now.revision !== projectRevision) {
               outcome = { outcome: "deferred", reason: now.blockedReason || "Waiting for the current saved project revision before applying navigation." };
             } else if (navigation.observedProjectRevision !== projectRevision) {
               outcome = { outcome: "refused", reason: "The project changed after this navigation request. Inspect the current project and request navigation again." };
             } else outcome = await latest.current.navigate(navigation);
             if (outcome.outcome !== "deferred" || navigation.status !== "deferred" || navigation.reason !== outcome.reason) {
+              const { commit, ...acknowledgement } = outcome;
               value = (await request<{ session: WorkbenchSession }>(active.path, "session.navigation.ack", {
                 sessionId: value.id, expectedSessionRevision: value.sessionRevision, navigationId: navigation.id,
-                observedProjectRevision: projectRevision, ...outcome,
+                observedProjectRevision: projectRevision, ...acknowledgement,
               })).session;
-              if (alive.current && latest.current.state().path === active.path) remember(active.path, active.projectId!, value);
+              if (alive.current && latest.current.state().path === active.path) {
+                remember(active.path, active.projectId!, value);
+                if (value.navigation?.id === navigation.id && value.navigation.status === "applied") commit?.();
+              }
             }
             setError("");
             return; // React applies selection state before the next publication.

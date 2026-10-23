@@ -2,77 +2,89 @@
 
 # CellCounter for Windows
 
-Native, private microscopy analysis for Windows 10 and 11.
+Local microscopy analysis, reproducible workflows and AI-agent access.
 
 [![Windows release](https://img.shields.io/badge/Windows-v1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/windows.yml?branch=main&label=Windows%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/windows.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) · [Installation guide](../docs/WINDOWS.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) · [Windows guide](../docs/WINDOWS.md) · [Workbench guide](../docs/WORKBENCH.md) · [Main project](../README.md)
 
 </div>
 
----
+CellCounter 1.3.0 combines an image library and batch-analysis interface with a
+project-based microscopy workbench. Import images, segment and correct objects,
+measure signals, review results and export images, tables or portable analysis
+packages. The Windows application uses React and a native Tauri shell.
 
-CellCounter for Windows preserves the React interface in a native Tauri application. Imported microscopy
-images, model inference, measurements, corrections, and exports remain on the PC; there is no image-upload or
-remote-inference path.
+## Features
 
-Version 1.1.2 fixes batch-calibrated editing, analysis commits and saved-mask restoration. See the [release notes](../docs/releases/windows-v1.1.2.md).
+- **Image analysis:** local classical and learned segmentation, calibrated
+  morphology, fluorescence measurements and microscopy assays.
+- **Interactive review:** linked images and measurements, exact mask corrections,
+  saved alternatives, review queues and retained decisions.
+- **Project workflows:** branching analysis graphs, parameter sweeps, resumable
+  jobs and correction-aware result refresh.
+- **Multidimensional data:** channel displays, linked slice and volume views,
+  temporal analysis and bounded TIFF/NGFF region processing.
+- **Experiments and reporting:** specimens, plates, conditions, declared
+  statistical designs and versioned scientific exports.
+- **Automation:** the same Workbench operations through the GUI, installed-app
+  CLI, Python SDK and scoped Model Context Protocol (MCP) server.
 
-Version 1.1.1 corrects local image access and adds preview recovery for existing
-imports. Automated tests and interactive validation were not run for this patch.
-See the [release notes](../docs/releases/windows-v1.1.1.md).
+Some functions require separately installed local runtimes or model checkpoints.
+Format, memory and algorithm limits are documented in the
+[Workbench guide](../docs/WORKBENCH.md#current-scope-and-troubleshooting).
+See the [feature matrix](../docs/FEATURES.md),
+[platform comparison](../docs/PLATFORM-PARITY.md) and
+[1.3.0 release notes](../docs/releases/windows-v1.3.0.md) for the current scope.
 
-## Highlights
+## Install and get started
 
-- Native x64 `.exe` and `.msi` installers for Windows 10 and Windows 11
-- First-analysis script staging is repaired automatically since 1.1.0
-- Cellpose-SAM, Cellpose `cyto3`, and StarDist fluorescence model families
-- Saved setup, representative previews, resumable processing and failed-image retry
-- Linked image/table/scatter selection, saved mask versions and bounded Review Queue pages
-- Microscopy import, Z-stack and channel handling, manual correction, advanced assays, comparison, and export
-- Local projects, source images, model environments, measurements, and provenance
-- Responsive React interface with Windows-native file handling and packaging
+1. Download the `.exe` or `.msi` and `SHA256SUMS.txt` from the
+   [Windows release](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0).
+2. Verify the download hash and install. Choose the `.exe` for a standard
+   workstation installation or the `.msi` for managed deployment. The current
+   installers are unsigned.
+3. Open **CellCounter** and install the required analysis runtime or model from
+   **Models**.
+4. Open **Workbench**, create a project, import images and preview an analysis
+   before saving results.
 
-## Feature parity
+Windows 10 or 11 on x64 is required. End users do not need to install Node.js,
+Rust or Python manually. Internet access is needed to provision optional analysis
+environments and download model weights. See the [Windows guide](../docs/WINDOWS.md)
+for requirements, upgrades, backup and troubleshooting.
 
-Windows 1.1.2 shares the main inspect → preview → process → review workflow with
-macOS. It is not a complete macOS port: inference is CPU-only, the setup viewer
-shows the imported display preview, and the wider model catalog, layered
-microscopy workspace, prompt/sequence correction and reviewed-library training
-remain unavailable. Local `cyto3` training uses grouped image/mask folders.
+## Automation and AI agents
 
-**Support → Platform parity** lists every inventoried capability and its limits.
-See the [current parity snapshot](../docs/PLATFORM-PARITY.md) and
-[detailed feature matrix](../docs/FEATURES.md). The
-[1.1.2 release notes](../docs/releases/windows-v1.1.2.md) document the calibration
-fixes and the packaging-only validation boundary.
+The installed executable exposes `--workbench` for command-line operations and
+MCP connections. Use the **AI agent access** panel to prepare a connection with
+explicit project and path permissions. MCP connections are read-only by default;
+writes and executable operations require separate grants.
 
-## Install
+For setup and examples, see [CLI usage](../docs/WORKBENCH.md#cli-example),
+[MCP connections](../docs/WORKBENCH.md#mcp-connection) and the
+[Python SDK](../shared/python/README.md).
 
-[![Download](https://img.shields.io/badge/Download-Windows%20v1.3.0-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
+## Data and privacy
 
-Choose the NSIS `.exe` for a standard workstation installation or the WiX `.msi` for managed deployment. Both
-packages contain the same application. The installers are currently unsigned, so verify the download against
-the included `SHA256SUMS.txt` before responding to any SmartScreen warning.
+Imported images, inference, measurements and corrections are processed locally.
+CellCounter does not automatically upload images or diagnostic reports. Model
+installation downloads packages and weights; optional OMERO operations connect
+only to explicitly configured servers for read-only imports. Executable plugins
+run locally with the authority of their configured environment and should be
+enabled only when trusted.
 
-On first launch, open **Models** and install one of the three available model families. Internet access is needed
-for the initial model setup; subsequent image analysis is local. End users do not need to install Node.js, Rust,
-or Python.
-
-For system requirements, hash verification, upgrades, backup, and troubleshooting, see the
-[Windows guide](../docs/WINDOWS.md).
+Workbench projects are separate from the existing image library. Use the
+previewed migration tools to copy supported library evidence into a project.
+Back up project folders and application data before upgrades.
 
 ## Development
 
-Requirements:
-
-- Node.js 22.18.x with npm
-- Rust 1.88 or newer
-- Current Tauri 2 prerequisites for Windows, including Microsoft C++ Build Tools and WebView2
-
-Install dependencies, verify the project, and start the development application:
+Build requirements are Node.js 22.18.x, Rust 1.88 or newer, and the
+[Tauri 2 Windows prerequisites](https://v2.tauri.app/start/prerequisites/), including
+Microsoft C++ Build Tools and WebView2. Run these commands from `desktop/`:
 
 ```powershell
 npm ci
@@ -90,29 +102,14 @@ npm run build:windows
 node scripts/verify-windows-artifacts.mjs --write-checksums
 ```
 
-Release bundles are written below `src-tauri/target/release/bundle/`. The Windows workflow performs the same
-validation for repository changes and publishes downloadable workflow artifacts for successful builds.
+Bundles are written below `src-tauri/target/release/bundle/`. The
+[Windows workflow](../.github/workflows/windows.yml) contains the complete pinned
+packaging procedure. See [architecture](../docs/ARCHITECTURE.md) and
+[contributing](../CONTRIBUTING.md) for the repository structure and development
+guidance.
 
 ## License
 
-MIT — see the repository-level [LICENSE](../LICENSE).
-
-## Windows 1.2.0 and Web 0.3.0 preview
-
-Local microscopy workspaces add OME-Zarr v2, multidimensional layers, registration,
-stitching, painting, lineage, replay and GIF export. Review, source selection,
-dataset snapshots and sample exports are expanded. Windows adds local model
-families and imported checkpoints. The web version stays browser-only; learned
-artifacts, proprietary readers and training remain unavailable.
-
-See the [workspace guide](../docs/PORTABLE-WORKSPACE.md),
-[Windows notes](../docs/releases/windows-v1.2.0.md) and
-[web notes](../docs/releases/web-v0.3.0.md).
-
-## Optional local diagnostics and real-workflow timings
-
-macOS 1.0.17, Windows 1.2.1 and Web 0.3.1 preview add user-started timing
-sessions and editable diagnostic exports. Use real images and normal workflows,
-then inspect and redact the report before exporting. Nothing is uploaded
-automatically; names, paths, IDs, images and raw logs are excluded. See the
-[usage guide](../docs/INSTALL.md#optional-local-diagnostics-and-real-workflow-benchmarks).
+CellCounter is MIT licensed. Model weights and optional dependencies have their
+own terms; see [LICENSE](../LICENSE) and
+[third-party notices](../THIRD_PARTY_LICENSES.md).

@@ -1,113 +1,150 @@
-# Installing CellCounter
+# Install CellCounter
+
+Choose the application for your computer:
+
+| Platform | Current release | Installation guide |
+| --- | --- | --- |
+| macOS 15 or later, Intel or Apple Silicon | [1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) | Steps below |
+| Windows 10/11, x64 | [1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) | [Windows guide](WINDOWS.md) |
+| Browser | [0.3.2 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) | [Browser guide](WEB.md) |
+
+There is no native Linux application package in this release. The standalone
+[Python SDK](WORKBENCH.md#python-sdk) provides a separate programmatic interface.
 
 ## macOS v1.1.0
 
-CellCounter requires **macOS 15 or later**. The macOS download is a **universal build for Intel and Apple Silicon Macs**. Python environments and model dependencies are installed separately for your Mac when needed.
-
-The application is **ad-hoc signed and not notarized**. macOS may block its first launch because Apple has not verified the developer or notarized the app.
+The macOS application requires **macOS 15 or later** and is a **universal build**
+for Intel and Apple Silicon. Its ZIP contains the application; Python analysis
+environments and model weights are installed separately when you choose to use them.
 
 ### Install and open
 
-1. Download `CellCounter-v1.1.0.zip` from the [macOS release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0).
-2. Unzip the download and drag **CellCounting.app** into **Applications**. The application is called CellCounter; its bundle on disk is named `CellCounting.app`. Quit an older copy before replacing it. Replacing the application is separate from resetting its saved library.
-3. Open the application. If macOS blocks it, dismiss the message without moving the app to Trash.
-4. Open **System Settings → Privacy & Security** and find the message about CellCounter being blocked. Choose **Open Anyway**, then confirm **Open** when prompted. Depending on your Mac's security policy, administrator approval may be required.
-5. Open CellCounter again if it did not launch automatically. Subsequent launches should use the same installed copy.
+1. Download `CellCounter-v1.1.0.zip` and its SHA-256 file from the
+   [official release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0).
+2. Compare the archive's SHA-256 with the supplied value. In Terminal, run
+   `shasum -a 256 ~/Downloads/CellCounter-v1.1.0.zip`.
+3. Unzip it and move **CellCounting.app** to **Applications**. CellCounter is the
+   product name; its bundle on disk is named `CellCounting.app`. Quit an older
+   copy before replacing it.
+4. Open the installed application.
 
-The release uses ad-hoc signing; it does not include an Apple Developer ID signature or Apple notarization. Managed institutional Macs may require your IT administrator to approve installation.
+The application is **ad-hoc signed and not notarized**. It does not have an Apple
+Developer ID signature. If macOS blocks a verified official download, dismiss the
+message, open **System Settings → Privacy & Security**, then use **Open Anyway**
+and confirm **Open** if your security policy permits it. Managed Macs may require
+your IT administrator's approval. Do not override a warning for a download with
+an uncertain source or a mismatched checksum.
+
+Replacing the application does not reset its saved library. Before upgrading,
+stop ongoing analysis and back up important projects and results.
 
 ### Start with your images
 
-1. Open **Workbench**. Use **AI agent and command-line access → Install or repair** to set up the dedicated Workbench environment with Python 3.11 or later and the pinned analysis, MCP, Zarr and reporting dependencies.
-2. Create or open a local project. Import supported acquisitions, choose their source channel/projection and confirm calibration before analysis.
-3. Preview segmentation, save masks and correct them before running measurements or assays. Classical analysis needs no learned checkpoint; registered models require an explicitly selected compatible checkpoint and interpreter.
-4. Save workflows for repeatable processing. Existing Jobs controls can advance checkpoints or start a background worker; a stop request pauses after the current unit.
-5. Export scientific files or a project package. For an agent connection, copy the configuration from **AI agent and command-line access**; it uses the installed executable's `--workbench` entry point and explicit project permissions.
+1. Open **Workbench**. In **AI agent and command-line access**, choose
+   **Install or repair** to prepare the dedicated analysis environment. This
+   downloads the analysis, MCP, chunked-storage and reporting dependencies.
+2. Create or open a local project and import supported images. Check the source
+   channel, time/Z selection and spatial calibration before analysis.
+3. Preview segmentation and inspect the masks. Classical analysis needs no
+   learned checkpoint. A registered learned model needs its compatible local
+   interpreter, exact checkpoint and explicit configuration.
+4. Run analysis, correct labels and review measurements. Save a workflow to
+   repeat supported steps or use a saved job for resumable processing.
+5. Export scientific images, tables or an analysis package to a new destination.
 
-The dedicated runtime is installed only by your explicit action. Agent invocation does not automatically install software. Model environments and optional OMERO configuration remain separate. See the [Workbench guide](WORKBENCH.md) for limits, source formats, revision checks and executable-code permissions.
+The dedicated environment is installed only by an explicit action. Agent commands
+do not install software automatically. Model environments and optional OMERO
+configuration remain separate. See the [Workbench guide](WORKBENCH.md) for supported
+formats, operations and limits.
+
+### Connect an AI agent or use the command line
+
+Open the Workbench's **AI agent and command-line access** panel and check runtime
+readiness. Create or select the intended project, choose the permissions it needs,
+and generate the connection configuration for your MCP client. Read-only access is
+the default. Grant project writes, source/export folders and trusted executable
+methods separately.
+
+The installed application supplies the `--workbench` entry point. The CLI, SDK
+and MCP server use the same project operations as the GUI, including revision
+checks and retained history. Follow the [CLI examples](WORKBENCH.md#cli-example)
+or [MCP connection guide](WORKBENCH.md#mcp-connection) for standalone use.
 
 ### Existing library workflow
 
-Older library data remains available. The migration controls preview a copy into a new Workbench project and retain historical evidence; they do not replace the original library or turn historical contours into exact instance masks.
+Existing libraries remain available. Their migration controls preview a copy into
+a new Workbench project and retain historical evidence; they do not replace the
+original library or turn historical contours into exact instance masks.
 
-1. On **Home**, open or drop supported images, or use **File → Open Images…** (`⌘O`) or **Open Folder…** (`⌘⇧O`).
-2. In **Set up analysis**, inspect a representative image and choose a task, calibration, model, channels and Z projection as appropriate. You can import and inspect images before installing a segmentation model. Some proprietary formats require optional Python readers.
-3. If you want segmentation, install the selected model from **Models**. Return to **Processing → Continue setup** to continue the saved setup.
-4. With the model installed, run **Preview** on the representative image, inspect the masks, and adjust the settings before starting the batch. Matching preview results are reused.
-5. Use **Processing** to follow progress, pause after an image, resume or retry failed images. Open completed images to review them while the remaining images process. Interrupted jobs are restored as paused after relaunch.
+To continue using the image library:
 
-Task presets provide starting points. Marker positivity and wound closure need their corresponding assay settings and measurements; choosing a preset does not itself perform the assay.
+1. Open images or a folder from **Home** or **File → Open Images…** (`⌘O`).
+2. Inspect a representative image in **Set up analysis**. Confirm calibration,
+   source settings and analysis parameters before processing the batch.
+3. If needed, open **Models** and install the chosen segmentation engine.
+   Model families can use separate Python environments and checkpoints.
+4. Run a preview, review the result, then start the saved processing job.
+5. Use **Processing** to pause, resume or retry failed images. Completed images
+   can be reviewed while the remaining images process.
 
-### Install a segmentation engine for the existing library
-
-1. Open **Models** and choose the model you intend to use.
-2. Use its installation action. Cellpose 3 and Cellpose 4/SAM have separate environments; other model families may have their own requirements.
-3. Allow the required Python packages and model weights to download. Installation can take several minutes. The installation dialog shows progress and a live log.
-4. If installation fails, retain the log and the model name for a bug report, then use the available retry or repair action.
-
-The application download does not include all Python dependencies or model weights. After the required components are installed, image analysis runs locally. Local fine-tuning additionally requires the Cellpose 3.x environment, existing compatible weights and reviewed segmentation masks; see the [v1.0.11 release notes](releases/v1.0.11.md).
-
-### Existing library previews and model downloads
-
-Ordinary PNG, JPEG and BMP previews do not need Python startup when their pixel layout is supported. The original image stays visible while the selected channel is prepared. Scientific formats may still require their Python reader.
-
-Some Cellpose checkpoints download on the first analysis even after the Python environment is installed. Keep the app open while **downloading weights** shows progress. A stalled connection reports a download failure; restore connectivity and retry the image. After an interrupted session, reopen the app and resume the paused job in **Processing**. Completed model downloads are reused.
-
-**No calibration metadata found** is expected for many screenshots and ordinary photographs. It does not mean segmentation failed. Enter a known pixels-per-micrometre scale for calibrated measurements; a screenshot alone does not establish that scale.
-
-See the [v1.0.12 hotfix notes](releases/v1.0.12.md).
-
-### Historical Review Queue fixes
-
-macOS v1.0.15 adds further protection against deleted review records and malformed saved measurements. Resetting all data clears orphaned analysis records as well as batches; updating the app does not reset the library. Review saves and undo retain the earlier protections against delayed Results edits. Missing thumbnails can use a bounded preview of the imported image.
-
-Quit the old copy, replace the application, and reopen Review Queue. Existing images and corrections are preserved; a data reset is unnecessary. Older libraries may briefly prepare their review index. Read or save failures are shown explicitly instead of appearing as an empty queue.
-
-The follow-up report is [issue #10](https://github.com/Alperen-Gur/CellCounter/issues/10). The universal release archive was built, but automated tests and interactive validation were not run for this release. The reporter's exact crash remains unconfirmed. See the [v1.0.15 release notes](releases/v1.0.15.md).
+You can import and inspect images before installing a detector. Some scientific
+formats require optional readers. Interrupted jobs reopen as paused, and completed
+model downloads are reused.
 
 ### Find keyboard shortcuts
 
-Open **Help → Keyboard Shortcuts** with `⌘/`, or use the shortcuts section in **Settings**. Menus show the actions available on the current screen; disabled actions have no applicable target. Letter keys for cell editing apply when the image canvas has focus. Search fields and text editors keep normal Mac text selection and undo behavior.
+Open **Help → Keyboard Shortcuts** with `⌘/`, or use the shortcuts section in
+**Settings**. Image-editing letter keys apply when the canvas has focus. Text
+fields retain normal macOS selection and undo behavior.
 
-## Other platforms
+## Backup and portable projects
 
-For the separate Windows application, see the [Windows guide](WINDOWS.md). This macOS release does not include a native Linux package. The [web guide](WEB.md) describes the browser preview and its separate capability limits.
+Retain your original acquisitions. Export an analysis package when transferring
+a Workbench project, and keep a separate backup of its project folder when the
+application and background workers are closed. Also retain externally referenced
+sources and any host-local model/plugin runtime configuration needed to rerun it.
 
-## Sharing with colleagues
+Restoration verifies packaged artifacts and does not automatically enable
+executable models or plugins. Previously exported reports are historical
+snapshots; export new files after changing an analysis.
 
-Some institutional mail servers reject application bundles or archives that contain them. Share the official release link instead of attaching the application to an email.
+## Troubleshooting
 
-## Optional local diagnostics and real-workflow benchmarks
+| Problem | What to check |
+| --- | --- |
+| macOS blocks launch | Verify the official download and checksum, then follow the first-launch guidance above or contact your administrator. |
+| Runtime is unavailable | Use the Workbench access panel's installation/repair and readiness controls. Keep the specific dependency error if repair fails. |
+| A model will not run | Confirm its exact checkpoint, compatible interpreter and enabled state. For the existing library, retain the Models installation log and use its retry/repair action. |
+| Initial analysis is waiting on a download | Keep the application open while required weights download. Restore connectivity and retry after a failed download; cached completed downloads are reused. |
+| No calibration metadata is found | Enter a known scale when physical measurements are required. Ordinary photographs and screenshots often have no usable microscopy calibration. |
+| A project changed in another client | Refresh, inspect the current result, then submit the intended edit against the current revision. |
+| An imported source exceeds a limit | Use a supported region or prepared TIFF/NGFF input; consult the [feature limits](FEATURES.md#current-operating-limits). |
+| A preview or review record cannot be read | Retain the specific error. Reinstall the current release if application resources are damaged; avoid resetting scientific data as a first troubleshooting step. |
 
-**Local diagnostics & performance** is available in Support (macOS and Windows)
-or Help (web), beginning with macOS 1.0.17, Windows 1.2.1 and Web 0.3.1 preview.
+For a reproducible problem, use the repository's
+[issue tracker](https://github.com/Alperen-Gur/CellCounter/issues). Include the
+application version, platform, operation and exact error. Remove private image,
+sample and file-path information before sharing a report.
 
-Choose **Start recording**, then use real images and the normal import,
-processing, review, workspace, assay and export controls. Normal analysis retains
-its normal results. There are no synthetic workloads or automatic reruns.
-Choose a 10-minute, 30-minute or two-hour limit; a visible Stop control remains
-available while navigating. Stop early or erase the recorded timings at any time.
+<a id="optional-local-diagnostics-and-real-workflow-benchmarks"></a>
 
-Recording is disabled initially and must be started each app session. It stores
-only bounded numeric aggregates under fixed operation categories, in memory:
-counts, durations, failures where known, unfinished operations and recent latency
-percentiles. Foreground interface scheduling is measured during recording.
-Names, paths, image content, saved measurements, IDs, device identifiers, raw
-logs, free-form errors, wall-clock timestamps and event order are excluded.
-A crash or app exit loses unsaved results; this is not a crash-dump collector.
+## Optional local diagnostics
 
-Afterward, explicitly include the optional state summary and/or recorded timings,
-prepare the editable preview, remove any lines you do not want to share, and mark
-it inspected. Export writes exactly that text, up to 64 KiB, with no attachments
-or automatic uploads. Editing clears the inspection confirmation. Sharing is a
-separate manual action. The chosen file destination may be synced by other
-software. Counts and timings can reveal workload characteristics, so inspection
-is still important; absolute anonymity cannot be guaranteed for text users add.
+**Local diagnostics & performance** in Support (desktop) or Help (browser) can
+record timing summaries for workflows you run. Recording is off by default and
+must be started each session. It stores bounded in-memory counts, durations,
+failures where known, incomplete work and latency summaries, rather than image
+content, filenames or a chronological activity log. Exiting the app loses unsaved
+recording results.
 
-Timings cover instrumented real workflow boundaries and include waiting, cache
-and scheduling effects. Nested categories overlap. Unobserved operations are
-listed rather than estimated, and incomplete work is marked explicitly. Native
-exports and other boundaries that cannot classify their final outcome report it
-as unspecified. Timing summaries do not establish segmentation accuracy or expose
-CPU/GPU kernel profiles. Startup before opt-in and work before recording began
-are not measured. Keep input/settings consistent when comparing sessions.
+You can prepare and edit a diagnostic preview, inspect it, and export that text
+locally. There is no automatic upload or attachment. Inspect anything you add:
+workload counts, timings and user-authored text can still disclose information.
+A saved report may also be synchronized by other software at its chosen location.
+These timings describe observed workflows, not segmentation accuracy or a CPU/GPU
+profiler.
+
+## Sharing the application
+
+Share the official release link with colleagues. Institutional email systems
+often block attached application bundles or installer archives.

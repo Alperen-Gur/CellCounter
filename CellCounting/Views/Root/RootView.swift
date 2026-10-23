@@ -136,13 +136,26 @@ struct RootView: View {
 
     @ViewBuilder
     private var contentBody: some View {
+        ZStack {
+            WorkbenchView(session: state.workbenchSession,
+                onLibraryMigration: { state.prepareLibraryMigration() },
+                isActive: state.view == .workbench)
+                .opacity(state.view == .workbench ? 1 : 0)
+                .allowsHitTesting(state.view == .workbench)
+                .accessibilityHidden(state.view != .workbench)
+            legacyContent
+        }
+    }
+
+    @ViewBuilder
+    private var legacyContent: some View {
         switch state.view {
         case .home:       HomeView(state: state)
         case .processing: ProcessingView(state: state)
         case .results:    ResultsView(state: state, fullScreenEdit: $fullScreenEdit)
         case .batch:      BatchView(state: state)
         case .workspace:  WorkspaceView(state: state, session: state.workspaceSession)
-        case .workbench:  WorkbenchView(session: state.workbenchSession, onLibraryMigration: { state.prepareLibraryMigration() }, onLegacyWorkspace: { state.view = .workspace })
+        case .workbench:  EmptyView()
         case .models:     ModelsView(state: state)
         case .fineTune:   FineTuneView(state: state)
         case .settings:   SettingsView(state: state)

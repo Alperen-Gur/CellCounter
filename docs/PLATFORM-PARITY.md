@@ -1,52 +1,77 @@
-# Release status and feature parity
+# Platform comparison
 
-Current release series: **macOS 1.1.0**, **Windows 1.3.0** and **Web 0.3.2 preview**.
+Current releases: **macOS 1.1.0**, **Windows 1.3.0** and **Web 0.3.2 preview**.
 
-The native applications share the project Workbench engine and its GUI, CLI,
-Python SDK and MCP operations. The browser remains a separate local PWA with a
-smaller feature set. Historical library workflows and platform-specific model
-installation tools remain available where they have distinct capabilities.
+The desktop applications share the project Workbench, including its GUI, installed
+CLI, Python SDK and MCP operations. The browser is a separate local PWA with a
+smaller feature set. Existing image-library and portable workspace tools have
+their own platform-specific behavior.
 
 | Capability | macOS 1.1.0 | Windows 1.3.0 | Web 0.3.2 preview |
 | --- | --- | --- | --- |
-| Shared project GUI, installed CLI and MCP entry point | Included; dedicated runtime installed explicitly | Included; dedicated runtime installed explicitly | No native companion, CLI or MCP server |
-| Exact masks, correction history and measurements | Plane and volume operations | Plane and volume operations | Browser classical analysis and bounded 2D correction |
-| Registered learned models | Local checkpoint and explicit compatible interpreter | Local checkpoint and explicit compatible interpreter | Qualified learned artifacts are not bundled |
-| Saved workflows and background execution | Linear and branching jobs, review gates, sweeps and isolated distributed packets | Same shared operations | Portable browser workflows and local jobs within browser limits |
-| Project and catalogue storage | Indexed catalogues, explicit legacy migration and resumable package restore | Same shared operations | Browser-managed storage and bounded portable exports |
-| Large and remote sources | Bounded TIFF/NGFF regions, supported tiled threshold analysis and configured OMERO raw-region import | Same shared operations | Portable local Zarr v2 workspace; no OMERO adapter |
-| Layer workspace | Canonical bindings, semantic journals, replay and generated-image provenance | Same shared engine | Portable layers, painting, replay and GIF export within browser limits |
-| Experimental results | Specimen assignments, typed statistical designs, temporal analyses and explicit result refresh plans | Same shared operations | Browser assays and descriptive workflows; no shared native statistics engine |
-| Executable extensions | Explicit local installation/enabling and interpreter configuration | Same shared operations | No native executable plugins |
+| Local analysis | Yes | Yes | Yes, within browser limits |
+| Shared project Workbench | Yes; explicitly installed Python runtime | Yes; explicitly installed Python runtime | Not included |
+| Installed CLI and MCP server | Yes; scoped project and executable-code permissions | Yes; same shared operations | Not included |
+| Python SDK | Standalone package using the shared dispatcher | Same package and operations | Not used by the browser |
+| Classical segmentation | Planes and selected volumes | Same shared operations | Bounded planes |
+| Registered learned models | Explicit compatible local interpreter and checkpoint | Same shared adapters; backend compatibility depends on local environment | Qualified production artifacts are not bundled |
+| Exact masks and correction history | Plane and volume operations | Same shared operations | Bounded 2D correction and saved alternatives |
+| Volume analysis and display | Original-voxel analysis with linked slices and sampled rendering | Same shared operations | Plane-based workspace; no shared scientific volume engine |
+| Tracking and lineage | Shared tracking, temporal inference and reviewed lineage operations | Same shared operations | Bounded sequence tracking and portable layer relationships |
+| Saved workflows | Linear/branching graphs, sweeps and review gates | Same shared operations | Portable recorded workspace operations and local processing jobs |
+| Background and portable tasks | Local workers and explicit distributed work packets | Same shared operations | Browser workers; no native task worker |
+| Large and remote sources | Bounded TIFF/NGFF regions, tiled threshold analysis and configured OMERO raw-region import | Same shared operations | Local Zarr v2 workspace within its format/codec limits; no OMERO adapter |
+| Experiments and statistics | Biological specimens, typed statistical designs and retained reports | Same shared operations | Browser assays and descriptive comparisons; not the shared specimen-statistics engine |
+| Dependent-result refresh | Stale-result reporting and explicit refresh plans | Same shared operations | Browser result/protocol behavior; not the shared refresh engine |
+| Executable plugins | Local reader, segmentation, measurement and exporter roles | Same shared operations | Native executable plugins not included |
+| Project storage | Filesystem projects and indexed catalogues | Same shared format | Browser-managed metadata and source storage |
+| Portable exports | Scientific files and resumable analysis packages | Same shared operations | File downloads, sample/dataset exports and portable workspace documents within browser bounds |
 
-The native NGFF reader supports the documented 0.4/Zarr v2 and 0.5/Zarr v3
-routes through pinned maintained libraries. This does not mean arbitrary codecs,
-remote stores, unlimited data sizes or every analysis algorithm are supported.
-The current tiled analysis path is a bounded plane threshold/connected-components
-workflow; whole-series OMERO processing and general tiled learned-model inference
-are not included. See the [Workbench guide](WORKBENCH.md) for operation limits.
+## Shared desktop limits
 
-Model availability depends on the selected interpreter, checkpoint and backend
-configuration; a catalogue entry alone is not an installed or validated model.
-The web app has no image-upload service. Its learned inference, proprietary
-microscope readers and actual model training remain unavailable. Current native
-Workbench import also does not claim proprietary VSI support. The browser's
-[portable workspace guide](PORTABLE-WORKSPACE.md) lists its narrower format,
-codec and coordinate behavior.
+- Standard imported sources are bounded to 512 MiB and 256 MiB decoded data;
+  selected planes to 16 million pixels and selected scientific volumes to
+  8 million voxels. Some operations have narrower limits.
+- Volume rendering samples at most 128 values per axis. Original voxels remain
+  authoritative for supported scientific measurements and edits.
+- Registered learned-model adapters perform 2D inference. General tiled
+  learned-model inference and whole-series OMERO processing are not included.
+- NGFF supports the documented 0.4/Zarr v2 and 0.5/Zarr v3 routes. This does not
+  imply arbitrary codec, remote-store or unlimited-size support.
+- General conditional workflow execution and automated cluster scheduling are
+  not included. Portable work packets use explicit transfer and collection.
+- Model availability requires the correct installed packages, checkpoint and
+  interpreter. A catalogue entry alone does not establish readiness or hardware
+  acceleration. The bundled Windows model-installation paths use CPU inference.
 
-These are software capabilities, not evidence of complete commercial-tool parity,
-biological accuracy or performance superiority. Local automated and nonvisual
-build checks were performed for this release; interactive application and visual
-verification were not performed. Windows installers are unsigned. macOS is
-ad-hoc signed and not notarized. Publishing the static web ZIP does not create a
-hosted service.
+The shared Workbench does not provide a built-in VSI reader. Existing library
+importers and model installers are separate routes; their format or checkpoint
+coverage must not be inferred from this table.
 
-See the [Windows notes](releases/windows-v1.3.0.md),
-[web notes](releases/web-v0.3.2.md), [installation guide](INSTALL.md), and
-[Workbench guide](WORKBENCH.md). The detailed [feature tables](FEATURES.md)
-retain a clearly labeled earlier release baseline; their counts are not current
-completion percentages.
+## Browser limits
 
-Opt-in local timing sessions and editable diagnostic exports remain available
-across all three platforms. Recording starts only by user choice, and reports
-have no automatic upload path.
+The browser has no native companion, filesystem-backed Python Workbench or
+installed MCP server. It does not include proprietary microscope readers,
+validated learned-model weights or live model training. Its local Zarr reader
+supports a narrower set of formats and codecs than the desktop NGFF reader.
+Browser quotas and site-data deletion can remove local work; export important
+results and retain the original images.
+
+See the [browser guide](WEB.md) and [portable workspace guide](PORTABLE-WORKSPACE.md)
+for the browser's coordinate, source and export behavior.
+
+## Installation and privacy
+
+macOS requires version 15 or later and supports Intel and Apple Silicon. Its
+download is ad-hoc signed and not notarized. Windows provides unsigned x64 MSI
+and NSIS installers for Windows 10/11 and requires WebView2. The browser archive
+contains static files to serve over HTTPS or localhost; downloading it does not
+create a hosted service.
+
+Analysis is local by default. Initial runtime/model downloads, explicitly
+configured OMERO access and trusted executable extensions have their own network
+requirements. Optional timing reports and diagnostics are previewed and exported
+locally; the application does not upload them automatically.
+
+See [macOS installation](INSTALL.md), [Windows installation](WINDOWS.md),
+[current features](FEATURES.md) and the [Workbench guide](WORKBENCH.md).

@@ -3,6 +3,7 @@ import SwiftUI
 struct WorkbenchReviewView: View {
     @Bindable var session: WorkbenchSession
     @Bindable var review: WorkbenchReviewState
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var tab = "queue"
     @State private var imageIDs: Set<String> = []
@@ -36,7 +37,7 @@ struct WorkbenchReviewView: View {
                 WorkbenchSavedRecordAccess(session: session, catalogues: ["reviewSessions"])
                 Spacer()
                 Button("Refresh", action: session.loadReviews)
-                Button("Done") { dismiss() }
+                if !embedded { Button("Done") { dismiss() } }
             }.disabled(session.busy)
             Text("Reviewer identities are declared locally and recorded with decisions. They are not authenticated accounts.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -54,7 +55,9 @@ struct WorkbenchReviewView: View {
                 Text(session.status).font(.caption).foregroundStyle(.secondary)
                 Spacer()
             }
-        }.padding(24).frame(width: 1120, height: 760).background(.background)
+        }.padding(embedded ? 16 : 24)
+        .frame(width: embedded ? nil : 1120, height: embedded ? nil : 760)
+        .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         .task {
             imageIDs = Set(session.selectedImage.map { session.viewingVolume ? ($0.volumeFrameCount > 0 ? [$0.id] : []) : ($0.cellCount != nil ? [$0.id] : []) } ?? [])
             session.loadReviews()
@@ -88,7 +91,7 @@ struct WorkbenchReviewView: View {
                 Button("Save classification") {
                     session.flagReviewImages(imageIDs: imageIDs, state: flagState, reason: flagReason, allTimePoints: allTimePoints)
                 }.disabled(imageIDs.isEmpty)
-            }.padding(.trailing, 14).frame(minWidth: 430)
+            }.padding(.trailing, 14).frame(minWidth: embedded ? 360 : 430)
             ScrollView {
                 VStack(alignment: .leading, spacing: 11) {
                     TextField("Review session name", text: $name).textFieldStyle(.roundedBorder)
@@ -124,7 +127,7 @@ struct WorkbenchReviewView: View {
                             (requiredReviews == 2 && reviewerTwo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
                             seed < 0 || seed > 4_294_967_295)
                 }.padding(.leading, 14)
-            }.frame(minWidth: 430)
+            }.frame(minWidth: embedded ? 360 : 430)
         }.disabled(session.busy)
     }
 
@@ -171,8 +174,8 @@ struct WorkbenchReviewView: View {
                             }
                         }
                     }.frame(minWidth: 150, idealWidth: 180, maxWidth: 220)
-                    reviewImage.frame(minWidth: 400)
-                    decisionControls.frame(minWidth: 270, idealWidth: 290).padding(.leading, 10)
+                    reviewImage.frame(minWidth: embedded ? 320 : 400)
+                    decisionControls.frame(minWidth: embedded ? 250 : 270, idealWidth: 290).padding(.leading, 10)
                 }
             } else {
                 ContentUnavailableView("No review sample selected", systemImage: "checklist",

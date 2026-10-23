@@ -9,7 +9,7 @@ struct WorkbenchSourcesView: View {
     var body: some View {
         TabView(selection: $section) {
             WorkbenchTIFFSourcesView(session: session, sources: sources).tabItem { Text("TIFF sources") }.tag("tiff")
-            WorkbenchStorageView(session: session, storage: session.storage).tabItem { Text("OME-Zarr and tiled analysis") }.tag("zarr")
+            WorkbenchStorageView(session: session, storage: session.storage).tabItem { Text("OME-Zarr sources") }.tag("zarr")
             WorkbenchOmeroView(session: session, omero: session.omero).tabItem { Text("OMERO") }.tag("omero")
         }.frame(width: 1120, height: 850).disabled(session.busy)
     }

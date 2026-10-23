@@ -259,6 +259,8 @@ final class WorkbenchSession {
     ) async throws -> WorkbenchJSON
 
     var projectPath: String
+    var task: WorkbenchTask = .preparation
+    private(set) var navigationCatalog: WorkbenchJSON = .null
     private(set) var projectName = ""
     private(set) var revision: Int?
     var images: [WorkbenchImage] = []
@@ -387,6 +389,14 @@ final class WorkbenchSession {
         return .object(values)
     }
 
+    func loadNavigationCatalog() async {
+        // Navigation discovery is available before a project is opened.
+        // Older runtimes keep the stable built-in task labels as a fallback.
+        if let response = try? await request("navigation.catalog", "", nil, [:]) {
+            navigationCatalog = response["result"]
+        }
+    }
+
     func open(path: String) {
         perform("Opening project…") {
             let response = try await self.projectSnapshot(path: path)
@@ -471,8 +481,17 @@ final class WorkbenchSession {
     }
 
     func importImages(_ urls: [URL]) {
-        mutate("image.import", arguments: ["paths": .array(urls.map { .string($0.path) })],
-               message: "Importing images…", finished: "Images imported.")
+        perform("Importing images…") {
+            try await self.importImageFiles(urls)
+            self.reportStatus("Images imported.")
+        }
+    }
+
+    func importImageFiles(_ urls: [URL]) async throws {
+        _ = try await call("image.import", arguments: ["paths": .array(urls.map { .string($0.path) })], mutation: true)
+        try await inspect()
+        try await loadImage()
+        invalidateSummaries()
     }
 
     func duplicateImage(name: String, copyAnalysis: Bool) {
@@ -1031,11 +1050,22 @@ final class WorkbenchSession {
     /// Explicit view navigation from a named local session. Ordinary scientific
     /// operations never call this method or move the selected image.
     func loadNavigationSelection(_ selection: WorkbenchJSON) async throws {
+        let requestedTask: WorkbenchTask?
+        if let taskID = selection["task"].string {
+            guard let nextTask = WorkbenchTask(rawValue: taskID) else {
+                throw WorkbenchFailure(code: "task-unavailable", message: "The requested workbench task is unavailable.")
+            }
+            requestedTask = nextTask
+            if isTaskOnlyNavigation(selection) { task = nextTask; return }
+        } else { requestedTask = nil }
         if let workspaceID = selection["workspaceId"].string {
             layeredWorkspace.load(try await call("workspace.get", arguments: ["workspaceId": .string(workspaceID)])["result"])
             sharedSession.presentWorkspace = true
         }
-        guard let imageID = selection["imageId"].string else { return }
+        guard let imageID = selection["imageId"].string else {
+            if let requestedTask { task = requestedTask }
+            return
+        }
         let image = try await resolveImage(imageID)
         let target = selection["target"].string ?? "plane"
         let requestedChannel = selection["channel"].integer ?? 0
@@ -1070,6 +1100,7 @@ final class WorkbenchSession {
                 try await loadSavedMaskOverlay()
             }
         }
+        if let requestedTask { task = requestedTask }
     }
 
     func reportStatus(_ message: String) { status = message }

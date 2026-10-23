@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -42,7 +42,7 @@ import WorkbenchExports from "./WorkbenchExports";
 import WorkbenchLabelImport from "./WorkbenchLabelImport";
 import WorkbenchComparison from "./WorkbenchComparison";
 import WorkbenchAnnotations from "./WorkbenchAnnotations";
-import WorkbenchTaskNavigation, { WorkbenchTaskSection, type WorkbenchTask } from "./WorkbenchTaskNavigation";
+import WorkbenchTaskNavigation, { WORKBENCH_TASKS, WorkbenchTaskSection, type WorkbenchTask } from "./WorkbenchTaskNavigation";
 import WorkbenchComposite from "./WorkbenchComposite";
 import type { CompositeExportArguments, CompositeExportFormat, CompositeExportResult } from "../../../../shared/workbench/compositeProtocol";
 import type { DisplayPreset, DisplayPresetMutation, DisplayPresetFileActions, DisplayPresetExportResult } from "../../../../shared/workbench/displayPresetProtocol";
@@ -60,6 +60,8 @@ import type { PackageInspection } from "../../../../shared/workbench/extensionPr
 import type { SweepExportArguments, SweepExportFormat, SweepExportResult, WorkbenchSweep } from "../../../../shared/workbench/sweepProtocol";
 import { activeJobWorker, type JobWorker } from "../../../../shared/workbench/workerProtocol";
 import { legacyLibraryLocations, request, requestResponse } from "../../kernel/workbench/client";
+import { WORKBENCH_ACTION_EVENT, takeWorkbenchAction } from "../../components/workbenchNavigation";
+import { WorkbenchVisibility } from "../../components/WorkbenchVisibility";
 import "./workbench.css";
 
 const PROJECT_KEY = "cellcounter.workbench.project.v1";
@@ -78,6 +80,17 @@ function displayScienceIdentity(value: ProjectSnapshot): string {
 }
 
 export default function WorkbenchPage() {
+  if (!("__TAURI_INTERNALS__" in window)) return <section className="workbench workbench-empty" aria-labelledby="workbench-preview-title">
+    <h1 id="workbench-preview-title">Microscopy workbench</h1>
+    <p>This is a browser preview of the desktop interface. Shared projects, Python analysis, the installed command line and MCP connections require the installed application.</p>
+    <p><a className="cc-btn" href="#/workspace">Open the browser workspace demo</a></p>
+    <p>The demo keeps its own local documents and supports a limited set of browser operations.</p>
+  </section>;
+  return <WorkbenchProjectPage />;
+}
+
+function WorkbenchProjectPage() {
+  const visible = useContext(WorkbenchVisibility);
   const [path, setPath] = useState(() => localStorage.getItem(PROJECT_KEY) ?? "");
   const [snapshot, setSnapshot] = useState<ProjectSnapshot>();
   const [imageId, setImageId] = useState("");
@@ -96,7 +109,22 @@ export default function WorkbenchPage() {
   const [tool, setTool] = useState<"select" | "polygon">("select");
   const [polygon, setPolygon] = useState<[number, number][]>([]);
   const [mode, setMode] = useState<"projection" | "volume">("projection");
-  const [task, setTask] = useState<WorkbenchTask>("preparation");
+  const [task, setCurrentTask] = useState<WorkbenchTask>("preparation");
+  const taskEpoch = useRef(0);
+  const setTask = useCallback((next: WorkbenchTask) => {
+    taskEpoch.current++;
+    setCurrentTask(next);
+  }, []);
+  const [tiledAnalysisTarget, setTiledAnalysisTarget] = useState<HTMLDivElement | null>(null);
+  const [tiledMeasurementsTarget, setTiledMeasurementsTarget] = useState<HTMLDivElement | null>(null);
+  const [tiledExportTarget, setTiledExportTarget] = useState<HTMLDivElement | null>(null);
+  const [volumeCalibrationTarget, setVolumeCalibrationTarget] = useState<HTMLDivElement | null>(null);
+  const [volumeMeasurementsTarget, setVolumeMeasurementsTarget] = useState<HTMLDivElement | null>(null);
+  const [volumeContextTarget, setVolumeContextTarget] = useState<HTMLDivElement | null>(null);
+  const [volumeCalibrationEditing, setVolumeCalibrationEditing] = useState(false);
+  const [importRequested, setImportRequested] = useState(false);
+  const libraryImportRef = useRef<HTMLDivElement>(null);
+  const agentAccessRef = useRef<HTMLDivElement>(null);
   const [volumeWorkflow, setVolumeWorkflow] = useState<VolumeWorkflowConfiguration>();
   const [volumeEditing, setVolumeEditing] = useState(false);
   const [annotationEditing, setAnnotationEditing] = useState(false);
@@ -135,13 +163,14 @@ export default function WorkbenchPage() {
   const image = snapshot?.images.find((item) => item.id === imageId);
   const volumeMode = mode === "volume" || (image?.timeCount ?? 1) > 1;
   const displayed = draft ?? cells;
-  const projectionEditing = draft !== null || polygon.length > 0 || selected.length > 0 ||
-    Boolean(image && (calibration === "" ? null : Number(calibration)) !== image.pxPerUm);
+  const projectionMaskEditing = draft !== null || polygon.length > 0 || selected.length > 0;
+  const projectionCalibrationEditing = Boolean(image && (calibration === "" ? null : Number(calibration)) !== image.pxPerUm);
+  const projectionEditing = projectionMaskEditing || projectionCalibrationEditing;
   const editing = useRef(false);
   const workspaceDraftActive = useRef(false);
   workspaceDraftActive.current = workspaceEditing;
   const workspaceScienceBlocked = useRef(false);
-  workspaceScienceBlocked.current = annotationEditing || (volumeMode ? volumeEditing : projectionEditing);
+  workspaceScienceBlocked.current = annotationEditing || volumeCalibrationEditing || (volumeMode ? volumeEditing : projectionEditing);
   editing.current = workspaceEditing || workspaceScienceBlocked.current;
 
   const readSnapshot = async (projectPath: string, selectedId?: string, revision?: number): Promise<ProjectSnapshot> => {
@@ -561,6 +590,7 @@ export default function WorkbenchPage() {
   };
 
   const chooseProject = (create: boolean) => run(async () => {
+    if (editing.current) throw new Error("Save or discard local drafts before changing projects.");
     const chosen = create
       ? await save({ title: "Create analysis project folder", defaultPath: "Experiment.ccproject" })
       : await open({ title: "Open analysis project folder", directory: true, multiple: false });
@@ -574,13 +604,19 @@ export default function WorkbenchPage() {
   });
 
   const importImages = () => run(async () => {
+    if (!current.current.snapshot) {
+      setTask("preparation"); setImportRequested(true);
+      setStatus("Create or open a project, then import your images into that project.");
+      return;
+    }
+    if (editing.current) throw new Error("Save or discard local drafts before importing images.");
     const files = await open({
       title: "Import microscopy images", multiple: true,
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "tif", "tiff", "bmp"] }],
     });
     if (!files) return;
     await mutate("image.import", { paths: Array.isArray(files) ? files : [files] });
-    setStatus("Images copied into the project.");
+    setImportRequested(false); setStatus("Images copied into the project.");
   });
 
   const choosePackage = () => run(async () => {
@@ -674,6 +710,34 @@ export default function WorkbenchPage() {
     if (document.querySelector("dialog[open]")) return;
     setTask(next);
   };
+
+  const shellActions = useRef({ importImages, chooseProject });
+  shellActions.current = { importImages, chooseProject };
+  useEffect(() => {
+    const handle = () => {
+      const action = takeWorkbenchAction();
+      if (!action) return;
+      if (document.querySelector("dialog[open]")) {
+        setStatus("Close the open dialog before using a Workbench navigation command.");
+        return;
+      }
+      if (action.kind === "task") { setTask(action.task); return; }
+      if (action.kind === "agent-access" || action.kind === "library-import") {
+        if (action.kind === "library-import") setTask("preparation");
+        const element = action.kind === "library-import" ? libraryImportRef.current : agentAccessRef.current;
+        const details = element?.querySelector("details");
+        if (details) details.open = true;
+        element?.scrollIntoView({ block: "start" });
+        return;
+      }
+      if (action.kind === "import") { setTask("preparation"); void shellActions.current.importImages(); return; }
+      if (editing.current) { setStatus("Save or discard local drafts before changing projects."); return; }
+      void shellActions.current.chooseProject(action.kind === "new-project");
+    };
+    window.addEventListener(WORKBENCH_ACTION_EVENT, handle);
+    handle();
+    return () => window.removeEventListener(WORKBENCH_ACTION_EVENT, handle);
+  }, []);
 
   const discardProjectionDraft = () => run(async () => {
     const active = current.current;
@@ -786,6 +850,7 @@ export default function WorkbenchPage() {
   };
 
   const sessionSelection: SessionSelection = {
+    task,
     ...(image ? { imageId: image.id, target: volumeMode ? "volume" as const : "plane" as const,
       channel: volumeMode ? volumeWorkflow?.imageId === imageId ? volumeWorkflow.channel : image.preferredVolumeSelection?.channel ?? 0 : parameters.channel,
       ...(volumeMode ? { timeIndex: volumeWorkflow?.imageId === imageId ? volumeWorkflow.timeIndex : image.preferredVolumeSelection?.timeIndex ?? 0,
@@ -794,7 +859,7 @@ export default function WorkbenchPage() {
     ...(workspaceSelection && snapshot?.workspaces?.some(item => item.id === workspaceSelection) ? { workspaceId: workspaceSelection } : {}),
   };
   const sessionState = useRef({ selection: sessionSelection, blockedReason: "" });
-  sessionState.current = { selection: sessionSelection, blockedReason: editing.current ? "Save or discard local scientific drafts first."
+  sessionState.current = { selection: sessionSelection, blockedReason: !visible ? "Return to Workbench before applying requested navigation." : editing.current ? "Save or discard local scientific drafts first."
     : document.querySelector("dialog[open]") ? "Close the open dialog first."
     : snapshot?.jobWorkers?.some(activeJobWorker) ? "Background execution is active; navigation waits for its checkpoint work to settle." : "" };
   const synchronization = useWorkbenchSession({
@@ -815,6 +880,19 @@ export default function WorkbenchPage() {
     },
     navigate: async requested => {
       const active = current.current;
+      const epoch = taskEpoch.current;
+      const requestedTask = requested.selection.task;
+      const commitTask = requestedTask ? () => {
+        if (taskEpoch.current !== epoch || current.current.path !== active.path ||
+          current.current.snapshot?.project.id !== active.snapshot?.project.id) return;
+        setTask(requestedTask);
+        setStatus(`Opened ${WORKBENCH_TASKS.find(item => item.id === requestedTask)?.label} for ${requested.actor.name}.`);
+      } : undefined;
+      if (!visible) return { outcome: "deferred", reason: "Return to Workbench before applying requested navigation." };
+      if (requestedTask && Object.keys(requested.selection).every(key => key === "task")) {
+        if (document.querySelector("dialog[open]")) return { outcome: "deferred", reason: "Close the open dialog before changing tasks." };
+        return { outcome: "applied", commit: commitTask };
+      }
       if (!active.snapshot || editing.current || document.querySelector("dialog[open]"))
         return { outcome: "deferred", reason: "Save or discard local drafts and close open dialogs before navigating." };
       if (active.snapshot.jobWorkers?.some(activeJobWorker)) return { outcome: "deferred", reason: "Wait for background execution to settle or stop it after its checkpoint." };
@@ -838,9 +916,8 @@ export default function WorkbenchPage() {
         setMode(target.target === "volume" ? "volume" : "projection");
       }
       setNavigation(requested);
-      setTask(target.workspaceId ? "preparation" : "segmentation");
       setStatus(`Navigation requested by ${requested.actor.name} applied to this view.`);
-      return { outcome: "applied" };
+      return { outcome: "applied", commit: commitTask };
     },
   });
   const stopWorker = async (workerId: string) => {
@@ -1306,14 +1383,14 @@ export default function WorkbenchPage() {
     </div> : null}
     <p className="workbench-status" role="status">{busy ? runningMigration ? status || "Importing the next library checkpoint…" : "Working…"
       : status || (snapshot ? `Saved revision ${snapshot.project.revision}` : "Create or open a project to begin.")}</p>
-    <WorkbenchAgentAccess path={snapshot ? path : ""} busy={busy}
+    <div ref={agentAccessRef}><WorkbenchAgentAccess path={snapshot ? path : ""} busy={busy}
       writeBlocked={editing.current || Boolean(snapshot?.jobWorkers?.some(activeJobWorker))} run={run}
       chooseFolder={accepted => run(async () => {
         const selected = await open({ directory: true, multiple: false, title: "Choose an allowed source or export folder" });
         if (typeof selected === "string") accepted(selected);
-      })} />
+      })} /></div>
     {snapshot ? <details className="workbench-agent-access"><summary>Shared project connection{ synchronization.notice ? " · update pending" : "" }</summary>
-      <p>Committed agent and worker changes are observed every five seconds and when this window gains focus. Local drafts defer scientific refresh and navigation.</p>
+      <p>Committed agent and worker changes are observed every five seconds and when this window gains focus. Local drafts defer scientific refresh and image navigation; changing tasks keeps drafts intact.</p>
       {synchronization.session ? <><p>Desktop session: <code>{synchronization.session.id}</code></p>
         <p>Session revision {synchronization.session.sessionRevision} · observed project revision {synchronization.session.observedProjectRevision}</p>
         {synchronization.session.navigation ? <p>Navigation: {synchronization.session.navigation.status}{synchronization.session.navigation.reason ? ` · ${synchronization.session.navigation.reason}` : ""}</p> : null}</> : <p>Registering this desktop view…</p>}
@@ -1322,9 +1399,9 @@ export default function WorkbenchPage() {
       <button className="cc-btn" disabled={busy} onClick={() => void synchronization.observe()}>Check shared project now</button>
     </details> : null}
     {synchronization.notice ? <p className="workbench-status" role="status">{synchronization.notice}</p> : null}
-    <WorkbenchMigration snapshot={snapshot} busy={busy} writeBlocked={editing.current} running={runningMigration}
+    <div ref={libraryImportRef} hidden={Boolean(snapshot) && task !== "preparation"}><WorkbenchMigration snapshot={snapshot} busy={busy} writeBlocked={editing.current} running={runningMigration}
       actions={migrationActions} readProjectless={(operation, args) => request("", operation, args)}
-      readProject={(operation, args) => request(path, operation, args, snapshot?.project.revision)} />
+      readProject={(operation, args) => request(path, operation, args, snapshot?.project.revision)} /></div>
     <div hidden={Boolean(snapshot) && task !== "preparation"}>
       <WorkbenchOmero busy={busy} canImport={Boolean(snapshot)} writeBlocked={editing.current || Boolean(snapshot?.jobWorkers?.some(activeJobWorker))}
         actions={{ run, chooseFile: (title, accepted) => run(async () => {
@@ -1336,7 +1413,7 @@ export default function WorkbenchPage() {
           setStatus("Imported exact raw OMERO pixels with server, selection and calibration provenance.");
         }) }} />
     </div>
-    <WorkbenchProjectStorage snapshot={snapshot} busy={busy} writeBlocked={editing.current || Boolean(snapshot?.jobWorkers?.some(activeJobWorker))}
+    <div hidden={Boolean(snapshot) && task !== "export" && !packageToRestore && !packageRestore}><WorkbenchProjectStorage snapshot={snapshot} busy={busy} writeBlocked={editing.current || Boolean(snapshot?.jobWorkers?.some(activeJobWorker))}
       selectedPackage={packageToRestore} restore={packageRestore} running={restoreRunning} rememberedRestorePath={rememberedRestorePath}
       run={run} read={(operation, args) => request(path, operation, args, snapshot?.project.revision)}
       upgrade={upgradeStorage} choosePackage={choosePackage} dismissPackage={() => setPackageToRestore(undefined)} startRestore={restorePackage}
@@ -1345,7 +1422,7 @@ export default function WorkbenchPage() {
         storageActionAllowed(); const value = restoreRef.current; if (!value || value.result.restore.status !== "completed") return;
         const saved = await request<PackageRestoreResult>(value.path, "package.restore.get");
         retainRestore(value.path, saved); if (saved.restore.status === "completed") await refresh(value.path);
-      })} />
+      })} /></div>
     {snapshot ? <>
       <details className="workbench-project-details"><summary>Project details</summary>
         <p className="workbench-project-path">{path}</p><p>{snapshot.imageCount ?? snapshot.images.length} images · saved revision {snapshot.project.revision}</p>
@@ -1364,16 +1441,19 @@ export default function WorkbenchPage() {
         {(image?.timeCount ?? 1) > 1 ? <span>Time series use individual 3D frames.</span> : null}
       </div>
       </div>
+      <div ref={setVolumeContextTarget} />
+      {importRequested ? <p className="workbench-draft-notice">Your project is ready. <button type="button" className="cc-btn" disabled={busy || editing.current} onClick={() => void importImages()}>Import images…</button></p> : null}
       {editing.current ? <p className="workbench-draft-notice">Selections and drafts stay active when you switch tasks.
         Finish or clear them before changing image, analysis mode or project.
         {annotationEditing ? " Annotation changes are in Measurements." : ""}
-        {workspaceEditing ? " Layer workspace changes are in Images & preparation." : ""}
-        {(volumeMode ? volumeEditing : projectionEditing) ? " Mask edits, selections and calibration are in Segmentation & correction." : ""}
+        {workspaceEditing ? " Layer workspace changes are in Images." : ""}
+        {(volumeMode ? volumeCalibrationEditing : projectionCalibrationEditing) ? " Calibration changes are in Images." : ""}
+        {(volumeMode ? volumeEditing : projectionMaskEditing) ? " Mask edits and selections are in Segmentation." : ""}
       </p> : null}
       <WorkbenchTaskNavigation selected={task} onSelect={selectTask} pending={{
         ...(annotationEditing ? { measurements: "Unsaved annotation" } : {}),
-        ...(workspaceEditing ? { preparation: "Unsaved layer settings" } : {}),
-        ...((volumeMode ? volumeEditing : projectionEditing) ? { segmentation: "Draft or selection active" } : {}),
+        ...((workspaceEditing || volumeCalibrationEditing || (!volumeMode && projectionCalibrationEditing)) ? { preparation: "Unsaved image settings" } : {}),
+        ...((volumeMode ? volumeEditing : projectionMaskEditing) ? { segmentation: "Draft or selection active" } : {}),
         ...((runningJobId || runningSweepId || snapshot.jobWorkers?.some(activeJobWorker)) ? { workflows: "Running" } : {}),
       }} />
       <div className="workbench-layout" aria-busy={busy}>
@@ -1383,11 +1463,11 @@ export default function WorkbenchPage() {
           {(snapshot.imageCount ?? 0) === 0 ? <p>Import a TIFF or ordinary image. The original is preserved in the project.</p> : null}
           <WorkbenchImageSelector key={snapshot.project.id} label="Selected image" initialOpen selectedIds={imageId ? [imageId] : []}
             disabled={busy || editing.current} onChange={ids => void run(() => selectProjectImage(ids[0] ?? ""))} />
-          {image ? <p>{image.name}<br />{image.width} × {image.height} · {image.channels} channels · {image.zCount} Z · {image.timeCount} time points<br />
-            {image.cellCount == null ? image.status : `${image.cellCount} saved 2D objects`}{image.volumeFrameCount ? ` · ${image.volumeFrameCount} analyzed volumes` : ""}</p> : null}
+          {image ? <p>{image.cellCount == null ? image.status : `${image.cellCount} saved 2D objects`}{image.volumeFrameCount ? ` · ${image.volumeFrameCount} analyzed volumes` : ""}</p> : null}
         </aside>
         <div className="workbench-task-content">
         <WorkbenchTaskSection task="segmentation" active={task}>
+        <div ref={setTiledAnalysisTarget} />
         <div className="workbench-actions">
           <button className="cc-btn" disabled={busy || !image || editing.current} onClick={() => void run(() =>
             mutate("image.duplicate", { imageId, name: `${image?.name.slice(0, 160)} · mask layer` }))}>New mask layer</button>
@@ -1401,10 +1481,11 @@ export default function WorkbenchPage() {
           exportLineage={exportLineage}
           exportComposite={exportComposite} compositeExportBlocked={editing.current || !!snapshot.jobWorkers?.some(activeJobWorker)}
           mutatePreset={mutateDisplayPreset} presetFiles={displayPresetFiles} displayTransition={displayTransition}
-          navigation={navigation}
+          navigation={navigation} calibrationTarget={volumeCalibrationTarget} measurementsTarget={volumeMeasurementsTarget}
+          contextTarget={volumeContextTarget} onCalibrationEditingChange={setVolumeCalibrationEditing}
           read={(operation, args) => request(path, operation, args, snapshot.project.revision)}
           act={(operation, args) => run(() => {
-            if (operation.startsWith("temporal.") || operation.startsWith("lineage.")) activeWorkflowProject();
+            if (operation.startsWith("temporal.") || operation.startsWith("lineage.") || operation.startsWith("tracks.")) activeWorkflowProject();
             return mutate(operation, args);
           })}
           onWorkflowChange={setVolumeWorkflow} onEditingChange={setVolumeEditing} /> : <p>Choose an image to inspect.</p> : <>
@@ -1516,14 +1597,7 @@ export default function WorkbenchPage() {
               <button className="cc-btn workbench-primary" onClick={() => void analyze(true)}>Run analysis</button>
             </div>
           </fieldset>
-          <h2>Calibration</h2>
-          <fieldset disabled={busy || !image}>
-            <label>Pixels per micrometre<input type="number" min="0" step="any" value={calibration}
-              placeholder="Unknown" onChange={(event) => setCalibration(event.target.value)} /></label>
-            <button className="cc-btn" disabled={!Number.isFinite(Number(calibration)) || Number(calibration) <= 0}
-              onClick={() => void run(() => mutate("calibration.set", { imageId, pxPerUm: Number(calibration) }))}>Apply calibration</button>
-            <p>Physical measurements remain unavailable until calibration is supplied.</p>
-          </fieldset>
+
         </aside>
         </>}
         </div>
@@ -1543,6 +1617,7 @@ export default function WorkbenchPage() {
         act={(operation, args) => run(() => mutate(operation, args))} />
       </WorkbenchTaskSection>
       <WorkbenchTaskSection task="export" active={task}>
+      <div ref={setTiledExportTarget} />
       <WorkbenchCatalogueBrowser catalogues={["imageExports", "workspaceOutputs", "labelImports"]} title="Retained export and import records" disabled={busy} />
       <section className="workbench-project-results" aria-label="Project results">
           <h2>Project results</h2>
@@ -1576,6 +1651,20 @@ export default function WorkbenchPage() {
       </section>
       </WorkbenchTaskSection>
       <WorkbenchTaskSection task="preparation" active={task}>
+      <section className="workbench-image-calibration" aria-label="Selected image calibration">
+        <div ref={setVolumeCalibrationTarget} />
+        {!volumeMode ? <>
+          <h2>Calibration</h2>
+          <fieldset disabled={busy || !image || projectionMaskEditing || annotationEditing || workspaceEditing}>
+            <label>Pixels per micrometre<input type="number" min="0" step="any" value={calibration}
+              placeholder="Unknown" onChange={(event) => setCalibration(event.target.value)} /></label>
+            <button className="cc-btn" disabled={!Number.isFinite(Number(calibration)) || Number(calibration) <= 0}
+              onClick={() => void run(() => mutate("calibration.set", { imageId, pxPerUm: Number(calibration) }))}>Apply calibration</button>
+            <button type="button" className="cc-btn" disabled={!projectionCalibrationEditing}
+              onClick={() => setCalibration(image?.pxPerUm == null ? "" : String(image.pxPerUm))}>Discard calibration changes</button>
+            <p>Physical measurements remain unavailable until calibration is supplied.</p>
+          </fieldset></> : null}
+      </section>
       <WorkbenchCatalogueBrowser catalogues={["collections", "largeSources", "zarrSources", "tiledAnalyses", "workspaces", "workspaceOutputs"]} title="Browse saved preparation records" disabled={busy} />
       {!image ? <p>Import images using the image list, or extract a region from a large TIFF below.</p> : <div className="workbench-actions">
         <button type="button" className="cc-btn" onClick={() => selectTask("segmentation")}>Segment selected image</button>
@@ -1584,7 +1673,7 @@ export default function WorkbenchPage() {
         read={(operation, args) => request(path, operation, args, snapshot.project.revision)}
         act={(operation, args) => run(() => mutate(operation, args))} />
       <WorkbenchStorage key={`storage-${snapshot.project.id}`} snapshot={snapshot} busy={busy}
-        writeBlocked={editing.current} actions={storageActions}
+        writeBlocked={editing.current} actions={storageActions} analysisTarget={tiledAnalysisTarget} measurementsTarget={tiledMeasurementsTarget} exportTarget={tiledExportTarget} activeTask={task}
         read={(operation, args) => request(path, operation, args, snapshot.project.revision)} />
       <WorkbenchLibrary key={`library-${snapshot.project.id}`} snapshot={snapshot} imageId={imageId} busy={busy}
         writeBlocked={editing.current || !!snapshot.jobWorkers?.some(activeJobWorker)} actions={libraryActions}
@@ -1606,7 +1695,10 @@ export default function WorkbenchPage() {
         actions={workspaceActions} read={(operation, args) => request(path, operation, args, snapshot.project.revision)} />
       </WorkbenchTaskSection>
       <WorkbenchTaskSection task="workflows" active={task}>
-      <WorkbenchCatalogueBrowser catalogues={["workflows", "jobs", "sweeps", "distributions", "jobWorkers", "plugins", "adaptationDatasets", "models", "trainingJobs", "specimens", "plates", "assignments", "experimentLayouts", "experimentApplications", "acquisitionSessions", "experimentExclusions"]} title="Browse saved workflows and experiment records" disabled={busy} />
+      <WorkbenchFreshness key={`freshness-${snapshot.project.id}`} snapshot={snapshot} imageId={imageId} busy={busy}
+        writeBlocked={editing.current} runningRefreshId={runningRefreshId} actions={refreshActions}
+        read={(operation, args) => request(path, operation, args, snapshot.project.revision)} />
+      <WorkbenchCatalogueBrowser catalogues={["workflows", "jobs", "sweeps", "distributions", "jobWorkers", "refreshJobs", "plugins", "adaptationDatasets", "models", "trainingJobs", "specimens", "plates", "assignments", "experimentLayouts", "experimentApplications", "acquisitionSessions", "experimentExclusions"]} title="Browse saved workflows and experiment records" disabled={busy} />
       <WorkbenchAutomation key={snapshot.project.id} snapshot={snapshot} imageId={imageId} parameters={parameters} busy={busy}
         volumeMode={volumeMode} volume={volumeWorkflow?.imageId === imageId ? volumeWorkflow : undefined}
         read={(operation, args) => request(path, operation, args, snapshot.project.revision)}
@@ -1630,10 +1722,10 @@ export default function WorkbenchPage() {
         act={(operation, args) => run(() => mutate(operation, args))} />
       </WorkbenchTaskSection>
       <WorkbenchTaskSection task="measurements" active={task}>
-      <WorkbenchCatalogueBrowser catalogues={["assayRuns", "assaySeriesRuns", "statisticsDesigns", "statisticsRuns", "refreshJobs", "specimens", "experimentApplications"]} title="Browse saved measurement records" disabled={busy} />
-      <WorkbenchFreshness key={`freshness-${snapshot.project.id}`} snapshot={snapshot} imageId={imageId} busy={busy}
-        writeBlocked={editing.current} runningRefreshId={runningRefreshId} actions={refreshActions}
-        read={(operation, args) => request(path, operation, args, snapshot.project.revision)} />
+      <div ref={setVolumeMeasurementsTarget} />
+      <div ref={setTiledMeasurementsTarget} />
+      <WorkbenchCatalogueBrowser catalogues={["assayRuns", "assaySeriesRuns", "statisticsDesigns", "statisticsRuns", "specimens", "experimentApplications"]} title="Browse saved measurement records" disabled={busy} />
+
       <WorkbenchStatistics key={`statistics-${snapshot.project.id}`} snapshot={snapshot} busy={busy}
         writeBlocked={editing.current || !!snapshot.jobWorkers?.some(activeJobWorker)} actions={statisticsActions}
         read={(operation, args) => request(path, operation, args, snapshot.project.revision)} />
@@ -1666,7 +1758,8 @@ export default function WorkbenchPage() {
       <h2>A project shared with your tools</h2>
       <p>The graphical workbench, command line and MCP tools open the same project folder.
         Images, masks, measurements and correction history stay together.</p>
-      <p>Classical segmentation runs locally without model weights. Install the local analysis runtime from Models if needed.</p>
+      {importRequested ? <p role="status">Image import is ready. Choose New project or Open project above, then import your images.</p> : null}
+      <p>Classical segmentation runs locally without model weights. Install or repair the analysis runtime under AI agent access above.</p>
     </div>}
   </section></WorkbenchImageProvider></WorkbenchCatalogueProvider>;
 }

@@ -1,11 +1,16 @@
 # CellCounter Web model assets
 
-Production segmentation weights are not included in the v0.2.0 web release.
-The application reports learned inference as unavailable and does not upload
+Qualified learned-segmentation weights are not included in the **0.3.2 preview**.
+The application reports learned inference as unavailable. It does not upload
 images or silently substitute another model.
 
-Future web releases may provide validated, same-origin model assets for local
-WebGPU inference. The native macOS and Windows releases are currently the
-recommended choice when learned segmentation is required.
+The explicitly selected **Classical threshold + watershed** detector runs locally
+in a CPU Worker without model weights. It is separate from Cellpose and StarDist.
+Use the [desktop releases](../../../README.md#download) when learned segmentation
+is required.
 
-The explicitly selected Classical threshold + watershed detector is included in the application and runs locally on the CPU without model weights. It is not Cellpose or StarDist.
+Browser learned-model adapters require compatible, same-origin artifacts for
+local WebGPU inference. The [model build contract](../../src/models/BUILD-CONTRACT.md)
+describes checkpoint identity, validation and manifest requirements for supplying
+such artifacts. See the [browser guide](../../../docs/WEB.md#webgpu-model-boundary)
+for the published preview's limits.

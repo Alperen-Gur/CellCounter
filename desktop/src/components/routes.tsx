@@ -1,21 +1,10 @@
-/**
- * components/routes.tsx — the shell's route + navigation registry.
- *
- * Single source of truth for "what screens exist and where they live". Each
- * entry lazy-imports a page from its own `pages/<name>/` directory. The Sidebar
- * renders from `NAV_SECTIONS` + `NAV_FOOTER`; `App.tsx` resolves the active
- * `RouteDef` by hash path. Routing is hash-based and dependency-free.
- *
- * Nav labels follow the product design (Queue / Images / Batches) even where the
- * underlying page directory keeps its feature-task id (review / library / batch).
- * Results, Processing and Onboarding are reachable routes but not rail items —
- * they open contextually (open an item, a run starts, first launch).
- */
+/** Application routes retain existing-library links while Workbench is the default. */
 
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 import type { IconName } from "./Icon";
 
 export type RouteId =
+  | "existing-library"
   | "home"
   | "processing"
   | "results"
@@ -40,6 +29,7 @@ export interface RouteDef {
   component: LazyExoticComponent<ComponentType>;
 }
 
+const ExistingLibrary = lazy(() => import("./ExistingLibrary"));
 const HomePage = lazy(() => import("../pages/home/HomePage"));
 const ProcessingPage = lazy(() => import("../pages/processing/ProcessingPage"));
 const ResultsPage = lazy(() => import("../pages/results/ResultsPage"));
@@ -57,22 +47,23 @@ const WorkbenchPage = lazy(() => import("../pages/workbench/WorkbenchPage"));
 const FineTunePage = lazy(() => import("../pages/finetune/FineTunePage"));
 
 export const ROUTES: RouteDef[] = [
-  { id: "home", path: "/", label: "Home", icon: "home", component: HomePage },
-  { id: "review", path: "/review", label: "Queue", icon: "queue", component: ReviewPage },
-  { id: "library", path: "/library", label: "Images", icon: "image", component: LibraryPage },
-  { id: "batch", path: "/batch", label: "Batches", icon: "batches", component: BatchPage },
-  { id: "compare", path: "/compare", label: "Compare", icon: "compare", component: ComparePage },
-  { id: "workspace",path:"/workspace",label:"Library workspace",icon:"layers",component:WorkspacePage },
+  { id: "existing-library", path: "/existing-library", label: "Existing library", icon: "image", component: ExistingLibrary },
+  { id: "home", path: "/legacy/import", label: "Add to existing library", icon: "home", component: HomePage },
+  { id: "review", path: "/review", label: "Existing review queue", icon: "queue", component: ReviewPage },
+  { id: "library", path: "/library", label: "Existing images", icon: "image", component: LibraryPage },
+  { id: "batch", path: "/batch", label: "Existing batches", icon: "batches", component: BatchPage },
+  { id: "compare", path: "/compare", label: "Existing comparisons", icon: "compare", component: ComparePage },
+  { id: "workspace",path:"/workspace",label:"Layer workspace",icon:"layers",component:WorkspacePage },
   { id: "workspace-archive", path: "/workspace-archive", label: "Original workspace archive", icon: "layers", component: WorkspaceArchivePage },
   { id: "workbench", path: "/workbench", label: "Workbench", icon: "scope", component: WorkbenchPage },
-  { id: "models", path: "/models", label: "Models", icon: "models", component: ModelsPage },
-  { id: "finetune", path: "/finetune", label: "Fine-tune", icon: "finetune", component: FineTunePage },
+  { id: "models", path: "/models", label: "Existing model environments", icon: "models", component: ModelsPage },
+  { id: "finetune", path: "/finetune", label: "Existing fine-tuning", icon: "finetune", component: FineTunePage },
   { id: "support", path: "/support", label: "Support", icon: "support", component: SupportPage },
   { id: "settings", path: "/settings", label: "Settings", icon: "settings", component: SettingsPage },
   // Reachable but not rail items:
-  { id: "processing", path: "/processing", label: "Processing", icon: "queue", component: ProcessingPage },
-  { id: "results", path: "/results", label: "Results", icon: "results", component: ResultsPage },
-  { id: "onboarding", path: "/onboarding", label: "Onboarding", icon: "calibrate", component: OnboardingPage },
+  { id: "processing", path: "/processing", label: "Existing runs", icon: "queue", component: ProcessingPage },
+  { id: "results", path: "/results", label: "Existing result", icon: "results", component: ResultsPage },
+  { id: "onboarding", path: "/onboarding", label: "Existing library calibration", icon: "calibrate", component: OnboardingPage },
 ];
 
 export interface NavSection {
@@ -82,18 +73,23 @@ export interface NavSection {
 
 /** Main grouped rail (top). */
 export const NAV_SECTIONS: NavSection[] = [
-  { title: "", routeIds: ["home", "processing", "review"] },
-  { title: "Library", routeIds: ["library", "batch", "compare", "workspace", "workbench"] },
-  { title: "System", routeIds: ["models", "finetune"] },
+  { title: "", routeIds: ["workbench", "existing-library"] },
 ];
 
 /** Bottom-pinned rail items. */
 export const NAV_FOOTER: RouteId[] = ["support", "settings"];
 
-export const DEFAULT_ROUTE: RouteDef = ROUTES[0];
+export const WORKBENCH_ROUTE = ROUTES.find(route => route.id === "workbench")!;
+export const DEFAULT_ROUTE: RouteDef = WORKBENCH_ROUTE;
+
+const LIBRARY_ROUTES: RouteId[] = ["home", "processing", "results", "library", "batch", "compare", "review", "models", "finetune", "onboarding", "workspace", "workspace-archive"];
+export function isExistingLibraryRoute(id: RouteId): boolean {
+  return id === "existing-library" || LIBRARY_ROUTES.includes(id);
+}
 
 export function routeForPath(rawHash: string): RouteDef {
   const path = normalizeHashPath(rawHash);
+  if (path === "/") return DEFAULT_ROUTE;
   return ROUTES.find((r) => r.path === path) ?? DEFAULT_ROUTE;
 }
 

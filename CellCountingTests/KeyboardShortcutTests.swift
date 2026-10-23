@@ -17,8 +17,8 @@ import Testing
 
     @Test func navigationDoesNotReplaceCanvasOverlayNumbers() {
         let entries = KeyboardShortcutRegistry.navigation
-        #expect(Set(entries.map { $0.0 }) == Set([AppView.home, .batch, .imagesLibrary,
-            .models, .queue, .reviewQueue, .compare, .fineTune, .workspace]))
+        #expect(Set(entries.map { $0.0 }) == Set(WorkbenchTask.allCases))
+        #expect(entries.map { $0.1 } == WorkbenchTask.allCases.map(\.title))
         #expect(Set(entries.map { $0.2 }).count == entries.count)
         #expect(KeyboardShortcutRegistry.definition(.overlayBoxes).modifiers == .command)
         #expect(KeyboardShortcutRegistry.definition(.overlayOutlines).modifiers == .command)

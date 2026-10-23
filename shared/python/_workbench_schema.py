@@ -179,6 +179,8 @@ from _workbench_assay_series import operations as _assay_series_operations
 OPERATIONS.extend(_assay_series_operations())
 from _workbench_package2 import operations as _package2_operations
 OPERATIONS.extend(_package2_operations())
+from _workbench_navigation import operations as _navigation_operations, task_for_operation as _navigation_task
+OPERATIONS.extend(_navigation_operations())
 _CELL_RESPONSE_OPERATIONS = {
     "analysis.preview", "analysis.run", "calibration.set", "mask.edit", "mask.undo",
     "volume.analysis.preview", "volume.analysis.run", "volume.calibration.set",
@@ -186,6 +188,9 @@ _CELL_RESPONSE_OPERATIONS = {
     "mask.import.preview", "mask.import.run",
 }
 for _entry in OPERATIONS:
+    _task = _navigation_task(_entry["name"])
+    if _task is not None:
+        _entry["navigationTask"] = _task
     if _entry["name"] in _CELL_RESPONSE_OPERATIONS:
         _entry["inputSchema"]["properties"]["cellLimit"] = {
             "type": "integer", "minimum": 1, "maximum": 1000,

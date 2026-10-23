@@ -1,15 +1,13 @@
 import AppKit
 import Combine
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct WorkbenchView: View {
     @Bindable var session: WorkbenchSession
     var onLibraryMigration: (() -> Void)?
-    var onLegacyWorkspace: (() -> Void)?
+    var isActive = true
+    @State private var visitedTasks: Set<WorkbenchTask> = []
     @State private var newName = "Microscopy project"
-    @State private var showingSummary = false
-    @State private var showingWorkflows = false
     @State private var showingExperiment = false
     @State private var showingPackage = false
     @State private var showingSavedRecords = false
@@ -20,7 +18,6 @@ struct WorkbenchView: View {
     @State private var showingResultFreshness = false
     @State private var showingPreprocessing = false
     @State private var showingVariant = false
-    @State private var showingReview = false
     @State private var showingSources = false
     @State private var showingRegistration = false
     @State private var showingImageExport = false
@@ -32,6 +29,8 @@ struct WorkbenchView: View {
     @State private var showingLayeredWorkspace = false
     @State private var showingLibrary = false
     @State private var showingStatistics = false
+    @State private var showingTiledStorage = false
+    @State private var tiledStorageScope: WorkbenchStorageScope = .segmentation
     @State private var variantName = ""
     @State private var copyVariantAnalysis = false
     @FocusState private var imageFocused: Bool
@@ -63,31 +62,23 @@ struct WorkbenchView: View {
                     Spacer()
                     if session.sharedSession.hasPendingNavigation {
                         Button("Apply navigation") { session.resolveRequestedNavigation(apply: true) }
-                            .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
+                            .disabled(session.busy || ((!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers) &&
+                                !session.isTaskOnlyNavigation(session.sharedSession.navigation["selection"])))
                         Button("Refuse") { session.resolveRequestedNavigation(apply: false) }.disabled(session.busy)
                     } else {
                         Button("Refresh") { session.refreshProjectActivity() }.disabled(!session.canRefreshWithoutDiscardingEdits)
                     }
                 }.padding(10)
             }
-            HSplitView {
-                inspector.frame(minWidth: 240, idealWidth: 270, maxWidth: 340)
-                VStack(spacing: 0) {
-                    if session.viewingVolume, session.selectedImage != nil {
-                        WorkbenchVolumeStage(session: session, volume: session.volume).frame(minHeight: 380)
-                        WorkbenchVolumeCorrectionBar(session: session, volume: session.volume)
-                        Divider()
-                        WorkbenchVolumeMeasurements(session: session, volume: session.volume)
-                            .frame(minHeight: 120, idealHeight: 160, maxHeight: 230)
-                    } else {
-                        imageStage.frame(minHeight: 220)
-                        correctionBar
-                        Divider()
-                        measurements.frame(minHeight: 150, idealHeight: 210, maxHeight: 290)
-                    }
-                }
-                .frame(minWidth: 360)
+            if session.task != .segmentation, hasSegmentationDraft {
+                HStack {
+                    Text("Your unfinished segmentation is preserved. Return to Segmentation to finish the preview or correction.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Segmentation") { session.task = .segmentation }
+                }.padding(.horizontal, 14).padding(.vertical, 8)
             }
+            taskContent
             HStack(spacing: 8) {
                 if session.busy { ProgressView().controlSize(.small) }
                 Text(session.status).font(.caption).foregroundStyle(.secondary)
@@ -100,13 +91,24 @@ struct WorkbenchView: View {
             .padding(.horizontal, 14).padding(.vertical, 9)
         }
         .background(Tokens.bg)
-        .opacity(showingReview ? 0 : 1)
+        .focusedSceneValue(\.cellCounterShortcuts, isActive ? shortcutActions : nil)
         .task {
-            session.sharedSession.visible = true
+            session.sharedSession.visible = isActive
+            visitedTasks.insert(session.task)
+            await session.loadNavigationCatalog()
             if !session.hasProject && !session.projectPath.isEmpty { session.refresh() }
             else { session.refreshProjectActivity() }
             openRequestedLayeredWorkspace()
         }
+        .onChange(of: isActive) { _, active in
+            session.sharedSession.visible = active
+            if active { session.refreshProjectActivity() }
+        }
+        .onChange(of: session.task) { _, task in
+            visitedTasks.insert(task)
+            if task == .export, session.hasProject, !session.busy { session.summarize() }
+        }
+        .onChange(of: session.projectPath) { _, _ in visitedTasks = [session.task] }
         .onDisappear {
             session.sharedSession.visible = false
             Task { await session.closeViewSession() }
@@ -116,14 +118,296 @@ struct WorkbenchView: View {
         }
         .onChange(of: session.hasProject) { _, _ in openRequestedLayeredWorkspace() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if session.hasProject { session.refreshProjectActivity() }
+            if isActive, session.hasProject { session.refreshProjectActivity() }
         }
-        .onReceive(workerTimer) { _ in session.refreshBackgroundProgress() }
+        .onReceive(workerTimer) { _ in if isActive { session.refreshBackgroundProgress() } }
         .sheet(isPresented: $showingAgentAccess) { WorkbenchAgentAccessView(session: session) }
         .sheet(isPresented: $showingLayeredWorkspace) { WorkbenchWorkspaceView(session: session, workspace: session.layeredWorkspace) }
         .sheet(isPresented: $showingLibrary) { WorkbenchLibraryView(session: session, library: session.library) }
+        .sheet(isPresented: $showingTiledStorage) {
+            WorkbenchStorageView(session: session, storage: session.storage, scope: tiledStorageScope)
+        }
         .sheet(isPresented: $showingStatistics) { WorkbenchStatisticsView(session: session, statistics: session.statistics) }
-        .sheet(isPresented: $showingSummary) {
+        .sheet(isPresented: $showingExperiment) { WorkbenchExperimentView(session: session) }
+        .sheet(isPresented: $showingPackage) { WorkbenchPackageView(session: session) }
+        .sheet(isPresented: $showingPlugins) { WorkbenchPluginsView(session: session, extensions: session.extensions) }
+        .sheet(isPresented: $showingAdaptation) { WorkbenchAdaptationView(session: session, extensions: session.extensions) }
+        .sheet(isPresented: $showingModels) { WorkbenchModelsView(session: session, models: session.models) }
+        .sheet(isPresented: $showingAssays) { WorkbenchAssaysView(session: session, assays: session.assays) }
+        .sheet(isPresented: $showingResultFreshness) {
+            WorkbenchResultRefreshView(session: session, refresh: session.resultRefresh)
+        }
+        .sheet(isPresented: $showingPreprocessing) {
+            WorkbenchPreprocessingView(session: session, preprocessing: session.preprocessing)
+        }
+        .sheet(isPresented: $showingSources) {
+            WorkbenchSourcesView(session: session, sources: session.sources)
+        }
+        .sheet(isPresented: $showingRegistration) {
+            WorkbenchRegistrationView(session: session, registration: session.registration)
+        }
+        .sheet(isPresented: $showingImageExport) {
+            WorkbenchImageExportView(session: session, exports: session.imageExports)
+        }
+        .sheet(isPresented: $showingLabelImport) {
+            WorkbenchLabelImportView(session: session, labelImport: session.labelImport)
+        }
+        .sheet(isPresented: $showingMaskComparison) {
+            WorkbenchMaskComparisonView(session: session, comparison: session.comparison)
+        }
+        .sheet(isPresented: $showingAnnotations) {
+            WorkbenchAnnotationsView(session: session, annotations: session.annotations)
+        }
+        .sheet(isPresented: $showingVariant) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Independent mask variant").font(.title2)
+                Text("Create a separate analysis identity for the same acquired pixels and calibration. Use it for a second segmentation, such as nuclear masks alongside cell masks.")
+                    .foregroundStyle(.secondary)
+                TextField("Variant name", text: $variantName).textFieldStyle(.roundedBorder)
+                Toggle("Copy current saved masks", isOn: $copyVariantAnalysis)
+                Text("The new variant has independent corrections. Reference approvals and tracks belong to the original analysis.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showingVariant = false }
+                    Button("Create variant") {
+                        session.duplicateImage(name: variantName, copyAnalysis: copyVariantAnalysis)
+                        showingVariant = false
+                    }.buttonStyle(.borderedProminent)
+                }
+            }.padding(24).frame(width: 500).disabled(session.busy)
+        }
+    }
+
+    private var hasSegmentationDraft: Bool {
+        session.viewingVolume
+            ? session.volume.parametersChanged || session.volume.isPreview || !session.volume.polygon.isEmpty || session.volume.editMode != "select"
+            : session.parametersChanged || session.isPreview || !session.polygon.isEmpty || session.drawingPolygon
+    }
+
+    private var shortcutActions: ScreenShortcutActions {
+        var actions = ScreenShortcutActions()
+        if session.hasProject, !session.busy {
+            if !session.hasActiveWorkers { actions.export = { session.presentExportProject() } }
+            if session.task == .segmentation, session.selectedImage != nil {
+                actions.run = { if session.viewingVolume { session.analyzeVolume(previewOnly: false) } else { session.analyze(previewOnly: false) } }
+                actions.preview = { if session.viewingVolume { session.analyzeVolume(previewOnly: true) } else { session.analyze(previewOnly: true) } }
+                if !session.viewingVolume, !session.isPreview { actions.undo = session.undo }
+            }
+        }
+        return actions
+    }
+
+    private var projectBar: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(session.hasProject ? session.projectName : "Microscopy project").font(.headline)
+                Text(session.hasProject ? imageContext : "Import, analyze, correct, measure and export in one project.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 12)
+            if session.hasProject {
+                Button { showingProjectDetails = true } label: { Image(systemName: "info.circle") }
+                    .buttonStyle(.plain).help("Project location and revision")
+                    .accessibilityLabel("Project details")
+                    .popover(isPresented: $showingProjectDetails) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Project details").font(.headline)
+                            Text(session.projectName).font(.callout)
+                            Text(session.projectPath).font(.caption).textSelection(.enabled)
+                            if let revision = session.revision {
+                                Text("Saved revision \(revision)").font(.caption).foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Button("Show in Finder") {
+                                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.projectPath)])
+                                }
+                                Button("Copy path") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(session.projectPath, forType: .string)
+                                }
+                            }
+                        }.padding(16).frame(width: 390)
+                    }
+            }
+            Menu("Project") {
+                Button("New project…", action: { session.presentCreateProject(name: newName) })
+                    .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
+                Button("Open project…", action: session.presentOpenProject)
+                    .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
+                if !session.hasProject {
+                    Button("Restore analysis package…") { showingPackage = true }
+                }
+                Button("Browse saved records…") { showingSavedRecords = true }.disabled(!session.hasProject)
+                if let onLibraryMigration {
+                    Button("Copy existing library into a project…", action: onLibraryMigration)
+                        .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
+                }
+                Divider()
+                Button("AI agent and command-line access…") { showingAgentAccess = true }
+                Button("Refresh project", action: session.refresh)
+                    .disabled(!session.hasProject || !session.canRefreshWithoutDiscardingEdits)
+            }.fixedSize()
+        }
+        .padding(14).disabled(session.busy)
+        .sheet(isPresented: $showingSavedRecords) { WorkbenchCatalogueBrowser(session: session, catalogues: []) }
+    }
+
+    private func openRequestedLayeredWorkspace() {
+        guard session.sharedSession.presentWorkspace else { return }
+        guard session.hasProject else {
+            session.reportStatus("Create or open a shared project to add layers or import an existing workspace document.")
+            return
+        }
+        guard session.canRefreshWithoutDiscardingEdits, !session.hasActiveWorkers else { return }
+        showingLayeredWorkspace = true; session.sharedSession.presentWorkspace = false
+    }
+
+    private var imageContext: String {
+        guard let image = session.selectedImage else { return "\(session.imageCount) images · Select or import an image" }
+        if session.viewingVolume {
+            return "\(image.name) · Volume · Time \(session.volume.timeIndex + 1) · Channel \(session.volume.channel + 1)"
+        }
+        return "\(image.name) · 2D projection · Channel \(session.channel + 1)"
+    }
+
+    private var taskBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(WorkbenchTask.allCases) { task in
+                    Button { session.task = task } label: {
+                        Text(task.title).font(.callout.weight(session.task == task ? .semibold : .regular))
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(session.task == task ? Color.accentColor.opacity(0.12) : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(session.task == task ? .isSelected : [])
+                    .help(session.navigationCatalog["tasks"].array.first { $0["id"].string == task.rawValue }?["description"].string ?? task.detail)
+                }
+            }.padding(.horizontal, 10).padding(.vertical, 6)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Workbench tasks")
+    }
+
+    private var taskContent: some View {
+        VStack(spacing: 0) {
+            if session.hasProject {
+                taskTools
+                Divider()
+            }
+            ZStack {
+                imageAnalysisContent
+                    .opacity(isImageTask || !session.hasProject ? 1 : 0)
+                    .allowsHitTesting(isImageTask || !session.hasProject)
+                    .accessibilityHidden(!isImageTask && session.hasProject)
+                if session.hasProject, visitedTasks.contains(.review) || session.task == .review {
+                    WorkbenchReviewView(session: session, review: session.review, embedded: true)
+                        .id("review-" + session.projectPath)
+                        .opacity(session.task == .review ? 1 : 0)
+                        .allowsHitTesting(session.task == .review)
+                        .accessibilityHidden(session.task != .review)
+                }
+                if session.hasProject, visitedTasks.contains(.workflows) || session.task == .workflows {
+                    WorkbenchWorkflowView(session: session, embedded: true)
+                        .id("workflows-" + session.projectPath)
+                        .opacity(session.task == .workflows ? 1 : 0)
+                        .allowsHitTesting(session.task == .workflows)
+                        .accessibilityHidden(session.task != .workflows)
+                }
+            }
+        }
+    }
+
+    private var isImageTask: Bool { ![WorkbenchTask.review, .workflows].contains(session.task) }
+
+    private var imageAnalysisContent: some View {
+        HSplitView {
+            inspector.frame(minWidth: 240, idealWidth: 270, maxWidth: 340)
+            VStack(spacing: 0) {
+                if session.task == .export, session.hasProject {
+                    resultSummary
+                } else if session.viewingVolume, session.selectedImage != nil {
+                    WorkbenchVolumeStage(session: session, volume: session.volume).frame(minHeight: 300)
+                    if session.task == .segmentation {
+                        WorkbenchVolumeCorrectionBar(session: session, volume: session.volume)
+                    }
+                    if session.task == .measurements {
+                        Divider()
+                        WorkbenchVolumeMeasurements(session: session, volume: session.volume)
+                            .frame(minHeight: 150, idealHeight: 220, maxHeight: 300)
+                    }
+                } else {
+                    imageStage.frame(minHeight: 220)
+                    if session.task == .segmentation { correctionBar }
+                    if session.task == .measurements {
+                        Divider()
+                        measurements.frame(minHeight: 200, idealHeight: 300)
+                    }
+                }
+            }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder private var taskTools: some View {
+        HStack(spacing: 10) {
+            switch session.task {
+            case .preparation:
+                Button("Import images…", action: session.presentImportImages)
+                    .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
+                Menu("Prepare") {
+                    Button("Import image folder…", action: session.presentImportFolder)
+                    Button("Sources and regions…") { showingSources = true }
+                    Button("Image metadata and collections…") { showingLibrary = true }
+                    Button("Layered workspace…") { showingLayeredWorkspace = true }
+                    Divider()
+                    Button("Preprocess image…") { showingPreprocessing = true }.disabled(session.selectedImageID == nil)
+                    Button("Register images…") { showingRegistration = true }.disabled(session.imageCount < 2)
+                }.disabled(!session.canRefreshWithoutDiscardingEdits)
+            case .segmentation:
+                Button("Models…") { showingModels = true }
+                Button("Tiled analysis…") { tiledStorageScope = .segmentation; showingTiledStorage = true }
+                Menu("Masks") {
+                    Button("Create mask variant…") {
+                        variantName = "\(session.selectedImage?.name ?? "Image") · variant"
+                        copyVariantAnalysis = false; showingVariant = true
+                    }.disabled(session.selectedImageID == nil || session.hasActiveWorkers)
+                    Button("Import label masks…") { showingLabelImport = true }.disabled(session.selectedImageID == nil)
+                }
+                Button("Training and adaptation…") { showingAdaptation = true }
+            case .measurements:
+                Button("Assays…") { showingAssays = true }.disabled(session.selectedImageID == nil)
+                Button("Tiled measurements…") { tiledStorageScope = .measurements; showingTiledStorage = true }
+                Button("Annotations and profiles…") { showingAnnotations = true }.disabled(session.selectedImageID == nil)
+                Button("Biological statistics…") { showingStatistics = true }.disabled(!session.canRefreshWithoutDiscardingEdits)
+                if !(session.viewingVolume ? session.volume.selectedLabels : session.selectedLabels).isEmpty {
+                    Button("Clear selection") {
+                        if session.viewingVolume { session.volume.selectedLabels = [] }
+                        else { session.selectedLabels = [] }
+                    }
+                }
+            case .review:
+                Button("Compare saved masks…") { showingMaskComparison = true }.disabled(session.selectedImageID == nil)
+                Text("Saved reviews retain their own image selection.").font(.caption).foregroundStyle(.secondary)
+            case .workflows:
+                Button("Experiments and specimens…") { showingExperiment = true }
+                Button("Result freshness…") { showingResultFreshness = true }
+                Button("Plugins…") { showingPlugins = true }
+            case .export:
+                Button("Refresh summary", action: session.summarize)
+                Button("Tiled results…") { tiledStorageScope = .export; showingTiledStorage = true }
+                Button("Scientific image data…") { showingImageExport = true }.disabled(session.selectedImageID == nil)
+                Button("Export package…", action: session.presentExportProject).disabled(session.hasActiveWorkers)
+                Button("Storage and restore…") { showingPackage = true }
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout).controlSize(.small).padding(.horizontal, 14).padding(.vertical, 8)
+        .disabled(session.busy)
+    }
+
+    private var resultSummary: some View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Project summary").font(.title2)
                 if let summary = session.summary {
@@ -168,190 +452,7 @@ struct WorkbenchView: View {
                     Text(session.error ?? "No summary is available.")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                Button("Done") { showingSummary = false }.frame(maxWidth: .infinity, alignment: .trailing)
-            }.padding(24).frame(width: 660, height: 460)
-        }
-        .sheet(isPresented: $showingWorkflows) { WorkbenchWorkflowView(session: session) }
-        .sheet(isPresented: $showingExperiment) { WorkbenchExperimentView(session: session) }
-        .sheet(isPresented: $showingPackage) { WorkbenchPackageView(session: session) }
-        .sheet(isPresented: $showingPlugins) { WorkbenchPluginsView(session: session, extensions: session.extensions) }
-        .sheet(isPresented: $showingAdaptation) { WorkbenchAdaptationView(session: session, extensions: session.extensions) }
-        .sheet(isPresented: $showingModels) { WorkbenchModelsView(session: session, models: session.models) }
-        .sheet(isPresented: $showingAssays) { WorkbenchAssaysView(session: session, assays: session.assays) }
-        .sheet(isPresented: $showingResultFreshness) {
-            WorkbenchResultRefreshView(session: session, refresh: session.resultRefresh)
-        }
-        .sheet(isPresented: $showingPreprocessing) {
-            WorkbenchPreprocessingView(session: session, preprocessing: session.preprocessing)
-        }
-        .sheet(isPresented: $showingReview) {
-            WorkbenchReviewView(session: session, review: session.review)
-        }
-        .sheet(isPresented: $showingSources) {
-            WorkbenchSourcesView(session: session, sources: session.sources)
-        }
-        .sheet(isPresented: $showingRegistration) {
-            WorkbenchRegistrationView(session: session, registration: session.registration)
-        }
-        .sheet(isPresented: $showingImageExport) {
-            WorkbenchImageExportView(session: session, exports: session.imageExports)
-        }
-        .sheet(isPresented: $showingLabelImport) {
-            WorkbenchLabelImportView(session: session, labelImport: session.labelImport)
-        }
-        .sheet(isPresented: $showingMaskComparison) {
-            WorkbenchMaskComparisonView(session: session, comparison: session.comparison)
-        }
-        .sheet(isPresented: $showingAnnotations) {
-            WorkbenchAnnotationsView(session: session, annotations: session.annotations)
-        }
-        .sheet(isPresented: $showingVariant) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Independent mask variant").font(.title2)
-                Text("Create a separate analysis identity for the same acquired pixels and calibration. Use it for a second segmentation, such as nuclear masks alongside cell masks.")
-                    .foregroundStyle(.secondary)
-                TextField("Variant name", text: $variantName).textFieldStyle(.roundedBorder)
-                Toggle("Copy current saved masks", isOn: $copyVariantAnalysis)
-                Text("The new variant has independent corrections. Reference approvals and tracks belong to the original analysis.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel") { showingVariant = false }
-                    Button("Create variant") {
-                        session.duplicateImage(name: variantName, copyAnalysis: copyVariantAnalysis)
-                        showingVariant = false
-                    }.buttonStyle(.borderedProminent)
-                }
-            }.padding(24).frame(width: 500).disabled(session.busy)
-        }
-    }
-
-    private var projectBar: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(session.hasProject ? session.projectName : "Shared analysis workbench").font(.headline)
-                Text(session.hasProject ? imageContext : "Import, analyze, correct, measure and export in one project.")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            }
-            Spacer(minLength: 12)
-            if session.hasProject {
-                Button { showingProjectDetails = true } label: { Image(systemName: "info.circle") }
-                    .buttonStyle(.plain).help("Project location and revision")
-                    .accessibilityLabel("Project details")
-                    .popover(isPresented: $showingProjectDetails) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Project details").font(.headline)
-                            Text(session.projectName).font(.callout)
-                            Text(session.projectPath).font(.caption).textSelection(.enabled)
-                            if let revision = session.revision {
-                                Text("Saved revision \(revision)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            HStack {
-                                Button("Show in Finder") {
-                                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.projectPath)])
-                                }
-                                Button("Copy path") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(session.projectPath, forType: .string)
-                                }
-                            }
-                        }.padding(16).frame(width: 390)
-                    }
-            }
-            Menu("Project") {
-                Button("Create project…", action: createProject)
-                Button("Open project…", action: openProject)
-                Button("Project storage and packages…") { showingPackage = true }
-                Button("Browse saved records…") { showingSavedRecords = true }.disabled(!session.hasProject)
-                if let onLibraryMigration {
-                    Button("Import native library…", action: onLibraryMigration)
-                        .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
-                }
-                if let onLegacyWorkspace {
-                    Button("Inspect or export a legacy workspace…", action: onLegacyWorkspace)
-                        .disabled(!session.canRefreshWithoutDiscardingEdits || session.hasActiveWorkers)
-                }
-                Divider()
-                Button("AI agent and command-line access…") { showingAgentAccess = true }
-                Button("Refresh project", action: session.refresh)
-                    .disabled(!session.hasProject || !session.canRefreshWithoutDiscardingEdits)
-            }.fixedSize()
-        }
-        .padding(14).disabled(session.busy)
-        .sheet(isPresented: $showingSavedRecords) { WorkbenchCatalogueBrowser(session: session, catalogues: []) }
-    }
-
-    private func openRequestedLayeredWorkspace() {
-        guard session.sharedSession.presentWorkspace else { return }
-        guard session.hasProject else {
-            session.reportStatus("Create or open a shared project to add layers or import an existing workspace document.")
-            return
-        }
-        guard session.canRefreshWithoutDiscardingEdits, !session.hasActiveWorkers else { return }
-        showingLayeredWorkspace = true; session.sharedSession.presentWorkspace = false
-    }
-
-    private var imageContext: String {
-        guard let image = session.selectedImage else { return "\(session.imageCount) images · Select or import an image" }
-        if session.viewingVolume {
-            return "\(image.name) · Volume · Time \(session.volume.timeIndex + 1) · Channel \(session.volume.channel + 1)"
-        }
-        return "\(image.name) · 2D projection · Channel \(session.channel + 1)"
-    }
-
-    private var taskBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                Menu("Images & preparation") {
-                    Button("Import images…", action: importImages).disabled(session.hasActiveWorkers)
-                    Button("Project library, metadata and collections…") { showingLibrary = true }.disabled(!session.canRefreshWithoutDiscardingEdits)
-                    Button("Sources and regions…") { showingSources = true }.disabled(!session.canRefreshWithoutDiscardingEdits)
-                    Button("Layered workspace…") { showingLayeredWorkspace = true }.disabled(!session.canRefreshWithoutDiscardingEdits)
-                    Divider()
-                    Button("Preprocess image…") { showingPreprocessing = true }.disabled(session.selectedImageID == nil)
-                    Button("Register images…") { showingRegistration = true }.disabled(session.imageCount < 2)
-                }
-                Menu("Segmentation & correction") {
-                    Button("Registered models…") { showingModels = true }
-                    Divider()
-                    Button("Create mask variant…") {
-                        variantName = "\(session.selectedImage?.name ?? "Image") · variant"
-                        copyVariantAnalysis = false
-                        showingVariant = true
-                    }.disabled(session.selectedImageID == nil || session.hasActiveWorkers)
-                    Button("Import label masks…") { showingLabelImport = true }.disabled(session.selectedImageID == nil)
-                }
-                Menu("Measurements") {
-                    Button("Measurements and assays…") { showingAssays = true }.disabled(session.selectedImageID == nil)
-                    Button("Annotations and intensity profiles…") { showingAnnotations = true }.disabled(session.selectedImageID == nil)
-                    Divider()
-                    Button("Saved result freshness…") { showingResultFreshness = true }
-                    Button("Biological-replicate statistics…") { showingStatistics = true }.disabled(!session.canRefreshWithoutDiscardingEdits)
-                }
-                Menu("Review") {
-                    Button("Review and quality control…") { showingReview = true }
-                    Button("Compare saved masks…") { showingMaskComparison = true }.disabled(session.selectedImageID == nil)
-                }
-                Menu("Workflows") {
-                    Button("Saved workflows, jobs and sweeps…") { showingWorkflows = true }
-                    Button("Experiments and specimens…") { showingExperiment = true }
-                    Divider()
-                    Button("Local analysis plugins…") { showingPlugins = true }
-                    Button("Reference datasets, training and comparison…") { showingAdaptation = true }
-                }
-                Menu("Results & export") {
-                    Button("Project summary") { session.summarize(); showingSummary = true }
-                    Divider()
-                    Button("Scientific image data…") { showingImageExport = true }.disabled(session.selectedImageID == nil)
-                    Button("Complete analysis package…", action: exportProject).disabled(session.hasActiveWorkers)
-                }
-            }
-            .font(.callout).controlSize(.small).fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-        }
-        .disabled(session.busy || !session.hasProject)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Workbench tasks")
+            }.padding(16)
     }
 
     private var inspector: some View {
@@ -363,15 +464,15 @@ struct WorkbenchView: View {
                         .font(.callout).foregroundStyle(.secondary)
                     TextField("New project name", text: $newName)
                         .textFieldStyle(.roundedBorder).accessibilityLabel("New project name")
-                    Button("Create project…", action: createProject)
-                    Button("Open project…", action: openProject)
+                    Button("New project…", action: { session.presentCreateProject(name: newName) })
+                    Button("Open project…", action: session.presentOpenProject)
                 }
                 Text("Images").font(.headline)
                 if session.hasProject { WorkbenchImageBrowserControls(session: session, page: session.imagePage) }
                 if session.imageCount == 0 {
                     Text("No images imported.").font(.callout).foregroundStyle(.secondary)
                     if session.hasProject {
-                        Button("Import images…", action: importImages)
+                        Button("Import images…", action: session.presentImportImages)
                             .buttonStyle(.borderedProminent).disabled(session.hasActiveWorkers)
                     }
                 }
@@ -409,7 +510,9 @@ struct WorkbenchView: View {
                 }
                 if let image = session.selectedImage {
                     Divider()
-                    WorkbenchCompositeControls(session: session, composite: session.composite)
+                    if session.task != .export {
+                        WorkbenchCompositeControls(session: session, composite: session.composite)
+                    }
                     Divider()
                     if image.supportsVolume {
                         Picker("Analysis view", selection: Binding(
@@ -418,9 +521,10 @@ struct WorkbenchView: View {
                             Text("2D projection (first time point)").tag(false)
                         }
                     }
-                    if session.viewingVolume {
+                    if session.viewingVolume, session.task != .export {
                         WorkbenchVolumeControls(session: session, volume: session.volume)
-                    } else {
+                    } else if !session.viewingVolume {
+                    if session.task == .segmentation {
                     Text("Segmentation").font(.headline)
                     Picker("Method", selection: $session.method) {
                         ForEach(WorkbenchClassicalMethod.names, id: \.id) { value in Text(value.title).tag(value.id) }
@@ -460,8 +564,10 @@ struct WorkbenchView: View {
                         Button("Preview") { session.analyze(previewOnly: true) }
                         Button("Run analysis") { session.analyze(previewOnly: false) }.buttonStyle(.borderedProminent)
                     }
-                    Text("Threshold and watershed controls. Registered models are under Segmentation & correction; local plugins are under Workflows.")
+                    Text("Threshold and watershed settings. Choose Models for registered model inference, or Workflows for reusable analyses.")
                         .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if session.task == .preparation {
                     Divider()
                     Text("Calibration").font(.headline)
                     numberField("Pixels per micrometre", value: $session.calibration)
@@ -470,6 +576,7 @@ struct WorkbenchView: View {
                     if image.pxPerUm == nil {
                         Text("Physical measurements need calibration. Pixel measurements remain available.")
                             .font(.caption).foregroundStyle(.secondary)
+                    }
                     }
                     }
                 }
@@ -536,7 +643,7 @@ struct WorkbenchView: View {
                         systemImage: session.hasActiveWorkers ? "gearshape.2" : "photo",
                         description: Text(session.hasActiveWorkers ?
                             (session.jobWorkers.contains { $0.active && $0.targetKind == "tiled-analysis" }
-                                ? "Open Images & preparation → Sources and regions → OME-Zarr for tiled progress and stop controls. The image reloads when the worker stops."
+                                ? "Open Segmentation → Tiled analysis for progress and stop controls. The image reloads when the worker stops."
                                 : session.jobWorkers.contains { $0.active && $0.targetKind == "refresh" }
                                 ? "Open Measurements → Saved result freshness for checkpoint progress and stop controls. The image reloads when the worker stops."
                                 : "Open Workflows for checkpoint progress and stop controls. The image reloads when the worker stops.") :
@@ -547,6 +654,7 @@ struct WorkbenchView: View {
         }
         .focusable().focused($imageFocused)
         .onKeyPress(keys: [.delete, .deleteForward, .escape, .return, .init("z")]) { press in
+            guard session.task == .segmentation else { return .ignored }
             guard !session.busy, !KeyboardShortcutContext.isEditingText,
                   !KeyboardShortcutContext.hasNativeSheet else { return .ignored }
             if press.key == .escape, press.modifiers.isEmpty {
@@ -660,51 +768,13 @@ struct WorkbenchView: View {
         guard !session.busy, !session.parametersChanged, rect.contains(point), let image = session.selectedImage else { return }
         let scale = rect.width / Double(image.width)
         let sourcePoint = CGPoint(x: (point.x - rect.minX) / scale, y: (point.y - rect.minY) / scale)
-        if session.drawingPolygon && !session.isPreview {
+        if session.task == .segmentation && session.drawingPolygon && !session.isPreview {
             if session.polygon.count < 2048 { session.polygon.append([sourcePoint.x, sourcePoint.y]) }
             return
         }
-        guard !session.isPreview else { return }
+        guard session.task == .segmentation || session.task == .measurements, !session.isPreview else { return }
         session.pickSavedLabel(x: sourcePoint.x, y: sourcePoint.y,
             extending: NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command))
     }
 
-    private func createProject() {
-        let panel = NSSavePanel()
-        panel.title = "Create analysis project"
-        panel.prompt = "Create"
-        panel.nameFieldStringValue = "\(newName).ccproject"
-        panel.canCreateDirectories = true
-        panel.isExtensionHidden = false
-        panel.begin { result in
-            guard result == .OK, let url = panel.url else { return }
-            session.create(path: url.path, name: url.deletingPathExtension().lastPathComponent)
-        }
-    }
-
-    private func openProject() {
-        let panel = NSOpenPanel()
-        panel.title = "Open analysis project folder"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.begin { result in
-            if result == .OK, let url = panel.url { session.open(path: url.path) }
-        }
-    }
-
-    private func importImages() {
-        presentOpenPanel(allowedExtensions: ["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
-                         allowFolders: false, allowMultiple: true) { session.importImages($0) }
-    }
-
-    private func exportProject() {
-        let panel = NSSavePanel()
-        panel.title = "Export analysis package"
-        panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = "\(session.projectName).zip"
-        panel.begin { result in
-            if result == .OK, let url = panel.url { session.export(to: url) }
-        }
-    }
-}
+ }

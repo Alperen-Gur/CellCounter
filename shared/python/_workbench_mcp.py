@@ -571,7 +571,7 @@ def build_server(
                 return [metadata_only(item) for item in value]
             return value
 
-        if request["operation"] == "operations.discover" and result.get("ok"):
+        if request["operation"] in ("operations.discover", "navigation.catalog") and result.get("ok"):
             for entry in result.get("result", {}).get("operations", []):
                 entry["access"] = access(entry)
             result["result"]["transport"] = {"toolMode": tool_mode, "readOnly": not allow_write,

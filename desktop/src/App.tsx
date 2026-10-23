@@ -1,139 +1,88 @@
-import { LocalTimingIndicator } from "./pages/system/LocalDiagnosticsPanel";
-/**
- * App.tsx — the CellCounter application shell.
- *
- * Draws the custom Windows-native chrome (TitleBar) + left Sidebar + a content
- * top bar (breadcrumb · model selector · Calibrate · settings) around a
- * hash-routed content pane that renders exactly one feature page. Routing is the
- * dependency-free `useHashRoute` + `ROUTES` registry, so route state lives in
- * the URL hash, never in the FROZEN kernel store.
- *
- * Shell-owned: feature engineers fill their `pages/<name>/` directory and never
- * edit App.tsx, the router, the Sidebar, the TitleBar, or the theme.
- */
-
 import { Suspense, useEffect, useState } from "react";
-
+import { LocalTimingIndicator } from "./pages/system/LocalDiagnosticsPanel";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
 import { Icon } from "./components/Icon";
 import { KeyboardShortcutsSheet } from "./components/KeyboardShortcutsSheet";
+import { AppearancePreferencesProvider } from "./components/AppearancePreferences";
 import { useHashRoute } from "./components/useHashRoute";
 import { useKeymap } from "./components/useKeymap";
-import { requestImageImport } from "./pages/home/importRequest";
 import { initAppData } from "./components/appInit";
+import { isExistingLibraryRoute, WORKBENCH_ROUTE } from "./components/routes";
+import { openWorkbench } from "./components/workbenchNavigation";
+import { WorkbenchVisibility } from "./components/WorkbenchVisibility";
 import { OnboardingRoot } from "./pages/onboarding/OnboardingRoot";
-import { modelLabel } from "./pages/models/catalog";
-import { useAppStore } from "./kernel/store/store";
-
 import "./styles/theme.css";
 import "./styles/shell.css";
+
+const Workbench = WORKBENCH_ROUTE.component;
 
 function App() {
   const { route, navigate } = useHashRoute();
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [theme,setTheme]=useState<"system"|"light"|"dark">(()=>{const saved=localStorage.getItem("cc-theme");return saved==="light"||saved==="dark"?saved:"system";});
-  useEffect(()=>{localStorage.setItem("cc-theme",theme);const media=matchMedia("(prefers-color-scheme: dark)");const apply=()=>document.documentElement.dataset.theme=theme==="system"?(media.matches?"dark":"light"):theme;apply();media.addEventListener("change",apply);return()=>media.removeEventListener("change",apply);},[theme]);
   const [collapsed, setCollapsed] = useState(false);
-  const activeModelId = useAppStore((s) => s.activeModelId);
-
-  useEffect(() => {
-    void initAppData();
-  }, []);
+  // The active project and its drafts survive visits to preferences or older records.
+  const [workbenchOpened, setWorkbenchOpened] = useState(route.id === "workbench");
+  useEffect(() => { if (route.id === "workbench") setWorkbenchOpened(true); }, [route.id]);
+  useEffect(() => { if ("__TAURI_INTERNALS__" in window) void initAppData(); }, []);
 
   useKeymap("global", { showShortcuts: () => setShortcutsOpen(true) }, { allowInInputs: true });
   useKeymap("application", {
-    openImages: () => { requestImageImport("images"); navigate("home"); },
-    openFolder: () => { requestImageImport("folder"); navigate("home"); },
-    settings: () => navigate("settings"), home: () => navigate("home"),
-    processing: () => navigate("processing"), review: () => navigate("review"),
-    library: () => navigate("library"), batch: () => navigate("batch"),
-    compare: () => navigate("compare"), models: () => navigate("models"),
-    finetune: () => navigate("finetune"), support: () => navigate("support"),
+    newProject: () => openWorkbench({ kind: "new-project" }),
+    openProject: () => openWorkbench({ kind: "open-project" }),
+    openImages: () => openWorkbench({ kind: "import" }),
+    settings: () => navigate("settings"),
+    preparation: () => openWorkbench({ kind: "task", task: "preparation" }),
+    segmentation: () => openWorkbench({ kind: "task", task: "segmentation" }),
+    measurements: () => openWorkbench({ kind: "task", task: "measurements" }),
+    review: () => openWorkbench({ kind: "task", task: "review" }),
+    workflows: () => openWorkbench({ kind: "task", task: "workflows" }),
+    export: () => openWorkbench({ kind: "task", task: "export" }),
   }, { allowInInputs: true });
 
   const PageComponent = route.component;
-
-  return (
+  const existingLibrary = isExistingLibraryRoute(route.id);
+  return <AppearancePreferencesProvider>
     <div className="cc-app">
       <TitleBar />
-
       <div className="cc-body">
         <Sidebar activeId={route.id} collapsed={collapsed} onNavigate={navigate} />
-
         <div className="cc-main">
           <header className="cc-topbar">
-            <button
-              type="button"
-              className="cc-iconbtn"
-              onClick={() => setCollapsed((v) => !v)}
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              title="Toggle sidebar"
-            >
-              <Icon name="menu" size={18} />
-            </button>
-
+            <button type="button" className="cc-iconbtn" onClick={() => setCollapsed(value => !value)}
+              aria-label={collapsed ? "Expand application navigation" : "Collapse application navigation"}
+              aria-expanded={!collapsed} title="Toggle application navigation"><Icon name="menu" size={18} /></button>
             <nav className="cc-breadcrumb" aria-label="Breadcrumb">
               <span className="cc-breadcrumb__root">CellCounter</span>
               <Icon name="chevronRight" size={15} className="cc-breadcrumb__sep" />
+              {existingLibrary && route.id !== "existing-library" ? <>
+                <button type="button" className="cc-breadcrumb__link" onClick={() => navigate("existing-library")}>Existing library</button>
+                <Icon name="chevronRight" size={15} className="cc-breadcrumb__sep" />
+              </> : null}
               <span className="cc-breadcrumb__here">{route.label}</span>
             </nav>
-
             <span className="cc-topbar__spacer" />
-            <label aria-label="Presentation theme"><select aria-label="Presentation theme" value={theme} onChange={e=>setTheme(e.target.value as typeof theme)}><option value="system">System theme</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-
-            {route.id !== "workbench" ? <><button
-              type="button"
-              className="cc-model"
-              onClick={() => navigate("models")}
-              title="Choose detection model"
-            >
-              <span className="cc-model__label">MODEL</span>
-              <span className="cc-model__value">{modelLabel(activeModelId)}</span>
-              <Icon name="chevronDown" size={15} className="cc-model__chev" />
-            </button>
-
-            <button
-              type="button"
-              className="cc-btn"
-              onClick={() => navigate("onboarding")}
-              title="Set the pixel scale"
-            >
-              <Icon name="calibrate" size={16} />
-              Calibrate
-            </button>
-            </> : null}
-
-            <button
-              type="button"
-              className="cc-iconbtn"
-              onClick={() => navigate("settings")}
-              aria-label="Settings"
-              title="Settings"
-            >
-              <Icon name="settings" size={18} />
-            </button>
+            <button type="button" className="cc-iconbtn" onClick={() => setShortcutsOpen(true)}
+              aria-label="Keyboard shortcuts" title="Keyboard shortcuts"><Icon name="info" size={18} /></button>
           </header>
-
           <main className="cc-content">
-            <Suspense fallback={<div className="cc-loading">Loading…</div>}>
-              <PageComponent />
-            </Suspense>
+            {existingLibrary && route.id !== "existing-library" ? <aside className="cc-library-context" aria-label="Existing library context">
+              <span>These are original library records. Workbench projects have their own images, settings and history.</span>
+              <button type="button" className="cc-btn" onClick={() => openWorkbench({ kind: "library-import" })}>Import into Workbench…</button>
+            </aside> : null}
+            {workbenchOpened || route.id === "workbench" ? <div hidden={route.id !== "workbench"} className="cc-route-pane">
+              <WorkbenchVisibility.Provider value={route.id === "workbench"}>
+                <Suspense fallback={<div className="cc-loading" role="status">Opening Workbench…</div>}><Workbench /></Suspense>
+              </WorkbenchVisibility.Provider>
+            </div> : null}
+            {route.id !== "workbench" ? <Suspense fallback={<div className="cc-loading" role="status">Opening {route.label}…</div>}><PageComponent /></Suspense> : null}
           </main>
         </div>
       </div>
-
-      <KeyboardShortcutsSheet
-        open={shortcutsOpen}
-        onClose={() => setShortcutsOpen(false)}
-      />
-
-      {/* Modal host for calibration/onboarding (reached via Calibrate or first
-          run). Auto-launch is off until the tour UI is restyled to match. */}
+      <KeyboardShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <LocalTimingIndicator />
       <OnboardingRoot />
     </div>
-  );
+  </AppearancePreferencesProvider>;
 }
-
 export default App;

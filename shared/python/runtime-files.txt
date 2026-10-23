@@ -52,6 +52,7 @@ _workbench_workspace.py
 _workbench_microscopy_runtime.py
 _workbench_native_workspace.py
 _workbench_sessions.py
+_workbench_navigation.py
 _workbench_library.py
 _workbench_zarr.py
 requirements-zarr.txt

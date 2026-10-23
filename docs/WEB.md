@@ -1,227 +1,175 @@
 # CellCounter Web 0.3.2 preview
 
-CellCounter Web is a fully client-side, installable PWA for private microscopy
-analysis. Imported pixels, model artifacts, measurements, corrections, study
-metadata and exports stay in the browser. This version contains no account,
-telemetry, image upload or application server path.
+CellCounter Web is a local, browser-based microscopy application. It provides
+classical segmentation, correction, measurements and exports without an account
+or image-upload service. It is a **preview with a smaller feature set than the
+desktop applications**.
+
+The [release archive](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
+contains a static PWA. Serve its extracted files over HTTPS or localhost; opening
+`index.html` directly is not supported. The downloadable archive does not provide
+a hosted analysis service.
+
+## Get started
+
+1. Open CellCounter from the HTTPS or localhost address where it is served.
+   If your browser offers **Install app**, you can install the PWA there.
+2. Import supported images or select a folder where the browser permits it.
+3. Confirm the source channel, supported projection and calibration. Select the
+   separately named classical method; it needs no model download.
+4. Preview a representative image, inspect the segmentation and adjust settings
+   before processing a batch.
+5. Review and correct results, then export the scientific files you need to keep.
+
+For the current comparison with desktop features, see the
+[platform comparison](PLATFORM-PARITY.md). The in-app
+**Help → Browser capabilities** panel describes available browser functions.
 
 ## What is available
 
-The in-product **Help → Browser capabilities** view records available features
-and explicit limits. Version 0.3.0 adds local multidimensional microscopy
-workspaces, review tools and dataset/sample exports. See the
-[workspace guide](PORTABLE-WORKSPACE.md) and [release notes](releases/web-v0.3.0.md).
-These implementations do not establish full macOS parity.
+| Area | Browser functionality |
+| --- | --- |
+| Import | PNG, JPEG, WebP, BMP, TIFF and OME-TIFF; supported folder import and local duplicate detection. |
+| Calibration | Manual scale and compatible OME, ImageJ or TIFF resolution metadata when valid. Missing scale is not guessed. |
+| Classical segmentation | Otsu, triangle, adaptive or manual thresholding; background subtraction, minimum-area filtering and optional watershed in a local Worker. |
+| Correction and review | Source-coordinate selection, add/remove/resize/merge/split tools, bounded undo/redo, ROIs, ground-truth markers, notes, confidence and review controls. |
+| Measurements | Calibrated morphology, size bins, focus/illumination indicators, intensity, colocalization, confluence/area, scratch/spheroid/colony, puncta, spatial, sequence/migration, neurite and profile workflows where their inputs are available. |
+| Repeatable processing | Saved analysis settings, representative previews, processing jobs with pause/resume/retry and versioned protocols. Interrupted jobs wait for explicit resume. |
+| Linked results | Image, measurement table and scatter selection; saved mask alternatives retain source coordinates. |
+| Portable microscopy | Supported local Zarr v2 sources, layer annotations, painting, translation/grid tools, recorded workspace operations and GIF presentation export within browser limits. |
+| Export | Cell/summary CSV, provenance JSON, ImageJ ROI ZIP, ROI JSON, GeoJSON, annotated PNG, label-mask PNG, PDF and bare NumPy label arrays; supported sample/dataset exports. |
 
-See the [cross-platform parity snapshot](PLATFORM-PARITY.md) for the current
-release status and the [feature matrix](FEATURES.md) for individual differences.
+Assays need their declared channels, masks and sequence information. Missing
+evidence produces an unavailable result rather than an invented measurement.
+Saved run settings remain distinct from later review settings.
 
-### New in 0.2.0–0.2.1
+The [portable workspace guide](PORTABLE-WORKSPACE.md) explains source coordinates,
+layer files, review sign-offs, dataset exports and replay. Its plane-based
+surfaces are not a substitute for the desktop scientific volume engine.
 
-- **A research workbench:** Library, Analyze, Processing and Review are the main
-  destinations. Analyze reserves most of the workspace for the image; Setup,
-  Selection and Image tabs organize its inspector. Measurements open on demand.
-- **Working segmentation without model downloads:** classical Otsu, triangle,
-  adaptive or manual thresholding, background subtraction, minimum-area
-  filtering and optional watershed run locally in a Worker. This method is
-  labeled explicitly and never impersonates Cellpose or StarDist.
-- **Preview before processing:** inspect a representative field and save its
-  whole-image preview. Processing reuses it only when source bytes, model,
-  parameters and calibration match.
-- **A saved processing queue:** each job retains its settings and progress.
-  Pause finishes the current image; cancellation stops it and pauses the job.
-  Resume and retry retain completed work. Interrupted jobs wait for explicit
-  resume after reopening the app.
-- **Linked review:** image selection, a paged measurement table and scatter
-  selection share cell identity. Saved mask alternatives use the same image
-  coordinates, show change counts and preserve the current mask before restore.
-- **An optional introduction:** an unframed 3D point illustration spans the landing page,
-  with native scrolling linking cell-like forms, boundaries and an ordered
-  field. Muted blue-gray points, explicit section/motion controls and
-  reduced-motion support preserve readability. It unloads on entering the analysis workspace.
-  Lucide icons and Three.js include their license notices in `licenses/`.
-- **Clearer context:** recorded run settings and calibration remain distinct
-  from later review settings. Phone-sized screens use an explicitly dismissible
-  inspector sheet; Help contains shortcuts, privacy details and capability limits.
+<a id="webgpu-model-boundary"></a>
 
-Browser-native functionality includes:
+## Learned-model availability
 
-- PNG, JPEG, WebP, BMP, TIFF and OME-TIFF import, plus recursive folder import
-- local SHA-256 duplicate detection and per-image OME, ImageJ or TIFF-baseline
-  calibration when valid metadata is present
-- an image-first workspace with fit, pan and zoom; contours; selection; and
-  source-coordinate add, remove, resize, merge and split tools
-- bounded undo/redo, ground-truth markers with live precision/recall/F1,
-  include/exclude ROIs, notes, confidence and a low-confidence review queue
-- calibrated morphology, size bins, focus/illumination QC, intensity and
-  colocalization assays, area/confluence/scratch/spheroid/colony assays,
-  puncta, spatial statistics, explicit-sequence tracking/migration, neurite
-  outgrowth and line profiles
-- versioned analysis protocols that are validated before atomic application
-- condition summaries and deterministic comparisons
-- IndexedDB metadata, OPFS source blobs when supported, lazy image restore and
-  local model caching
-- Cells CSV, provenance JSON, ImageJ ROI ZIP, ROI JSON, GeoJSON, annotated PNG,
-  label-mask PNG, PDF report and a safe bare uint32 NumPy label map
-- responsive light and dark interfaces with screen-scoped shortcuts, visible
-  focus and modal focus restoration
+**Validated learned-model weights are not included in this preview.** The
+Cellpose-SAM, Cellpose cyto3 and StarDist fluorescence catalogue entries therefore
+cannot perform live learned segmentation. The usable classical method is labeled
+with its actual algorithm and never substitutes for one of those models.
 
-All expensive TIFF, assay, inference and full-resolution export work runs in
-dedicated Web Workers. TIFF imports are serialized and checked against a
-conservative 384 MB end-to-end working-set budget; startup restores metadata
-and thumbnails first and decodes the active source only.
+The learned-model adapter requires WebGPU and an exact compatible artifact when
+available. It does not silently use another checkpoint, CPU/WASM inference or
+fixture output. Classical analysis uses a CPU Worker and does not require WebGPU.
 
-## WebGPU model boundary
-
-The frozen initial catalog contains exactly:
-
-1. `cpsam_v2` — Cellpose-SAM v2 (browser artifact remains build required)
-2. `cp-cyto3` — Cellpose cyto3 (the cross-platform default)
-3. `sd-fluo` — StarDist versatile fluorescence
-
-The learned-model adapter is WebGPU-only and never substitutes WASM, CPU,
-another model or fixture output. The separate classical method uses a local
-CPU Worker and does not need WebGPU. Model weights are not committed. At this revision all
-three entries are honestly `buildRequired`: no exact ONNX artifact has yet
-passed the repository's checkpoint-lineage, output-parity, operator, checksum
-and byte-length gates. Selecting one of those learned models therefore shows an actionable artifact
-error; this source revision does **not** claim live learned segmentation.
-
-[`web/src/models/BUILD-CONTRACT.md`](../web/src/models/BUILD-CONTRACT.md)
-defines how a release engineer can export, validate and checksum an exact
-artifact before changing its manifest atomically to `ready`. There is no silent
-model substitution.
+Native Python model environments, proprietary microscope readers and model
+training are not part of this browser application.
 
 ## TIFF and quantitative-image semantics
 
-TIFF/OME-TIFF decoding happens locally in a Worker. The original source bytes,
-bit depth, channel count, plane count and source SHA-256 are retained in local
-storage. OME `PhysicalSizeX/Y`, ImageJ pixel width and explicit TIFF resolution
-units are accepted when isotropic and valid; missing resolution units are not
-guessed.
+TIFF/OME-TIFF decoding runs locally in a Worker. Original bytes, bit depth,
+channel/plane information and source hashes are retained in browser storage.
+Calibration accepts valid isotropic OME X/Y spacing, ImageJ pixel width or explicit
+TIFF resolution units. Missing units are not inferred.
 
-The default TIFF display and currently specified learned-model input use an
-explicit first-plane 8-bit RGB PNG normalization. Provenance records its own digest, media type and byte
-length separately from the original TIFF identity and names the transform.
-It never claims that the original high-bit or multi-plane bytes were fed to the
-model. The classical method reads retained source rasters with explicit source-channel
-selection and first-plane, maximum, mean or sum projection. Prepared source
-previews show the selected transform. Assays retains its own source controls;
-its available choices should not be confused with learned-model preprocessing.
-Full high-bit, multi-plane learned-model parity remains coupled to the
-model-artifact validation gate.
+Classical analysis reads retained source rasters with explicit source-channel
+selection and first-plane, maximum, mean or sum projection. The prepared preview
+shows the chosen transform. Assay source controls can differ from segmentation
+controls; confirm the inputs for each measurement.
+
+The default TIFF display and the learned-adapter input use a recorded first-plane
+8-bit RGB PNG normalization. That preview has its own digest and provenance; it
+does not mean original high-bit or multiplane pixels were submitted to a learned
+model. Learned-model processing remains unavailable without the required artifact.
+
+## Memory, formats and storage limits
+
+- TIFF analysis supports up to **4 million pixels per plane**, **16 channels**
+  and **64 Z planes per projection**, within a conservative **384 MB working-set
+  budget**. Ambiguous multi-series or multi-file OME-TIFF mappings are rejected.
+- The portable Zarr reader supports **Zarr v2**, supported spatial pyramids/plate
+  fields and uncompressed, zlib or gzip chunks. Blosc, Zarr v3 and remote stores
+  are not supported by this browser reader.
+- Portable workspace files can embed up to **16 MiB** of supplied plane snapshots;
+  they do not embed every plane of an external acquisition.
+- Browser sample/dataset ZIP exports are bounded to **48 MiB of uncompressed
+  artifacts**.
+- Browser quotas, private-browsing settings and site-data deletion can remove
+  local images or results. Browser storage is not an archival backup.
+
+For large acquisitions, prepare supported TIFF inputs or use a compatible coarser
+Zarr level. Desktop NGFF and scientific volume limits are separate.
+
+## Save, export and update
+
+Metadata is stored in IndexedDB and source blobs use browser-managed storage,
+including OPFS where supported. Retain original acquisitions outside the browser
+and export important results regularly. A workspace document or mask download is
+not necessarily a complete copy of the study.
+
+The NumPy export is a bare uint32 label array with a JSON sidecar, not a pickled
+Cellpose GUI `_seg.npy` session. Dataset snapshots export compatible source planes,
+instance masks and provenance; exporting one does not train a model.
+
+When **Update available → Reload app** appears, finish active analysis and use
+that action. It saves pending metadata before reloading. If an older preview has
+no update notice, close all CellCounter tabs/windows, then reopen the same address.
+**Do not clear site data merely to update the interface:** that removes local work.
 
 ## Privacy and offline behavior
 
-The content security policy limits connections to the same origin. Application
-image display uses local `blob:` URLs. The only authored `fetch` path is the
-same-origin, versioned model loader; it verifies SHA-256 and byte length before
-caching or use. A corrupt cache entry is deleted and reported.
+Images, measurements and corrections are processed in the browser. The application
+has no account, telemetry or authored image-upload path. Its content security
+policy restricts application connections to the same origin; local images are
+displayed from browser-managed URLs.
 
-The initial UI is split from the inference runtime and assay/export workers, so
-they do not block first interaction. ONNX Runtime and the inference worker are
-loaded only when learned detection is explicitly requested, rather than during
-PWA installation; the browser may then retain those same-origin assets in its
-ordinary HTTP cache. Model files remain separately gated and cached only after
-their manifests become ready.
+The host serves application assets and can apply its own hosting/access-log policy.
+Where compatible model artifacts are provided, the same-origin model loader checks
+their hash and length before caching or use. A corrupt cached artifact is rejected.
 
-Reset in Settings deletes the local project. A future optional server is
-outside this release and outside its privacy boundary.
+After the required application assets are cached, supported local workflows can
+be used offline. Some assets load only when their feature is opened, so an initial
+installation does not guarantee that every optional component is cached.
+No browser-to-desktop synchronization is provided.
 
-## Updating an installed preview
-
-When a new version is ready, **Update available → Reload app** appears. The
-button waits while analysis is active and saves pending image metadata before
-reloading. If an older preview predates that notice, close every CellCounter
-tab and installed window, then reopen it so the waiting update can activate.
-Do not clear site data just to refresh the interface; that would remove the
-local study.
+Optional local timing summaries and diagnostic exports require explicit recording
+and inspection; there is no automatic report upload. See
+[local diagnostics](INSTALL.md#optional-local-diagnostics).
 
 ## Run locally
 
 Requirements:
 
 - Node.js `^20.19.0` or `>=22.12.0`
-- a current browser with Web Workers, IndexedDB and `createImageBitmap`;
-  WebGPU is additionally required for future validated learned-model artifacts
-- HTTPS in production (`localhost` is sufficient for development)
+- A current browser with Web Workers, IndexedDB and `createImageBitmap`
+- HTTPS for deployed use; localhost is sufficient for local development
 
-From `web/`:
+From the repository root:
 
 ```sh
+cd web
 npm ci
 npm run dev
 ```
 
-Run the complete local contract:
+To build and serve a local production preview:
 
 ```sh
 npm run build
-npm test -- --run
-npm run verify:privacy
-npm run verify:workflow
-npm run verify:models
-npm run verify:core
-npm run verify:parity
-npm run verify:parity-analysis
+npm run preview
 ```
 
-The production PWA is emitted to `web/dist/`. CI performs these checks with a pinned Node runtime. Release archives contain
-the static production files; serve them over HTTPS rather than opening
-`index.html` directly. Publishing a downloadable archive does not create a
-publicly hosted analysis service.
+The production files are written to `web/dist/`. Serve that directory from the
+web root over HTTPS for deployment.
 
-## Honest browser limits
+## Troubleshooting
 
-- ND2, CZI, LIF, OIR, VSI and other proprietary SDK-only containers are
-  unavailable. Convert them locally to OME-TIFF first.
-- Exact `cpsam_v2`, `cp-cyto3` and `sd-fluo` production weights are absent, so
-  learned detection and model-coupled preprocessing remain build-gated. The
-  separately named classical method is usable, including its own watershed.
-- The NumPy export is a safe bare uint32 label array with a JSON sidecar, not a
-  Cellpose GUI pickled `_seg.npy` session. Full round-trip import/export remains
-  build required.
-- Live fine-tuning is unavailable because the exact training weights and native
-  training runtime are absent and browser memory limits make parity unsafe.
-  Corrected label masks and include/exclude ROI data can be exported for later workflows.
-- 3D learned inference, OME-Zarr, the native layer workspace, registration,
-  lineage editing, recorded workspace replay, prompt/sequence correction and
-  reviewed-library training are not available in this build.
-- Browser storage quotas and site-data deletion can remove local work. Export
-  results you need to retain; this release is not a cross-device project sync
-  or archival backup service.
+| Problem | What to check |
+| --- | --- |
+| A learned model is unavailable | This preview does not include qualified production weights. Use the explicitly named classical method or a desktop model workflow. |
+| A TIFF exceeds the import budget | Prepare a supported smaller image/stack or a compatible coarser Zarr level. The browser does not silently downsample scientific analysis to bypass the limit. |
+| Calibration is missing | Enter a known scale. Ordinary images and TIFFs without valid units do not establish physical calibration. |
+| A workspace opens but external planes are missing | Reattach its original source data. Embedded snapshots are only a bounded subset. |
+| A saved study disappeared | Check that you are using the same browser profile and origin. Clearing site data or storage eviction can remove the local study. Restore from retained sources/exports where available. |
+| The installed PWA still shows an older version | Finish active work, use the update action, or close every tab/window and reopen. Preserve site data. |
+| A proprietary microscope file will not import | Convert locally to a supported TIFF/OME-TIFF or use a compatible desktop reader. |
 
-## Optional local diagnostics and real-workflow benchmarks
-
-**Local diagnostics & performance** is available in Support (macOS and Windows)
-or Help (web), beginning with macOS 1.0.17, Windows 1.2.1 and Web 0.3.1 preview.
-
-Choose **Start recording**, then use real images and the normal import,
-processing, review, workspace, assay and export controls. Normal analysis retains
-its normal results. There are no synthetic workloads or automatic reruns.
-Choose a 10-minute, 30-minute or two-hour limit; a visible Stop control remains
-available while navigating. Stop early or erase the recorded timings at any time.
-
-Recording is disabled initially and must be started each app session. It stores
-only bounded numeric aggregates under fixed operation categories, in memory:
-counts, durations, failures where known, unfinished operations and recent latency
-percentiles. Foreground interface scheduling is measured during recording.
-Names, paths, image content, saved measurements, IDs, device identifiers, raw
-logs, free-form errors, wall-clock timestamps and event order are excluded.
-A crash or app exit loses unsaved results; this is not a crash-dump collector.
-
-Afterward, explicitly include the optional state summary and/or recorded timings,
-prepare the editable preview, remove any lines you do not want to share, and mark
-it inspected. Export writes exactly that text, up to 64 KiB, with no attachments
-or automatic uploads. Editing clears the inspection confirmation. Sharing is a
-separate manual action. The chosen file destination may be synced by other
-software. Counts and timings can reveal workload characteristics, so inspection
-is still important; absolute anonymity cannot be guaranteed for text users add.
-
-Timings cover instrumented real workflow boundaries and include waiting, cache
-and scheduling effects. Nested categories overlap. Unobserved operations are
-listed rather than estimated, and incomplete work is marked explicitly. Native
-exports and other boundaries that cannot classify their final outcome report it
-as unspecified. Timing summaries do not establish segmentation accuracy or expose
-CPU/GPU kernel profiles. Startup before opt-in and work before recording began
-are not measured. Keep input/settings consistent when comparing sessions.
+See the [0.3.2 release notes](releases/web-v0.3.2.md) for release-specific changes.

@@ -1,33 +1,56 @@
-# Contributing
+# Contributing to CellCounter
 
-Thanks for taking a look. CellCounter is a research tool, and contributions —
-bug reports, feature requests, pull requests — are welcome.
+Bug reports, documentation improvements and focused pull requests are welcome.
+CellCounter is a scientific tool: changes should make behavior clear and retain
+source, measurement and correction provenance.
 
-## Reporting a bug
+## Report a problem
 
-Open an issue with:
-- what you did, what you expected, and what happened instead
-- your OS and app version
-- if it's a detection/install problem, a screenshot of the install log or the
-  detection overlay helps a lot (please make sure no patient data is visible)
+Open a [GitHub issue](https://github.com/Alperen-Gur/CellCounter/issues) with:
 
-## Development
+- Your operating system and CellCounter version.
+- The steps you followed, expected behavior and observed result.
+- The operation, file format or model involved, and any relevant error message.
+- A minimal example using synthetic or openly redistributable data, when possible.
 
-The repository currently contains:
-- `CellCounting/` — the native macOS (SwiftUI) app
-- `CellCounting/python/` — the Python sidecar that runs Cellpose
-- a cross-platform rebuild (Tauri + React) is being added under a separate
-  directory; see the Roadmap in the README
+Review diagnostic reports, logs and screenshots before sharing them. Remove
+personal information, credentials, private paths and sensitive research or
+patient data. Do not upload an entire project when a small example is sufficient.
 
-Please don't commit:
-- image data (patient or otherwise) — the `.gitignore` blocks common formats,
-  but double-check
-- model weights — they're downloaded at runtime, not vendored
-- anything under AGPL — this project is MIT and needs to stay
-  permissively licensed
+## Repository structure
 
-## Pull requests
+| Directory | Contents |
+| --- | --- |
+| `CellCounting/` | Native macOS SwiftUI application and its library services |
+| `desktop/` | Windows React/Tauri application and native backend |
+| `web/` | Browser PWA and worker-based processing |
+| `shared/python/` | Scientific Workbench runtime, CLI, Python SDK and MCP server |
+| `shared/workbench/` | Typed operation contracts |
+| `shared/microscopy/` | Portable microscopy workspace engine |
+| `docs/` | Installation, features, architecture and usage guides |
 
-Keep them focused. If you're adding a feature, an issue to discuss it first
-saves everyone time. By contributing you agree to license your contribution
-under the MIT License.
+Start with the [architecture guide](docs/ARCHITECTURE.md), then follow the
+[macOS](docs/INSTALL.md), [Windows](desktop/README.md#development),
+[browser](web/README.md#run-locally) or [Python SDK](shared/python/README.md)
+instructions for the component you are changing.
+
+## Prepare a pull request
+
+Keep the change focused and explain the problem, resulting behavior and relevant
+validation. Update the affected public documentation when behavior changes.
+Include regression coverage when it meaningfully exercises a bug or scientific
+contract; select checks appropriate to the component and change.
+
+Use small synthetic fixtures for tests. Do not commit microscopy datasets, model
+weights, generated environments, build output, credentials or private working
+material. Preserve licenses and attribution for dependencies and assets. Optional
+models may have terms that differ from CellCounter's own license; consult
+[third-party notices](THIRD_PARTY_LICENSES.md) before adding or redistributing them.
+
+Changes to Workbench operations should retain the same semantics across the GUI,
+CLI, SDK and MCP clients. Document relevant source/calibration limits, revision
+behavior and permissions rather than treating a new interface entry as evidence
+of scientific validation.
+
+By contributing, you agree to license your contribution under the
+[MIT License](LICENSE).

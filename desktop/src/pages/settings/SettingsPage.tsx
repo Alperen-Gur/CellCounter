@@ -1,3 +1,5 @@
+import { AppearancePreference } from "../../components/AppearancePreferences";
+import { openWorkbench } from "../../components/workbenchNavigation";
 import { MODEL_CATALOG } from "../models/catalog";
 import { analysisQueue } from "../../kernel/workflow/desktopQueue";
 /**
@@ -119,7 +121,17 @@ export default function SettingsPage() {
   const [section, setSection] = useState<SectionId>("general");
 
   return (
-    <div className="cc-set">
+    <section className="cc-application-settings">
+      <header><h1>Settings</h1><p>Appearance applies across the application. Scientific settings are saved with the active Workbench project.</p></header>
+      <AppearancePreference />
+      <div className="cc-existing-library__actions">
+        <button type="button" className="cc-btn" onClick={() => openWorkbench({ kind: "task", task: "preparation" })}>Image calibration and sources</button>
+        <button type="button" className="cc-btn" onClick={() => openWorkbench({ kind: "task", task: "segmentation" })}>Segmentation and models</button>
+        <button type="button" className="cc-btn" onClick={() => openWorkbench({ kind: "agent-access" })}>Runtime and AI agent access</button>
+      </div>
+      <details className="cc-legacy-preferences"><summary>Existing library preferences</summary>
+        <p>These settings apply only to the earlier image library. They do not change calibration, models or analysis parameters in a Workbench project. Data reset affects only that existing library.</p>
+      <div className="cc-set">
       <nav className="cc-set__rail" aria-label="Settings sections">
         {SECTIONS.map((s) => (
           <button
@@ -148,6 +160,8 @@ export default function SettingsPage() {
         {section === "data" && <DataSection />}
       </div>
     </div>
+    </details>
+    </section>
   );
 }
 
@@ -200,8 +214,8 @@ function GeneralSection() {
   return (
     <section className="cc-set__section" aria-label="General settings">
       <Heading
-        title="General"
-        subtitle="Defaults applied to every new analysis. Changes take effect on the next detection."
+        title="Existing library defaults"
+        subtitle="Defaults for new detections in the existing library. Workbench projects retain their own analysis parameters."
       />
 
       <SetRow
