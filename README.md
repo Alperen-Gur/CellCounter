@@ -13,7 +13,7 @@ Import images, review and correct cell masks, quantify experiments, and export r
 [![Web](https://img.shields.io/badge/Web-0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Download](#download) · [Features](#features) · [Quick start](#quick-start) · [AI-agent access](#automation-and-ai-agents) · [Documentation](#documentation)
+[Download](#download) · [Features](#features) · [Comparison](#feature-comparison) · [Quick start](#quick-start) · [AI-agent access](#automation-and-ai-agents) · [Documentation](#documentation)
 
 </div>
 
@@ -67,6 +67,38 @@ existing image-library workflow have separate requirements and capabilities.
 
 See the [feature guide](docs/FEATURES.md) for the current inventory and the [Workbench guide](docs/WORKBENCH.md)
 for operation-specific formats, parameters and limits.
+
+## Feature comparison
+
+Selected open-source microscopy tools, based on documentation reviewed on **23 October 2026**.
+CellCounter entries describe the released desktop Workbench; the web preview has a smaller feature set.
+
+**✓** documented support · **Plugin** supplied through an extension, which may be bundled ·
+**Limited** a narrower implementation · **?** not established by the cited documentation.
+Text in a cell identifies the supported route or scope. Support does not imply equivalent methods or performance.
+
+| Feature | **CellCounter** | [Cell-ACDC](https://cell-acdc.readthedocs.io/en/stable/) | [Fiji / ImageJ](https://imagej.net/learn/) | [napari](https://napari.org/stable/) | [CellProfiler](https://cellprofiler.org/) | [QuPath](https://qupath.readthedocs.io/en/stable/) |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Classical segmentation | ✓ | ✓ | ✓ | Plugin | ✓ | ✓ |
+| Learned segmentation | 2D | ✓ | Plugin | Plugin | Plugin | Plugin |
+| Manual mask / object correction | ✓ | ✓ | ✓ | ✓ | 2D | ROIs / objects |
+| Morphology and fluorescence measurements | ✓ | ✓ | ✓ | Plugin | ✓ | ✓ |
+| 3D segmentation | Limited | ✓ | Plugin | Plugin | Selected modules | ? |
+| Object tracking | Limited | ✓ | TrackMate | Plugin | 2D | ? |
+| Lineage / division annotation | Reviewed proposals | ✓ | TrackMate | Plugin | 2D | ? |
+| Large, multiscale image viewing | Selected regions | ? | BigDataViewer | ✓ | ? | ✓ |
+| Reusable analysis | Workflows | Saved recipes | Macros / scripts | Plugins / scripts | Pipelines | Scripts |
+| Batch analysis | ✓ | ✓ | ✓ | Scripts / plugins | ✓ | ✓ |
+| Script / API access | CLI / Python SDK | CLI / Python interfaces | Macros / APIs | Python API | CLI / Python modules | Groovy / CLI |
+| MCP tools for AI agents | ✓ | ? | Plugin | Plugin | ? | ? |
+
+CellCounter's 3D analysis is bounded to **8 million voxels per selected volume**; learned adapters currently
+run in 2D. Large-source viewing does not imply tiled support for every analysis. Tracking includes reviewed
+division proposals. CellProfiler's manual editing and tracking modules are 2D; other modules support 3D.
+Fiji and napari MCP access requires optional extensions.
+
+See the [detailed comparison](docs/COMPARISON.md) for **commercial software**, sources, plugin requirements
+and the distinctions behind these entries. This is a capability guide, not an accuracy, speed or usability ranking.
 
 ## Quick start
 
@@ -131,6 +163,7 @@ Consult [current scope and troubleshooting](docs/WORKBENCH.md#current-scope-and-
 | [Installation](docs/INSTALL.md) | macOS setup, runtime installation and first-launch help |
 | [Windows](docs/WINDOWS.md) · [Web preview](docs/WEB.md) | Platform-specific installation, workflows and troubleshooting |
 | [Features](docs/FEATURES.md) · [Platform comparison](docs/PLATFORM-PARITY.md) | Supported capabilities and edition differences |
+| [Software comparison](docs/COMPARISON.md) | Open-source and commercial alternatives, feature qualifications and primary sources |
 | [Workbench](docs/WORKBENCH.md) | Analysis, correction, workflows, experiments, export, CLI, SDK and MCP |
 | [Portable workspace](docs/PORTABLE-WORKSPACE.md) | Browser workspace formats, coordinates, layers and limits |
 | [Releases](https://github.com/Alperen-Gur/CellCounter/releases) | Downloads, checksums and version history |

@@ -9,6 +9,8 @@ The tables below describe the current desktop **Workbench**. Existing image-libr
 and portable microscopy tools remain available, with platform-specific behavior.
 See the [platform comparison](PLATFORM-PARITY.md) for these distinctions and the
 [Workbench guide](WORKBENCH.md) for operation-level details.
+For other microscopy tools, see the [feature comparison](../README.md#feature-comparison)
+and [commercial software comparison](COMPARISON.md).
 
 ## Import and organize
 
