@@ -2,6 +2,8 @@ cff-version: 1.2.0
 title: "CellCounter: a local microscopy workbench for image analysis and quantification"
 message: "If you use this software, please cite it and the segmentation model you ran (e.g. Cellpose)."
 type: software
+version: 1.2.0
+date-released: 2026-11-17
 authors:
   - given-names: Alperen
     family-names: Gur
@@ -11,8 +13,10 @@ repository-code: "https://github.com/Alperen-Gur/CellCounter"
 license: MIT
 keywords:
   - microscopy
+  - bioimage analysis
+  - cell segmentation
   - cell counting
   - image segmentation
+  - quantification
   - cellpose
-  - keratinocytes
-  - bioimage analysis
+  - stardist

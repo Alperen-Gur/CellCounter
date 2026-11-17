@@ -2,7 +2,7 @@
 
 # CellCounter Web
 
-Microscopy analysis in your browser.
+Private microscopy analysis that runs entirely in your browser.
 
 [![Web preview](https://img.shields.io/badge/Web-v0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 [![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)

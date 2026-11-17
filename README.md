@@ -4,9 +4,11 @@
 
 # CellCounter
 
-**A local microscopy workbench for segmentation, measurement and reproducible analysis.**
+**Segment, correct and measure cells across entire experiments — on your own computer.**
 
-Import images, review and correct cell masks, quantify experiments, and export results with their analysis history.
+Run Cellpose-SAM, Cellpose, StarDist, Omnipose, SAM or classical pipelines, review every mask, and turn
+images into counts, size distributions, shape, intensity, assay and tracking results you can reproduce
+and export.
 
 [![macOS](https://img.shields.io/badge/macOS-1.2.0-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0)
 [![Windows](https://img.shields.io/badge/Windows-1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
