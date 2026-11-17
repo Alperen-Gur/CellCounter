@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ImageIO
+import SwiftData
 import SwiftUI
 import Testing
 import UniformTypeIdentifiers
