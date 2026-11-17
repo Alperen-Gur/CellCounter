@@ -83,7 +83,7 @@ nonisolated enum AssayResultInvalidation {
 /// One-entry memo: the value is recomputed only when the key changes.
 /// Held by a view in `@State` (a reference), so filling it while SwiftUI
 /// evaluates `body` does not invalidate the view.
-final class KeyedMemo<Key: Equatable, Value> {
+nonisolated final class KeyedMemo<Key: Equatable, Value> {
     private var entry: (key: Key, value: Value)?
     private(set) var computeCount = 0
 
