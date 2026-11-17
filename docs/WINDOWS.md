@@ -165,45 +165,15 @@ environments. Workbench project folders are managed separately.
 
 ## Troubleshooting
 
-### The installer is blocked by SmartScreen
-
-Check the download source and SHA-256. On a managed workstation, ask your IT team
-to approve the installer.
-
-### The window is blank or does not open
-
-Repair or install Microsoft Edge WebView2 Runtime, then reopen CellCounter.
-
-### The Workbench runtime is unavailable
-
-Use **Workbench → AI agent access → Install or repair runtime**, then check
-readiness. If setup fails, check the error, internet connection, free disk space
-and write access to the app-data directory.
-
-### A model install fails
-
-Check the installation log, internet connection, disk space and write access to
-`py`, then retry or repair the model.
-
-### Imported images show broken thumbnails or previews
-
-Check that the original source files are still available. If you restored a
-backup, check that it includes the image folders.
-
-### First analysis says “Sidecar scripts are not staged”
-
-Reinstall the current app from the release page and retry. Check disk space and
-write access to `py` if preparation still fails.
-
-### Detection is slow
-
-First use can include model startup and a weight download. The bundled model
-installers use CPU inference. For a custom GPU setup, check the model's Python
-environment and backend.
-
-### Imported images or models appear missing after restore
-
-Restore both `CellCounter` and `py` under the app-data path above. Open Workbench
-projects from the folders where you saved them.
+| Problem | Try this |
+| --- | --- |
+| SmartScreen blocks the installer | Check the download source and SHA-256. On a managed workstation, ask your IT team to approve the installer. |
+| The window is blank or does not open | Repair or install Microsoft Edge WebView2 Runtime, then reopen CellCounter. |
+| The Workbench runtime is unavailable | Use **Workbench → AI agent access → Install or repair runtime**, then check readiness. If setup fails, check the error, internet connection, free disk space and write access to the app-data directory. |
+| A model install fails | Check the installation log, internet connection, disk space and write access to `py`, then retry or repair the model. |
+| Imported images show broken thumbnails or previews | Check that the original source files are still available. If you restored a backup, check that it includes the image folders. |
+| Analysis or import reports that a script or helper “is not staged” | Reinstall the current release or the selected model, then retry. If it still fails, check disk space and write access to `py`. |
+| Detection is slow | First use can include model startup and a weight download. The bundled model installers use CPU inference; for a GPU setup, check the model's Python environment and backend. |
+| Images or models are missing after a restore | Restore both `CellCounter` and `py` under the app-data path above. Open Workbench projects from the folders where you saved them. |
 
 See the [1.3.0 release notes](releases/windows-v1.3.0.md).

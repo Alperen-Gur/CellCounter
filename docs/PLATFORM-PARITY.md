@@ -22,7 +22,8 @@ CellCounter Web runs in your browser.
 | Experiments and statistics | Specimens, plates, conditions and statistical designs | Specimens, plates, conditions and statistical designs | Assays and condition summaries |
 | Result refresh after edits | ✓ | ✓ | — |
 | Executable plugins | Readers, segmentation, measurements and exporters | Readers, segmentation, measurements and exporters | — |
-| Project storage | Project folders and image library | Project folders and image library | Browser storage |
+| Project storage | Project folders and image libraries | Project folders and image library | Browser storage |
+| Multiple libraries and batch archives | ✓ | — | — |
 | Export | Scientific files and analysis packages | Scientific files and analysis packages | Images, tables, reports, datasets and workspace files |
 
 ## Installation and privacy
@@ -39,5 +40,5 @@ Keep original images and back up your projects. In the browser, export important
 results before clearing site data or changing browser profiles.
 
 See [macOS installation](INSTALL.md), [Windows installation](WINDOWS.md),
-the [browser guide](WEB.md), [features](FEATURES.md) and the
-[Workbench guide](WORKBENCH.md).
+the [browser guide](WEB.md), [features](FEATURES.md), the
+[Workbench guide](WORKBENCH.md) and [libraries and batch archives](LIBRARIES.md).

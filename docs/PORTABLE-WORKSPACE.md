@@ -1,7 +1,7 @@
 # Portable microscopy workspace
 
 Work with image layers, annotations, labels and tracks in a portable workspace.
-This guide covers the browser workspace and shared layer tools. For Windows
+This guide covers the browser workspace and shared layer tools. For desktop
 Workbench projects, see [layer workspaces](WORKBENCH.md#layer-workspaces-and-semantic-journals).
 
 ## Sources and coordinates

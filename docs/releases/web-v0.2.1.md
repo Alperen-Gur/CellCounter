@@ -1,27 +1,24 @@
 # CellCounter Web 0.2.1 preview
 
 The introduction is now a continuous landing page. One full-viewport particle
-illustration changes with native scrolling, alongside four concise sections
+illustration changes with native scrolling, alongside four short sections
 about inspecting images, separating cells, understanding measurements and
-starting work. It is not contained in a panel.
+starting work.
 
-- Muted blue-gray points on a cool-white surface follow the scientific design
-  guide, with readable typography and generous spacing.
+- Muted blue-gray points on a cool-white surface, with readable typography and
+  generous spacing.
 - The illustration morphs from a membrane-like cell to separate objects,
-  boundaries and an ordered spatial field. These forms are decorative,
-  explicitly labeled illustrations; they are not biological measurements.
-- Direct section links, rotation controls, Pause and Open workspace remain
-  accessible. Reduced motion uses static stages, and ordinary scrolling stays
-  native without a wheel trap or forced pause.
-- Mobile composition reserves clear space for text and controls. The renderer
-  limits particle count, caps pixel ratio and physical canvas area, pauses in
-  background tabs, and releases its resources on workspace entry.
+  boundaries and an ordered spatial field. The forms are decorative.
+- Section links, rotation controls, Pause and Open workspace stay accessible.
+  Reduced motion uses static stages, and scrolling stays native.
+- Mobile layouts reserve clear space for text and controls. The renderer
+  limits particle count and canvas size, pauses in background tabs, and
+  releases its resources when you enter the workspace.
 
-The previous release’s classical segmentation, saved preview/processing/review
-workflow, local-only storage, blue workbench and licensed Lucide icons remain.
-Learned browser models and the documented native-platform gaps are still
-unavailable; this design update does not imply full feature parity.
+Classical segmentation, the saved preview/processing/review workflow, local-only
+storage, the blue workbench and Lucide icons are unchanged.
 
-See the [browser guide](../WEB.md). Download the static PWA archive and checksum from
-this release and serve the files over HTTPS (or localhost). This is a release
-archive, not a new hosted analysis service.
+## Install
+
+Download the static PWA archive and checksum from this release and serve the
+files over HTTPS (or localhost). See the [browser guide](../WEB.md).

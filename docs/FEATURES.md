@@ -17,7 +17,7 @@ See the [edition comparison](PLATFORM-PARITY.md), [Workbench guide](WORKBENCH.md
 | OME-Zarr / OME-NGFF | Read NGFF 0.4/Zarr v2 and 0.5/Zarr v3 datasets with their storage dependencies. |
 | OMERO | Connect to your server and import image regions using a local connection profile. |
 | Calibration | Read image metadata or enter X, Y and Z spacing. Measurements update when calibration changes. |
-| Image libraries | Search and browse acquisitions, inspect their history, and copy existing libraries into Workbench projects. |
+| Acquisition library | Search and browse acquisitions, inspect their history, and copy existing libraries into Workbench projects. |
 | Experiments | Organize conditions, plates, wells and biological specimens. Record sample assignments and exclusions. |
 
 ## Segment, correct and review
@@ -67,6 +67,19 @@ for setup and examples.
 | Scientific exports | Export calibrated images, labels, tables, annotations, overlays, lineage files and analysis history. |
 | Analysis packages | Bundle source images, masks, results, settings and history to share or reopen an analysis. |
 
+## Image libraries and archives (macOS)
+
+| Feature | What you can do |
+| --- | --- |
+| Multiple libraries | Create, open and switch libraries from the **File** menu. Your existing data opens as the Default Library. |
+| Batch archives | Move a finished batch, with its images, outlines, measurements and calibration, into a self-contained folder with CSV exports and a README. The copy is checked before the batch leaves the library. |
+| Restore | Bring an archived batch back with **File → Restore Archived Batch…**. The archive stays unchanged. |
+| Safe deletion | Removing a batch offers **Archive…** first; **Delete Permanently** asks for confirmation. |
+| Saved mask versions | Keep earlier masks when you re-analyze, compare them with the current mask and swap them back with **Use**. Choose how many versions each image keeps. |
+| Large libraries | Compact cell storage, per-image summaries, models that stay loaded between images and image-by-image exports keep big libraries responsive. |
+
+See [Libraries and batch archives](LIBRARIES.md).
+
 ## Automation and plugins
 
 The desktop app, CLI, Python SDK and MCP server share the same project operations and history.
@@ -84,5 +97,5 @@ layer workspaces, processing jobs and file exports. Images are processed locally
 See the [browser guide](WEB.md) for setup and workspace tools.
 
 For desktop installation, see the [macOS guide](INSTALL.md) or [Windows guide](WINDOWS.md).
-Release notes: [macOS](releases/v1.1.0.md), [Windows](releases/windows-v1.3.0.md),
-[browser](releases/web-v0.3.2.md).
+Release notes: [macOS](releases/v1.1.0.md) ([unreleased changes](releases/unreleased.md)),
+[Windows](releases/windows-v1.3.0.md), [browser](releases/web-v0.3.2.md).

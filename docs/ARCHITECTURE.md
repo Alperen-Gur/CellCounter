@@ -51,10 +51,21 @@ Indexed storage provides paged image, history and measurement reads. Cursors
 refer to a project revision and filter set. Selection and mask picking work
 independently of the currently loaded table page.
 
-The original application libraries use platform-specific storage. Windows uses
+The image libraries use platform-specific storage. Windows uses
 [`desktop/src-tauri/src/db/`](../desktop/src-tauri/src/db/) and the locations in
-[`paths.rs`](../desktop/src-tauri/src/paths.rs); macOS uses SwiftData. Library
-migration previews and copies data into a project, preserving the original.
+[`paths.rs`](../desktop/src-tauri/src/paths.rs). Library migration previews and
+copies data into a project, preserving the original.
+
+On macOS, a library is a SwiftData store (`store.sqlite`) with its image folders,
+described by [`LibraryLayout.swift`](../CellCounting/Persistence/LibraryLayout.swift).
+The Default Library lives in `~/Library/Application Support/CellCounter`; other
+libraries and batch archives use the same layout in `.cellcounterlibrary` folders.
+Models, Python environments and analysis protocols are shared by all libraries.
+The app opens one library per process, so switching relaunches it. Cell outlines
+and measurements are stored compressed in their own records, with compact per-cell
+metrics for list and comparison screens. Before upgrading an older store, the app
+saves a verified copy in the library's `Backups/` folder. See
+[Libraries and batch archives](LIBRARIES.md).
 
 Portable packages contain a project snapshot and hash-verified artifacts.
 Restoration writes a new destination and verifies the contents. Configure and
@@ -70,6 +81,9 @@ Reporting, OME-Zarr and OMERO dependencies have their own setup instructions.
 Local workers run analysis and adaptation in the background. Jobs save settings,
 source references and checkpoints, so work can continue after an interruption.
 Review gates and dependency refresh use the same job state.
+
+macOS library detectors run in persistent Python workers that keep their model
+loaded between images, and fall back to a one-off process if a worker cannot start.
 
 The TypeScript layer engine runs in a packaged Node runtime on desktop. Its
 manifest identifies the worker and engine files. Browser builds run the browser
@@ -103,7 +117,7 @@ access grants stay local to the host.
 
 ## Development references
 
-- [macOS installation](INSTALL.md)
+- [macOS installation](INSTALL.md) and [building the macOS app](../CONTRIBUTING.md#build-the-macos-app)
 - [Windows development and packaging](../desktop/README.md#development)
 - [Browser development](../web/README.md#run-locally)
 - [Python SDK installation and usage](../shared/python/README.md)

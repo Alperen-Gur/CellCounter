@@ -50,6 +50,7 @@ portable workspaces. See the [web guide](docs/WEB.md) and [edition comparison](d
 | **Repeatable workflows** | Save linear or branching analysis workflows, run parameter sweeps, review intermediate results and resume interrupted jobs from saved checkpoints. |
 | **Experiments and review** | Organize conditions, plates and biological specimens. Compare model results, review flagged objects and analyze biological replicates. |
 | **Traceable results** | Update measurements after corrections and refresh related results. Export images, tables, reports and portable projects with their settings and history. |
+| **Libraries and archives** | On macOS, keep a separate image library per project or year. Archive finished batches into self-contained folders with CSV exports, and restore them when you need them. |
 
 Use **Cellpose 3**, **Cellpose 4 / Cellpose-SAM**, **StarDist 2D**,
 **Omnipose** and **micro-SAM**. Set up a model environment and select its checkpoint to get started.
@@ -121,13 +122,15 @@ Use these packages to share an analysis or return to it later.
 
 | Guide | Contents |
 | --- | --- |
-| [Installation](docs/INSTALL.md) | macOS setup, runtime installation and first-launch help |
+| [Installation](docs/INSTALL.md) | macOS setup, upgrades, runtime installation and first-launch help |
 | [Windows](docs/WINDOWS.md) · [Web preview](docs/WEB.md) | Platform-specific installation, workflows and troubleshooting |
 | [Features](docs/FEATURES.md) · [Platform comparison](docs/PLATFORM-PARITY.md) | Supported capabilities and edition differences |
 | [Software comparison](docs/COMPARISON.md) | Open-source and commercial tools, with links to their documentation |
 | [Workbench](docs/WORKBENCH.md) | Analysis, correction, workflows, experiments, export, CLI, SDK and MCP |
+| [Libraries and batch archives](docs/LIBRARIES.md) | macOS image libraries, archiving and restoring batches, saved mask versions |
 | [Portable workspace](docs/PORTABLE-WORKSPACE.md) | Browser workspace formats, layers and editing tools |
-| [Releases](https://github.com/Alperen-Gur/CellCounter/releases) | Downloads, checksums and version history |
+| [Release notes](docs/releases/) · [Releases](https://github.com/Alperen-Gur/CellCounter/releases) | Changes in each version, downloads and checksums |
+| [Architecture](docs/ARCHITECTURE.md) | How the apps, analysis runtime and storage fit together |
 | [Contributing](CONTRIBUTING.md) | Building from source, reporting bugs and contributing changes |
 
 ## Support and citation
@@ -136,8 +139,13 @@ Report problems or request features in [GitHub Issues](https://github.com/Alpere
 Include your application version, operating system, relevant settings and steps to reproduce the problem.
 Share only image data or logs you are permitted to disclose.
 
-If you use CellCounter in research, cite the software using [CITATION.cff](CITATION.cff) and cite the segmentation
-models and methods used in your analysis. Record the application and model versions in your methods.
+If you use CellCounter in research, cite the software and the segmentation models you ran, and record the
+application and model versions in your methods:
+
+> Gur, A. *CellCounter: a local microscopy workbench for image analysis and quantification.*
+> https://github.com/Alperen-Gur/CellCounter
+
+Citation metadata is in [CITATION.cff](CITATION.cff); GitHub's **Cite this repository** button exports it as APA or BibTeX.
 
 CellCounter builds on open-source scientific software, including [Cellpose](https://github.com/MouseLand/cellpose),
 [StarDist](https://github.com/stardist/stardist) and [Omnipose](https://github.com/kevinjohncutler/omnipose).
