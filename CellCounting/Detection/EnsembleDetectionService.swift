@@ -14,15 +14,15 @@ import Foundation
 /// `@Model`. Manufacturing throwaway `@Model` instances just to reuse the
 /// function would insert rows into the user's store as a side effect of a
 /// detection run. Same algorithm, no persistence hazard.
-enum EnsembleMatcher {
+nonisolated enum EnsembleMatcher {
 
-    struct Pair {
+    struct Pair: Sendable {
         let a: DetectedCell
         let b: DetectedCell
         let distancePx: Double
     }
 
-    struct Result {
+    struct Result: Sendable {
         /// Cells both detectors found — they agree.
         let agreed: [Pair]
         /// Cells only the primary detector found.
@@ -42,38 +42,141 @@ enum EnsembleMatcher {
         }
     }
 
+    /// Runs `match` off the main actor. Matching is pure, so the result is
+    /// identical to calling `match` directly.
+    @concurrent
+    static func matchOffMain(a: [DetectedCell],
+                             b: [DetectedCell],
+                             matchRadiusFactor: Double = 1.0) async -> Result {
+        match(a: a, b: b, matchRadiusFactor: matchRadiusFactor)
+    }
+
+    struct Candidate {
+        let ai: Int
+        let bi: Int
+        let distance: Double
+    }
+
+    private struct GridKey: Hashable {
+        let x: Int
+        let y: Int
+    }
+
+    /// Every (a, b) pair inside the match window, in (ai, bi) ascending order,
+    /// computed by testing all pairs. Reference implementation.
+    static func bruteForceCandidates(a: [DetectedCell], b: [DetectedCell],
+                                     matchRadiusFactor: Double) -> [Candidate] {
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(min(a.count * b.count, 1 << 16))
+        for (ai, ca) in a.enumerated() {
+            for (bi, cb) in b.enumerated() {
+                if let c = candidate(ai, ca, bi, cb, matchRadiusFactor) { candidates.append(c) }
+            }
+        }
+        return candidates
+    }
+
+    @inline(__always)
+    private static func candidate(_ ai: Int, _ ca: DetectedCell,
+                                  _ bi: Int, _ cb: DetectedCell,
+                                  _ matchRadiusFactor: Double) -> Candidate? {
+        let dx = ca.cx - cb.cx
+        let dy = ca.cy - cb.cy
+        let dist = (dx * dx + dy * dy).squareRoot()
+        // Use the LARGER of the two diameters: if one model split a
+        // cell the other kept whole, we still want the pair considered
+        // so it reads as agreement-with-different-segmentation rather
+        // than two separate disagreements.
+        let radius = matchRadiusFactor * max(max(ca.diameterPx, cb.diameterPx), 1)
+        return dist <= radius ? Candidate(ai: ai, bi: bi, distance: dist) : nil
+    }
+
+    /// Same candidate list as `bruteForceCandidates` (same members, same
+    /// (ai, bi) order), but each `a` cell is only tested against `b` cells in
+    /// the 3x3 block of grid buckets around it. The bucket edge is at least the
+    /// largest possible match radius, so any pair within its radius lies in
+    /// adjacent buckets. Falls back to brute force when the radius or the
+    /// coordinates are not finite or are too large to bucket safely.
+    static func gridCandidates(a: [DetectedCell], b: [DetectedCell],
+                               matchRadiusFactor: Double) -> [Candidate] {
+        var maxDiameter = 1.0
+        for c in a { maxDiameter = max(maxDiameter, c.diameterPx) }
+        for c in b { maxDiameter = max(maxDiameter, c.diameterPx) }
+        let maxRadius = matchRadiusFactor * maxDiameter
+        // Slack guards the float rounding of the divisions below.
+        let size = maxRadius * 1.0001
+        guard maxRadius.isFinite, maxRadius > 0, size.isFinite, size > 0 else {
+            return bruteForceCandidates(a: a, b: b, matchRadiusFactor: matchRadiusFactor)
+        }
+        let limit = 1.0e9
+        func key(_ c: DetectedCell) -> GridKey? {
+            // Non-finite centroids can never be within a finite radius.
+            guard c.cx.isFinite, c.cy.isFinite else { return nil }
+            let gx = (c.cx / size).rounded(.down)
+            let gy = (c.cy / size).rounded(.down)
+            guard abs(gx) < limit, abs(gy) < limit else { return nil }
+            return GridKey(x: Int(gx), y: Int(gy))
+        }
+        // Out-of-range finite coordinates would be dropped from the grid; use
+        // the reference path for them instead.
+        for c in a where c.cx.isFinite && c.cy.isFinite && key(c) == nil {
+            return bruteForceCandidates(a: a, b: b, matchRadiusFactor: matchRadiusFactor)
+        }
+        var grid: [GridKey: [Int]] = [:]
+        for (bi, cb) in b.enumerated() {
+            if let k = key(cb) { grid[k, default: []].append(bi) }
+            else if cb.cx.isFinite && cb.cy.isFinite {
+                return bruteForceCandidates(a: a, b: b, matchRadiusFactor: matchRadiusFactor)
+            }
+        }
+
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(min(a.count, 1 << 16))
+        var nearby: [Int] = []
+        for (ai, ca) in a.enumerated() {
+            guard let k = key(ca) else { continue }
+            nearby.removeAll(keepingCapacity: true)
+            for ox in -1...1 {
+                for oy in -1...1 {
+                    if let bucket = grid[GridKey(x: k.x + ox, y: k.y + oy)] {
+                        nearby.append(contentsOf: bucket)
+                    }
+                }
+            }
+            // Ascending bi, as the brute-force inner loop would visit them.
+            nearby.sort()
+            for bi in nearby {
+                if let c = candidate(ai, ca, bi, b[bi], matchRadiusFactor) {
+                    candidates.append(c)
+                }
+            }
+        }
+        return candidates
+    }
+
     /// - Parameter matchRadiusFactor: multiplier on a detection's diameter used
     ///   as the match window. 1.0 means "centroids within one diameter of each
     ///   other are the same cell", matching `AnnotationMatcher`'s default.
     static func match(a: [DetectedCell],
                       b: [DetectedCell],
                       matchRadiusFactor: Double = 1.0) -> Result {
+        finish(a: a, b: b,
+               candidates: gridCandidates(a: a, b: b, matchRadiusFactor: matchRadiusFactor))
+    }
+
+    /// All-pairs reference used by tests to check `match`.
+    static func matchBruteForce(a: [DetectedCell],
+                                b: [DetectedCell],
+                                matchRadiusFactor: Double = 1.0) -> Result {
+        finish(a: a, b: b,
+               candidates: bruteForceCandidates(a: a, b: b, matchRadiusFactor: matchRadiusFactor))
+    }
+
+    private static func finish(a: [DetectedCell], b: [DetectedCell],
+                               candidates unsorted: [Candidate]) -> Result {
         if a.isEmpty { return Result(agreed: [], onlyA: [], onlyB: b) }
         if b.isEmpty { return Result(agreed: [], onlyA: a, onlyB: []) }
-
-        struct Candidate {
-            let ai: Int
-            let bi: Int
-            let distance: Double
-        }
-
-        var candidates: [Candidate] = []
-        candidates.reserveCapacity(min(a.count * b.count, 1 << 16))
-        for (ai, ca) in a.enumerated() {
-            for (bi, cb) in b.enumerated() {
-                let dx = ca.cx - cb.cx
-                let dy = ca.cy - cb.cy
-                let dist = (dx * dx + dy * dy).squareRoot()
-                // Use the LARGER of the two diameters: if one model split a
-                // cell the other kept whole, we still want the pair considered
-                // so it reads as agreement-with-different-segmentation rather
-                // than two separate disagreements.
-                let radius = matchRadiusFactor * max(max(ca.diameterPx, cb.diameterPx), 1)
-                if dist <= radius {
-                    candidates.append(Candidate(ai: ai, bi: bi, distance: dist))
-                }
-            }
-        }
+        var candidates = unsorted
         candidates.sort { $0.distance < $1.distance }
 
         var claimedA = Set<Int>()
@@ -147,7 +250,7 @@ struct EnsembleDetectionService: DetectionService {
         try Task.checkCancellation()
         let b = try await secondary.detect(inputB)
 
-        let match = EnsembleMatcher.match(a: a.cells, b: b.cells)
+        let match = await EnsembleMatcher.matchOffMain(a: a.cells, b: b.cells)
 
         var cells: [DetectedCell] = []
         cells.reserveCapacity(match.totalCount)

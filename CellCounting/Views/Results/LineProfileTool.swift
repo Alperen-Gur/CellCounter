@@ -5,13 +5,6 @@ import CoreGraphics
 
 enum ProfileMode { case idle, drawing }
 
-// MARK: — Profile data
-
-private struct ProfileSample {
-    let position: Int   // 0..<256
-    let intensity: Double
-}
-
 // MARK: — Main view
 
 struct LineProfileTool: View {
@@ -25,8 +18,10 @@ struct LineProfileTool: View {
     // State: two taps define the line in VIEW coordinates.
     @State private var startPt: CGPoint? = nil
     @State private var endPt: CGPoint? = nil
-    @State private var profile: [ProfileSample] = []
-    @State private var samplingForLine: (CGPoint, CGPoint)? = nil
+    @State private var profile: [LineProfileSample] = []
+    /// The line being sampled, in source pixels. Its `.task(id:)` is
+    /// cancelled when the line is reset or replaced, or the tool closes.
+    @State private var request: LineProfileRequest? = nil
 
     private let sampleCount = 256
 
@@ -74,6 +69,19 @@ struct LineProfileTool: View {
             }
         }
         .onChange(of: mode) { if mode == .idle { reset() } }
+        .task(id: request) {
+            guard let request else { return }
+            guard let samples = await ResultsPixelSampler.shared.profile(
+                    at: request.url, from: request.start, to: request.end, count: request.count),
+                  !Task.isCancelled else { return }
+            profile = samples
+        }
+        .onDisappear {
+            // The tool keeps the image's grey plane only while it is open.
+            if let url = Self.decodableURL(for: image) {
+                Task { await ResultsPixelSampler.shared.releasePlane(for: url) }
+            }
+        }
     }
 
     // MARK: — Tap handler
@@ -96,29 +104,26 @@ struct LineProfileTool: View {
         startPt = nil
         endPt = nil
         profile = []
-        samplingForLine = nil
+        request = nil
     }
 
     // MARK: — Profile sampling
 
     private func computeProfile() {
         guard let s = startPt, let e = endPt else { return }
-        // Avoid re-computing if nothing changed.
-        if let prev = samplingForLine, prev.0 == s, prev.1 == e { return }
-        samplingForLine = (s, e)
+        // No decodable file: the profile stays empty, as before.
+        guard let url = Self.decodableURL(for: image) else { return }
+        // Only values leave the main actor; an unchanged line keeps its task.
+        request = LineProfileRequest(url: url,
+                                     start: viewToSource(s, scale: viewScale, offset: viewOffset),
+                                     end: viewToSource(e, scale: viewScale, offset: viewOffset),
+                                     count: sampleCount)
+    }
 
-        let capturedImage = image
-        let scale = viewScale
-        let offset = viewOffset
-        let n = sampleCount
-        let startSrc = viewToSource(s, scale: scale, offset: offset)
-        let endSrc = viewToSource(e, scale: scale, offset: offset)
-
-        Task.detached(priority: .userInitiated) {
-            let samples = Self.sample(image: capturedImage,
-                                      from: startSrc, to: endSrc, count: n)
-            await MainActor.run { self.profile = samples }
-        }
+    /// The file `ImageLoader.load` would decode for `image`, when supported.
+    private static func decodableURL(for image: ImageRecord) -> URL? {
+        let url = ImageLoader.displayDecodableURL(for: image.displayURL)
+        return ImageLoader.nativeSupported.contains(url.pathExtension.lowercased()) ? url : nil
     }
 
     private func viewToSource(_ pt: CGPoint, scale: Double, offset: CGPoint) -> CGPoint {
@@ -126,59 +131,6 @@ struct LineProfileTool: View {
             x: (pt.x - offset.x) / scale,
             y: (pt.y - offset.y) / scale
         )
-    }
-
-    // MARK: — Off-actor sampling (bilinear interpolation in grayscale)
-
-    private static func sample(image: ImageRecord,
-                                from start: CGPoint,
-                                to end: CGPoint,
-                                count: Int) -> [ProfileSample] {
-        guard count > 0,
-              let loaded = ImageLoader.loadStored(image) else { return [] }
-        let cg = loaded.cgImage
-        let w = cg.width, h = cg.height
-        guard w > 0, h > 0 else { return [] }
-
-        // Render to a grayscale buffer for fast pixel access.
-        var pixels = [UInt8](repeating: 0, count: w * h)
-        guard let ctx = CGContext(data: &pixels, width: w, height: h,
-                                  bitsPerComponent: 8, bytesPerRow: w,
-                                  space: CGColorSpaceCreateDeviceGray(),
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return [] }
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-
-        var result: [ProfileSample] = []
-        result.reserveCapacity(count)
-        let dx = Double(end.x - start.x) / Double(count - 1)
-        let dy = Double(end.y - start.y) / Double(count - 1)
-
-        for i in 0..<count {
-            let px = Double(start.x) + dx * Double(i)
-            let py = Double(start.y) + dy * Double(i)
-            let intensity = bilinear(pixels: pixels, width: w, height: h, x: px, y: py)
-            result.append(ProfileSample(position: i, intensity: intensity))
-        }
-        return result
-    }
-
-    /// Bilinear interpolation. Returns 0 for out-of-bounds samples (clamp at border).
-    private static func bilinear(pixels: [UInt8], width: Int, height: Int,
-                                  x: Double, y: Double) -> Double {
-        let x0 = max(0, min(width  - 1, Int(x)))
-        let y0 = max(0, min(height - 1, Int(y)))
-        let x1 = min(width  - 1, x0 + 1)
-        let y1 = min(height - 1, y0 + 1)
-        let fx = x - Double(x0)
-        let fy = y - Double(y0)
-        let p00 = Double(pixels[y0 * width + x0])
-        let p10 = Double(pixels[y0 * width + x1])
-        let p01 = Double(pixels[y1 * width + x0])
-        let p11 = Double(pixels[y1 * width + x1])
-        return p00 * (1 - fx) * (1 - fy)
-             + p10 * fx       * (1 - fy)
-             + p01 * (1 - fx) * fy
-             + p11 * fx       * fy
     }
 
     // MARK: — Drawing helpers
@@ -198,10 +150,18 @@ struct LineProfileTool: View {
     }
 }
 
+/// One requested line profile, in source pixels.
+private struct LineProfileRequest: Equatable {
+    let url: URL
+    let start: CGPoint
+    let end: CGPoint
+    let count: Int
+}
+
 // MARK: — Profile plot (mini chart)
 
 private struct ProfilePlot: View {
-    let samples: [ProfileSample]
+    let samples: [LineProfileSample]
 
     private var minI: Double { samples.map(\.intensity).min() ?? 0 }
     private var maxI: Double { max(1, samples.map(\.intensity).max() ?? 255) }

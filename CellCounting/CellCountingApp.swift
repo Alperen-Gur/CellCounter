@@ -8,6 +8,9 @@ struct CellCountingApp: App {
     @State private var showShortcuts: Bool = false
 
     @MainActor init() {
+        // A library switch relaunches the app: wait for the previous instance
+        // to finish saving and quit before any file is opened.
+        LibraryRelaunch.prepareForLaunch()
         NativeLibraryArchiveExporter.handleCommandLineIfRequested()
         WorkbenchCommandLine.handleIfRequested()
 
@@ -33,6 +36,10 @@ struct CellCountingApp: App {
         // Build repositories first, then AppState that wraps them.
         let repos = Repositories()
         self._state = State(initialValue: AppState(repos: repos))
+
+        MemoryPressureMonitor.shared.start()
+        EmbeddingCacheJanitor.runAtLaunch(container: repos.container,
+                                          embeddingsDirectory: FileStore.shared.embeddingsDir)
     }
 
     var body: some Scene {
@@ -48,6 +55,8 @@ struct CellCountingApp: App {
         .commands {
             AppKeyboardCommands(state: state, showShortcuts: $showShortcuts)
             AnalysisProtocolCommands(state: state, shortcutsPresented: showShortcuts)
+            LibraryCommands(state: state)
+            BatchArchiveCommands(state: state)
         }
     }
 }

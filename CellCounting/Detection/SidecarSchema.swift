@@ -4,7 +4,7 @@ import Foundation
 
 /// Output envelope written by every Python detection sidecar.
 /// Snake-case keys match the JSON from the Python scripts verbatim.
-struct SidecarPayload: Decodable {
+nonisolated struct SidecarPayload: Decodable, Sendable {
     let width: Int
     let height: Int
     let cells: [SidecarCell]
@@ -13,7 +13,7 @@ struct SidecarPayload: Decodable {
 }
 
 /// Per-cell JSON produced by every detection script.
-struct SidecarCell: Decodable {
+nonisolated struct SidecarCell: Decodable, Sendable {
     let id: String
     let cx: Double
     let cy: Double
@@ -49,33 +49,105 @@ struct SidecarCell: Decodable {
 /// Structured error emitted by a sidecar when a known failure occurs
 /// (e.g. model not found, import error). The Swift host checks for this
 /// before attempting to decode a full SidecarPayload.
-struct SidecarError: Decodable {
+nonisolated struct SidecarError: Decodable, Sendable {
     let error: String
     let hint: String?
 }
 
+/// A sidecar's stdout is either a structured error object or a payload. Both
+/// shapes are decoded from the SAME parsed JSON tree (one `JSONDecoder` pass):
+/// the error shape is tried first because it only reads two top-level keys, and
+/// the payload is decoded only when it does not match.
+nonisolated enum SidecarOutput: Decodable, Sendable {
+    case failure(SidecarError)
+    case payload(SidecarPayload)
+
+    init(from decoder: Decoder) throws {
+        if let err = try? SidecarError(from: decoder) {
+            self = .failure(err)
+        } else {
+            self = .payload(try SidecarPayload(from: decoder))
+        }
+    }
+}
+
+/// Decoded, mapped detection output. A plain `Sendable` value so the decode can
+/// run off the main actor and hand back one result.
+nonisolated struct DecodedSidecarResult: Sendable {
+    let cells: [DetectedCell]
+    let imageWidth: Int
+    let imageHeight: Int
+    let imageStats: [String: Double]?
+}
+
 extension SidecarPayload {
     /// Single source of truth for turning a sidecar's stdout into a
-    /// `DetectionResult`. Every detection family (Cellpose, CellposeSAM, SAM,
-    /// StarDist) funnels through this so the structured-error check, the
-    /// payload decode, and the per-cell field mapping (including every `?? …`
-    /// default) live in exactly one place and can't drift between detectors.
+    /// `DetectionResult`. Every detection family funnels through this so the
+    /// structured-error check, the payload decode, and the per-cell field
+    /// mapping (including every `?? …` default) live in exactly one place.
+    ///
+    /// The parse and mapping run off the main actor (`@concurrent`) and the
+    /// stdout is parsed once. Only the final `DetectionResult` wrapper is built
+    /// on the caller's actor.
     ///
     /// - Parameters:
     ///   - stdout: the sidecar's raw stdout bytes.
     ///   - exitCode: the sidecar's exit code, used only for the parse-failure
     ///     error message.
+    ///   - isolatingJSON: when true (StarDist-style sidecars whose libraries
+    ///     print banners to stdout) a failed decode is retried from the first
+    ///     `{` offset that yields valid JSON.
     /// - Throws: `DetectionError.sidecarFailed` on a structured `SidecarError`
     ///   payload or an unparseable payload.
-    static func decodeResult(stdout: Data, exitCode: Int32) throws -> DetectionResult {
-        if let errPayload = try? JSONDecoder().decode(SidecarError.self, from: stdout) {
-            let combined = "\(errPayload.error)\(errPayload.hint.map { ": \($0)" } ?? "")"
-            throw DetectionError.sidecarFailed(exitCode: 0, stderr: combined)
-        }
+    static func decodeResultOffMain(stdout: Data, exitCode: Int32,
+                                    isolatingJSON: Bool = false) async throws -> DetectionResult {
+        let r = try await decodeOffMain(stdout: stdout, exitCode: exitCode,
+                                        isolatingJSON: isolatingJSON)
+        return DetectionResult(cells: r.cells,
+                               imageWidth: r.imageWidth,
+                               imageHeight: r.imageHeight,
+                               imageStats: r.imageStats)
+    }
 
+    /// Synchronous variant for callers outside the detection services (runs on
+    /// the caller's actor). Prefer `decodeResultOffMain`.
+    static func decodeResult(stdout: Data, exitCode: Int32) throws -> DetectionResult {
+        let r = try decodeSync(stdout: stdout, exitCode: exitCode)
+        return DetectionResult(cells: r.cells,
+                               imageWidth: r.imageWidth,
+                               imageHeight: r.imageHeight,
+                               imageStats: r.imageStats)
+    }
+
+    @concurrent
+    static func decodeOffMain(stdout: Data, exitCode: Int32,
+                              isolatingJSON: Bool) async throws -> DecodedSidecarResult {
+        do {
+            return try decodeSync(stdout: stdout, exitCode: exitCode)
+        } catch {
+            guard isolatingJSON else { throw error }
+            // Only an unparseable stdout is retried; a structured sidecar
+            // error is final. The retry data is a strict suffix, so equal
+            // length means nothing was stripped.
+            let isolated = StarDistDetectionService.isolatingJSON(stdout)
+            guard isolated.count != stdout.count else { throw error }
+            return try decodeSync(stdout: isolated, exitCode: exitCode)
+        }
+    }
+
+    /// Synchronous decode + mapping. Exposed (internal) so it is testable.
+    nonisolated static func decodeSync(stdout: Data, exitCode: Int32) throws -> DecodedSidecarResult {
         let decoded: SidecarPayload
         do {
-            decoded = try JSONDecoder().decode(SidecarPayload.self, from: stdout)
+            switch try JSONDecoder().decode(SidecarOutput.self, from: stdout) {
+            case .failure(let errPayload):
+                let combined = "\(errPayload.error)\(errPayload.hint.map { ": \($0)" } ?? "")"
+                throw DetectionError.sidecarFailed(exitCode: 0, stderr: combined)
+            case .payload(let p):
+                decoded = p
+            }
+        } catch let e as DetectionError {
+            throw e
         } catch {
             let stdoutText = String(data: stdout, encoding: .utf8) ?? ""
             throw DetectionError.sidecarFailed(exitCode: exitCode,
@@ -118,9 +190,9 @@ extension SidecarPayload {
                 channelIntensities: c.channel_intensities
             )
         }
-        return DetectionResult(cells: cells,
-                               imageWidth: decoded.width,
-                               imageHeight: decoded.height,
-                               imageStats: decoded.image_stats)
+        return DecodedSidecarResult(cells: cells,
+                                    imageWidth: decoded.width,
+                                    imageHeight: decoded.height,
+                                    imageStats: decoded.image_stats)
     }
 }

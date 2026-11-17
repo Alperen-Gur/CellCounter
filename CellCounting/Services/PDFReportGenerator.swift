@@ -39,9 +39,9 @@ enum PDFReportError: LocalizedError {
 struct PDFReportGenerator {
 
     // A4 at 144 dpi (matches 8.27" × 11.69").
-    private static let pageWidth: CGFloat = 1190
-    private static let pageHeight: CGFloat = 1684
-    private static let margin: CGFloat = 48
+    nonisolated private static let pageWidth: CGFloat = 1190
+    nonisolated private static let pageHeight: CGFloat = 1684
+    nonisolated private static let margin: CGFloat = 48
 
     // Palette (mirrors the on-screen report styling). `nonisolated(unsafe)` so
     // the off-main render path can read these immutable NSColor constants.
@@ -340,10 +340,14 @@ struct PDFReportGenerator {
                                                    thresholds: [Double],
                                                    pxPerUm: Double,
                                                    confidence: Double) throws -> NSImage {
-        let loaded = try ImageLoader.load(imageURL)
-        let cg = loaded.cgImage
+        // Only as many pixels as the page can show are decoded and embedded.
+        // `w`/`h` are the bitmap's size; `sourceW`/`sourceH` the original's,
+        // which is the coordinate space of the cells.
+        let (cg, sourceW, sourceH) = try loadForReport(imageURL)
         let w = cg.width
         let h = cg.height
+        let sx = CGFloat(w) / CGFloat(max(1, sourceW))
+        let sy = CGFloat(h) / CGFloat(max(1, sourceH))
 
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil,
@@ -363,7 +367,10 @@ struct PDFReportGenerator {
             ctx.saveGState()
             ctx.translateBy(x: 0, y: CGFloat(h))
             ctx.scaleBy(x: 1, y: -1)
-            let lineWidth = max(1.5, CGFloat(min(w, h)) * 0.0025)
+            // Cells and line width are in source pixels; scale them onto the
+            // (possibly smaller) bitmap. Identity when nothing was downsampled.
+            ctx.scaleBy(x: sx, y: sy)
+            let lineWidth = max(1.5, CGFloat(min(sourceW, sourceH)) * 0.0025)
             ctx.setLineWidth(lineWidth)
             ctx.setLineJoin(.round)
             for cell in visibleCells {
@@ -405,6 +412,66 @@ struct PDFReportGenerator {
             throw PDFReportError.renderFailed
         }
         return NSImage(cgImage: outImage, size: NSSize(width: w, height: h))
+    }
+
+    // MARK: — Embedded image resolution
+
+    /// Print density the embedded image is sized for. The page is laid out in
+    /// units of 1/144 inch (A4 at 144 dpi, see the type comment), so the
+    /// image keeps `printDPI / 144` pixels per layout unit.
+    nonisolated static let printDPI: CGFloat = 300
+    nonisolated private static let layoutDPI: CGFloat = 144
+
+    /// Size of the annotated-image box in layout units. Must match the
+    /// geometry in `drawReport`: the left column is what remains beside the
+    /// 480-unit right column and 24-unit gap, and the box starts below the
+    /// header band (margin + 34 + 18 + 20 + 18) plus the 16-unit section title.
+    nonisolated static var annotatedImageBox: CGSize {
+        let columnsTop = margin + 34 + 18 + 20 + 18
+        let imgTop = columnsTop + 16
+        return CGSize(width: pageWidth - 2 * margin - 480 - 24,
+                      height: min(1180, pageHeight - imgTop - 120))
+    }
+
+    /// Pixel size to embed for a source of `sourceWidth` x `sourceHeight`:
+    /// the size the image is drawn at on the page, times `printDPI / 144`.
+    /// Returns nil when the source is not larger than that, i.e. it is used
+    /// as it is.
+    nonisolated static func embeddedImagePixelSize(sourceWidth: Int, sourceHeight: Int,
+                                                   box: CGSize = annotatedImageBox,
+                                                   dpi: CGFloat = printDPI) -> (width: Int, height: Int)? {
+        guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+        let (fitW, fitH) = fitBox(CGFloat(sourceWidth), CGFloat(sourceHeight), box.width, box.height)
+        let density = dpi / layoutDPI
+        let width = Int((fitW * density).rounded(.up))
+        let height = Int((fitH * density).rounded(.up))
+        guard width < sourceWidth, height < sourceHeight else { return nil }
+        return (max(1, width), max(1, height))
+    }
+
+    /// Decodes the source at the embedded size (ImageIO decodes straight to
+    /// the smaller size), or in full when it is already small enough. Also
+    /// returns the source's own pixel size.
+    nonisolated private static func loadForReport(_ url: URL) throws -> (CGImage, Int, Int) {
+        let resolved = ImageLoader.displayDecodableURL(for: url)
+        if let src = CGImageSourceCreateWithURL(resolved as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+           let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+           let sw = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+           let sh = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+           let target = embeddedImagePixelSize(sourceWidth: sw, sourceHeight: sh) {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                // Cells use raw pixel coordinates, so no EXIF rotation.
+                kCGImageSourceCreateThumbnailWithTransform: false,
+                kCGImageSourceThumbnailMaxPixelSize: max(target.width, target.height),
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            if let thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) {
+                return (thumb, sw, sh)
+            }
+        }
+        let loaded = try ImageLoader.load(url)
+        return (loaded.cgImage, loaded.widthPx, loaded.heightPx)
     }
 
     /// Bin CGColor derived from the single `Tokens.binRamp` source of truth, so

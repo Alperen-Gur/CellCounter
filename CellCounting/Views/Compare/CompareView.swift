@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SwiftData
 
 // MARK: — Compare conditions (pass 6)
 
@@ -15,7 +16,16 @@ struct CompareView: View {
     /// Names of conditions currently included in the comparison.
     @State private var selected: Set<String> = []
     @State private var exportError: String? = nil
-    @State private var analysisRevision = 0
+    /// Pooled figures for the selected conditions, read off the main actor
+    /// from compact cell metrics (see `ComparisonAnalysisCache`).
+    @State private var outputs: [ComparisonConditionOutput] = []
+    /// The thresholds `outputs` were binned with.
+    @State private var outputsThresholds: [Double] = []
+    /// Bumped whenever `outputs` is replaced.
+    @State private var outputsRevision = 0
+    /// Images in the current pools: an edit elsewhere does not refresh.
+    @State private var pooledImageIds: Set<UUID> = []
+    @State private var refresher = CoalescedRefresh()
     @State private var search = ""
     @FocusState private var searchFocused: Bool
 
@@ -58,8 +68,7 @@ struct CompareView: View {
                 PseudoreplicationCaveat()
                     .padding(.horizontal, 24).padding(.top, 14)
 
-                PanelsScroll(state: state, conditions: activeConditions,
-                             analysisRevision: analysisRevision)
+                PanelsScroll(conditions: activeConditions, outputs: outputs, thresholds: outputsThresholds)
 
                 // Mann–Whitney U panel only makes sense for pairwise comparison.
                 // Show it when exactly two conditions are selected; otherwise
@@ -69,8 +78,8 @@ struct CompareView: View {
                 // section vanish with zero explanation, which reads as
                 // "broken" rather than "not applicable").
                 if activeConditions.count == 2 {
-                    MannWhitneyPanel(state: state, conditions: activeConditions,
-                                     analysisRevision: analysisRevision)
+                    MannWhitneyPanel(conditions: activeConditions, outputs: outputs,
+                                     outputsRevision: outputsRevision)
                         .padding(.horizontal, 24)
                         .padding(.bottom, 18)
                 } else {
@@ -90,17 +99,29 @@ struct CompareView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Tokens.bg)
         .onAppear { refresh() }
-        .onReceive(NotificationCenter.default.publisher(
-            for: Notification.Name("ccCorrectionsChanged"))) { _ in
-                analysisRevision &+= 1
-            }
+        .onDisappear {
+            refresher.cancel()
+            Task { await ComparisonAnalysisCache.shared.clear() }
+        }
+        // The selection, thresholds or global cut-off changed: pool again.
+        .task(id: selectionKey) { refresher.request(delay: .zero, perform: loadOutputs) }
+        // An edit to a pooled image re-reads only that image; a change
+        // without an image, or a library change, re-reads the pools.
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            let imageId = CoalescedRefresh.imageId(of: note)
+            if let imageId, !pooledImageIds.contains(imageId) { return }
+            refresher.request(imageId, perform: loadOutputs)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in
+            refresher.request(perform: loadOutputs)
+        }
         .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
     }
 
     private var shortcutActions: ScreenShortcutActions {
         var actions = ScreenShortcutActions()
         actions.find = { searchFocused = true }
-        actions.run = { refresh() }
+        actions.run = { refresh(); refresher.request(delay: .zero, perform: loadOutputs) }
         if !conditions.isEmpty { actions.selectAll = { selected = Set(conditions.prefix(maxSelected).map(\.name)) } }
         if !selected.isEmpty { actions.export = { presentComparisonExport() } }
         return actions
@@ -125,11 +146,9 @@ struct CompareView: View {
         // export looked successful.
         let thresholds = state.thresholds
         let labels = BinMath.bins(from: thresholds).map(\.label)
-        let inputs = comparisonInputs(state: state, conditions: conditions)
         Task { @MainActor in
             do {
-                let outputs = await ComparisonAnalysisCache.shared.outputs(
-                    for: inputs, thresholds: thresholds)
+                let outputs = try await comparisonOutputs(state: state, conditions: conditions)
                 try await Task.detached(priority: .userInitiated) {
                     try writeComparisonCSV(outputs: outputs, binLabels: labels, to: url)
                 }.value
@@ -146,6 +165,43 @@ struct CompareView: View {
         if selected.isEmpty {
             selected = Set(conditions.prefix(2).map(\.name))
         }
+    }
+
+    private var selectedNames: [String] {
+        conditions.filter { selected.contains($0.name) }.map(\.name)
+    }
+
+    private var selectionKey: String {
+        let thresholds = state.thresholds.map { String($0) }.joined(separator: ",")
+        return "\(selectedNames.joined(separator: "\u{0}"))|\(thresholds)|\(state.confidence)"
+    }
+
+    /// Pools the selected conditions (all images, or only `imageIds` after
+    /// an edit) off the main actor and publishes the figures.
+    private func loadOutputs(everything: Bool, imageIds: Set<UUID>) async {
+        let names = selectedNames
+        let thresholds = state.thresholds
+        let cutoff = state.confidence
+        let container = state.repos.container
+        guard !names.isEmpty else {
+            outputs = []; pooledImageIds = []; outputsRevision &+= 1
+            return
+        }
+        let result: ComparisonAnalysisCache.Result
+        do {
+            result = try await ComparisonAnalysisCache.shared.load(
+                names: names, globalCutoff: cutoff, thresholds: thresholds,
+                container: container, changedImages: everything ? nil : imageIds)
+        } catch {
+            return
+        }
+        // A newer request is already queued when the selection moved on.
+        guard !Task.isCancelled, names == selectedNames, thresholds == state.thresholds,
+              cutoff == state.confidence else { return }
+        outputs = result.outputs
+        outputsThresholds = thresholds
+        pooledImageIds = result.imageIds
+        outputsRevision &+= 1
     }
 }
 
@@ -278,20 +334,8 @@ private struct PooledCondition: Identifiable {
     let buckets: [Int]          // histogram buckets (HistogramMath.bucketCount)
 }
 
-private struct ComparisonDetectionInput: Sendable {
-    let id: UUID
-    let revision: Int
-    let cellsData: Data
-    let confidence: Double
-}
-
-private struct ComparisonConditionInput: Sendable {
-    let name: String
-    let batchCount: Int
-    let detections: [ComparisonDetectionInput]
-}
-
-private struct ComparisonConditionOutput: Sendable {
+/// Pooled figures for one condition.
+nonisolated struct ComparisonConditionOutput: Sendable, Equatable {
     let name: String
     let batchCount: Int
     let diameters: [Double]
@@ -301,83 +345,12 @@ private struct ComparisonConditionOutput: Sendable {
     let buckets: [Int]
 }
 
-/// Copy only compact Data/scalar values while on the MainActor. Large JSON
-/// decoding and statistical scans then run on a worker, so selecting a Compare
-/// chip never freezes the window for a large library.
-private func comparisonInputs(state: AppState,
-                              conditions: [ConditionRecord]) -> [ComparisonConditionInput] {
-    conditions.map { condition in
-        let batches = state.repos.batches(matching: condition.name)
-        let detections = batches.flatMap(\.images).compactMap { image -> ComparisonDetectionInput? in
-            guard let detection = image.detection else { return nil }
-            return .init(id: detection.id, revision: detection.cellsRevision,
-                         cellsData: detection.cellsData,
-                         confidence: state.effectiveConfidence(for: image))
-        }
-        return .init(name: condition.name, batchCount: batches.count,
-                     detections: detections)
-    }
-}
-
-nonisolated private func comparisonAnalysisKey(
-    _ inputs: [ComparisonConditionInput], thresholds: [Double]
-) -> Int {
-    var hasher = Hasher()
-    hasher.combine(thresholds)
-    for input in inputs {
-        hasher.combine(input.name)
-        hasher.combine(input.batchCount)
-        for detection in input.detections {
-            hasher.combine(detection.id)
-            hasher.combine(detection.revision)
-            hasher.combine(detection.confidence)
-        }
-    }
-    return hasher.finalize()
-}
-
-/// The chart, pairwise test, and CSV export often request the same pooled
-/// analysis at once. Coalesce those requests so each cell payload is decoded
-/// and scanned only once per data revision.
-private actor ComparisonAnalysisCache {
-    static let shared = ComparisonAnalysisCache()
-
-    private var cached: (key: Int, outputs: [ComparisonConditionOutput])?
-    private var running: (key: Int, task: Task<[ComparisonConditionOutput], Never>)?
-
-    func outputs(for inputs: [ComparisonConditionInput],
-                 thresholds: [Double]) async -> [ComparisonConditionOutput] {
-        let key = comparisonAnalysisKey(inputs, thresholds: thresholds)
-        if let cached, cached.key == key { return cached.outputs }
-        if let running, running.key == key { return await running.task.value }
-
-        let task = Task.detached(priority: .userInitiated) {
-            computeComparisonOutputs(inputs, thresholds: thresholds)
-        }
-        running = (key, task)
-        let outputs = await task.value
-        if running?.key == key {
-            cached = (key, outputs)
-            running = nil
-        }
-        return outputs
-    }
-}
-
-nonisolated private func computeComparisonOutputs(
-    _ inputs: [ComparisonConditionInput], thresholds: [Double]
-) -> [ComparisonConditionOutput] {
-    let sortedThresholds = thresholds.sorted()
-    return inputs.map { input in
-        var diameters: [Double] = []
-        for detection in input.detections {
-            let cells = DetectionRecord.decodeCellsData(detection.cellsData)
-            diameters.reserveCapacity(diameters.count + cells.count)
-            for cell in cells where cell.confidence >= detection.confidence {
-                diameters.append(cell.diameter)
-            }
-        }
-
+/// Pooled statistics for one condition from its diameters (one pass:
+/// mean, population σ, size bins and the fixed histogram buckets).
+nonisolated enum ComparisonPoolStats {
+    static func summarize(name: String, batchCount: Int, diameters: [Double],
+                          thresholds: [Double]) -> ComparisonConditionOutput {
+        let sortedThresholds = thresholds.sorted()
         let n = diameters.count
         let mean = n == 0 ? 0 : diameters.reduce(0, +) / Double(n)
         let sigma = n == 0 ? 0 : sqrt(diameters.reduce(0) {
@@ -392,10 +365,166 @@ nonisolated private func computeComparisonOutputs(
             let raw = (diameter - 8) / (60 - 8) * 24
             buckets[min(23, max(0, Int(raw)))] += 1
         }
-        return .init(name: input.name, batchCount: input.batchCount,
+        return .init(name: name, batchCount: batchCount,
                      diameters: diameters, mean: mean, sigma: sigma,
                      binCounts: binCounts, buckets: buckets)
     }
+}
+
+/// Reads and pools the cells of the selected conditions off the main actor.
+///
+/// Pooled cells are every stored cell at or above its image's effective
+/// cut-off (`AppState.effectiveConfidence(for:)`), over every image with a
+/// detection in every batch tagged with the condition. Batches come newest
+/// first, images by import date, cells in stored order. Only each
+/// detection's compact metrics are read, and they are kept per
+/// `(detection, cellsRevision)`: after an edit only the changed image is
+/// re-read, and only the pooled statistics are recomputed.
+private actor ComparisonAnalysisCache {
+    static let shared = ComparisonAnalysisCache()
+
+    nonisolated struct Result: Sendable {
+        let outputs: [ComparisonConditionOutput]
+        let imageIds: Set<UUID>
+    }
+
+    private nonisolated struct Values: Sendable {
+        let diameters: [Double]
+        let confidence: [Double]
+    }
+
+    private nonisolated struct Entry: Sendable {
+        let imageId: UUID
+        var key: LibraryMetricsReader.DetectionKey
+        var cutoff: Double
+    }
+
+    private nonisolated struct Pool: Sendable {
+        let name: String
+        let batchCount: Int
+        var entries: [Entry]
+    }
+
+    private var values: [LibraryMetricsReader.DetectionKey: Values] = [:]
+    private var pools: [Pool] = []
+    private var poolNames: [String]? = nil
+    private var poolCutoff: Double = .nan
+    private var cached: (key: Int, outputs: [ComparisonConditionOutput])?
+
+    /// `changedImages` nil re-reads every pooled image; otherwise only those
+    /// images are re-read (falling back to a full read when one of them is
+    /// not pooled any more or the selection changed).
+    func load(names: [String], globalCutoff: Double, thresholds: [Double],
+              container: ModelContainer, changedImages: Set<UUID>?) throws -> Result {
+        if let changedImages, poolNames == names, poolCutoff == globalCutoff,
+           try update(changedImages, globalCutoff: globalCutoff, container: container) {
+            // Pools patched in place.
+        } else {
+            try readAll(names: names, globalCutoff: globalCutoff, container: container)
+        }
+        let live = Set(pools.flatMap { $0.entries.map(\.key) })
+        values = values.filter { live.contains($0.key) }
+
+        var hasher = Hasher()
+        hasher.combine(thresholds)
+        for pool in pools {
+            hasher.combine(pool.name)
+            hasher.combine(pool.batchCount)
+            for entry in pool.entries {
+                hasher.combine(entry.key)
+                hasher.combine(entry.cutoff)
+            }
+        }
+        let key = hasher.finalize()
+        let imageIds = Set(pools.flatMap { $0.entries.map(\.imageId) })
+        if let cached, cached.key == key { return Result(outputs: cached.outputs, imageIds: imageIds) }
+
+        let outputs = pools.map { pool -> ComparisonConditionOutput in
+            var diameters: [Double] = []
+            for entry in pool.entries {
+                guard let pooled = values[entry.key] else { continue }
+                diameters.append(contentsOf: CellMetricsStats.diameters(
+                    diameterUm: pooled.diameters, confidence: pooled.confidence, atOrAbove: entry.cutoff))
+            }
+            return ComparisonPoolStats.summarize(name: pool.name, batchCount: pool.batchCount,
+                                                 diameters: diameters, thresholds: thresholds)
+        }
+        cached = (key, outputs)
+        return Result(outputs: outputs, imageIds: imageIds)
+    }
+
+    /// Drops everything kept between refreshes (Compare is closed).
+    func clear() {
+        values = [:]
+        pools = []
+        poolNames = nil
+        poolCutoff = .nan
+        cached = nil
+    }
+
+    private func readAll(names: [String], globalCutoff: Double, container: ModelContainer) throws {
+        var known = Set(values.keys)
+        var next: [Pool] = []
+        for name in names {
+            try Task.checkCancellation()
+            let batchIds = try LibraryMetricsReader.batchIds(condition: name, container: container)
+            var entries: [Entry] = []
+            for batchId in batchIds {
+                let images = try LibraryMetricsReader.batchImages(batchId: batchId, container: container,
+                                                                  metrics: .allExcept(known))
+                for image in images {
+                    guard let detection = image.detection else { continue }
+                    if let metrics = detection.metrics {
+                        values[detection.key] = Values(diameters: metrics.diameterUm, confidence: metrics.confidence)
+                        known.insert(detection.key)
+                    }
+                    entries.append(Entry(imageId: image.id, key: detection.key,
+                                         cutoff: image.cutoff(global: globalCutoff)))
+                }
+            }
+            next.append(Pool(name: name, batchCount: batchIds.count, entries: entries))
+        }
+        pools = next
+        poolNames = names
+        poolCutoff = globalCutoff
+    }
+
+    /// Re-reads `imageIds` into the current pools. False when a full read is
+    /// needed instead.
+    private func update(_ imageIds: Set<UUID>, globalCutoff: Double, container: ModelContainer) throws -> Bool {
+        for imageId in imageIds {
+            try Task.checkCancellation()
+            let positions = pools.indices.flatMap { pool in
+                pools[pool].entries.indices.filter { pools[pool].entries[$0].imageId == imageId }.map { (pool, $0) }
+            }
+            guard !positions.isEmpty else { continue }
+            guard let image = try LibraryMetricsReader.image(id: imageId, container: container,
+                                                             metrics: .allExcept(Set(values.keys))),
+                  let detection = image.detection else { return false }
+            if let metrics = detection.metrics {
+                values[detection.key] = Values(diameters: metrics.diameterUm, confidence: metrics.confidence)
+            }
+            guard values[detection.key] != nil else { return false }
+            for (pool, index) in positions {
+                pools[pool].entries[index].key = detection.key
+                pools[pool].entries[index].cutoff = image.cutoff(global: globalCutoff)
+            }
+        }
+        return true
+    }
+}
+
+/// Pooled outputs for `conditions` at the current thresholds and cut-off,
+/// reading every pooled image again (used by the CSV exports).
+@MainActor
+private func comparisonOutputs(state: AppState, conditions: [ConditionRecord]) async throws -> [ComparisonConditionOutput] {
+    let names = conditions.map(\.name)
+    let thresholds = state.thresholds
+    let cutoff = state.confidence
+    let container = state.repos.container
+    return try await ComparisonAnalysisCache.shared.load(
+        names: names, globalCutoff: cutoff, thresholds: thresholds,
+        container: container, changedImages: nil).outputs
 }
 
 nonisolated private func writeComparisonCSV(
@@ -429,46 +558,17 @@ nonisolated private func writeComparisonCSV(
 }
 
 private struct PanelsScroll: View {
-    @Bindable var state: AppState
     let conditions: [ConditionRecord]
-    let analysisRevision: Int
+    /// Pooled figures from `CompareView`, which reads them once per change.
+    let outputs: [ComparisonConditionOutput]
+    /// The thresholds `outputs` were binned with.
+    let thresholds: [Double]
 
-    /// Materialized once per (conditions × thresholds) change instead of on
-    /// every SwiftUI body pass. Recomputed by a cancellable keyed task.
-    @State private var pooled: [PooledCondition] = []
-    @State private var sharedYMax: Int = 1
-
-    private var recomputeKey: String {
-        let names = conditions.map(\.name).joined(separator: "\u{0}")
-        let thresholds = state.thresholds.map { String($0) }.joined(separator: ",")
-        return "\(names)|\(thresholds)|\(state.confidence)|\(analysisRevision)"
-    }
-
-    var body: some View {
-        ScrollView {
-            HStack(alignment: .top, spacing: 16) {
-                ForEach(pooled) { p in
-                    ConditionPanel(data: p, sharedYMax: sharedYMax)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .padding(.horizontal, 24).padding(.vertical, 18)
-        }
-        .task(id: recomputeKey) { await recompute() }
-    }
-
-    /// Single-pass materialization: one SwiftData fetch + one cell scan per
-    /// condition, computing pooled stats, per-bin counts, and histogram buckets
-    /// together, plus the shared Y-axis max.
-    private func recompute() async {
-        let thresholds = state.thresholds
+    /// One panel per selected condition that has figures, in selection order.
+    private var pooled: [PooledCondition] {
         let bins = BinMath.bins(from: thresholds)
-        let inputs = comparisonInputs(state: state, conditions: conditions)
-        let outputs = await ComparisonAnalysisCache.shared.outputs(
-            for: inputs, thresholds: thresholds)
-        guard !Task.isCancelled else { return }
-        let byName = Dictionary(uniqueKeysWithValues: outputs.map { ($0.name, $0) })
-        let result: [PooledCondition] = conditions.compactMap { condition in
+        let byName = Dictionary(outputs.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        return conditions.compactMap { condition in
             guard let output = byName[condition.name] else { return nil }
             return PooledCondition(id: condition.name, condition: condition,
                                    batchCount: output.batchCount,
@@ -477,9 +577,21 @@ private struct PanelsScroll: View {
                                    bins: bins, binCounts: output.binCounts,
                                    buckets: output.buckets)
         }
-        let yMax = result.lazy.compactMap { $0.buckets.max() }.max() ?? 1
-        pooled = result
-        sharedYMax = yMax
+    }
+
+    var body: some View {
+        let panels = pooled
+        // Shared Y-axis so bar heights compare across panels.
+        let sharedYMax = panels.lazy.compactMap { $0.buckets.max() }.max() ?? 1
+        ScrollView {
+            HStack(alignment: .top, spacing: 16) {
+                ForEach(panels) { p in
+                    ConditionPanel(data: p, sharedYMax: sharedYMax)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.horizontal, 24).padding(.vertical, 18)
+        }
     }
 }
 
@@ -895,11 +1007,9 @@ private struct BottomBar: View {
 
         let thresholds = state.thresholds
         let labels = BinMath.bins(from: thresholds).map(\.label)
-        let inputs = comparisonInputs(state: state, conditions: conditions)
         Task { @MainActor in
             do {
-                let outputs = await ComparisonAnalysisCache.shared.outputs(
-                    for: inputs, thresholds: thresholds)
+                let outputs = try await comparisonOutputs(state: state, conditions: conditions)
                 try await Task.detached(priority: .userInitiated) {
                     try writeComparisonCSV(outputs: outputs, binLabels: labels, to: url)
                 }.value
@@ -994,40 +1104,32 @@ private struct NotPairwiseHint: View {
 /// condition and runs a two-tailed Mann–Whitney U test on diameters.
 /// The actual stats math lives in `Services/Statistics.swift`.
 private struct MannWhitneyPanel: View {
-    @Bindable var state: AppState
     let conditions: [ConditionRecord]
-    let analysisRevision: Int
+    /// Pooled figures from `CompareView`, which applies the SAME per-image
+    /// confidence cutoff every other stat in the app uses (finding:
+    /// compare-ignores-confidence-cutoff).
+    let outputs: [ComparisonConditionOutput]
+    /// Changes whenever `outputs` is replaced.
+    let outputsRevision: Int
 
     private struct Pooled {
         let condition: ConditionRecord
         let diameters: [Double]
     }
 
-    /// Pooled diameters + Mann–Whitney result, materialized once per
-    /// (conditions × thresholds) change instead of on every SwiftUI body pass.
-    /// Mirrors PanelsScroll.recompute so the fetch/decode/scan/sort happens once
-    /// per data change rather than per render / confidence-slider tick
-    /// (findings: compare-groups-recompute-per-body, mannwhitney-repools-every-body-pass).
+    /// Pooled diameters + Mann–Whitney result, materialized once per data
+    /// change instead of on every SwiftUI body pass (findings:
+    /// compare-groups-recompute-per-body, mannwhitney-repools-every-body-pass).
     @State private var groups: [Pooled] = []
     @State private var result: MannWhitneyResult? = nil
 
     private var recomputeKey: String {
-        let names = conditions.map(\.name).joined(separator: "\u{0}")
-        let thresholds = state.thresholds.map { String($0) }.joined(separator: ",")
-        return "\(names)|\(thresholds)|\(state.confidence)|\(analysisRevision)"
+        "\(conditions.map(\.name).joined(separator: "\u{0}"))|\(outputsRevision)"
     }
 
-    /// Single-pass materialization: one SwiftData fetch + one cell scan per
-    /// condition, applying the SAME per-image confidence cutoff every other stat
-    /// in the app uses (finding: compare-ignores-confidence-cutoff), then runs
-    /// the Mann–Whitney test on the pooled diameters.
-    private func recompute() async {
-        let thresholds = state.thresholds
-        let inputs = comparisonInputs(state: state, conditions: conditions)
-        let outputs = await ComparisonAnalysisCache.shared.outputs(
-            for: inputs, thresholds: thresholds)
-        guard !Task.isCancelled else { return }
-        let byName = Dictionary(uniqueKeysWithValues: outputs.map { ($0.name, $0.diameters) })
+    /// Runs the Mann–Whitney test on the pooled diameters.
+    private func recompute() {
+        let byName = Dictionary(outputs.map { ($0.name, $0.diameters) }, uniquingKeysWith: { first, _ in first })
         let gs = conditions.compactMap { condition -> Pooled? in
             guard let diameters = byName[condition.name] else { return nil }
             return Pooled(condition: condition, diameters: diameters)
@@ -1080,7 +1182,7 @@ private struct MannWhitneyPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: Tokens.Radius.lg, style: .continuous)
                 .strokeBorder(Tokens.border, lineWidth: 0.5))
-        .task(id: recomputeKey) { await recompute() }
+        .task(id: recomputeKey) { recompute() }
     }
 
     private struct StatsBody: View {

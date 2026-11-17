@@ -35,8 +35,9 @@ enum AnalysisProtocolStore {
     /// configuration"), so keeping them as loose JSON means "share this
     /// protocol" is just "share this file" — no export step needed, and no
     /// schema migration required in `Persistence/Records.swift`.
+    /// App-wide: every data library sees the same protocols.
     static var libraryDirectory: URL {
-        FileStore.shared.root.appendingPathComponent("Protocols", isDirectory: true)
+        FileStore.shared.protocolsDir
     }
 
     @discardableResult

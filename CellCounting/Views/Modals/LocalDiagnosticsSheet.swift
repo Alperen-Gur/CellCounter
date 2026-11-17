@@ -9,6 +9,8 @@ struct LocalDiagnosticsSheet: View {
     @State private var sessionMinutes = 30
     @State private var includeState = false
     @State private var includeTimings = false
+    @State private var includeLibrarySize = true
+    @State private var preparing = false
     @State private var draft: String?
     @State private var reviewed = false
     @State private var saving = false
@@ -26,6 +28,7 @@ struct LocalDiagnosticsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Reports are prepared only on request. Nothing is uploaded automatically. The basic report contains the app version and platform. Images, measurements, names, paths, IDs, logs and crash dumps are excluded.")
+                    Text("Library size helps explain a slow app: it lists how many batches, images and cells your library holds, how much space the database and image folders use, and your macOS version, Mac model (for example “Mac15,6”, never a serial number), memory and processor cores. These are plain numbers. No file, batch or condition names, folder locations or IDs are included, and the counts are read without opening your images or cell outlines.")
                     Text("Benchmark real workflows").font(.headline)
                     Text("Start recording, then use your real images and normal analysis, queue, review and export controls. Return here to stop and prepare a report. Only fixed operation categories and numeric summaries are retained, in memory, for the session limit you choose. A crash or app exit loses unsaved results.")
                     Text(session.active ? "Real-workflow timing is recording." : "Timing is stopped.").accessibilityAddTraits(.updatesFrequently)
@@ -54,7 +57,11 @@ struct LocalDiagnosticsSheet: View {
                     } else {
                         Toggle("Include optional state summary (approximate counts and status flags)", isOn: $includeState)
                         Toggle("Include recorded real-workflow timings", isOn: $includeTimings)
-                        Button("Prepare editable preview", action: generate)
+                        Toggle("Include library size and Mac summary (numbers only)", isOn: $includeLibrarySize)
+                        HStack {
+                            Button("Prepare editable preview", action: generate).disabled(preparing)
+                            if preparing { ProgressView().controlSize(.small); Text("Measuring library size…").font(.callout) }
+                        }
                     }
                     if !message.isEmpty { Text(message).accessibilityLabel(message) }
                 }
@@ -68,12 +75,23 @@ struct LocalDiagnosticsSheet: View {
         switch count { case ..<0: return "unknown"; case 0: return "0"; case 1...10: return "1–10"; case 11...100: return "11–100"; case 101...1000: return "101–1,000"; default: return "over 1,000" }
     }
     private func generate() {
+        guard !preparing else { return }
+        guard includeLibrarySize else { finishDraft(librarySize: nil); return }
+        preparing = true
+        Task { @MainActor in
+            let snapshot = await LibrarySizeReport.measure(repos: state.repos)
+            preparing = false
+            finishDraft(librarySize: LibrarySizeReport.lines(snapshot, system: .current()))
+        }
+    }
+    private func finishDraft(librarySize: [String]?) {
         let raw = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let version = raw.range(of: #"^\d{1,4}\.\d{1,4}\.\d{1,4}$"#, options: .regularExpression) != nil ? raw : "unknown"
-        var lines = ["CellCounter local diagnostics · format 1", "", "Application version: \(version)", "Platform: macOS", "", "Prepared locally on request. Recording requires explicit opt-in. No automatic uploads.", "Excluded: images, measurements, names, IDs, paths, logs, crash dumps, device identifiers, network details and timestamps."]
+        var lines = ["CellCounter local diagnostics · format 1", "", "Application version: \(version)", "Platform: macOS", "", "Prepared locally on request. Recording requires explicit opt-in. No automatic uploads.", "Excluded: images, measurements, names, IDs, paths, logs, crash dumps, serial numbers and other device identifiers, network details and timestamps."]
         if includeState {
             lines += ["", "Optional state snapshot (cached; may be stale or incomplete):", "Library images: \(band(state.libraryImageCount))", "Library batches: \(band(state.libraryBatchCount))", "Review candidates: \(band(state.reviewQueueCount))", "Review index building: \(state.isReviewIndexing ? "yes" : "no")", "Review index error present: \(state.reviewIndexError != nil ? "yes" : "no")", "Detection error present: \(state.lastDetectionError != nil ? "yes" : "no")"]
         }
+        if let librarySize { lines += [""] + librarySize }
         if includeTimings { lines += ["", LocalPerformanceRecorder.shared.report()] }
         lines += ["", "This report does not reproduce a crash or diagnose its cause.", ""]
         draft = lines.joined(separator: "\n"); reviewed = false; message = ""

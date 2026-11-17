@@ -7,8 +7,18 @@ import SwiftData
 struct ImagesLibraryView: View {
     @Bindable var state: AppState
 
-    @State private var images: [ImageRecord] = []
+    /// Library rows as plain values read in a background context; this
+    /// screen keeps no `ImageRecord` or `DetectionRecord` alive.
+    @State private var images: [LibraryMetricsReader.ImageEntry] = []
+    @State private var batchThresholds: [UUID: [Double]] = [:]
     @State private var imageNames: [UUID: String] = [:]
+    /// Tile reload tokens: one per image (an edit to that image) and one for
+    /// all tiles (any other change). Only tiles on screen reload.
+    @State private var tileRevisions: [UUID: Int] = [:]
+    @State private var allTilesRevision = 0
+    @State private var refresher = CoalescedRefresh()
+    /// False until the first read arrives, so the empty state does not flash.
+    @State private var hasLoaded = false
     @State private var selectedIDs: Set<UUID> = []
     @State private var multiSelectMode = false
     @State private var showFindDuplicates = false
@@ -17,10 +27,10 @@ struct ImagesLibraryView: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var gridFocused: Bool
 
-    private var visibleImages: [ImageRecord] {
+    private var visibleImages: [LibraryMetricsReader.ImageEntry] {
         search.isEmpty ? images : images.filter { (imageNames[$0.id] ?? $0.fileName).localizedCaseInsensitiveContains(search) }
     }
-    private var selectedImage: ImageRecord? { visibleImages.first { selectedIDs.contains($0.id) } }
+    private var selectedImage: LibraryMetricsReader.ImageEntry? { visibleImages.first { selectedIDs.contains($0.id) } }
 
     private let columns = [
         GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 14)
@@ -28,7 +38,9 @@ struct ImagesLibraryView: View {
 
     var body: some View {
         Group {
-            if images.isEmpty {
+            if images.isEmpty && !hasLoaded {
+                Color.clear
+            } else if images.isEmpty {
                 EmptyStateView(
                     title: "No images yet",
                     subtitle: "Drop microscope images on Home to get started.",
@@ -98,7 +110,9 @@ struct ImagesLibraryView: View {
                                 ImageThumbCell(
                                     image: image,
                                     displayName: imageNames[image.id] ?? image.fileName,
-                                    state: state,
+                                    thresholds: image.batchId.flatMap { batchThresholds[$0] } ?? state.thresholds,
+                                    revision: "\(allTilesRevision).\(tileRevisions[image.id] ?? 0)",
+                                    container: state.repos.container,
                                     isSelected: selectedIDs.contains(image.id),
                                     multiSelectMode: multiSelectMode,
                                     onTap: { handleTap(image: image) },
@@ -121,9 +135,15 @@ struct ImagesLibraryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bg)
-        .onAppear { reload() }
-        // Refresh when detections land or images are added.
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in reload() }
+        .onAppear { reload(delay: .zero) }
+        .onDisappear { refresher.cancel() }
+        // An edit to one image (notification object = its id) reloads only
+        // that tile; other corrections and library changes re-read the list
+        // (image rows only) and reload the tiles on screen.
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            refresher.request(CoalescedRefresh.imageId(of: note), perform: refresh)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in reload() }
         .sheet(isPresented: $showFindDuplicates) {
             FindDuplicatesSheet(state: state, onDismiss: { showFindDuplicates = false; reload() })
         }
@@ -155,7 +175,15 @@ struct ImagesLibraryView: View {
 
     // MARK: — Helpers
 
-    private func reload() {
+    private func reload(delay: Duration = .milliseconds(250)) {
+        refresher.request(delay: delay, perform: refresh)
+    }
+
+    private func refresh(everything: Bool, imageIds: Set<UUID>) async {
+        guard everything else {
+            for id in imageIds { tileRevisions[id, default: 0] &+= 1 }
+            return
+        }
         // Researcher feedback #5: `allImages()` returns import order, which
         // is effectively random across a folder drop (filesystem enumeration
         // order, not alphabetical) and made scanning the grid disorienting.
@@ -166,11 +194,29 @@ struct ImagesLibraryView: View {
         // indexing scheme (Shared/AppState.swift), so that sort must NOT be
         // changed independently or tapping a thumbnail would open the wrong
         // image in Results.
-        let loaded = state.repos.allImages()
+        let container = state.repos.container
+        let result = await LibraryMetricsReader.run { try LibraryMetricsReader.library(container: container) }
+        guard !Task.isCancelled else { return }
+        guard let read = result else { hasLoaded = true; return }
+        let loaded = read.images
             .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
         images = loaded
+        batchThresholds = read.thresholds
         imageNames = disambiguatedNames(for: loaded)
         selectedIDs.formIntersection(Set(loaded.map(\.id)))
+        allTilesRevision &+= 1
+        hasLoaded = true
+    }
+
+    /// The selected rows' records, fetched from the main context only when
+    /// an action needs them.
+    private func records(_ ids: Set<UUID>) -> [ImageRecord] {
+        let wanted = Array(ids)
+        let byId = Dictionary(
+            ((try? state.repos.context.fetch(FetchDescriptor<ImageRecord>(
+                predicate: #Predicate { wanted.contains($0.id) }))) ?? []).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first })
+        return images.compactMap { byId[$0.id] }
     }
 
     /// Pass-17: back-fill hashes for any un-hashed images, then present FindDuplicatesSheet.
@@ -194,11 +240,12 @@ struct ImagesLibraryView: View {
 
         Task.detached(priority: .userInitiated) {
             // Hash off the main thread, then apply all writes + a single save.
-            var computed: [(UUID, String)] = []
+            var hashes: [(UUID, String)] = []
             for (imageId, url) in pairs {
                 guard let hash = ImageLoader.sha256Hex(of: url) else { continue }
-                computed.append((imageId, hash))
+                hashes.append((imageId, hash))
             }
+            let computed = hashes
             await MainActor.run {
                 // Single fetch, single map, single save — instead of per-image.
                 let byId = Dictionary(
@@ -216,7 +263,7 @@ struct ImagesLibraryView: View {
 
     /// Returns disambiguated display names for images that share the same fileName.
     /// Duplicates get _2, _3, … appended so the grid label is always unique.
-    private func disambiguatedNames(for images: [ImageRecord]) -> [UUID: String] {
+    private func disambiguatedNames(for images: [LibraryMetricsReader.ImageEntry]) -> [UUID: String] {
         var counts: [String: Int] = [:]
         var seen: [String: Int] = [:]
         for img in images { counts[img.fileName, default: 0] += 1 }
@@ -239,7 +286,7 @@ struct ImagesLibraryView: View {
         return result
     }
 
-    private func handleTap(image: ImageRecord) {
+    private func handleTap(image: LibraryMetricsReader.ImageEntry) {
         if multiSelectMode {
             if selectedIDs.contains(image.id) {
                 selectedIDs.remove(image.id)
@@ -251,9 +298,9 @@ struct ImagesLibraryView: View {
         openImage(image)
     }
 
-    private func openImage(_ image: ImageRecord) {
+    private func openImage(_ image: LibraryMetricsReader.ImageEntry) {
         // Navigate to results for this image.
-        guard let batch = image.batch else { return }
+        guard let batchId = image.batchId, let batch = state.repos.batch(id: batchId) else { return }
         state.currentBatchId = batch.id
         let sorted = state.orderedImages(in: batch)
         if let idx = sorted.firstIndex(where: { $0.id == image.id }) {
@@ -262,7 +309,8 @@ struct ImagesLibraryView: View {
         state.view = .results
     }
 
-    private func confirmDelete(image: ImageRecord) {
+    private func confirmDelete(image entry: LibraryMetricsReader.ImageEntry) {
+        guard let image = records([entry.id]).first else { return }
         let alert = NSAlert()
         alert.messageText = "Delete \"\(image.fileName)\"?"
         alert.informativeText = "This removes the image and its detection. This cannot be undone."
@@ -283,8 +331,7 @@ struct ImagesLibraryView: View {
     }
 
     private func deleteSelected() {
-        let idsToDelete = selectedIDs
-        let toDelete = images.filter { idsToDelete.contains($0.id) }
+        let toDelete = records(selectedIDs)
         let alert = NSAlert()
         alert.messageText = "Delete \(toDelete.count) image\(toDelete.count == 1 ? "" : "s")?"
         alert.informativeText = "This removes the images and their detections. This cannot be undone."
@@ -308,12 +355,45 @@ struct ImagesLibraryView: View {
 
 // MARK: — Thumbnail Cell
 
+/// What a Library tile shows about an image's detection.
+nonisolated private struct LibraryTile: Sendable, Equatable {
+    let hasDetection: Bool
+    /// `DetectionRecord.summaryCellCount`.
+    let cellCount: Int
+    /// The 5-bar size mini-chart; nil without cells.
+    let bars: [Double]?
+}
+
+/// Reads Library tiles one at a time, off the main actor, from compact cell
+/// metrics (the full payload only for detections not backfilled yet). A tile
+/// that scrolls away before its turn is skipped: its task is cancelled.
+private actor LibraryTileLoader {
+    static let shared = LibraryTileLoader()
+
+    func tile(imageId: UUID, thresholds: [Double], container: ModelContainer) throws -> LibraryTile? {
+        try Task.checkCancellation()
+        guard let entry = try LibraryMetricsReader.image(id: imageId, container: container, metrics: .all,
+                                                          resolvingBatch: false) else {
+            return nil
+        }
+        guard let detection = entry.detection else {
+            return LibraryTile(hasDetection: false, cellCount: 0, bars: nil)
+        }
+        let bars = detection.metrics.flatMap { CellMetricsStats.imageSummary($0, thresholds: thresholds).bars }
+        return LibraryTile(hasDetection: true, cellCount: detection.cellCount, bars: bars)
+    }
+}
+
 private struct ImageThumbCell: View {
-    let image: ImageRecord
+    let image: LibraryMetricsReader.ImageEntry
     /// Disambiguated display name — may differ from image.fileName when multiple
     /// images in the batch share the same original filename (e.g. plate01.tif _2, _3).
     let displayName: String
-    @Bindable var state: AppState
+    /// The image's batch thresholds (app-wide ones for an image without a batch).
+    let thresholds: [Double]
+    /// Changes when this tile's count and bars must be re-read.
+    let revision: String
+    let container: ModelContainer
     let isSelected: Bool
     let multiSelectMode: Bool
     let onTap: () -> Void
@@ -321,29 +401,11 @@ private struct ImageThumbCell: View {
 
     @State private var hovered = false
     @State private var thumb: NSImage? = nil
+    @State private var tile: LibraryTile? = nil
 
     @Environment(AppTheme.self) private var theme
 
-    private var cellCount: Int {
-        image.detection?.summaryCellCount ?? 0
-    }
-
-    @State private var distNorm: [Double]? = nil
-
-    nonisolated private static func distribution(cellsData: Data?,
-                                                 thresholds: [Double]) -> [Double]? {
-        guard let cellsData else { return nil }
-        let cells = DetectionRecord.decodeCellsData(cellsData)
-        guard !cells.isEmpty else { return nil }
-        var bins = Array(repeating: 0.0, count: max(thresholds.count + 1, 5))
-        for c in cells {
-            let idx = min(BinMath.binIndex(for: c.diameter, thresholds: thresholds), bins.count - 1)
-            bins[idx] += 1
-        }
-        while bins.count < 5 { bins.append(0) }
-        let m = bins.prefix(5).max() ?? 1
-        return Array(bins.prefix(5)).map { m > 0 ? $0 / m * 100 : 0 }
-    }
+    private var distNorm: [Double]? { tile?.bars }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -367,12 +429,12 @@ private struct ImageThumbCell: View {
                         }
 
                         // Cell count badge
-                        if image.detection != nil {
+                        if let tile, tile.hasDetection {
                             VStack {
                                 Spacer()
                                 HStack {
                                     Spacer()
-                                    Text("\(cellCount) cells")
+                                    Text("\(tile.cellCount) cells")
                                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                         .foregroundStyle(.white)
                                         .padding(.horizontal, 7)
@@ -470,7 +532,8 @@ private struct ImageThumbCell: View {
         .animation(Tokens.Motion.easeFast, value: hovered)
         .animation(Tokens.Motion.easeFast, value: isSelected)
         .onHover { hovered = $0 }
-        .task(id: image.id) { await loadContent() }
+        .task(id: image.id) { await loadThumbnail() }
+        .task(id: "\(image.id)|\(revision)|\(thresholds)") { await loadTile() }
     }
 
     /// Pass-18 (Lane N): trim notes to ~80 chars for the hover tooltip on the
@@ -483,22 +546,27 @@ private struct ImageThumbCell: View {
         return trimmed[..<idx] + "…"
     }
 
-    private func loadContent() async {
+    private func loadThumbnail() async {
         // Pass-11 K6: capture the URL on the MainActor before hopping off —
-        // touching `image.thumbURL` inside the detached Task would read a
-        // SwiftData @Model property off-main, which is undefined behaviour
-        // (and may crash under aggressive isolation checking).
-        let url = image.thumbURL
-        let cellsData = image.detection?.cellsData
-        let thresholds = image.batch?.thresholds ?? state.thresholds
-        let loaded = await Task.detached(priority: .utility) {
-            let img = ImageLoader.cachedThumbnail(at: url)
-            let distribution = Self.distribution(cellsData: cellsData,
-                                                 thresholds: thresholds)
-            return (img, distribution)
-        }.value
+        // touching a SwiftData model inside the detached task would read it
+        // off-main, which is undefined behaviour.
+        let url = FileStore.shared.thumbURL(for: image.id)
+        let loaded = await LibraryMetricsReader.run { ImageLoader.cachedThumbnail(at: url) }
+        guard !Task.isCancelled, let loaded else { return }
+        thumb = loaded
+    }
+
+    /// Count badge and size bars from the image's compact cell metrics; the
+    /// task is cancelled when the tile scrolls away or its inputs change.
+    private func loadTile() async {
+        let loaded: LibraryTile?
+        do {
+            loaded = try await LibraryTileLoader.shared.tile(imageId: image.id, thresholds: thresholds,
+                                                              container: container)
+        } catch {
+            return
+        }
         guard !Task.isCancelled else { return }
-        thumb = loaded.0
-        distNorm = loaded.1
+        tile = loaded
     }
 }

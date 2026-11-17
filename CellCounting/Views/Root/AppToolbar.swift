@@ -51,20 +51,25 @@ struct AppToolbar: View {
         }
     }
 
+    /// "Existing library" for the Default Library, else the open library's name.
+    private var library: String {
+        state.libraries.isDefaultLibrary ? "Existing library" : state.libraries.displayName
+    }
+
     private var title: String {
         switch state.view {
-        case .home:       return "Existing library"
-        case .processing: return "Existing library · Processing"
-        case .results:    return "Existing library · " + (state.currentBatch?.displayName ?? "Results")
-        case .batch:      return "Existing library · Batches"
-        case .models:     return "Existing library · Models"
-        case .fineTune:   return "Existing library · Fine-tuning"
+        case .home:       return library
+        case .processing: return library + " · Processing"
+        case .results:    return library + " · " + (state.currentBatch?.displayName ?? "Results")
+        case .batch:      return library + " · Batches"
+        case .models:     return library + " · Models"
+        case .fineTune:   return library + " · Fine-tuning"
         case .settings:   return "Settings"
-        case .queue:          return "Existing library · Processing"
-        case .reviewQueue:    return "Existing library · Review queue"
-        case .compare:        return "Existing library · Compare conditions"
-        case .imagesLibrary:  return "Existing library · Images"
-        case .workspace:      return "Existing library · Workspace"
+        case .queue:          return library + " · Processing"
+        case .reviewQueue:    return library + " · Review queue"
+        case .compare:        return library + " · Compare conditions"
+        case .imagesLibrary:  return library + " · Images"
+        case .workspace:      return library + " · Workspace"
         case .workbench:      return "Microscopy workbench"
         }
     }

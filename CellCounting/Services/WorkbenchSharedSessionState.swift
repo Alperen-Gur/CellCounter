@@ -11,13 +11,15 @@ final class WorkbenchSharedSessionState {
     var visible = false
     var polling = false
     var presentWorkspace = false
+    var residency = WorkbenchViewResidency()
+    var poll = WorkbenchPollBackoff()
     var id: String? { record["id"].string }
     var sessionRevision: Int { record["sessionRevision"].integer ?? 0 }
     var navigation: WorkbenchJSON { record["navigation"] }
     var hasPendingNavigation: Bool { ["pending", "deferred"].contains(navigation["status"].string ?? "") }
     func reset() {
         record = .null; observedRevision = nil; pendingRevision = nil; lastEvents = []
-        notice = ""; presentWorkspace = false
+        notice = ""; presentWorkspace = false; poll.reset()
     }
 }
 
@@ -52,6 +54,7 @@ extension WorkbenchSession {
             let changes = try await self.call("project.changes", arguments: ["afterRevision": .number(Double(cursor)), "limit": .number(100)])["result"]
             let current = changes["projectRevision"].integer ?? cursor
             self.sharedSession.lastEvents = changes["events"].array
+            let projectChanged = current != cursor || changes["resetRequired"].bool == true
             if current != cursor || changes["resetRequired"].bool == true {
                 if mayRefresh {
                     let selectedAffected = changes["resetRequired"].bool == true || changes["hasMore"].bool == true ||
@@ -87,6 +90,7 @@ extension WorkbenchSession {
                 if let id = job["id"].string { self.models.updateJob(try await self.call("adaptation.train.status", arguments: ["jobId": .string(id)])["result"]["job"]) }
             }
             self.models.applyActivity(activity["activeTrainingJobs"].array)
+            self.sharedSession.poll.record(changed: projectChanged || self.hasActiveWorkers || self.sharedSession.hasPendingNavigation || self.models.hasActiveTraining)
             guard self.sharedSession.visible else { return }
             if self.sharedSession.id == nil || self.sharedSession.record["closed"].bool == true {
                 self.sharedSession.record = try await self.call("session.open", arguments: ["name": .string("CellCounter on macOS"), "clientKind": .string("native")])["result"]["session"]

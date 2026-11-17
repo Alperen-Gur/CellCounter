@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 nonisolated struct FTMetrics: Codable, Equatable, Sendable {
     var ap50: Double
@@ -20,6 +21,7 @@ struct FineTuneView: View {
     @State private var step = 0
     @State private var records: [ImageRecord] = []
     @State private var samples: [TrainingSample] = []
+    @State private var selectingAll = false
     @State private var split = TrainingSplit()
     @State private var baseModel = "cp-cyto3"
     @State private var epochs = 40
@@ -71,15 +73,29 @@ struct FineTuneView: View {
         }
         .background(Tokens.bg)
         .focusedSceneValue(\.cellCounterShortcuts, shortcuts)
-        .task { records = state.repos.allBatches().flatMap(\.images).filter { $0.detection != nil }.sorted { $0.importedAt > $1.importedAt } }
+        .task {
+            var query = FetchDescriptor<ImageRecord>(
+                predicate: #Predicate { $0.detection != nil },
+                sortBy: [SortDescriptor(\.importedAt, order: .reverse)])
+            query.includePendingChanges = true
+            records = (try? state.repos.context.fetch(query)) ?? []
+        }
         .onReceive(trainer.$progress) { progress in if case .complete = progress { step = 5 } }
         .onDisappear { trainer.cancel() }
     }
 
     private var shortcuts: ScreenShortcutActions {
         var actions = ScreenShortcutActions()
-        if step == 0, !records.isEmpty {
-            actions.selectAll = { samples = TrainingDatasetService.samples(from: records) }
+        if step == 0, !records.isEmpty, !selectingAll {
+            actions.selectAll = {
+                let pending = TrainingDatasetService.pendingSamples(from: records)
+                selectingAll = true
+                Task {
+                    let decoded = await TrainingDatasetService.decode(pending)
+                    samples = decoded
+                    selectingAll = false
+                }
+            }
         }
         if (1...3).contains(step) { actions.previous = { step -= 1 } }
         if step == 0 && !samples.isEmpty { actions.next = { step = 1 } }
@@ -107,7 +123,10 @@ struct FineTuneView: View {
             if records.isEmpty {
                 ContentUnavailableView("No segmented images", systemImage: "photo.on.rectangle", description: Text("Import images and create a segmentation, then return here."))
             } else {
-                Text("\(samples.count) selected").font(.headline)
+                HStack(spacing: 8) {
+                    Text("\(samples.count) selected").font(.headline)
+                    if selectingAll { ProgressView().controlSize(.small) }
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(records, id: \.id) { record in

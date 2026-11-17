@@ -340,20 +340,26 @@ struct ResultsExportPanel: View {
             if let img = state.currentImage { return state.effectiveConfidence(for: img) }
             return state.confidence
         }()
-        do {
-            try withCustomFolderAccess {
-                try ExportService.writePerImageSummaryCSV(
+        // The main actor only copies stored bytes (in chunks); decoding and
+        // building the CSV happen in a detached task. Access to the custom
+        // export folder stays open across the awaits.
+        let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
+        let separator = csvSeparator.isEmpty ? "," : csvSeparator
+        Task { @MainActor in
+            defer { SecurityBookmarks.stop(scoped) }
+            do {
+                try await ExportService.writePerImageSummaryCSVOffMain(
                     batch: batch,
                     thresholds: batch.thresholds,
                     pxPerUm: batch.pxPerUm,
                     confidence: conf,
-                    separator: csvSeparator.isEmpty ? "," : csvSeparator,
+                    separator: separator,
                     to: url
                 )
+                flashSaved(url.path)
+            } catch {
+                flashError(error.localizedDescription)
             }
-            flashSaved(url.path)
-        } catch {
-            flashError(error.localizedDescription)
         }
     }
 

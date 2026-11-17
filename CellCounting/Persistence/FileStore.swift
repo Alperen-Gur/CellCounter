@@ -1,81 +1,102 @@
 import Foundation
 
-/// Owns the on-disk layout under `~/Library/Application Support/CellCounter/`.
-/// All file operations that aren't covered by SwiftData go through here.
+/// Owns the on-disk layout. All file operations that aren't covered by
+/// SwiftData go through here.
+///
+/// Two roots, deliberately kept apart:
+/// - `appRoot` (normally `~/Library/Application Support/CellCounter/`) holds
+///   app-wide resources: Python runtimes, model checkpoints (`Models/`),
+///   analysis protocols (`Protocols/`) and OMERO profiles.
+/// - `library` holds one library's data: the SwiftData store, copied images,
+///   display PNGs, thumbnails, embeddings, exports and the analysis job queue.
+///
+/// The Default Library is `appRoot` itself, so existing installs keep their
+/// store and images exactly where they were. Other libraries are separate
+/// `<name>.cellcounterlibrary` folders (see `LibraryLayout`). The library is
+/// chosen once per process (`LibrarySelection`); switching relaunches the app.
 struct FileStore {
-    static let shared = FileStore()
+    static let shared = FileStore(resolution: LibrarySelection.resolveForCurrentProcess())
 
-    let root: URL
+    /// How the roots below were chosen (environment, preference or default).
+    let resolution: LibraryResolution
 
-    /// Resolve the configured location without creating, migrating or opening
-    /// a library. Headless CLI/MCP startup uses only the runtime below it.
-    static func location() -> URL {
-        let fm = FileManager.default
-        let environment = ProcessInfo.processInfo.environment
-        if let override = environment["CELLCOUNTER_DATA_ROOT"] ?? environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"], override.hasPrefix("/") {
-            return URL(fileURLWithPath: override, isDirectory: true)
-        }
-        if environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil {
-            return fm.temporaryDirectory.appendingPathComponent("CellCounter-tests-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
-        }
-        return fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("CellCounter", isDirectory: true)
+    /// App-wide resources. Never library data.
+    var appRoot: URL { resolution.appRoot }
+    /// The library this process opened.
+    var library: LibraryLayout { resolution.library }
+    var libraryRoot: URL { library.root }
+
+    /// Resolve the app-wide location without reading preferences, creating,
+    /// migrating or opening a library. Headless CLI/MCP startup uses only the
+    /// runtime below it.
+    static func appLocation() -> URL {
+        LibrarySelection.appRootForCurrentProcess()
     }
 
-    init() {
+    init(resolution: LibraryResolution) {
+        self.resolution = resolution
         let fm = FileManager.default
-        let environment = ProcessInfo.processInfo.environment
-        let override = environment["CELLCOUNTER_DATA_ROOT"]
-            ?? environment["TEST_RUNNER_CELLCOUNTER_DATA_ROOT"]
-        let isTest = environment["XCTestConfigurationFilePath"] != nil
-            || environment["XCTestBundlePath"] != nil
-        self.root = Self.location()
+        let appRoot = resolution.appRoot
 
         // Best-effort migration from a previous sandboxed install. We turned
         // off App Sandbox in pass 10; before that the data lived under
         // ~/Library/Containers/alguer.CellCounting/Data/Library/Application Support/CellCounter/.
         // If the new (unsandboxed) root is empty and the legacy root has
-        // content, move it over so users don't lose their store.
+        // content, move it over so users don't lose their store. Never under
+        // an environment override or in a test process.
         let legacyRoot = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Containers/alguer.CellCounting/Data/Library/Application Support/CellCounter", isDirectory: true)
-        if override == nil && !isTest && fm.fileExists(atPath: legacyRoot.path)
-            && !fm.fileExists(atPath: self.root.path) {
+        if resolution.usesPreferences
+            && LibrarySelection.samePath(appRoot, LibrarySelection.standardAppRoot())
+            && fm.fileExists(atPath: legacyRoot.path)
+            && !fm.fileExists(atPath: appRoot.path) {
             // Try move first (cheap, atomic if on the same volume); fall back
             // to copy if move fails (e.g. cross-volume or permissions).
             do {
-                try fm.createDirectory(at: self.root.deletingLastPathComponent(),
+                try fm.createDirectory(at: appRoot.deletingLastPathComponent(),
                                        withIntermediateDirectories: true)
-                try fm.moveItem(at: legacyRoot, to: self.root)
+                try fm.moveItem(at: legacyRoot, to: appRoot)
             } catch {
-                try? fm.copyItem(at: legacyRoot, to: self.root)
+                try? fm.copyItem(at: legacyRoot, to: appRoot)
             }
         }
 
-        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: imagesDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: displayImagesDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: thumbsDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: appRoot, withIntermediateDirectories: true)
         try? fm.createDirectory(at: modelsDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: exportsDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: embeddingsDir, withIntermediateDirectories: true)
+        // The Default Library's root is `appRoot`, created above. Any other
+        // library was verified to exist during resolution; its root is never
+        // created here, so a missing drive is not replaced by an empty folder.
+        library.createSubdirectoriesIfRootExists()
     }
 
-    var imagesDir: URL  { root.appendingPathComponent("Images", isDirectory: true) }
+    // MARK: - Library data (resolves against the open library)
+
+    /// SwiftData store of the open library.
+    var storeURL: URL { library.storeURL }
+    /// Persisted analysis job queue of the open library.
+    var analysisJobsURL: URL { library.analysisJobsURL }
+    var imagesDir: URL { library.imagesDir }
     /// Lossless, flattened PNGs for vendor containers that AppKit cannot read.
     /// The untouched source remains in `imagesDir` for detection/quantification.
-    var displayImagesDir: URL { root.appendingPathComponent("DisplayImages", isDirectory: true) }
-    var thumbsDir: URL  { root.appendingPathComponent("Thumbnails", isDirectory: true) }
-    var modelsDir: URL  { root.appendingPathComponent("Models", isDirectory: true) }
-    var exportsDir: URL { root.appendingPathComponent("Exports", isDirectory: true) }
+    var displayImagesDir: URL { library.displayImagesDir }
+    var thumbsDir: URL { library.thumbsDir }
+    var exportsDir: URL { library.exportsDir }
     /// Reusable prompt-model image embeddings. Safe to delete; regenerated on demand.
-    var embeddingsDir: URL { root.appendingPathComponent("Embeddings", isDirectory: true) }
+    var embeddingsDir: URL { library.embeddingsDir }
+
+    // MARK: - App-wide resources
+
+    /// Model checkpoints (fine-tuned and trained models). Shared by all libraries.
+    var modelsDir: URL { appRoot.appendingPathComponent("Models", isDirectory: true) }
+    /// Analysis protocol files (`*.ccproto.json`). Shared by all libraries.
+    var protocolsDir: URL { appRoot.appendingPathComponent("Protocols", isDirectory: true) }
 
     /// Writeable Python sidecar root.
     ///
     /// The .app bundle is read-only inside the sandbox, so the venv and the
     /// per-model `*_detect.py` helpers are mirrored here on first install.
     /// See `CellposeAvailability.swift` for the full post-install layout.
-    var pythonDir: URL { root.appendingPathComponent("python", isDirectory: true) }
+    var pythonDir: URL { appRoot.appendingPathComponent("python", isDirectory: true) }
     var pythonVenvDir: URL { pythonDir.appendingPathComponent("venv", isDirectory: true) }
     var pythonInstallScriptURL: URL { pythonDir.appendingPathComponent("install_python.sh") }
 
@@ -136,14 +157,14 @@ struct FileStore {
     }
 
     func imageURL(for imageId: UUID, extension ext: String = "tif") -> URL {
-        imagesDir.appendingPathComponent("\(imageId.uuidString).\(ext)")
+        library.imageURL(for: imageId, extension: ext)
     }
 
     func thumbURL(for imageId: UUID) -> URL {
-        thumbsDir.appendingPathComponent("\(imageId.uuidString).jpg")
+        library.thumbURL(for: imageId)
     }
 
     func displayImageURL(for imageId: UUID) -> URL {
-        displayImagesDir.appendingPathComponent("\(imageId.uuidString).png")
+        library.displayImageURL(for: imageId)
     }
 }

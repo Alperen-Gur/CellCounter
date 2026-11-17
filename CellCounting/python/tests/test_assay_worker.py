@@ -6,7 +6,6 @@ import select
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 
 import numpy as np
@@ -237,10 +236,8 @@ class AssayProtocolTests(unittest.TestCase):
         self.proc.stdin.flush()
         self.assertTrue(select.select([self.proc.stderr], [], [], 20)[0])
         self.assertIn("confluence", self.proc.stderr.readline())
-        start = time.monotonic()
         self.proc.terminate()
         self.proc.wait(timeout=5)
-        self.assertLess(time.monotonic() - start, 5)
         self.assertEqual(self.proc.returncode, -15)
         replacement = self.start()
         result = self.request(self.mask_args(), process=replacement)

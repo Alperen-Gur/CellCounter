@@ -72,6 +72,12 @@ struct TrackingPanel: View {
     @State private var resultKey: SeriesResultKey? = nil
     @State private var resultSettingsKey: String? = nil
     @State private var errorMessage: String? = nil
+    /// The batch's frames (series order) as plain values, read off the main
+    /// actor when the batch opens and re-read per image when one changes,
+    /// so rendering never walks the batch's images or decodes run settings.
+    @State private var seriesFrames: [LibraryMetricsReader.ImageEntry] = []
+    @State private var seriesBatchId: UUID? = nil
+    @State private var seriesRefresher = CoalescedRefresh()
 
     @Environment(AppTheme.self) private var theme
 
@@ -79,14 +85,27 @@ struct TrackingPanel: View {
 
     /// The batch's images in series order (oldest import first) — the same
     /// sort `AppState.currentImage` applies, so indices line up with the
-    /// batch strip.
+    /// batch strip. Read only when a run starts.
     private var orderedImages: [ImageRecord] {
         guard let batch = state.currentBatch else { return [] }
         return state.orderedImages(in: batch)
     }
 
+    /// The series as it stands, when `seriesFrames` describes the open batch.
+    private var currentSeries: SeriesSnapshot? {
+        guard let batchId = seriesBatchId, batchId == state.currentBatchId else { return nil }
+        return SeriesSnapshot(batchId: batchId, frames: seriesFrames,
+                              globalCutoff: state.confidence, roiRevision: roiSignal)
+    }
+
+    /// Images in the batch, from its stored count (no image walk).
+    private var batchImageCount: Int { state.currentBatch?.imageCount ?? 0 }
+
+    /// Frames in the series read, or the batch's stored count until it arrives.
+    private var frameCount: Int { currentSeries?.frameCount ?? batchImageCount }
+
     private var framesWithDetections: Int {
-        orderedImages.filter { ($0.detection?.summaryCellCount ?? 0) > 0 }.count
+        currentSeries?.framesWithDetections ?? 0
     }
 
     private var parsedFrameInterval: Double? {
@@ -98,21 +117,64 @@ struct TrackingPanel: View {
         framesWithDetections >= TrackingRunner.minimumFrames && parsedFrameInterval != nil
     }
 
-    /// Fingerprint of the frame set as it stands RIGHT NOW.
-    private var currentKey: SeriesResultKey {
+    /// Fingerprint of the frame set as it stands RIGHT NOW, from the models.
+    /// Computed once when a run starts.
+    private func liveKey(_ images: [ImageRecord]) -> SeriesResultKey {
         SeriesResultKey(batchId: state.currentBatchId,
-                        frameCellCounts: orderedImages.map { $0.detection?.summaryCellCount ?? 0 },
-                        frameRevisions: orderedImages.map { $0.detection?.cellsRevision ?? 0 },
-                        frameCutoffs: orderedImages.map { state.effectiveConfidence(for: $0) },
+                        frameCellCounts: images.map { $0.detection?.summaryCellCount ?? 0 },
+                        frameRevisions: images.map { $0.detection?.cellsRevision ?? 0 },
+                        frameCutoffs: images.map { state.effectiveConfidence(for: $0) },
                         roiRevision: roiSignal)
     }
 
     /// Nil unless `result` was computed from exactly the frame set the batch
-    /// holds right now — not merely from the same batch.
+    /// holds right now — not merely from the same batch. A result stays
+    /// hidden until the series read has caught up with any change.
     private var activeResult: TrackingPayload? {
-        guard let resultKey, resultKey == currentKey,
+        guard let resultKey, resultKey == currentSeries?.key,
               resultSettingsKey == currentSettingsKey else { return nil }
         return result
+    }
+
+    /// The open image and its cut-off override (the Results slider changes it).
+    private var overrideSignal: OverrideSignal {
+        let image = state.currentImage
+        return OverrideSignal(imageId: image?.id, value: image?.confidenceOverride)
+    }
+
+    /// Re-reads the frames (`everything`) or only `imageIds` in a background
+    /// context: counts, revisions and saved cut-offs, no cells.
+    private func refreshSeries(everything: Bool, imageIds: Set<UUID>) async {
+        guard let batchId = state.currentBatchId else {
+            seriesFrames = []; seriesBatchId = nil
+            return
+        }
+        let container = state.repos.container
+        if !everything, seriesBatchId == batchId {
+            let ids = Array(imageIds)
+            guard let read = await LibraryMetricsReader.run({
+                try ids.map { try LibraryMetricsReader.image(id: $0, container: container, metrics: .none) }
+            }), !Task.isCancelled, state.currentBatchId == batchId else { return }
+            var frames = seriesFrames
+            for (id, entry) in zip(ids, read) {
+                let index = frames.firstIndex { $0.id == id }
+                switch (index, entry?.batchId == batchId) {
+                case (let index?, true): frames[index] = entry!
+                case (nil, false): continue          // another batch's image
+                default:
+                    // Added to or removed from this batch: read it whole.
+                    seriesRefresher.request(perform: refreshSeries)
+                    return
+                }
+            }
+            seriesFrames = frames
+            return
+        }
+        guard let entries = await LibraryMetricsReader.run({
+            try LibraryMetricsReader.batchImages(batchId: batchId, container: container, metrics: .none)
+        }), !Task.isCancelled, state.currentBatchId == batchId else { return }
+        seriesFrames = SeriesSnapshot.seriesOrder(entries)
+        seriesBatchId = batchId
     }
 
     private var currentSettingsKey: String {
@@ -144,8 +206,19 @@ struct TrackingPanel: View {
 
     var body: some View {
         // A single still image is not a series — skip the panel entirely.
-        if orderedImages.count < Self.minimumImagesInBatch { return AnyView(EmptyView()) }
-        return AnyView(content)
+        if batchImageCount < Self.minimumImagesInBatch { return AnyView(EmptyView()) }
+        return AnyView(content
+            .task(id: state.currentBatchId) { seriesRefresher.request(delay: .zero, perform: refreshSeries) }
+            // A slider move on the open image re-reads that image only.
+            .onChange(of: overrideSignal) { old, new in
+                if let id = new.imageId, old.imageId == id {
+                    seriesRefresher.request(id, perform: refreshSeries)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in
+                seriesRefresher.request(perform: refreshSeries)
+            }
+            .onDisappear { seriesRefresher.cancel() })
     }
 
     private var content: some View {
@@ -161,6 +234,10 @@ struct TrackingPanel: View {
             result = nil
             resultKey = nil
             resultSettingsKey = nil
+        }
+        // An edit to one image re-reads that frame; anything else, all frames.
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            seriesRefresher.request(CoalescedRefresh.imageId(of: note), perform: refreshSeries)
         }
     }
 
@@ -203,8 +280,8 @@ struct TrackingPanel: View {
         // Captured BEFORE the run so an edit to any frame that lands while the
         // sidecar is working invalidates the result instead of being stamped
         // onto it.
-        let startKey = currentKey
         let imagesSnapshot = orderedImages
+        let startKey = liveKey(imagesSnapshot)
         // PIXELS PER MICROMETRE — forwarded to `--px-per-um` verbatim. Never
         // the reciprocal `pixel_size_um`; see TrackingRunner's header note.
         let pxPerUm = state.currentBatch?.pxPerUm ?? state.pxPerUm
@@ -344,11 +421,11 @@ struct TrackingPanel: View {
         if framesWithDetections < TrackingRunner.minimumFrames {
             TrackingInfoNote(text: framesWithDetections <= 1
                 ? "Tracking needs at least 2 frames with detections; \(framesWithDetections) of "
-                  + "\(orderedImages.count) image(s) in this batch \(framesWithDetections == 1 ? "has" : "have") "
+                  + "\(frameCount) image(s) in this batch \(framesWithDetections == 1 ? "has" : "have") "
                   + "any. Run detection on each frame first."
                 : "Tracking needs at least \(TrackingRunner.minimumFrames) frames with detections.")
         } else {
-            Text("\(orderedImages.count) frame(s) in this batch, \(framesWithDetections) with detections.")
+            Text("\(frameCount) frame(s) in this batch, \(framesWithDetections) with detections.")
                 .font(.system(size: 10))
                 .foregroundStyle(Tokens.textQuaternary)
         }
@@ -571,5 +648,41 @@ struct TrackPathsPreview: View {
         .overlay(
             RoundedRectangle(cornerRadius: Tokens.Radius.sm, style: .continuous)
                 .strokeBorder(Tokens.border, lineWidth: 0.5))
+    }
+}
+
+/// The open image's id and cut-off override.
+private struct OverrideSignal: Equatable {
+    let imageId: UUID?
+    let value: Double?
+}
+
+/// What `TrackingPanel` shows about the open batch's series, and the
+/// `SeriesResultKey` a result must match, built from values read off the
+/// main actor. Counts, revisions and cut-offs are the ones the panel used to
+/// read from every frame on each render.
+private struct SeriesSnapshot {
+    let frameCount: Int
+    let framesWithDetections: Int
+    let key: SeriesResultKey
+
+    /// Frames ordered exactly as `AppState.orderedImages(in:)` orders them.
+    static func seriesOrder(_ entries: [LibraryMetricsReader.ImageEntry]) -> [LibraryMetricsReader.ImageEntry] {
+        entries.sorted {
+            let lhs = $0.sourceOrder ?? Int.max, rhs = $1.sourceOrder ?? Int.max
+            if lhs != rhs { return lhs < rhs }
+            return $0.importedAt < $1.importedAt
+        }
+    }
+
+    init(batchId: UUID, frames: [LibraryMetricsReader.ImageEntry], globalCutoff: Double, roiRevision: Int) {
+        let counts = frames.map { $0.detection?.cellCount ?? 0 }
+        frameCount = frames.count
+        framesWithDetections = counts.filter { $0 > 0 }.count
+        key = SeriesResultKey(batchId: batchId,
+                              frameCellCounts: counts,
+                              frameRevisions: frames.map { $0.detection?.cellsRevision ?? 0 },
+                              frameCutoffs: frames.map { $0.cutoff(global: globalCutoff) },
+                              roiRevision: roiRevision)
     }
 }

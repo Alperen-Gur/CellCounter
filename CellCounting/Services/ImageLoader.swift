@@ -88,6 +88,14 @@ nonisolated private final class ViewerBitmapCache: @unchecked Sendable {
         if let entry = entries.removeValue(forKey: key) { bytes -= entry.bytes }
         order.removeAll { $0 == key }
     }
+
+    func removeAll() {
+        lock.withLock {
+            entries.removeAll()
+            order.removeAll()
+            bytes = 0
+        }
+    }
 }
 
 /// Decodes JPEG/PNG/TIFF/BMP via ImageIO; rejects anything else with a clear error.
@@ -130,11 +138,11 @@ enum ImageLoadError: LocalizedError {
 
 enum ImageLoader {
     /// ImageIO-readable formats and vendor containers handled by `_imageio.py`.
-    static let nativeSupported: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "bmp"]
-    static let vendorSupported: Set<String> = ["nd2", "czi", "lif", "oif", "oib", "oir"]
+    nonisolated static let nativeSupported: Set<String> = ["jpg", "jpeg", "png", "tif", "tiff", "bmp"]
+    nonisolated static let vendorSupported: Set<String> = ["nd2", "czi", "lif", "oif", "oib", "oir"]
     static let supported = nativeSupported.union(vendorSupported)
 
-    static func isVendorExtension(_ raw: String) -> Bool {
+    nonisolated static func isVendorExtension(_ raw: String) -> Bool {
         vendorSupported.contains(raw.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")))
     }
 
@@ -156,10 +164,10 @@ enum ImageLoader {
 
     nonisolated private static let memory = MemoryCaches()
 
-    static func load(_ url: URL) throws -> LoadedImage {
+    nonisolated static func load(_ url: URL) throws -> LoadedImage {
         try LocalTiming.measure(.imageDecode) { try loadImpl(url) }
     }
-    private static func loadImpl(_ url: URL) throws -> LoadedImage {
+    nonisolated private static func loadImpl(_ url: URL) throws -> LoadedImage {
         let resolvedURL = displayDecodableURL(for: url)
         let ext = resolvedURL.pathExtension.lowercased()
         guard nativeSupported.contains(ext) else { throw ImageLoadError.unsupportedFormat(ext) }
@@ -173,7 +181,7 @@ enum ImageLoader {
     /// Redirect a stored vendor container to the display PNG generated at
     /// import. A source outside CellCounter's store has no UUID basename and
     /// therefore remains unchanged (and produces a clear unsupported error).
-    static func displayDecodableURL(for url: URL) -> URL {
+    nonisolated static func displayDecodableURL(for url: URL) -> URL {
         guard isVendorExtension(url.pathExtension),
               let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else {
             return url
@@ -182,30 +190,33 @@ enum ImageLoader {
         return FileManager.default.fileExists(atPath: display.path) ? display : url
     }
 
-    /// Imports a user-dropped file: copies into FileStore.imagesDir, decodes, computes SHA-256,
-    /// and returns an ImportResult (record + image + hash + reserved EXIF slot for Lane C).
-    /// Must be called off the MainActor (it does file I/O).
+    /// Imports a user-dropped file: copies it into FileStore.imagesDir, hashes
+    /// the copy, writes the thumbnail, and returns an ImportResult (record +
+    /// image + hash + reserved EXIF slot for Lane C).
+    /// Synchronous file I/O: call it off the MainActor (`AppState` runs it in
+    /// a detached task).
     ///
-    /// `precomputedHash`: pass the SHA-256 already computed by the dedup pass in
-    /// `AppState.importAndAnalyze` so we don't re-read and re-hash the whole file
-    /// a second time. Nil (the default) recomputes it here, preserving the old
-    /// behavior for any caller that doesn't have the hash on hand.
-    nonisolated static func importFile(_ url: URL, precomputedHash: String? = nil) throws -> ImportResult {
-        try LocalTiming.measure(.imageImport) { try importFileImpl(url, precomputedHash: precomputedHash) }
+    /// `knownHash` / `knownHashStamp`: the SHA-256 taken when the file was
+    /// dropped and the file's size and modification time at that moment.
+    /// While the source still reports both, the hash is reused and the file is
+    /// only copied; otherwise the copy is hashed in the pass that writes it.
+    /// `ImportResult.fileHash` is always the SHA-256 of the stored copy.
+    nonisolated static func importFile(_ url: URL, knownHash: String? = nil,
+                                       knownHashStamp: ImportFileStamp? = nil) throws -> ImportResult {
+        try LocalTiming.measure(.imageImport) {
+            try importFileImpl(url, knownHash: knownHash, knownHashStamp: knownHashStamp)
+        }
     }
-    nonisolated private static func importFileImpl(_ url: URL, precomputedHash: String?) throws -> ImportResult {
+    nonisolated private static func importFileImpl(_ url: URL, knownHash: String?,
+                                                   knownHashStamp: ImportFileStamp?) throws -> ImportResult {
+        // Reads the header; pixels are decoded only by the thumbnail fallback.
         let loaded = try load(url)
         let fileName = url.lastPathComponent
-
-        // Compute SHA-256 of the raw file bytes (full file — typical 17 MB TIFFs hash in <50 ms).
-        // Reuse the dedup-pass hash when the caller threads it through.
-        let fileHash = precomputedHash ?? sha256Hex(of: url)
 
         let record = ImageRecord(fileName: fileName,
                                   originalPath: url.path,
                                   widthPx: loaded.widthPx,
                                   heightPx: loaded.heightPx)
-        record.fileHash = fileHash
 
         // copy into FileStore — always store under a lowercased extension so
         // `ImageRecord.storedURL` (which also lowercases) resolves identically
@@ -213,13 +224,22 @@ enum ImageLoader {
         let dest = FileStore.shared.imageURL(for: record.id,
                                               extension: (fileName as NSString).pathExtension.lowercased())
         try? FileManager.default.removeItem(at: dest)
+        let fileHash: String
         do {
-            try FileManager.default.copyItem(at: url, to: dest)
+            fileHash = try ImportFileDigest.copy(url, to: dest, knownHash: knownHash,
+                                                 knownStamp: knownHashStamp)
         } catch {
             throw ImageLoadError.ioError(error)
         }
+        record.fileHash = fileHash
         // write a small JPEG thumbnail; log a warning but don't fail the import — thumbnails are non-essential.
-        if !writeThumbnail(loaded.cgImage, to: FileStore.shared.thumbURL(for: record.id)) {
+        // It is made from the stored copy (same bytes as the source, and local),
+        // with ImageIO decoding only enough pixels for it. The full decode is
+        // kept as a fallback for files ImageIO can't make a thumbnail from.
+        let thumbURL = FileStore.shared.thumbURL(for: record.id)
+        if !writeThumbnail(fromImageAt: dest, pixelWidth: loaded.widthPx,
+                           pixelHeight: loaded.heightPx, to: thumbURL),
+           !writeThumbnail(loaded.cgImage, to: thumbURL) {
             print("[ImageLoader] warning: thumbnail write failed for \(record.id)")
         }
         // Pass-17 Lane C: detect EXIF px/µm from the original file (before copy,
@@ -248,11 +268,11 @@ enum ImageLoader {
             NSLog("[EXIFCalibration] %@ — no calibration metadata found", url.lastPathComponent)
         }
 
-        return ImportResult(record: record, image: loaded, fileHash: fileHash ?? "",
+        return ImportResult(record: record, image: loaded, fileHash: fileHash,
                             exifPxPerUm: exifPxPerUm, exifSource: exifSource)
     }
 
-    private struct VendorPreparationPayload: Decodable {
+    nonisolated private struct VendorPreparationPayload: Decodable {
         let width: Int
         let height: Int
         let pixel_size_um: Double?
@@ -262,29 +282,37 @@ enum ImageLoader {
     /// Import a vendor microscope container through `_imageio.py`. The raw
     /// file stays in `Images/` for detection and intensity measurements; a
     /// lossless projected PNG in `DisplayImages/` feeds AppKit and exports.
-    nonisolated static func importVendorFile(
+    ///
+    /// Runs off the main actor (`@concurrent`): the copy of the whole
+    /// container and its hash never block the user interface. `knownHash` /
+    /// `knownHashStamp` work as in `importFile`, and `ImportResult.fileHash`
+    /// is the SHA-256 of the stored copy.
+    @concurrent
+    static func importVendorFile(
         _ url: URL,
-        precomputedHash: String? = nil,
+        knownHash: String? = nil,
+        knownHashStamp: ImportFileStamp? = nil,
         interpreters: [URL],
         zProjection: String
     ) async throws -> ImportResult {
         let ext = url.pathExtension.lowercased()
         guard isVendorExtension(ext) else { throw ImageLoadError.unsupportedFormat(ext) }
         guard !interpreters.isEmpty else { throw ImageLoadError.vendorReaderUnavailable(ext) }
-        guard let scriptURL = PythonRuntime.stagedScriptURL(named: "image_prepare.py")
-                ?? PythonRuntime.bundledPythonURL(named: "image_prepare.py") else {
+        let id = UUID()
+        let paths = await vendorImportPaths(for: id, extension: ext)
+        guard let scriptURL = paths.script else {
             throw ImageLoadError.vendorPreparationFailed("image_prepare.py is missing from the app bundle")
         }
 
-        let id = UUID()
         let fileName = url.lastPathComponent
-        let rawDest = FileStore.shared.imageURL(for: id, extension: ext)
-        let displayDest = FileStore.shared.displayImageURL(for: id)
-        let thumbDest = FileStore.shared.thumbURL(for: id)
-        let fileHash = precomputedHash ?? sha256Hex(of: url)
+        let rawDest = paths.raw
+        let displayDest = paths.display
+        let thumbDest = paths.thumbnail
 
+        let fileHash: String
         do {
-            try FileManager.default.copyItem(at: url, to: rawDest)
+            fileHash = try ImportFileDigest.copy(url, to: rawDest, knownHash: knownHash,
+                                                 knownStamp: knownHashStamp)
         } catch {
             throw ImageLoadError.ioError(error)
         }
@@ -331,7 +359,7 @@ enum ImageLoader {
             let pxPerUm = payload.pixel_size_um.flatMap { $0 > 0 ? 1.0 / $0 : nil }
             let source = pxPerUm == nil ? nil : "metadata-\(payload.source_format)"
             return ImportResult(record: record, image: loaded,
-                                fileHash: fileHash ?? "",
+                                fileHash: fileHash,
                                 exifPxPerUm: pxPerUm,
                                 exifSource: source)
         } catch {
@@ -342,27 +370,69 @@ enum ImageLoader {
         }
     }
 
+    /// Main-actor lookups for a vendor import, made in one hop.
+    private static func vendorImportPaths(for id: UUID, extension ext: String)
+        -> (script: URL?, raw: URL, display: URL, thumbnail: URL) {
+        (PythonRuntime.stagedScriptURL(named: "image_prepare.py")
+            ?? PythonRuntime.bundledPythonURL(named: "image_prepare.py"),
+         FileStore.shared.imageURL(for: id, extension: ext),
+         FileStore.shared.displayImageURL(for: id),
+         FileStore.shared.thumbURL(for: id))
+    }
+
     /// Computes SHA-256 of the file at `url` and returns the hex-encoded digest.
-    /// Returns nil only if the file cannot be read.
+    /// Returns nil only if the file cannot be read. The file is read in
+    /// fixed-size chunks (`ImportFileDigest`), never mapped or loaded whole.
     /// `nonisolated` so callers inside `Task.detached` don't get main-actor warnings.
     nonisolated static func sha256Hex(of url: URL) -> String? {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        ImportFileDigest.sha256Hex(of: url)
     }
 
     /// Writes a JPEG thumbnail scaled to fit within `maxDim`. Returns `true` on success.
     /// Failure is always non-fatal — callers should log a warning but not abort the import.
     @discardableResult
-    static func writeThumbnail(_ cg: CGImage, to url: URL, maxDim: Int = 256) -> Bool {
+    nonisolated static func writeThumbnail(_ cg: CGImage, to url: URL, maxDim: Int = 256) -> Bool {
         guard maxDim > 0, cg.width > 0, cg.height > 0 else { return false }
-        let scale = Double(maxDim) / Double(max(cg.width, cg.height))
-        let w = max(1, Int(Double(cg.width) * scale))
-        let h = max(1, Int(Double(cg.height) * scale))
+        return encodeThumbnail(cg, sourceWidth: cg.width, sourceHeight: cg.height, to: url, maxDim: maxDim)
+    }
+
+    /// The thumbnail `writeThumbnail(_:to:maxDim:)` writes for the image at
+    /// `source` (whose raw pixel size is `pixelWidth` × `pixelHeight`): same
+    /// pixel size, orientation, colour space, format and quality. ImageIO
+    /// decodes only enough pixels for it instead of the full-resolution image.
+    @discardableResult
+    nonisolated static func writeThumbnail(fromImageAt source: URL, pixelWidth: Int, pixelHeight: Int,
+                                           to url: URL, maxDim: Int = 256) -> Bool {
+        guard maxDim > 0, pixelWidth > 0, pixelHeight > 0,
+              let imageSource = CGImageSourceCreateWithURL(source as CFURL, [
+                  kCGImageSourceShouldCache: false,
+              ] as CFDictionary) else { return false }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            // The full-decode thumbnail keeps the raw pixel orientation (as
+            // detections do), so EXIF rotation is not applied here either.
+            kCGImageSourceCreateThumbnailWithTransform: false,
+            kCGImageSourceThumbnailMaxPixelSize: maxDim,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let small = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) else {
+            return false
+        }
+        return encodeThumbnail(small, sourceWidth: pixelWidth, sourceHeight: pixelHeight, to: url, maxDim: maxDim)
+    }
+
+    /// Draws `image` at the thumbnail size of a `sourceWidth` × `sourceHeight`
+    /// image (longest side `maxDim`, truncated, at least 1 px) into an 8-bit
+    /// RGB context and writes it as JPEG at quality 0.7.
+    nonisolated private static func encodeThumbnail(_ image: CGImage, sourceWidth: Int, sourceHeight: Int,
+                                                    to url: URL, maxDim: Int) -> Bool {
+        let scale = Double(maxDim) / Double(max(sourceWidth, sourceHeight))
+        let w = max(1, Int(Double(sourceWidth) * scale))
+        let h = max(1, Int(Double(sourceHeight) * scale))
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
                                    bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
         guard let scaled = ctx.makeImage() else { return false }
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return false }
         CGImageDestinationAddImage(dest, scaled, [kCGImageDestinationLossyCompressionQuality: 0.7] as CFDictionary)
@@ -384,6 +454,17 @@ enum ImageLoader {
         let cost = Int(image.size.width * image.size.height * 4)
         memory.thumbnails.setObject(image, forKey: key, cost: cost)
         return image
+    }
+
+    /// Memory pressure: drops the viewer bitmaps, and with `includingPreviews`
+    /// the thumbnail and review-preview caches. All are rebuilt from disk on
+    /// the next request. Safe from any thread.
+    nonisolated static func purgeMemoryCaches(includingPreviews: Bool) {
+        memory.viewerImages.removeAll()
+        if includingPreviews {
+            memory.thumbnails.removeAllObjects()
+            memory.reviewPreviews.removeAllObjects()
+        }
     }
 
     /// An eagerly decoded display bitmap at the requested resolution. ImageIO

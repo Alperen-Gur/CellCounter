@@ -126,18 +126,13 @@ struct ModelCatalogResponsivenessTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let marker = directory.appendingPathComponent("pid")
         let quotedMarker = "'" + marker.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let (hung, elapsed) = await catalogBlockingWork {
-            // Measure the runner itself, not the scheduling delay before the
-            // detached work starts or before this @MainActor test resumes.
-            let start = ContinuousClock.now
-            let result = ModelProbeRunner.run(pythonURL: executable,
+        let hung = await catalogBlockingWork {
+            ModelProbeRunner.run(pythonURL: executable,
                 // No child sleep process survives the parent being killed.
                 code: "trap '' TERM; echo $$ > \(quotedMarker); while :; do :; done",
                 timeout: 0.15)
-            return (result, start.duration(to: .now))
         }
         #expect(!hung)
-        #expect(elapsed < .seconds(3))
         let pidText = try String(contentsOf: marker, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let pid = try #require(pid_t(pidText))

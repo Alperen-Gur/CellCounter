@@ -247,9 +247,12 @@ private struct WorkflowSection<Content: View>: View {
 
 struct MaskCuratorPanel: View {
     @Bindable var state: AppState
-    @State private var variants: [SegmentationVariantRecord] = []
-    @State private var comparing: SegmentationVariantRecord?
+    /// Value copies from a light fetch: listing never loads saved masks, and
+    /// a version removed elsewhere is never read through a stale model.
+    @State private var variants: [SegmentationVariantSummary] = []
+    @State private var comparing: SegmentationVariantSummary?
     @State private var variantPage = 0
+    @State private var applying = false
 
     var body: some View {
         Group {
@@ -263,17 +266,19 @@ struct MaskCuratorPanel: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(variant.label).font(.system(size: 11.5, weight: .medium))
                                 .foregroundStyle(Tokens.text).lineLimit(1)
-                            Text("\(variant.cellCount) masks · \(Int(variant.meanConfidence * 100))% mean confidence")
+                            Text(detail(variant))
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(Tokens.textTertiary)
                         }
                         HStack(spacing: 8) {
                         Button("Compare") { comparing = variant }.appButton(.ghost, size: .sm)
                         Button("Use") { apply(variant) }.appButton(.ghost, size: .sm)
+                            .disabled(applying)
                         Button {
-                            state.repos.deleteSegmentationVariant(variant); refresh()
+                            delete(variant)
                         } label: { Image(systemName: "trash") }
                             .buttonStyle(.plain).foregroundStyle(Tokens.textTertiary)
+                            .disabled(applying)
                         Spacer()
                         }
                     }
@@ -297,6 +302,7 @@ struct MaskCuratorPanel: View {
         .onChange(of: state.currentImage?.id) { comparing = nil; refresh() }
         .onChange(of: state.currentImage?.detection?.id) { refresh() }
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { _ in refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: .ccMaskVersionsChanged)) { _ in refresh() }
         .sheet(item: $comparing) { variant in
             if let image = state.currentImage, image.id == variant.imageId {
                 VariantComparisonView(state: state, image: image, variant: variant,
@@ -305,18 +311,47 @@ struct MaskCuratorPanel: View {
         }
     }
 
+    private func detail(_ variant: SegmentationVariantSummary) -> String {
+        let confidence = variant.isMeanConfidencePending
+            ? "mean confidence pending"
+            : "\(Int(variant.meanConfidence * 100))% mean confidence"
+        return "\(variant.cellCount) masks · \(confidence)"
+    }
+
     private func refresh() {
         guard let image = state.currentImage else { variants = []; return }
-        variants = state.repos.segmentationVariants(for: image.id)
+        variants = state.repos.segmentationVariantSummaries(for: image.id)
         variantPage = min(variantPage, max(0, (variants.count - 1) / 8))
     }
 
-    private func apply(_ variant: SegmentationVariantRecord) {
-        guard let image = state.currentImage, image.id == variant.imageId else { return }
-        let result = state.repos.applySegmentationVariant(variant, to: image)
-        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: image.id,
-                                        userInfo: ["reviewDelta": result?.reviewCountDelta ?? 0])
+    private func delete(_ variant: SegmentationVariantSummary) {
+        if let record = state.repos.segmentationVariant(id: variant.id) {
+            state.repos.deleteSegmentationVariant(record)
+        }
         refresh()
+    }
+
+    /// Using a version swaps it with the live mask: the live mask is kept as
+    /// a version and the used one leaves the list. Pending Results edits are
+    /// saved first, so the kept mask includes them and none can land on top
+    /// of the swapped-in mask afterwards.
+    private func apply(_ variant: SegmentationVariantSummary) {
+        guard !applying, let image = state.currentImage, image.id == variant.imageId,
+              let detection = image.detection else { return }
+        applying = true
+        comparing = nil
+        Task { @MainActor in
+            defer { applying = false; refresh() }
+            let detectionID = detection.id
+            do { try await state.finishPendingCellEdits(for: detection) } catch { return }
+            // Still the same image and detection after the edits were saved.
+            guard let image = state.currentImage, image.id == variant.imageId,
+                  image.detection?.id == detectionID,
+                  let record = state.repos.segmentationVariant(id: variant.id) else { return }
+            let result = state.repos.applySegmentationVariant(record, to: image)
+            NotificationCenter.default.post(name: .ccCorrectionsChanged, object: image.id,
+                                            userInfo: ["reviewDelta": result?.reviewCountDelta ?? 0])
+        }
     }
 }
 

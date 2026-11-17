@@ -53,7 +53,30 @@ enum ExportService {
         overlayMode: OverlayMode,
         parentDirectory: URL
     ) throws -> BatchAnnotatedFolderResult {
-        guard !images.isEmpty else { throw ExportError.noAnalyzedImages }
+        try writeBatchAnnotatedPNGs(
+            batchName: batchName,
+            imageCount: images.count,
+            thresholds: thresholds,
+            pxPerUm: pxPerUm,
+            overlayMode: overlayMode,
+            parentDirectory: parentDirectory,
+            loadImage: { images[$0] })
+    }
+
+    /// Streaming form: `loadImage(index)` is called once per image, just
+    /// before that image is composited, so only one image's decoded cells and
+    /// one full-resolution frame are alive at a time. Each image runs in its
+    /// own autorelease pool. File names and results match the array form.
+    nonisolated static func writeBatchAnnotatedPNGs(
+        batchName: String,
+        imageCount: Int,
+        thresholds: [Double],
+        pxPerUm: Double,
+        overlayMode: OverlayMode,
+        parentDirectory: URL,
+        loadImage: (Int) -> BatchAnnotatedImageInput
+    ) throws -> BatchAnnotatedFolderResult {
+        guard imageCount > 0 else { throw ExportError.noAnalyzedImages }
         let folder = parentDirectory.appendingPathComponent(
             sanitizeFilename(batchName), isDirectory: true)
         do {
@@ -67,29 +90,32 @@ enum ExportService {
         var written: [String] = []
         var errors: [(String, String)] = []
 
-        for image in images {
-            let rawBase = (image.fileName as NSString).deletingPathExtension
-            let base = sanitizeFilename(rawBase)
-            var candidate = "\(base)-annotated.png"
-            var suffix = 2
-            while usedNames.contains(candidate.lowercased()) {
-                candidate = "\(base)-annotated_\(suffix).png"
-                suffix += 1
-            }
-            usedNames.insert(candidate.lowercased())
-            let destination = folder.appendingPathComponent(candidate)
-            do {
-                try compositeAnnotatedPNG(
-                    imageURL: image.imageURL,
-                    cells: image.cells,
-                    thresholds: thresholds,
-                    pxPerUm: pxPerUm,
-                    overlayMode: overlayMode,
-                    confidence: image.confidence,
-                    to: destination)
-                written.append(candidate)
-            } catch {
-                errors.append((candidate, error.localizedDescription))
+        for index in 0..<imageCount {
+            autoreleasepool {
+                let image = loadImage(index)
+                let rawBase = (image.fileName as NSString).deletingPathExtension
+                let base = sanitizeFilename(rawBase)
+                var candidate = "\(base)-annotated.png"
+                var suffix = 2
+                while usedNames.contains(candidate.lowercased()) {
+                    candidate = "\(base)-annotated_\(suffix).png"
+                    suffix += 1
+                }
+                usedNames.insert(candidate.lowercased())
+                let destination = folder.appendingPathComponent(candidate)
+                do {
+                    try compositeAnnotatedPNG(
+                        imageURL: image.imageURL,
+                        cells: image.cells,
+                        thresholds: thresholds,
+                        pxPerUm: pxPerUm,
+                        overlayMode: overlayMode,
+                        confidence: image.confidence,
+                        to: destination)
+                    written.append(candidate)
+                } catch {
+                    errors.append((candidate, error.localizedDescription))
+                }
             }
         }
 
@@ -528,7 +554,7 @@ enum ExportService {
         }
     }
 
-    nonisolated private static func csvEscape(_ s: String, separator: String) -> String {
+    nonisolated static func csvEscape(_ s: String, separator: String) -> String {
         // Neutralize spreadsheet formula injection: a free-text field beginning
         // with `=`, `+`, `-`, `@`, tab, or CR is executed as a formula by
         // Excel/LibreOffice on open. Attacker-influenceable values (image
@@ -600,6 +626,25 @@ enum ExportService {
                                                   confidence: Double = 0.0,
                                                   provenance: ProvenanceMetadata? = nil,
                                                   to url: URL) throws {
+        // Full resolution is the point of an export, but the decoded source,
+        // the drawing context and the output frame are released as soon as
+        // this image is written.
+        try autoreleasepool {
+            try compositeAnnotatedPNGBody(imageURL: imageURL, cells: cells,
+                                          thresholds: thresholds, pxPerUm: pxPerUm,
+                                          overlayMode: overlayMode, confidence: confidence,
+                                          provenance: provenance, to: url)
+        }
+    }
+
+    nonisolated private static func compositeAnnotatedPNGBody(imageURL: URL,
+                                                              cells: [DetectedCell],
+                                                              thresholds: [Double],
+                                                              pxPerUm: Double,
+                                                              overlayMode: OverlayMode,
+                                                              confidence: Double,
+                                                              provenance: ProvenanceMetadata?,
+                                                              to url: URL) throws {
         guard let loaded = try? ImageLoader.load(imageURL) else { throw ExportError.missingImageBitmap }
         let cg = loaded.cgImage
         let w = cg.width
@@ -877,6 +922,174 @@ enum ExportService {
                                          separator: String = ",",
                                          provenance: ProvenanceMetadata? = nil,
                                          to url: URL) throws {
+        let inputs = batch.images.map { image in
+            PerImageSummaryInput(
+                fileName: image.fileName,
+                importedAt: image.importedAt,
+                confidenceOverride: image.confidenceOverride,
+                detection: image.detection.map {
+                    PerImageSummaryInput.Detection(cells: $0.cells, imageStats: $0.imageStats,
+                                                   detectorId: $0.detectorId, ranAt: $0.ranAt)
+                })
+        }
+        try writePerImageSummaryCSVCore(images: inputs,
+                                        modelId: batch.modelId,
+                                        thresholds: thresholds,
+                                        pxPerUm: pxPerUm,
+                                        confidence: confidence,
+                                        separator: separator,
+                                        provenance: provenance,
+                                        to: url)
+    }
+
+    /// Values one summary row needs, captured from SwiftData so the CSV can be
+    /// built away from the main actor (batch archive). `detection == nil`
+    /// means the image was never analyzed.
+    nonisolated struct PerImageSummaryInput: Sendable {
+        nonisolated struct Detection: Sendable {
+            let cells: [DetectedCell]
+            let imageStats: [String: Double]
+            let detectorId: String
+            let ranAt: Date
+        }
+        let fileName: String
+        let importedAt: Date
+        let confidenceOverride: Double?
+        let detection: Detection?
+    }
+
+    /// Off-main-safe body of `writePerImageSummaryCSV`: identical columns and
+    /// rules, operating only on Sendable value types.
+    nonisolated static func writePerImageSummaryCSVCore(images: [PerImageSummaryInput],
+                                                        modelId: String,
+                                                        thresholds: [Double],
+                                                        pxPerUm: Double,
+                                                        confidence: Double = 0.0,
+                                                        separator: String = ",",
+                                                        provenance: ProvenanceMetadata? = nil,
+                                                        to url: URL) throws {
+        let rows = images.enumerated().map {
+            PerImageSummaryRow(index: $0.offset, fileName: $0.element.fileName,
+                               importedAt: $0.element.importedAt,
+                               confidenceOverride: $0.element.confidenceOverride)
+        }
+        try writePerImageSummaryCSVCore(rows: rows, detection: { images[$0.index].detection },
+                                        modelId: modelId, thresholds: thresholds, pxPerUm: pxPerUm,
+                                        confidence: confidence, separator: separator,
+                                        provenance: provenance, to: url)
+    }
+
+    /// The part of a summary row known without decoding anything. `index`
+    /// identifies the row to the `detection` loader.
+    nonisolated struct PerImageSummaryRow: Sendable {
+        let index: Int
+        let fileName: String
+        let importedAt: Date
+        let confidenceOverride: Double?
+    }
+
+    /// Stored, still-encoded values of one image, captured on the main actor.
+    nonisolated struct PerImageSummaryRaw: Sendable {
+        nonisolated struct Detection: Sendable {
+            let cellsData: Data
+            let imageStatsData: Data?
+            let detectorId: String
+            let ranAt: Date
+        }
+        let fileName: String
+        let importedAt: Date
+        let confidenceOverride: Double?
+        let detection: Detection?
+
+        /// Same values `DetectionRecord.cells` / `.imageStats` return.
+        nonisolated func decodedDetection() -> PerImageSummaryInput.Detection? {
+            guard let detection else { return nil }
+            let stats = detection.imageStatsData.flatMap {
+                try? JSONDecoder().decode([String: Double].self, from: $0)
+            } ?? [:]
+            return PerImageSummaryInput.Detection(
+                cells: DetectionRecord.decodeCellsData(detection.cellsData),
+                imageStats: stats, detectorId: detection.detectorId, ranAt: detection.ranAt)
+        }
+    }
+
+    /// Reads each image's stored bytes on the main actor in chunks, yielding
+    /// between chunks so the UI stays responsive. Nothing is decoded here.
+    @MainActor
+    static func gatherSummaryRaw(batch: BatchRecord, chunkSize: Int = 32) async -> [PerImageSummaryRaw] {
+        let images = batch.images
+        var raws: [PerImageSummaryRaw] = []
+        raws.reserveCapacity(images.count)
+        var start = 0
+        while start < images.count {
+            let end = min(images.count, start + chunkSize)
+            for image in images[start..<end] {
+                raws.append(PerImageSummaryRaw(
+                    fileName: image.fileName,
+                    importedAt: image.importedAt,
+                    confidenceOverride: image.confidenceOverride,
+                    detection: image.detection.map {
+                        PerImageSummaryRaw.Detection(cellsData: $0.cellsData,
+                                                     imageStatsData: $0.imageStatsData,
+                                                     detectorId: $0.detectorId, ranAt: $0.ranAt)
+                    }))
+            }
+            start = end
+            await Task.yield()
+        }
+        return raws
+    }
+
+    /// Same file as `writePerImageSummaryCSV(batch:...)`, byte for byte, but
+    /// the main actor only copies stored bytes (in chunks). Decoding and CSV
+    /// building run in a detached task, one image's cells at a time.
+    @MainActor
+    static func writePerImageSummaryCSVOffMain(batch: BatchRecord,
+                                               thresholds: [Double],
+                                               pxPerUm: Double,
+                                               confidence: Double = 0.0,
+                                               separator: String = ",",
+                                               provenance: ProvenanceMetadata? = nil,
+                                               to url: URL) async throws {
+        let raws = await gatherSummaryRaw(batch: batch)
+        let modelId = batch.modelId
+        try await Task.detached(priority: .userInitiated) {
+            try writePerImageSummaryCSVCore(raws: raws, modelId: modelId, thresholds: thresholds,
+                                            pxPerUm: pxPerUm, confidence: confidence,
+                                            separator: separator, provenance: provenance, to: url)
+        }.value
+    }
+
+    nonisolated static func writePerImageSummaryCSVCore(raws: [PerImageSummaryRaw],
+                                                        modelId: String,
+                                                        thresholds: [Double],
+                                                        pxPerUm: Double,
+                                                        confidence: Double = 0.0,
+                                                        separator: String = ",",
+                                                        provenance: ProvenanceMetadata? = nil,
+                                                        to url: URL) throws {
+        let rows = raws.enumerated().map {
+            PerImageSummaryRow(index: $0.offset, fileName: $0.element.fileName,
+                               importedAt: $0.element.importedAt,
+                               confidenceOverride: $0.element.confidenceOverride)
+        }
+        try writePerImageSummaryCSVCore(rows: rows, detection: { raws[$0.index].decodedDetection() },
+                                        modelId: modelId, thresholds: thresholds, pxPerUm: pxPerUm,
+                                        confidence: confidence, separator: separator,
+                                        provenance: provenance, to: url)
+    }
+
+    /// Shared body. `detection` is called once per row, in output order, and
+    /// its result is released before the next row.
+    nonisolated static func writePerImageSummaryCSVCore(rows: [PerImageSummaryRow],
+                                                        detection loadDetection: (PerImageSummaryRow) -> PerImageSummaryInput.Detection?,
+                                                        modelId: String,
+                                                        thresholds: [Double],
+                                                        pxPerUm: Double,
+                                                        confidence: Double = 0.0,
+                                                        separator: String = ",",
+                                                        provenance: ProvenanceMetadata? = nil,
+                                                        to url: URL) throws {
         let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
         defer { localTiming?.finish() }
 
@@ -920,14 +1133,14 @@ enum ExportService {
         }
 
         // Sort images by import order for stable, reproducible CSV rows.
-        let sortedImages = batch.images.sorted { $0.importedAt < $1.importedAt }
+        let sortedImages = rows.sorted { $0.importedAt < $1.importedAt }
 
         // Build a disambiguated filename map: if multiple images share the same
         // fileName, append _2, _3… so downstream CSV analysis has unique row keys.
         var fileNameCounts: [String: Int] = [:]
         var fileNameSeen: [String: Int] = [:]
         for img in sortedImages { fileNameCounts[img.fileName, default: 0] += 1 }
-        func disambiguatedName(for img: ImageRecord) -> String {
+        func disambiguatedName(for img: PerImageSummaryInput) -> String {
             guard fileNameCounts[img.fileName, default: 0] > 1 else { return img.fileName }
             fileNameSeen[img.fileName, default: 0] += 1
             let suffix = fileNameSeen[img.fileName]!
@@ -947,99 +1160,105 @@ enum ExportService {
         lines.append(configHeaderComment(thresholds: thresholds,
                                           pxPerUm: pxPerUm,
                                           confidence: confidence,
-                                          modelId: batch.modelId))
+                                          modelId: modelId))
         lines.append(header.joined(separator: separator))
 
-        for image in sortedImages {
-            // Filter per-image cells by THIS image's own effective cutoff so
-            // each summary row aggregates over the same cells visible for that
-            // image. `confidence` is the global fallback; an image with its own
-            // `confidenceOverride` must use that, not one image's cutoff applied
-            // batch-wide (matches AppState.effectiveConfidence semantics).
-            let effectiveConf = image.confidenceOverride ?? confidence
-            let cells = (image.detection?.cells ?? []).filter { $0.confidence >= effectiveConf }
-            let nCells = cells.count
-            let diameters = cells.map(\.diameter)
+        for sortedRow in sortedImages {
+            autoreleasepool {
+                let image = PerImageSummaryInput(fileName: sortedRow.fileName,
+                                                 importedAt: sortedRow.importedAt,
+                                                 confidenceOverride: sortedRow.confidenceOverride,
+                                                 detection: loadDetection(sortedRow))
+                // Filter per-image cells by THIS image's own effective cutoff so
+                // each summary row aggregates over the same cells visible for that
+                // image. `confidence` is the global fallback; an image with its own
+                // `confidenceOverride` must use that, not one image's cutoff applied
+                // batch-wide (matches AppState.effectiveConfidence semantics).
+                let effectiveConf = image.confidenceOverride ?? confidence
+                let cells = (image.detection?.cells ?? []).filter { $0.confidence >= effectiveConf }
+                let nCells = cells.count
+                let diameters = cells.map(\.diameter)
 
-            // Mean / SD of diameter (µm).
-            let meanD: Double = diameters.isEmpty
-                ? 0
-                : diameters.reduce(0, +) / Double(diameters.count)
-            let sdD: Double = {
-                guard diameters.count > 1 else { return 0 }
-                let m = meanD
-                let variance = diameters.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(diameters.count)
-                return sqrt(variance)
-            }()
+                // Mean / SD of diameter (µm).
+                let meanD: Double = diameters.isEmpty
+                    ? 0
+                    : diameters.reduce(0, +) / Double(diameters.count)
+                let sdD: Double = {
+                    guard diameters.count > 1 else { return 0 }
+                    let m = meanD
+                    let variance = diameters.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(diameters.count)
+                    return sqrt(variance)
+                }()
 
-            // Size-bin counts. Compute LIVE from the batch's current
-            // thresholds rather than the per-cell `sizeClass` string frozen at
-            // detection time. Bins are a reclassification of stored
-            // measurements, so the summary must track a post-hoc re-binning the
-            // same way the on-screen bins do — otherwise the exported n_bin*
-            // columns would silently disagree with the UI. Mirrors the
-            // per-cell CSV's bucketing (`writeCSVCore` above): bucket with
-            // `BinMath.binIndex`, clamped into range.
-            var binCounts = [Int](repeating: 0, count: bins.count)
-            for c in cells {
-                let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
-                let safeIdx = max(0, min(idx, bins.count - 1))
-                binCounts[safeIdx] += 1
+                // Size-bin counts. Compute LIVE from the batch's current
+                // thresholds rather than the per-cell `sizeClass` string frozen at
+                // detection time. Bins are a reclassification of stored
+                // measurements, so the summary must track a post-hoc re-binning the
+                // same way the on-screen bins do — otherwise the exported n_bin*
+                // columns would silently disagree with the UI. Mirrors the
+                // per-cell CSV's bucketing (`writeCSVCore` above): bucket with
+                // `BinMath.binIndex`, clamped into range.
+                var binCounts = [Int](repeating: 0, count: bins.count)
+                for c in cells {
+                    let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
+                    let safeIdx = max(0, min(idx, bins.count - 1))
+                    binCounts[safeIdx] += 1
+                }
+
+                // Flag percentages — denominator is total cells; 0 when no cells.
+                let denom = max(1, nCells)
+                let nClumps = cells.filter { $0.likelyClump }.count
+                let nDebris = cells.filter { $0.likelyDebris }.count
+                let nEdge   = cells.filter { $0.edgeTouching }.count
+                let pctClumps = 100.0 * Double(nClumps) / Double(denom)
+                let pctDebris = 100.0 * Double(nDebris) / Double(denom)
+                let pctEdge   = 100.0 * Double(nEdge)   / Double(denom)
+
+                // Per-image stats (C2 + C3 namespace).
+                let stats: [String: Double] = image.detection?.imageStats ?? [:]
+
+                // Detection metadata.
+                let modelUsed: String = image.detection?.detectorId ?? ""
+                let ranAt: String = image.detection.map { isoFormatter.string(from: $0.ranAt) } ?? ""
+
+                // If there's no detection at all, emit blanks for the count columns
+                // too — otherwise zeros would imply "we measured zero cells" which
+                // is confusing for unanalyzed images.
+                let hasDetection = image.detection != nil
+                let nCellsStr     = hasDetection ? String(nCells) : ""
+                let meanDStr      = (hasDetection && nCells > 0) ? fmt(meanD, decimals: 3) : ""
+                let sdDStr        = (hasDetection && nCells > 1) ? fmt(sdD, decimals: 3) : ""
+                // One count string per bin, aligned 1:1 (same order, same count)
+                // with `binColumnNames` in the header, so this stays correct for
+                // any number of bins. Same "blank when unanalyzed" convention as
+                // nCellsStr above.
+                let binCountStrs: [String] = hasDetection
+                    ? binCounts.map { String($0) }
+                    : Array(repeating: "", count: bins.count)
+                let clumpsStr     = (hasDetection && nCells > 0) ? fmtPct(pctClumps) : ""
+                let debrisStr     = (hasDetection && nCells > 0) ? fmtPct(pctDebris) : ""
+                let edgeStr       = (hasDetection && nCells > 0) ? fmtPct(pctEdge)   : ""
+
+                let row: [String] = [
+                    csvEscape(disambiguatedName(for: image), separator: separator),
+                    nCellsStr,
+                    meanDStr,
+                    sdDStr,
+                ] + binCountStrs + [
+                    clumpsStr,
+                    debrisStr,
+                    edgeStr,
+                    stat(stats, "confluency_pct", decimals: 2),
+                    statInt(stats, "n_colonies"),
+                    stat(stats, "mean_colony_size_cells", decimals: 2),
+                    statInt(stats, "largest_colony_size_cells"),
+                    stat(stats, "focus_score", decimals: 4),
+                    stat(stats, "illumination_residual", decimals: 4),
+                    csvEscape(modelUsed, separator: separator),
+                    csvEscape(ranAt, separator: separator),
+                ]
+                lines.append(row.joined(separator: separator))
             }
-
-            // Flag percentages — denominator is total cells; 0 when no cells.
-            let denom = max(1, nCells)
-            let nClumps = cells.filter { $0.likelyClump }.count
-            let nDebris = cells.filter { $0.likelyDebris }.count
-            let nEdge   = cells.filter { $0.edgeTouching }.count
-            let pctClumps = 100.0 * Double(nClumps) / Double(denom)
-            let pctDebris = 100.0 * Double(nDebris) / Double(denom)
-            let pctEdge   = 100.0 * Double(nEdge)   / Double(denom)
-
-            // Per-image stats (C2 + C3 namespace).
-            let stats: [String: Double] = image.detection?.imageStats ?? [:]
-
-            // Detection metadata.
-            let modelUsed: String = image.detection?.detectorId ?? ""
-            let ranAt: String = image.detection.map { isoFormatter.string(from: $0.ranAt) } ?? ""
-
-            // If there's no detection at all, emit blanks for the count columns
-            // too — otherwise zeros would imply "we measured zero cells" which
-            // is confusing for unanalyzed images.
-            let hasDetection = image.detection != nil
-            let nCellsStr     = hasDetection ? String(nCells) : ""
-            let meanDStr      = (hasDetection && nCells > 0) ? fmt(meanD, decimals: 3) : ""
-            let sdDStr        = (hasDetection && nCells > 1) ? fmt(sdD, decimals: 3) : ""
-            // One count string per bin, aligned 1:1 (same order, same count)
-            // with `binColumnNames` in the header, so this stays correct for
-            // any number of bins. Same "blank when unanalyzed" convention as
-            // nCellsStr above.
-            let binCountStrs: [String] = hasDetection
-                ? binCounts.map { String($0) }
-                : Array(repeating: "", count: bins.count)
-            let clumpsStr     = (hasDetection && nCells > 0) ? fmtPct(pctClumps) : ""
-            let debrisStr     = (hasDetection && nCells > 0) ? fmtPct(pctDebris) : ""
-            let edgeStr       = (hasDetection && nCells > 0) ? fmtPct(pctEdge)   : ""
-
-            let row: [String] = [
-                csvEscape(disambiguatedName(for: image), separator: separator),
-                nCellsStr,
-                meanDStr,
-                sdDStr,
-            ] + binCountStrs + [
-                clumpsStr,
-                debrisStr,
-                edgeStr,
-                stat(stats, "confluency_pct", decimals: 2),
-                statInt(stats, "n_colonies"),
-                stat(stats, "mean_colony_size_cells", decimals: 2),
-                statInt(stats, "largest_colony_size_cells"),
-                stat(stats, "focus_score", decimals: 4),
-                stat(stats, "illumination_residual", decimals: 4),
-                csvEscape(modelUsed, separator: separator),
-                csvEscape(ranAt, separator: separator),
-            ]
-            lines.append(row.joined(separator: separator))
         }
 
         let body = lines.joined(separator: "\n") + "\n"

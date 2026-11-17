@@ -24,12 +24,124 @@ nonisolated enum PersistentSidecarError: LocalizedError {
     }
 }
 
+/// A warm worker as the pool sees it. The production worker is a long-lived
+/// Python process; tests substitute in-memory fakes.
+nonisolated protocol PersistentSidecarWorkerHandle: Sendable {
+    /// False once the worker was asked to stop or its process has exited.
+    var isHealthy: Bool { get }
+
+    func request(
+        args: [String],
+        onStderrLine: (@Sendable (String) -> Void)?
+    ) async throws -> SidecarOutcome
+
+    /// Stops the worker immediately, failing any queued or running request.
+    /// Idempotent.
+    func terminate()
+
+    /// Stops a worker that has nothing in flight by letting it leave its
+    /// request loop, with `terminate()` as the fallback. Idempotent.
+    func shutdown()
+}
+
+/// Time source for idle retirement, injectable so tests control time.
+/// Instants are offsets from the moment the clock was wrapped.
+nonisolated struct SidecarIdleClock: Sendable {
+    let now: @Sendable () -> Duration
+    let sleepUntil: @Sendable (Duration) async throws -> Void
+
+    init<C: Clock>(_ clock: C) where C.Duration == Duration {
+        let origin = clock.now
+        now = { origin.duration(to: clock.now) }
+        sleepUntil = { deadline in
+            try await clock.sleep(until: origin.advanced(by: deadline), tolerance: nil)
+        }
+    }
+
+    /// Keeps counting while the Mac sleeps, so a worker left idle overnight
+    /// is retired promptly after wake.
+    static let continuous = SidecarIdleClock(ContinuousClock())
+}
+
 /// Long-lived sidecar pool. Each worker serializes its own request queue so a
 /// Cellpose model is never evaluated concurrently inside one Python process.
+///
+/// Memory policy:
+/// - A worker with no request in flight exits after `idleTimeout`.
+/// - At most `maxWarmWorkers` workers are kept. Admitting a new model
+///   signature first shuts down the least recently used idle worker.
+/// - A worker with a request in flight is never evicted. When every worker
+///   is busy, a new one is admitted anyway and the pool shrinks back to the
+///   limit as requests finish.
 actor PersistentSidecarPool {
+    /// Two lets an ensemble keep both member models loaded between images.
+    nonisolated static let defaultMaxWarmWorkers = 2
+    /// Unused time after which a worker exits and returns its model memory.
+    nonisolated static let defaultIdleTimeout: Duration = .seconds(180)
+
     static let shared = PersistentSidecarPool()
 
-    private var workers: [PersistentSidecarKey: PersistentSidecarWorker] = [:]
+    typealias Launcher = @Sendable (
+        _ key: PersistentSidecarKey,
+        _ pythonURL: URL,
+        _ scriptURL: URL,
+        _ trackerKind: ChildProcessTracker.Kind
+    ) throws -> any PersistentSidecarWorkerHandle
+
+    nonisolated private final class Entry {
+        let key: PersistentSidecarKey
+        let worker: any PersistentSidecarWorkerHandle
+        /// Requests checked out against this worker, queued or executing.
+        var inFlight = 0
+        /// Pool-wide use sequence; orders LRU eviction and identifies the
+        /// idle period an idle-retirement task was scheduled for.
+        var lastUse: UInt64
+        var idleRetirement: Task<Void, Never>?
+        var retireWhenIdle = false
+
+        init(key: PersistentSidecarKey, worker: any PersistentSidecarWorkerHandle, lastUse: UInt64) {
+            self.key = key
+            self.worker = worker
+            self.lastUse = lastUse
+        }
+    }
+
+    private let maxWarmWorkers: Int
+    private let idleTimeout: Duration?
+    private let clock: SidecarIdleClock
+    private let launcher: Launcher
+    private var entries: [PersistentSidecarKey: Entry] = [:]
+    private var useSequence: UInt64 = 0
+
+    /// - Parameters:
+    ///   - maxWarmWorkers: workers kept at once (at least one).
+    ///   - idleTimeout: unused time before a worker exits; `nil` disables
+    ///     idle retirement.
+    init(
+        maxWarmWorkers: Int = PersistentSidecarPool.defaultMaxWarmWorkers,
+        idleTimeout: Duration? = PersistentSidecarPool.defaultIdleTimeout,
+        clock: SidecarIdleClock = .continuous,
+        launcher: @escaping Launcher = PersistentSidecarPool.launchProcessWorker
+    ) {
+        self.maxWarmWorkers = max(1, maxWarmWorkers)
+        self.idleTimeout = idleTimeout.map { max(.zero, $0) }
+        self.clock = clock
+        self.launcher = launcher
+    }
+
+    nonisolated static func launchProcessWorker(
+        key: PersistentSidecarKey,
+        pythonURL: URL,
+        scriptURL: URL,
+        trackerKind: ChildProcessTracker.Kind
+    ) throws -> any PersistentSidecarWorkerHandle {
+        try PersistentSidecarWorker(pythonURL: pythonURL, scriptURL: scriptURL, trackerKind: trackerKind)
+    }
+
+    /// Live workers, busy or idle.
+    var workerCount: Int { entries.count }
+
+    func hasWorker(for key: PersistentSidecarKey) -> Bool { entries[key] != nil }
 
     func run(
         key: PersistentSidecarKey,
@@ -39,23 +151,9 @@ actor PersistentSidecarPool {
         trackerKind: ChildProcessTracker.Kind = .detection,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> SidecarOutcome {
-        let worker: PersistentSidecarWorker
-        if let existing = workers[key], existing.isHealthy {
-            worker = existing
-        } else {
-            workers[key]?.terminate()
-            do {
-                worker = try PersistentSidecarWorker(
-                    pythonURL: pythonURL,
-                    scriptURL: scriptURL,
-                    trackerKind: trackerKind)
-                workers[key] = worker
-            } catch {
-                workers[key] = nil
-                throw error
-            }
-        }
-
+        let entry = try checkOut(key: key, pythonURL: pythonURL,
+                                 scriptURL: scriptURL, trackerKind: trackerKind)
+        let worker = entry.worker
         do {
             let result = try await withTaskCancellationHandler {
                 try await worker.request(args: args, onStderrLine: onStderrLine)
@@ -66,29 +164,144 @@ actor PersistentSidecarPool {
                 // a model that the host believes is idle.
                 worker.terminate()
             }
-            if !worker.isHealthy, workers[key] === worker {
-                workers[key] = nil
-            }
+            checkIn(entry, failed: false)
             return result
         } catch {
-            if workers[key] === worker { workers[key] = nil }
-            worker.terminate()
+            checkIn(entry, failed: true)
             throw error
         }
     }
 
+    /// Stops every worker immediately, including ones with a request in
+    /// flight. For runtime changes and shutdown.
     func retireAll() {
-        for worker in workers.values { worker.terminate() }
-        workers.removeAll()
+        for entry in Array(entries.values) { discard(entry, graceful: false) }
     }
 
     /// Packages are shared within a runtime, but Cellpose 3 and 4 are
     /// isolated. Retire only workers whose imported runtime changed.
     func retire(modelSignaturePrefix: String) {
-        let affected = workers.keys.filter { $0.modelSignature.hasPrefix(modelSignaturePrefix) }
-        for key in affected {
-            workers.removeValue(forKey: key)?.terminate()
+        for entry in entries.values.filter({ $0.key.modelSignature.hasPrefix(modelSignaturePrefix) }) {
+            discard(entry, graceful: false)
         }
+    }
+
+    /// Stops every worker with no request in flight. Busy workers continue.
+    func retireIdleWorkers() {
+        for entry in Array(entries.values) where entry.inFlight == 0 { discard(entry, graceful: true) }
+    }
+
+    /// Stops idle workers now and each busy worker as soon as its last
+    /// in-flight request finishes, without interrupting any request. Used
+    /// before training so its process does not compete with warm models.
+    func retireAllWhenIdle() {
+        for entry in Array(entries.values) {
+            if entry.inFlight == 0 { discard(entry, graceful: true) } else { entry.retireWhenIdle = true }
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    private func nextUse() -> UInt64 {
+        useSequence &+= 1
+        return useSequence
+    }
+
+    private func checkOut(
+        key: PersistentSidecarKey,
+        pythonURL: URL,
+        scriptURL: URL,
+        trackerKind: ChildProcessTracker.Kind
+    ) throws -> Entry {
+        if let existing = entries[key] {
+            if existing.worker.isHealthy {
+                begin(existing)
+                return existing
+            }
+            discard(existing, graceful: false)
+        }
+        makeRoomForNewWorker()
+        let worker = try launcher(key, pythonURL, scriptURL, trackerKind)
+        let entry = Entry(key: key, worker: worker, lastUse: nextUse())
+        entries[key] = entry
+        begin(entry)
+        return entry
+    }
+
+    private func begin(_ entry: Entry) {
+        entry.inFlight += 1
+        entry.lastUse = nextUse()
+        entry.idleRetirement?.cancel()
+        entry.idleRetirement = nil
+    }
+
+    private func checkIn(_ entry: Entry, failed: Bool) {
+        entry.inFlight -= 1
+        entry.lastUse = nextUse()
+        // A retired or replaced worker was already stopped by `discard`.
+        guard entries[entry.key] === entry else { return }
+        if failed || !entry.worker.isHealthy {
+            discard(entry, graceful: false)
+            return
+        }
+        guard entry.inFlight == 0 else { return }
+        if entry.retireWhenIdle {
+            discard(entry, graceful: true)
+            return
+        }
+        trim(to: maxWarmWorkers)
+        if entries[entry.key] === entry { scheduleIdleRetirement(entry) }
+    }
+
+    /// Drops dead idle workers, then shuts down least recently used idle
+    /// workers until one more fits under the limit.
+    private func makeRoomForNewWorker() {
+        for entry in Array(entries.values) where entry.inFlight == 0 && !entry.worker.isHealthy {
+            discard(entry, graceful: false)
+        }
+        trim(to: maxWarmWorkers - 1)
+    }
+
+    private func trim(to limit: Int) {
+        while entries.count > limit,
+              let victim = entries.values
+                .filter({ $0.inFlight == 0 })
+                .min(by: { $0.lastUse < $1.lastUse }) {
+            discard(victim, graceful: true)
+        }
+    }
+
+    /// Removes the worker and stops it. Only an idle worker is stopped
+    /// gracefully; one with a request in flight is always terminated.
+    private func discard(_ entry: Entry, graceful: Bool) {
+        if entries[entry.key] === entry { entries[entry.key] = nil }
+        entry.idleRetirement?.cancel()
+        entry.idleRetirement = nil
+        if graceful && entry.inFlight == 0 {
+            entry.worker.shutdown()
+        } else {
+            entry.worker.terminate()
+        }
+    }
+
+    private func scheduleIdleRetirement(_ entry: Entry) {
+        entry.idleRetirement?.cancel()
+        entry.idleRetirement = nil
+        guard let idleTimeout else { return }
+        let key = entry.key
+        let use = entry.lastUse
+        let clock = clock
+        // The deadline is fixed now, not when the task first runs.
+        let deadline = clock.now() + idleTimeout
+        entry.idleRetirement = Task { [weak self] in
+            do { try await clock.sleepUntil(deadline) } catch { return }
+            await self?.retireIfStillIdle(key: key, lastUse: use)
+        }
+    }
+
+    private func retireIfStillIdle(key: PersistentSidecarKey, lastUse: UInt64) {
+        guard let entry = entries[key], entry.inFlight == 0, entry.lastUse == lastUse else { return }
+        discard(entry, graceful: true)
     }
 }
 
@@ -136,7 +349,10 @@ nonisolated enum ReusableSidecarRunner {
     }
 }
 
-nonisolated private final class PersistentSidecarWorker: @unchecked Sendable {
+nonisolated private final class PersistentSidecarWorker: PersistentSidecarWorkerHandle, @unchecked Sendable {
+    /// How long a gracefully stopped worker may take to exit before SIGTERM.
+    private static let shutdownGrace: TimeInterval = 10
+
     private struct RequestEnvelope: Encodable {
         let request_id: String
         let args: [String]
@@ -184,13 +400,18 @@ nonisolated private final class PersistentSidecarWorker: @unchecked Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // An empty read means end of file. Removing the handler there stops
+        // it from firing repeatedly if the worker object is already gone
+        // when its process exits.
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
-            if !chunk.isEmpty { self?.consumeStdout(chunk) }
+            guard !chunk.isEmpty else { handle.readabilityHandler = nil; return }
+            self?.consumeStdout(chunk)
         }
         stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
-            if !chunk.isEmpty { self?.consumeStderr(chunk) }
+            guard !chunk.isEmpty else { handle.readabilityHandler = nil; return }
+            self?.consumeStderr(chunk)
         }
         process.terminationHandler = { [weak self] process in
             self?.processDidTerminate(status: process.terminationStatus)
@@ -242,6 +463,33 @@ nonisolated private final class PersistentSidecarWorker: @unchecked Sendable {
         healthy = false
         lock.unlock()
         if shouldTerminate { process.terminate() }
+    }
+
+    /// Closing stdin ends the Python request loop, so the interpreter exits
+    /// through its normal path. A worker that unexpectedly still has work,
+    /// or that has not exited after the grace period, is terminated.
+    func shutdown() {
+        lock.lock()
+        let running = healthy && process.isRunning
+        let hasWork = current != nil || !queue.isEmpty
+        healthy = false
+        lock.unlock()
+        guard running else { return }
+        guard !hasWork else {
+            process.terminate()
+            return
+        }
+        do {
+            try stdinHandle.close()
+        } catch {
+            process.terminate()
+            return
+        }
+        // Holds the worker until the grace period ends so its pipe handlers
+        // can still collect the process's final output.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.shutdownGrace) { [self] in
+            if process.isRunning { process.terminate() }
+        }
     }
 
     /// Called with `lock` held. Moves one queued request into the active slot
@@ -361,7 +609,13 @@ nonisolated private final class PersistentSidecarWorker: @unchecked Sendable {
     }
 }
 
-nonisolated private final class PersistentLineBuffer: @unchecked Sendable {
+/// Newline framing for worker pipes. Each byte is scanned once: the search
+/// resumes where the previous chunk's search stopped, complete lines are
+/// sliced out by offset, and the consumed prefix is dropped once per chunk
+/// rather than once per line. A response that arrives in many chunks
+/// therefore costs time proportional to its size, and the pending buffer
+/// only ever holds the unfinished line.
+nonisolated final class PersistentLineBuffer: @unchecked Sendable {
     struct Result {
         let lines: [Data]
         let overflowed: Bool
@@ -369,24 +623,49 @@ nonisolated private final class PersistentLineBuffer: @unchecked Sendable {
 
     private let lock = NSLock()
     private let maxBytes: Int
-    private var buffer = Data()
+    /// The unfinished line. It never contains a newline between calls.
+    private var pending: [UInt8] = []
     private var didOverflow = false
 
     init(maxBytes: Int) { self.maxBytes = maxBytes }
 
+    /// Bytes held for a line whose newline has not arrived yet.
+    var pendingByteCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return pending.count
+    }
+
     func appendAndTakeLines(_ chunk: Data) -> Result {
         lock.lock(); defer { lock.unlock() }
         guard !didOverflow else { return Result(lines: [], overflowed: true) }
-        if buffer.count + chunk.count > maxBytes {
+        if pending.count + chunk.count > maxBytes {
             didOverflow = true
-            buffer = Data()
+            pending = []
             return Result(lines: [], overflowed: true)
         }
-        buffer.append(chunk)
+        guard !chunk.isEmpty else { return Result(lines: [], overflowed: false) }
+
+        // Everything already pending was scanned by an earlier call.
+        let scanFrom = pending.count
+        chunk.withUnsafeBytes { raw in pending.append(contentsOf: raw) }
+
         var lines: [Data] = []
-        while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-            lines.append(Data(buffer[..<newline]))
-            buffer = Data(buffer[buffer.index(after: newline)...])
+        var lineStart = 0
+        pending.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var searchFrom = scanFrom
+            while searchFrom < bytes.count,
+                  let hit = memchr(base + searchFrom, Int32(UInt8(ascii: "\n")), bytes.count - searchFrom) {
+                let newline = base.distance(to: UnsafeRawPointer(hit))
+                lines.append(Data(bytes: base + lineStart, count: newline - lineStart))
+                lineStart = newline + 1
+                searchFrom = lineStart
+            }
+        }
+        if lineStart > 0 {
+            // Copy only the unfinished tail. A fresh array also releases the
+            // capacity a large response grew the buffer to.
+            pending = Array(pending[lineStart...])
         }
         return Result(lines: lines, overflowed: false)
     }

@@ -14,6 +14,10 @@ nonisolated struct AnalysisJobItem: Codable, Identifiable, Sendable, Equatable {
     var sourcePath: String
     var sourceBookmark: Data?
     var knownHash: String?
+    /// The source's size and modification time when `knownHash` was taken.
+    /// While the source still matches, import reuses `knownHash` instead of
+    /// hashing the file again. Nil for items saved before it existed.
+    var knownHashStamp: ImportFileStamp?
     var imageId: UUID?
     var status: AnalysisItemStatus = .pending
     var error: String?
@@ -21,12 +25,16 @@ nonisolated struct AnalysisJobItem: Codable, Identifiable, Sendable, Equatable {
     var estimatedBytes: Int64 = 0
     var fileName: String { displayName ?? URL(fileURLWithPath: sourcePath).lastPathComponent }
 
-    init(url: URL, imageId: UUID? = nil, knownHash: String? = nil, displayName: String? = nil) {
+    init(url: URL, imageId: UUID? = nil, knownHash: String? = nil,
+         knownHashStamp: ImportFileStamp? = nil, displayName: String? = nil) {
         self.displayName = displayName
         sourcePath = url.path
         self.imageId = imageId
         self.knownHash = knownHash
-        sourceBookmark = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+        self.knownHashStamp = knownHash == nil ? nil : knownHashStamp
+        // An imported item is located by `imageId`; a bookmark is only needed
+        // until the source has been imported.
+        if imageId == nil { sourceBookmark = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil) }
         let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         estimatedBytes = Int64(bytes)
         // Compressed file size alone is not a memory estimate. For ordinary
@@ -51,6 +59,32 @@ nonisolated struct AnalysisJobItem: Codable, Identifiable, Sendable, Equatable {
                        relativeTo: nil, bookmarkDataIsStale: &stale)
     }
 }
+
+extension AnalysisJobItem {
+    /// The arguments of `init(url:imageId:knownHash:knownHashStamp:displayName:)`,
+    /// captured on the caller's actor.
+    nonisolated struct Source: Sendable, Equatable {
+        var url: URL
+        var imageId: UUID? = nil
+        var knownHash: String? = nil
+        var knownHashStamp: ImportFileStamp? = nil
+        var displayName: String? = nil
+    }
+
+    /// Builds one item per source, in order, off the caller's actor: each
+    /// item creates a security bookmark and reads its file's size and image
+    /// header. Every item equals `init` called with the same source (apart
+    /// from its random `id`).
+    @concurrent
+    static func make(_ sources: [Source]) async -> [AnalysisJobItem] {
+        sources.map { source in
+            autoreleasepool {
+                AnalysisJobItem(url: source.url, imageId: source.imageId, knownHash: source.knownHash,
+                                knownHashStamp: source.knownHashStamp, displayName: source.displayName)
+            }
+        }
+    }
+}
 nonisolated struct AnalysisJob: Codable, Identifiable, Sendable, Equatable {
     var id = UUID()
     var batchId: UUID
@@ -73,6 +107,13 @@ nonisolated struct AnalysisJob: Codable, Identifiable, Sendable, Equatable {
         let warm = Array(durations.dropFirst().suffix(8))
         return warm.reduce(0, +) / Double(warm.count) * Double(items.count - completedCount - failedCount)
     }
+    /// Drops the security bookmark of items that already have an imported image.
+    mutating func dropImportedBookmarks() {
+        for index in items.indices where items[index].imageId != nil && items[index].sourceBookmark != nil {
+            items[index].sourceBookmark = nil
+        }
+    }
+    var isActive: Bool { [.queued, .running, .pausing].contains(status) }
     mutating func recoverAfterLaunch() {
         if [.running, .pausing, .queued].contains(status) { status = .paused }
         for index in items.indices where [.running, .preparing].contains(items[index].status) {

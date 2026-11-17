@@ -59,4 +59,10 @@ extension Notification.Name {
     /// directories shown by Settings. The Models storage inventory observes
     /// this and refreshes its off-main cached measurements.
     static let ccModelStorageChanged = Notification.Name("ccModelStorageChanged")
+
+    /// Posted when saved mask versions change outside the Mask Curator:
+    /// older versions removed from Settings, or the background upkeep filled
+    /// in pending mean confidences. Observers: MaskCuratorPanel (reloads its
+    /// light list), Settings (recounts removable versions).
+    static let ccMaskVersionsChanged = Notification.Name("ccMaskVersionsChanged")
 }

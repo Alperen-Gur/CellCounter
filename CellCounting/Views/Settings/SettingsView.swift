@@ -69,7 +69,7 @@ enum SettingsSection: String, CaseIterable {
 
     var searchTerms: String {
         switch self {
-        case .general: return "General default model background preprocessing rolling ball parallel preparation watershed"
+        case .general: return "General default model background preprocessing rolling ball parallel preparation watershed mask versions saved segmentations storage"
         case .appearance: return "Appearance theme colors dark light overlay"
         case .bins: return "Default bins size thresholds"
         case .conditions: return "Conditions groups experiments labels"
@@ -331,6 +331,95 @@ private struct GeneralSection: View {
                         .foregroundStyle(Tokens.textSecondary)
                         .frame(width: 48, alignment: .trailing)
                 }
+            }
+            MaskVersionsSettings(state: state)
+        }
+    }
+}
+
+// MARK: - Saved mask versions
+
+/// How many alternative segmentations ("Before …" versions in the Mask
+/// Curator) each image keeps, plus a one-off cleanup for the whole library.
+private struct MaskVersionsSettings: View {
+    @Bindable var state: AppState
+    @AppStorage(MaskVersionRetention.defaultsKey) private var kept = MaskVersionRetention.defaultLimit
+    /// Versions beyond the limit right now; nil while counting.
+    @State private var removable: Int?
+    @State private var removing = false
+    @State private var recountTick = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Saved mask versions".uppercased())
+                .tracking(0.04 * 13)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Tokens.textSecondary)
+                .padding(.top, 22)
+            SetRow(label: "Mask versions kept per image",
+                   desc: "When a new segmentation is saved for an image, older alternative segmentations beyond this number are removed. The current mask is never affected.") {
+                Menu {
+                    ForEach(MaskVersionRetention.choices, id: \.self) { choice in
+                        Button(MaskVersionRetention.label(for: choice)) { kept = choice }
+                    }
+                } label: {
+                    SelectPill(label: MaskVersionRetention.label(for: kept))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            SetRow(label: "Older versions", desc: removableDescription) {
+                Button(removing ? "Removing…" : "Remove older versions now") { confirmRemoval() }
+                    .appButton(.standard, size: .sm)
+                    .disabled(removing || (removable ?? 0) == 0)
+            }
+        }
+        .task(id: "\(kept)-\(recountTick)") { recount() }
+        .onReceive(NotificationCenter.default.publisher(for: .ccMaskVersionsChanged)) { _ in
+            recountTick &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in
+            recountTick &+= 1
+        }
+    }
+
+    private var removableDescription: String {
+        if kept <= 0 { return "Every saved version is kept." }
+        guard let removable else { return "Counting saved versions…" }
+        switch removable {
+        case 0: return "No image has more saved versions than this."
+        case 1: return "1 saved version is beyond this number."
+        default: return "\(removable) saved versions are beyond this number."
+        }
+    }
+
+    private func recount() {
+        removable = kept > 0 ? ((try? state.repos.excessSegmentationVariantIDs(keeping: kept).count) ?? 0) : 0
+    }
+
+    private func confirmRemoval() {
+        let limit = kept
+        guard limit > 0, let count = removable, count > 0, !removing else { return }
+        let alert = NSAlert()
+        alert.messageText = count == 1 ? "Remove 1 older mask version?" : "Remove \(count) older mask versions?"
+        alert.informativeText =
+            "Each image keeps its \(limit) newest saved \(limit == 1 ? "version" : "versions"). " +
+            "Current masks are not affected.\n\nRemoved versions cannot be restored."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        removing = true
+        Task { @MainActor in
+            defer { removing = false; recountTick &+= 1 }
+            do {
+                try await state.repos.removeExcessSegmentationVariants(keeping: limit)
+            } catch {
+                let failed = NSAlert()
+                failed.messageText = "Couldn't remove all older versions."
+                failed.informativeText = error.localizedDescription
+                failed.alertStyle = .warning
+                failed.runModal()
             }
         }
     }
@@ -1582,7 +1671,8 @@ private struct AboutSection: View {
         alert.messageText = "Delete all imported data?"
         alert.informativeText =
             "This permanently removes all imported images, detections, " +
-            "batches, and corrections.\n\n" +
+            "batches, and corrections from the library “\(state.libraries.displayName)”. " +
+            "Other libraries are not affected.\n\n" +
             "Your conditions, calibration presets, bin presets, the Python " +
             "environment, and the Exports folder are preserved.\n\n" +
             "This cannot be undone."
@@ -1676,6 +1766,7 @@ private struct AboutSection: View {
             "cc-model-filter", "cc-onboarded", "cc-current-batch",
             "cc-models-banner-dismissed", "cc-install-banner-dismissed",
             "cc-manual-diameter", "cc-cellpose-importable",
+            MaskVersionRetention.defaultsKey,
             // Pass-16: cp4 importable flag pairs with `cc-cellpose-importable`.
             "cc-cellpose4-importable",
             "cc-seeded-conditions-v1",
@@ -1895,7 +1986,9 @@ private struct AckCard: View {
 // MARK: - PrivacyContent
 
 private struct PrivacyContent: View {
-    private let storagePath = "~/Library/Containers/alguer.CellCounting/Data/Library/Application Support/CellCounter/"
+    private var storagePath: String {
+        "Open library: \(FileStore.shared.libraryRoot.path)\nApp data (Python, models, protocols): \(FileStore.shared.appRoot.path)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

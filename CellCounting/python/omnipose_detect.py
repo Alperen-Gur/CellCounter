@@ -28,6 +28,12 @@ CLI: accepts the full shared flag set (`--image`, `--model`, `--pxPerUm`,
 unchanged, plus the Omnipose-specific flags below.
 
 All logging goes to stderr; stdout carries only the JSON result.
+
+``--serve`` keeps one interpreter, with PyTorch and Omnipose imported and the
+model loaded, for many images. Requests use the `serve_ndjson` protocol in
+`_cellpose_common`. Each request runs the same `main` a one-shot process runs,
+so the payload is the same; only the model construction is skipped once the
+model is loaded. The host starts one worker per model name and GPU setting.
 """
 
 from __future__ import annotations
@@ -56,6 +62,11 @@ _MODEL_MAP = {
 }
 
 _KNOWN_NAMES = set(_MODEL_MAP.values())
+
+# The constructed model, keyed by everything that determines it: model name,
+# device override and the GPU flag. A serve worker keeps one entry; a one-shot
+# run fills it once and exits.
+_MODEL_CACHE: dict = {}
 
 
 def resolve_model_name(raw: str) -> str:
@@ -159,8 +170,8 @@ def configure_model_cache(model_name):
                 os.unlink(temporary)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv=None) -> None:
+    args = parse_args(argv)
     channels = cc.parse_channels(args.channels)
     try:
         model_name = resolve_model_name(args.model)
@@ -206,36 +217,46 @@ def main() -> None:
     import torch as _torch
     override_device, use_gpu_kw = cc.resolve_device(args, _torch)
 
-    # --- Build the model ---------------------------------------------------
-    try:
-        with contextlib.redirect_stdout(sys.stderr):
-            model = omni_models.CellposeModel(
-                gpu=use_gpu_kw, model_type=model_name, omni=True,
-                nchan=2, nclasses=3, dim=2,
-            )
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] model load failed: {exc!r}")
-        emit_error("model-load-failed", hint=str(exc), exit_code=4)
-        return
-
-    if override_device is not None:
+    # --- Build the model (once per worker) ---------------------------------
+    model_key = (model_name, str(override_device), bool(use_gpu_kw))
+    model = _MODEL_CACHE.get(model_key)
+    if model is None:
+        # The host keys a worker by the same signature, so another entry here
+        # is unexpected. Release it before building, so the worker never
+        # holds two models.
+        _MODEL_CACHE.clear()
         try:
-            if getattr(model, "net", None) is not None:
-                model.net.to(override_device)
+            with contextlib.redirect_stdout(sys.stderr):
+                model = omni_models.CellposeModel(
+                    gpu=use_gpu_kw, model_type=model_name, omni=True,
+                    nchan=2, nclasses=3, dim=2,
+                )
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] model load failed: {exc!r}")
+            emit_error("model-load-failed", hint=str(exc), exit_code=4)
+            return
+
+        if override_device is not None:
+            try:
+                if getattr(model, "net", None) is not None:
+                    model.net.to(override_device)
+                    try:
+                        model.net.device = override_device
+                    except Exception:  # noqa: BLE001
+                        pass
                 try:
-                    model.net.device = override_device
+                    model.device = override_device
                 except Exception:  # noqa: BLE001
                     pass
-            try:
-                model.device = override_device
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                model.mkldnn = False
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception as exc:  # noqa: BLE001
-            log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
+                try:
+                    model.mkldnn = False
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
+        _MODEL_CACHE[model_key] = model
+    else:
+        log("[cellpose_detect] reusing initialized model")
 
     resolved_device = "cpu"
     try:
@@ -289,5 +310,15 @@ def main() -> None:
     cc.emit_payload(width_px, height_px, cells, image_stats)
 
 
+def serve() -> None:
+    log("[cellpose_detect] Omnipose worker ready; the model loads with the first image")
+    # Memory is released after each response is sent, so it never delays a
+    # result. The cached model stays loaded.
+    cc.serve_ndjson(main, after_response=cc.release_request_memory)
+
+
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv[1:]:
+        serve()
+    else:
+        main()

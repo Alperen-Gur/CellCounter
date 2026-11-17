@@ -58,6 +58,12 @@ Public API (callers in cellpose_detect.py / cellpose4_detect.py):
         each cell additionally carries a "channel_intensities" list — see the
         function docstring for the exact JSON.
 
+    label_crops(masks, label_ids) -> iterator of (label, crop, row0, col0)
+        Each label's mask cropped to its bounding box (plus a 1-pixel
+        margin inside the image). Used by measure_cells and by the StarDist
+        and SAM sidecars so per-cell work scales with cell size, not image
+        size.
+
     apply_watershed_if_requested(masks, args) -> masks
     compute_colony_stats(masks, args, height_px, width_px) -> dict
     emit_payload(width_px, height_px, cells, image_stats) -> None
@@ -99,7 +105,16 @@ def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
     sys.exit(exit_code)
 
 
-def serve_ndjson(run_once) -> None:
+def _exit_status(code) -> int:
+    """The process exit status `sys.exit(code)` would give a one-shot run."""
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return int(code)
+    return 1
+
+
+def serve_ndjson(run_once, after_response=None) -> None:
     """Serve serialized detection requests over newline-delimited JSON.
 
     The process keeps imported modules and the caller's model cache alive
@@ -107,6 +122,15 @@ def serve_ndjson(run_once) -> None:
     and each output line is an envelope containing the unchanged one-shot
     stdout payload plus its logical exit code. Logs continue to use stderr, so
     the host can stream progress exactly as it does for a one-shot process.
+
+    ``run_once(argv)`` must be the function a one-shot run calls with the same
+    arguments, so a served payload matches the one-shot payload exactly.
+
+    ``after_response``, when given, is called with no arguments after each
+    response has been written and flushed, so work that does not affect the
+    result (such as `release_request_memory`) never delays it. Anything it
+    prints goes to stderr, and an exception it raises is logged and does not
+    stop the worker.
 
     Requests are deliberately executed one at a time: Cellpose model objects
     are not documented as thread-safe, and serialization prevents concurrent
@@ -128,7 +152,11 @@ def serve_ndjson(run_once) -> None:
                 try:
                     run_once(argv)
                 except SystemExit as exc:
-                    exit_code = int(exc.code) if isinstance(exc.code, int) else 1
+                    exit_code = _exit_status(exc.code)
+                    if exc.code is not None and not isinstance(exc.code, int):
+                        # A one-shot interpreter prints a non-integer exit
+                        # message to stderr; keep that diagnostic.
+                        log(exc.code)
         except Exception as exc:  # noqa: BLE001
             exit_code = 70
             log(f"[cellpose_detect] worker request failed: {exc!r}")
@@ -145,6 +173,55 @@ def serve_ndjson(run_once) -> None:
         }
         sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
         sys.stdout.flush()
+
+        if after_response is not None:
+            # Drop this request's input and payload first, so the hook can
+            # reclaim them. The model cache lives in the caller's module.
+            raw_line = request = argv = output = response = None
+            _run_after_response(after_response)
+
+
+def _run_after_response(hook) -> None:
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            hook()
+    except Exception as exc:  # noqa: BLE001
+        log(f"[cellpose_detect] post-response cleanup failed: {exc!r}")
+
+
+def release_request_memory() -> None:
+    """Hand back memory a finished request no longer needs.
+
+    For use as `serve_ndjson`'s ``after_response`` hook. A cached model stays
+    loaded. This collects unreachable Python objects (including reference
+    cycles left by the request) and, only when the worker has already
+    imported PyTorch, returns its cached, now unused accelerator blocks to
+    the system. It never imports PyTorch itself, so the TensorFlow and
+    scikit-image workers pay for the collection only. It writes nothing to
+    stdout.
+    """
+    import gc
+
+    with contextlib.redirect_stdout(sys.stderr):
+        gc.collect()
+        torch = sys.modules.get("torch")
+        if torch is None:
+            return
+        try:
+            mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+            mps = getattr(torch, "mps", None)
+            if (mps_backend is not None and mps_backend.is_available()
+                    and hasattr(mps, "empty_cache")):
+                mps.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] could not release the MPS cache: {exc!r}")
+        try:
+            cuda = getattr(torch, "cuda", None)
+            if (cuda is not None and cuda.is_available()
+                    and cuda.is_initialized()):
+                cuda.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] could not release the CUDA cache: {exc!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +747,71 @@ def compute_colony_stats(masks, args, height_px: int, width_px: int) -> dict:
 # Per-cell measurement loop.
 # ---------------------------------------------------------------------------
 
+# Above this many possible label values per present label, the bounding boxes
+# are not looked up (scipy's find_objects allocates one slot per value up to
+# the largest label). Such labels fall back to the whole image.
+_SPARSE_LABEL_FACTOR = 4
+_SPARSE_LABEL_FLOOR = 1 << 16
+
+
+def label_crops(masks, label_ids):
+    """Yield ``(label, crop, row0, col0)`` for every label in ``label_ids``.
+
+    ``crop`` is ``masks == label`` restricted to that label's bounding box
+    grown by one pixel on each side, but never past the image border.
+    ``(row0, col0)`` is the crop's top-left corner in full-image pixels.
+
+    Measuring a cell on this crop gives exactly what the same code gives on
+    the full-image ``masks == label``:
+
+    * ``np.nonzero(crop)`` shifted by ``(row0, col0)`` lists the same pixels
+      in the same row-major order as ``np.where(masks == label)``, so means,
+      medians and fancy-indexed values come out identical.
+    * ``skimage.measure.perimeter`` only gives weight to the cell's border
+      pixels, whose 3x3 neighbourhoods lie inside the grown box. Outside the
+      image both its erosion and its convolution read zeros, as they do for
+      the full image.
+    * ``skimage.measure.find_contours(..., 0.5)`` visits the squares that
+      touch the cell in the same order, so it returns the same contours
+      shifted by ``(row0, col0)``. Shift a contour back BEFORE any further
+      float processing (``approximate_polygon`` is not translation-exact).
+      The box is not grown past the image border because a full-image
+      contour stays open there.
+
+    Labels with no usable bounding box (non-integer label maps, labels below
+    1, very sparse label values, or scipy unavailable) get the whole image as
+    their crop, which is the plain whole-image computation.
+    """
+    import numpy as np
+
+    height, width = int(masks.shape[0]), int(masks.shape[1])
+    objects = None
+    if len(label_ids) and np.issubdtype(masks.dtype, np.integer):
+        max_label = int(np.max(label_ids))
+        limit = max(_SPARSE_LABEL_FLOOR, _SPARSE_LABEL_FACTOR * len(label_ids))
+        if 1 <= max_label <= limit:
+            try:
+                from scipy.ndimage import find_objects
+                objects = find_objects(masks)
+            except Exception:  # noqa: BLE001
+                objects = None
+
+    for label in label_ids:
+        box = None
+        if objects is not None:
+            index = int(label) - 1
+            if 0 <= index < len(objects):
+                box = objects[index]
+        if box is None:
+            row0, row1, col0, col1 = 0, height, 0, width
+        else:
+            row0 = max(box[0].start - 1, 0)
+            row1 = min(box[0].stop + 1, height)
+            col0 = max(box[1].start - 1, 0)
+            col1 = min(box[1].stop + 1, width)
+        yield label, masks[row0:row1, col0:col1] == label, row0, col0
+
+
 def measure_cells(masks, img, args, flows=None, channel_stack=None,
                   channel_names=None) -> list[dict]:
     """Build the list of per-cell dicts matching SidecarPayload's schema.
@@ -802,14 +944,20 @@ def measure_cells(masks, img, args, flows=None, channel_stack=None,
     large_t = float(getattr(args, "large_threshold", 30))
     EDGE_MARGIN_PX = 16
 
-    for cell_idx, label in enumerate(label_ids):
+    # Each cell is measured on a small crop around its bounding box rather
+    # than on a full-image mask: `mask` is that crop and (row0, col0) its
+    # top-left corner. `ys`/`xs` are full-image coordinates. See
+    # `label_crops` for why the numbers are unchanged.
+    for cell_idx, (label, mask, row0, col0) in enumerate(
+            label_crops(masks, label_ids)):
         if cell_idx > 0 and cell_idx % progress_every == 0:
             log(f"[cellpose_detect] measured {cell_idx}/{n_total} cells…")
-        mask = (masks == label)
-        ys, xs = np.where(mask)
-        area_px = int(mask.sum())
+        crop_ys, crop_xs = np.nonzero(mask)
+        area_px = int(crop_ys.size)
         if area_px < 4:
             continue
+        ys = crop_ys + row0
+        xs = crop_xs + col0
         cy = float(ys.mean())
         cx = float(xs.mean())
         diameter_px = 2.0 * math.sqrt(area_px / math.pi)
@@ -850,7 +998,7 @@ def measure_cells(masks, img, args, flows=None, channel_stack=None,
             except Exception:  # noqa: BLE001
                 pass
 
-        mean_intensity = float(img_gray[mask].mean()) if mask.any() else None
+        mean_intensity = float(img_gray[ys, xs].mean()) if area_px else None
         integrated_density = ((area_px * mean_intensity)
                               if mean_intensity is not None else None)
 
@@ -948,11 +1096,13 @@ def measure_cells(masks, img, args, flows=None, channel_stack=None,
         # find_contours returns (row, col) pairs at 0.5 iso-level — flip to
         # (x=col, y=row) and downsample with Ramer–Douglas–Peucker so a
         # 1000-point boundary collapses to ≤200 points without losing shape.
+        # The contour is shifted to full-image pixels before simplification.
         if _skimage_ok and sk_find_contours is not None:
             try:
                 contours = sk_find_contours(mask.astype(np.uint8), 0.5)
                 if contours:
-                    best = max(contours, key=len)
+                    best = max(contours, key=len) + np.array(
+                        [row0, col0], dtype=np.float64)
                     if sk_approx_polygon is not None and len(best) > 4:
                         approx = sk_approx_polygon(best, tolerance=0.5)
                     else:

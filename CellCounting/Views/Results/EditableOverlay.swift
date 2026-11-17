@@ -85,7 +85,9 @@ struct EditableOverlay: View {
     }
 
     private func cellsWithCentroids(in rect: CGRect) -> [DetectedCell] {
-        geometry.query(rect).indices.compactMap { index in
+        // Read the binding once; Results derives it on every access.
+        let cells = self.cells
+        return geometry.query(rect).indices.compactMap { index in
             let cell = cells[index]
             return rect.contains(CGPoint(x: cell.cx, y: cell.cy)) ? cell : nil
         }
@@ -254,7 +256,6 @@ struct EditableOverlay: View {
         let index = geometry
         return CellsCanvas(cells: cells,
                     geometry: index,
-                    pathCache: geometryCache,
                     renderRevision: renderRevision,
                     thresholds: thresholds,
                     overlayMode: overlayMode,
@@ -274,6 +275,7 @@ struct EditableOverlay: View {
         Canvas { ctx, _ in
             guard selectedCellId != nil || mergeFirstId != nil else { return }
             let index = geometry
+            let cells = self.cells
             let ids = Set([selectedCellId, mergeFirstId].compactMap { $0 })
             for offset in ids.compactMap({ index.indicesByID[$0] }).sorted() {
                 let c = cells[offset]
@@ -1229,9 +1231,11 @@ struct EditableOverlay: View {
     /// Painted on top of cellsLayer — does not touch F1/F2's drawing.
     private var multiSelectionHighlight: some View {
         Canvas { ctx, _ in
-            guard !selectedCellIds.isEmpty else { return }
+            let selected = selectedCellIds
+            guard !selected.isEmpty else { return }
             let index = geometry
-            for offset in selectedCellIds.compactMap({ index.indicesByID[$0] }).sorted() {
+            let cells = self.cells
+            for offset in selected.compactMap({ index.indicesByID[$0] }).sorted() {
                 let c = cells[offset]
                 let r = (c.diameterPx * viewScale) / 2
                 let cxv = c.cx * viewScale + viewOffset.x
@@ -1352,7 +1356,10 @@ private extension EditableOverlay.DragSession.Corner {
 }
 
 /// One current-image index and a bounded cache of source paths. Panning, zoom,
-/// palette changes and selection reuse vertices; geometry revisions invalidate.
+/// palette changes and selection reuse the index; geometry revisions
+/// invalidate. The cell layer builds its merged per-colour paths on each draw
+/// (`OverlayRenderPlan`); `path(for:contour:)` returns the same single-cell
+/// polygon, built by the same function.
 final class OverlayGeometryCache {
     private var previousCells: [DetectedCell] = []
     private var previousRevision: Int?
@@ -1396,11 +1403,7 @@ final class OverlayGeometryCache {
     func path(for id: UUID, contour: [CGPoint]) -> Path {
         if let cached = paths[id] { return cached.path }
         var path = Path()
-        if let first = contour.first {
-            path.move(to: first)
-            for point in contour.dropFirst() { path.addLine(to: point) }
-            path.closeSubpath()
-        }
+        OverlayRenderPlan.appendPolygon(contour, to: &path)
         guard contour.count <= maxVertices, maxPaths > 0 else { return path }
         while !paths.isEmpty && (paths.count >= maxPaths || cachedVertices + contour.count > maxVertices) {
             let oldest = pathOrder[evictionHead]
@@ -1429,7 +1432,6 @@ final class OverlayGeometryCache {
 private struct CellsCanvas: View, Equatable {
     let cells: [DetectedCell]
     let geometry: CellSpatialIndex
-    let pathCache: OverlayGeometryCache
     let renderRevision: Int?
     let thresholds: [Double]
     let overlayMode: OverlayMode
@@ -1439,6 +1441,9 @@ private struct CellsCanvas: View, Equatable {
     let viewOffset: CGPoint
     let visibleSourceRect: CGRect?
 
+    // Not `rendersAsynchronously`: the selection, lasso and annotation layers
+    // above draw synchronously, and an asynchronously presented cell layer
+    // could lag them by a frame while editing or zooming.
     var body: some View {
         Canvas { ctx, size in
             let scale = max(viewScale, 0.0001)
@@ -1450,64 +1455,75 @@ private struct CellsCanvas: View, Equatable {
             var sourceContext = ctx
             sourceContext.translateBy(x: viewOffset.x, y: viewOffset.y)
             sourceContext.scaleBy(x: viewScale, y: viewScale)
-            for cellIndex in geometry.query(region).indices {
-                let c = cells[cellIndex]
-                let isManual = c.isManual
-                let r = (c.diameterPx * viewScale) / 2
-                let cxv = c.cx * viewScale + viewOffset.x
-                let cyv = c.cy * viewScale + viewOffset.y
-                let rect = CGRect(x: cxv - r, y: cyv - r, width: r * 2, height: r * 2)
-
-                if isManual {
-                    // Manual marker: fixed 14pt pin — small circle with sequential number.
-                    // Visual size is FIXED regardless of cell diameter (diameter still used for stats).
-                    let mr = EditableOverlay.manualMarkerRadius
-                    let pinRect = CGRect(x: cxv - mr, y: cyv - mr, width: mr * 2, height: mr * 2)
-                    let circlePath = Path(ellipseIn: pinRect)
-                    ctx.fill(circlePath, with: .color(.accentColor))
-                    ctx.stroke(circlePath, with: .color(.white), style: StrokeStyle(lineWidth: 1.5))
-
-                    // Draw sequential number centered inside the pin
-                    let label = "\(geometry.manualOrdinals[cellIndex])"
-                    let resolved = ctx.resolve(
-                        Text(label)
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                    )
-                    let textSize = resolved.measure(in: CGSize(width: 28, height: 20))
-                    ctx.draw(resolved, at: CGPoint(x: cxv - textSize.width / 2,
-                                                   y: cyv - textSize.height / 2))
-                } else {
-                    // Standard ML-detected cell rendering
-                    let idx = BinMath.binIndex(for: c.diameter, thresholds: thresholds)
-                    let col = palette.overlayColor(forBin: idx)
-                    let isUncertain = c.confidence < uncertaintyThreshold
-
-                    if let contour = c.contourPx, contour.count >= 3 {
-                        // Pass-14: paint the per-cell mask as a filled polygon
-                        // in the bin color. Independent of OverlayMode — whenever
-                        // contour data is present we use it.
-                        let sourcePath = pathCache.path(for: c.id, contour: contour)
-                        sourceContext.fill(sourcePath, with: .color(col.opacity(0.25)))
-                        // Transform the context, retaining the exact cached path;
-                        // divide strokes/dashes to preserve their screen size.
-                        let style: StrokeStyle = isUncertain
-                            ? StrokeStyle(lineWidth: 1 / scale, dash: [3.5 / scale, 3 / scale])
-                            : StrokeStyle(lineWidth: 1 / scale)
-                        sourceContext.stroke(sourcePath, with: .color(col), style: style)
-                    } else {
-                        let path = overlayMode == .outline
-                            ? Path(ellipseIn: rect)
-                            : Path(roundedRect: rect, cornerRadius: 2)
-                        ctx.fill(path, with: .color(col.opacity(overlayMode == .outline ? 0.18 : 0.10)))
-                        let style: StrokeStyle = isUncertain
-                            ? StrokeStyle(lineWidth: 1.5, dash: [3.5, 3])
-                            : StrokeStyle(lineWidth: 1.5)
-                        ctx.stroke(path, with: .color(col), style: style)
-                    }
+            // Same fills and strokes as one-per-cell drawing; cells that
+            // cannot touch share one path per bin colour (see OverlayRenderPlan).
+            let commands = OverlayRenderPlan.commands(
+                cells: cells, drawOrder: geometry.query(region).indices,
+                sourceBounds: geometry.bounds, thresholds: thresholds,
+                outlineShapes: overlayMode == .outline,
+                uncertaintyThreshold: uncertaintyThreshold,
+                viewScale: viewScale, viewOffset: viewOffset)
+            guard !commands.isEmpty else { return }
+            var colors: [Int: Color] = [:]
+            func color(_ bin: Int) -> Color {
+                if let cached = colors[bin] { return cached }
+                let resolved = palette.overlayColor(forBin: bin)
+                colors[bin] = resolved
+                return resolved
+            }
+            // Transform the context, retaining the exact source-space paths;
+            // divide strokes/dashes to preserve their screen size.
+            let contourSolid = StrokeStyle(lineWidth: 1 / scale)
+            let contourDashed = StrokeStyle(lineWidth: 1 / scale, dash: [3.5 / scale, 3 / scale])
+            let boxSolid = StrokeStyle(lineWidth: 1.5)
+            let boxDashed = StrokeStyle(lineWidth: 1.5, dash: [3.5, 3])
+            let boxFillOpacity = overlayMode == .outline ? 0.18 : 0.10
+            for command in commands {
+                switch command {
+                case .fillContours(let bin, let path):
+                    // Pass-14: the per-cell mask as a filled polygon in the
+                    // bin color, whatever the OverlayMode.
+                    sourceContext.fill(path, with: .color(color(bin).opacity(0.25)))
+                case .strokeContours(let bin, let path, let dashed):
+                    sourceContext.stroke(path, with: .color(color(bin)),
+                                         style: dashed ? contourDashed : contourSolid)
+                case .fillBox(let bin, let path):
+                    ctx.fill(path, with: .color(color(bin).opacity(boxFillOpacity)))
+                case .strokeBox(let bin, let path, let dashed):
+                    ctx.stroke(path, with: .color(color(bin)), style: dashed ? boxDashed : boxSolid)
+                case .fillDots(let bin, let uncertain, let path):
+                    let base = color(bin)
+                    ctx.fill(path, with: .color(uncertain
+                        ? base.opacity(OverlayRenderPlan.uncertainDotOpacity) : base))
+                case .pin(let cellIndex):
+                    drawPin(cellIndex, in: &ctx)
                 }
             }
         }
+    }
+
+    /// Manual marker: fixed 14pt pin — small circle with sequential number.
+    /// Visual size is FIXED regardless of cell diameter (diameter still used for stats).
+    private func drawPin(_ cellIndex: Int, in ctx: inout GraphicsContext) {
+        let c = cells[cellIndex]
+        let cxv = c.cx * viewScale + viewOffset.x
+        let cyv = c.cy * viewScale + viewOffset.y
+        let mr = EditableOverlay.manualMarkerRadius
+        let pinRect = CGRect(x: cxv - mr, y: cyv - mr, width: mr * 2, height: mr * 2)
+        let circlePath = Path(ellipseIn: pinRect)
+        ctx.fill(circlePath, with: .color(.accentColor))
+        ctx.stroke(circlePath, with: .color(.white), style: StrokeStyle(lineWidth: 1.5))
+
+        // Draw sequential number centered inside the pin
+        let label = "\(geometry.manualOrdinals[cellIndex])"
+        let resolved = ctx.resolve(
+            Text(label)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+        )
+        let textSize = resolved.measure(in: CGSize(width: 28, height: 20))
+        ctx.draw(resolved, at: CGPoint(x: cxv - textSize.width / 2,
+                                       y: cyv - textSize.height / 2))
     }
 
     // Custom equality (all stored properties are value types) so `.equatable()`

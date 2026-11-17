@@ -103,6 +103,15 @@ actor AssayWorkerService {
         retirement = nil
     }
 
+    /// Memory pressure: stop the worker (and with it its prepared-data cache)
+    /// when no assay is running or waiting. A running assay is left alone.
+    func purgeForMemoryPressure() async {
+        guard activeID == nil, waiters.isEmpty else { return }
+        retirement?.cancel()
+        retirement = nil
+        await retireIfIdle()
+    }
+
     func shutdown() async {
         retirement?.cancel()
         retirement = nil

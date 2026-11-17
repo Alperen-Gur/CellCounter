@@ -32,7 +32,9 @@ final class AppState {
     let workbenchSession = WorkbenchSession()
 
     let jobScheduler = AnalysisJobScheduler(store: AnalysisJobStore(
-        url: FileStore.shared.root.appendingPathComponent("analysis-jobs.json")))
+        url: FileStore.shared.analysisJobsURL))
+    /// Which data library is open, plus New/Open/Recent Library switching.
+    let libraries = LibraryController()
     var analysisSetupJobId: UUID?
     var isPreparingImport = false
     var showLibraryMigration = false
@@ -270,6 +272,19 @@ final class AppState {
         reviewQueueCount = repos.uncorrectedCellCount(below: Self.reviewQueueConfidenceCutoff)
     }
 
+    @ObservationIgnored
+    private var recentSummariesTask: Task<Void, Never>?
+
+    /// Debounced `recentBatchSummaries` refresh for rapid edit notifications.
+    private func scheduleRecentSummariesRefresh() {
+        recentSummariesTask?.cancel()
+        recentSummariesTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
+        }
+    }
+
     /// Observer token for `ccLibraryChanged` — held so we don't leak (matches the
     /// `defaultsObserver` pattern above).
     @ObservationIgnored
@@ -400,7 +415,10 @@ final class AppState {
     /// Coalesce rapid overlay edits while their payload is encoded off the UI thread.
     @ObservationIgnored private var pendingCellEdits: [UUID: PendingCellEdit] = [:]
     @ObservationIgnored private var pendingCellEditTasks: [UUID: Task<Void, Never>] = [:]
-    @ObservationIgnored private var calibrationTask: Task<Void, Error>?
+    @ObservationIgnored private var calibrationTask: Task<Bool, Error>?
+    /// Images a recalibration rewrites between saves, so its pending changes
+    /// (and the write-ahead log) stay bounded on large batches.
+    @ObservationIgnored var recalibrationSaveInterval = 16
     private var calibrationUpdatesInFlight = 0
     var isRecalibrating: Bool { calibrationUpdatesInFlight > 0 }
 
@@ -559,6 +577,8 @@ final class AppState {
         // existing correction/split sites; `ccLibraryChanged` is posted by
         // `importAndAnalyze` and from views that delete batches/images.
         refreshLibraryStats()
+        // One-time notice: the store was copied before this launch upgraded it.
+        libraries.upgradeBackupURL = repos.upgradeBackupURL
         self.correctionsChangedObserver = NotificationCenter.default.addObserver(
             forName: .ccCorrectionsChanged,
             object: nil,
@@ -572,8 +592,8 @@ final class AppState {
                 // resurrect a badge after every image was deleted.
                 self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
                 // Cell edits can change the denormalized total in a recent row;
-                // this is five lightweight batch reads, not a library scan.
-                self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
+                // refresh it once a burst of edits settles.
+                self.scheduleRecentSummariesRefresh()
             }
         }
         self.libraryChangedObserver = NotificationCenter.default.addObserver(
@@ -587,9 +607,24 @@ final class AppState {
         // Upgrade pre-index rows in yielding chunks. App launch and Home render
         // stay immediate; the Review badge fills in as legacy detections are
         // normalized once, then remains O(1)/fetchCount on future launches.
+        // Review opens as soon as the queue's own index work is done; the
+        // stale-row check and legacy batch totals follow in the background.
+        repos.onStaleReviewRows = { [weak self] in
+            Task { @MainActor [weak self] in await self?.runIndexMaintenance() }
+        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.prepareReviewIndex()
+            // Saved mask versions are compacted, and detection cells still
+            // stored inline are moved to their own rows, at low priority and
+            // only once the review index is ready, so launch never waits on it.
+            // Each job starts only while the library's upkeep note says it
+            // may have work (`BackgroundUpkeepNote`); a library already
+            // upgraded is not read at all.
+            self.repos.scheduleDetectionStorageMigration()
+            self.repos.scheduleVariantCompaction()
+            // Compact cell metrics for detections saved before they existed.
+            CellMetricsBackfill.shared.start(repos: self.repos)
         }
 
         // Pass-12 K1: keep `activeModelInstallState` (and `detector`) coherent
@@ -919,7 +954,7 @@ final class AppState {
             do {
                 for pending in Array(pendingCellEdits.values) { try await finishPendingCellEdits(for: pending.detection) }
                 try repos.context.save()
-                workbenchSession.migration.sourceDirectory = FileStore.shared.root.path
+                workbenchSession.migration.sourceDirectory = FileStore.shared.libraryRoot.path
                 workbenchSession.migration.selectedLegacyIDs = imageIDs.map(\.uuidString).sorted()
                 workbenchSession.migration.clearPreview()
                 showLibraryMigration = true
@@ -929,24 +964,67 @@ final class AppState {
         }
     }
 
+    /// Drains in-flight Results edits and saves, so this library can be
+    /// closed when the app relaunches into another one.
+    func saveForLibrarySwitch() async throws {
+        for pending in Array(pendingCellEdits.values) { try await finishPendingCellEdits(for: pending.detection) }
+        try repos.context.save()
+    }
+
     func retryReviewIndex() {
         guard !isReviewIndexing else { return }
         isReviewIndexing = true
         Task { await prepareReviewIndex() }
     }
 
+    /// Only the index work the queue's contents and order depend on keeps
+    /// Review waiting (legacy detections without review rows, legacy sort
+    /// keys); with nothing to upgrade that is two indexed queries. The rest
+    /// runs after Review is available, since the queue already hides stale rows.
     private func prepareReviewIndex() async {
         reviewIndexError = nil
-        defer { isReviewIndexing = false }
         do {
-            try await repos.rebuildPerformanceIndexes { [weak self] in
-                guard let self else { return }
-                self.reviewQueueCount = self.repos.pendingReviewCandidateCount()
-                self.recentBatchSummaries = self.repos.recentBatchSummaries(limit: 5)
-            }
+            let upgraded = try await repos.prepareReviewQueueIndex()
+            if upgraded { refreshReviewIndexStats() }
         } catch {
             reviewIndexError = "Could not prepare the review queue: \(error.localizedDescription)"
+            isReviewIndexing = false
+            return
         }
+        isReviewIndexing = false
+        await runIndexMaintenance()
+    }
+
+    @ObservationIgnored private var indexMaintenanceRunning = false
+    @ObservationIgnored private var indexMaintenanceRequested = false
+
+    /// Stale-row check (only when the library's note asks for it) and legacy
+    /// batch totals, without blocking Review. Home is refreshed once, at the
+    /// end, and only if something changed. A request made while a pass runs
+    /// starts one more pass afterwards. A failure leaves the check pending for
+    /// the next launch; until then the queue keeps hiding stale rows.
+    private func runIndexMaintenance() async {
+        guard !indexMaintenanceRunning else {
+            indexMaintenanceRequested = true
+            return
+        }
+        indexMaintenanceRunning = true
+        defer { indexMaintenanceRunning = false }
+        repeat {
+            indexMaintenanceRequested = false
+            do {
+                if try await repos.performDeferredIndexMaintenance() { refreshReviewIndexStats() }
+            } catch {
+                NSLog("CellCounter: review index upkeep failed and will be retried: %@",
+                      error.localizedDescription)
+                return
+            }
+        } while indexMaintenanceRequested && !Task.isCancelled
+    }
+
+    private func refreshReviewIndexStats() {
+        reviewQueueCount = repos.pendingReviewCandidateCount()
+        recentBatchSummaries = repos.recentBatchSummaries(limit: 5)
     }
 
     var currentImage: ImageRecord? {
@@ -1169,31 +1247,32 @@ final class AppState {
             guard let self else { return }
             defer { self.isPreparingImport = false }
             await self.jobScheduler.restore()
+            // One chunked read per file. The digest also records the file's
+            // size and modification time, so the import can reuse the hash.
             let pairs = await Task.detached(priority: .userInitiated) {
-                supported.map { ($0, ImageLoader.sha256Hex(of: $0)) }
+                supported.map { ($0, ImportFileDigest.digest(of: $0)) }
             }.value
-            let existing = Dictionary(self.repos.allImages().compactMap { image -> (String, ImageRecord)? in
-                guard let hash = image.fileHash else { return nil }
-                return (hash, image)
-            }, uniquingKeysWith: { first, _ in first })
-            var hashes: [URL: String] = [:]
+            // Only images sharing a dropped file's hash, via the fileHash index.
+            let existing = self.repos.firstImagesByFileHash(Set(pairs.compactMap { $0.1?.hash }))
+            var digests: [URL: ImportSourceDigest] = [:]
             var seen: Set<String> = []
             var unique: [URL] = []
             var duplicates: [DuplicateCandidate] = []
-            for (url, hash) in pairs {
-                if let hash {
-                    hashes[url] = hash
+            for (url, digest) in pairs {
+                if let digest {
+                    let hash = digest.hash
+                    digests[url] = digest
                     if let image = existing[hash] { duplicates.append(.init(url: url, hash: hash, existingRecord: image)) }
                     if !seen.insert(hash).inserted { continue }
                 }
                 unique.append(url)
             }
             if duplicates.isEmpty {
-                self.proceedWithImport(urls: unique, condition: condition, knownHashes: hashes)
+                await self.importNewBatch(urls: unique, condition: condition, knownDigests: digests)
             } else {
                 self.pendingDuplicateSession = DuplicateImportSession(allURLs: unique, condition: condition,
                     duplicates: duplicates, onProceed: { [weak self] urls in
-                        self?.proceedWithImport(urls: urls, condition: condition, knownHashes: hashes)
+                        self?.proceedWithImport(urls: urls, condition: condition, knownDigests: digests)
                     })
                 self.showDuplicateImportSheet = true
             }
@@ -1204,16 +1283,30 @@ final class AppState {
     /// Create a durable draft and import the representative image. Inference is
     /// an explicit choice in AnalysisSetupSheet; native import needs no model.
     func proceedWithImport(urls: [URL], condition: String?, svc: DetectionService? = nil,
-                           knownHashes: [URL: String] = [:]) {
+                           knownDigests: [URL: ImportSourceDigest] = [:]) {
+        guard !urls.isEmpty else { return }
+        Task { [weak self] in
+            await self?.importNewBatch(urls: urls, condition: condition, knownDigests: knownDigests)
+        }
+    }
+
+    /// `proceedWithImport`'s work. The job items (a security bookmark, the
+    /// file size and the image header of every file) are built off the main
+    /// actor before the batch is created.
+    private func importNewBatch(urls: [URL], condition: String?,
+                                knownDigests: [URL: ImportSourceDigest]) async {
         guard !urls.isEmpty else { return }
         let parentNames = Set(urls.map { $0.deletingLastPathComponent().lastPathComponent })
         let title = urls.count == 1 ? urls[0].deletingPathExtension().lastPathComponent
             : (parentNames.count == 1 ? parentNames.first! : "Batch · \(urls.count) images · \(Self.shortDate())")
         let settings = AnalysisRunSettings.capture(state: self)
+        let items = await AnalysisJobItem.make(urls.map { url in
+            AnalysisJobItem.Source(url: url, knownHash: knownDigests[url]?.hash,
+                                   knownHashStamp: knownDigests[url]?.stamp)
+        })
         let batch = repos.createBatch(displayName: title, modelId: settings.modelId,
                                       pxPerUm: settings.pxPerUm, thresholds: settings.thresholds, condition: condition)
-        var job = AnalysisJob(batchId: batch.id, title: title, settings: settings,
-                              items: urls.map { AnalysisJobItem(url: $0, knownHash: knownHashes[$0]) })
+        var job = AnalysisJob(batchId: batch.id, title: title, settings: settings, items: items)
         job.settings.calibrationSource = "unconfirmed"
         currentBatchId = batch.id; currentImageIdx = 0
         refreshLibraryStats()
@@ -1243,6 +1336,9 @@ final class AppState {
         }
     }
 
+    /// Batches whose Analysis setup job is still being built.
+    @ObservationIgnored private var analysisSetupsInPreparation: Set<UUID> = []
+
     func openAnalysisSetup(for batch: BatchRecord) {
         if let draft = jobScheduler.jobs.last(where: { $0.batchId == batch.id && $0.status == .draft }) {
             analysisSetupJobId = draft.id; return
@@ -1251,21 +1347,44 @@ final class AppState {
             flashExport("Pause \(active.title) before changing its analysis setup.", isError: false)
             view = .queue; return
         }
-        let sample = currentImage?.batch?.id == batch.id ? currentImage : orderedImages(in: batch).first
+        // The draft for this batch is on its way; a second one must not be added.
+        guard !analysisSetupsInPreparation.contains(batch.id) else { return }
+        let images = orderedImages(in: batch)
+        let sample = currentImage?.batch?.id == batch.id ? currentImage : images.first
         var settings = sample?.detection?.runSettings ?? AnalysisRunSettings.capture(state: self)
         settings.pxPerUm = batch.pxPerUm; settings.calibrationSource = batch.pxPerUmSource ?? "manual"
         settings.thresholds = batch.thresholds
-        let items = orderedImages(in: batch).map { image -> AnalysisJobItem in
-            var item = AnalysisJobItem(url: image.storedURL, imageId: image.id, knownHash: image.fileHash, displayName: image.fileName)
-            if image.detection?.runSettings?.hasSameInputs(as: settings) == true { item.status = .completed }
-            return item
+        let sources = images.map { image in
+            AnalysisJobItem.Source(url: image.storedURL, imageId: image.id, knownHash: image.fileHash,
+                                   displayName: image.fileName)
         }
-        let job = AnalysisJob(batchId: batch.id, title: batch.displayName, settings: settings, items: items)
+        let savedRunSettings = images.map { $0.detection?.runSettingsData }
+        let batchId = batch.id, title = batch.displayName
+        analysisSetupsInPreparation.insert(batchId)
         Task { [weak self] in
+            let items = await Self.analysisSetupItems(sources, savedRunSettings: savedRunSettings,
+                                                      settings: settings)
             guard let self else { return }
+            defer { self.analysisSetupsInPreparation.remove(batchId) }
+            let job = AnalysisJob(batchId: batchId, title: title, settings: settings, items: items)
             do { try await self.jobScheduler.add(job); self.analysisSetupJobId = job.id }
             catch { self.flashExport(error.localizedDescription, isError: true) }
         }
+    }
+
+    /// Analysis setup items, built off the main actor: the image header of
+    /// every image and the comparison with each image's saved run settings
+    /// (`DetectionRecord.runSettings` decodes `runSettingsData` the same way).
+    /// Same items, order and statuses as building them on the main actor.
+    @concurrent
+    private static func analysisSetupItems(_ sources: [AnalysisJobItem.Source], savedRunSettings: [Data?],
+                                           settings: AnalysisRunSettings) async -> [AnalysisJobItem] {
+        var items = await AnalysisJobItem.make(sources)
+        for (index, data) in zip(items.indices, savedRunSettings) {
+            let saved = data.flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) }
+            if saved?.hasSameInputs(as: settings) == true { items[index].status = .completed }
+        }
+        return items
     }
 
     func commitAnalysisSetup(_ jobId: UUID) async throws {
@@ -1273,26 +1392,26 @@ final class AppState {
         if let error = job.settings.validationError {
             throw NSError(domain: "AnalysisJobs", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
         }
-        try await recalibrateBatch(batch, pxPerUm: job.settings.pxPerUm, source: job.settings.calibrationSource)
-        batch.modelId = job.settings.modelId
-        batch.thresholds = job.settings.thresholds
-        batch.contentRevision &+= 1
+        // Preview and Run both commit; pressing either again with the same
+        // settings changes nothing, rewrites nothing and wakes no screen.
+        var changed = try await recalibrateBatchIfNeeded(batch, pxPerUm: job.settings.pxPerUm,
+                                                         source: job.settings.calibrationSource, notify: false)
+        guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+        if batch.modelId != job.settings.modelId {
+            batch.modelId = job.settings.modelId
+            changed = true
+        }
+        if batch.thresholds != job.settings.thresholds {
+            batch.thresholds = job.settings.thresholds
+            changed = true
+        }
+        if changed { batch.contentRevision &+= 1 }
         try repos.context.save()
-        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+        if changed { NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil) }
     }
 
-    func jobStatus(for imageId: UUID) -> String? {
-        for job in jobScheduler.jobs.reversed() {
-            if let item = job.items.first(where: { $0.imageId == imageId }) {
-                if jobScheduler.previewItemId == item.id { return "Running preview" }
-                if item.status == .completed { return job.importOnly ? "Imported · ready to analyze" : "Analysis complete" }
-                if item.status == .failed { return "Analysis failed · retry in Processing" }
-                if job.status == .draft { return "Ready for preview" }
-                return "\(job.status.title) · \(item.status.rawValue)"
-            }
-        }
-        return nil
-    }
+    /// O(1): the scheduler keeps a per-image status index up to date.
+    func jobStatus(for imageId: UUID) -> String? { jobScheduler.statusLabel(for: imageId) }
 
     private func prepareJobImage(_ item: AnalysisJobItem, settings: AnalysisRunSettings,
                                  batchId: UUID) async throws -> UUID {
@@ -1306,11 +1425,12 @@ final class AppState {
         let imported: ImportResult
         if ImageLoader.isVendorExtension(url.pathExtension) {
             let interpreters = PythonRuntime.vendorReaderInterpreters(preferredFamily: ModelFamily(rawValue: settings.modelFamily))
-            imported = try await ImageLoader.importVendorFile(url, precomputedHash: item.knownHash,
+            imported = try await ImageLoader.importVendorFile(url, knownHash: item.knownHash,
+                knownHashStamp: item.knownHashStamp,
                 interpreters: interpreters, zProjection: settings.zProjection)
         } else {
             imported = try await Task.detached(priority: .utility) {
-                try ImageLoader.importFile(url, precomputedHash: item.knownHash)
+                try ImageLoader.importFile(url, knownHash: item.knownHash, knownHashStamp: item.knownHashStamp)
             }.value
         }
         let image = imported.record
@@ -1324,12 +1444,10 @@ final class AppState {
         }
         // A queued source can be replaced between selection and preparation.
         // Verify the owned copy before trusting the original dedup identity.
-        let copiedURL = image.storedURL
-        let actualHash = await Task.detached(priority: .utility) { ImageLoader.sha256Hex(of: copiedURL) }.value ?? ""
-        guard !batch.isDeleted, batch.modelContext != nil else {
-            discardImportedFiles()
-            throw CancellationError()
-        }
+        // `fileHash` is the stored copy's hash: computed while copying, or the
+        // drop-time hash when the source still has the size and modification
+        // time it had when that hash was taken.
+        let actualHash = imported.fileHash
         if actualHash.isEmpty || (item.knownHash != nil && item.knownHash != actualHash) {
             discardImportedFiles()
             throw NSError(domain: "AnalysisJobs", code: 3, userInfo: [NSLocalizedDescriptionKey:
@@ -1369,8 +1487,13 @@ final class AppState {
     /// have changed since the run settings were captured.
     func cellsAtBatchScale(_ cells: [DetectedCell], for image: ImageRecord,
                            measuredAt sourceScale: Double) -> [DetectedCell] {
-        guard let scale = image.batch?.pxPerUm, scale > 0, scale != sourceScale else { return cells }
-        return Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: sourceScale)
+        Self.cellsAtScale(cells, batchScale: image.batch?.pxPerUm, measuredAt: sourceScale)
+    }
+
+    nonisolated static func cellsAtScale(_ cells: [DetectedCell], batchScale: Double?,
+                                         measuredAt sourceScale: Double) -> [DetectedCell] {
+        guard let scale = batchScale, scale > 0, scale != sourceScale else { return cells }
+        return calibratedCells(cells, pxPerUm: scale, fallbackScale: sourceScale)
     }
 
     private func analyzeJobImage(_ imageId: UUID, settings: AnalysisRunSettings) async throws {
@@ -1396,21 +1519,38 @@ final class AppState {
         }
         let result = try await svc.detectWithLocalTiming(settings.detectionInput(imageURL: source))
         guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
-        // Edits made while inference was running belong to the saved previous
-        // variant. Drain them before replacing its detection record.
-        while let detection = image.detection, let pending = pendingCellEditTasks[detection.id] {
-            await pending.value
+        // Scale, encode, hash and compress the cells on a detached task, so
+        // the main actor only links rows. Redone if the batch calibration
+        // changes meanwhile: the cells are stored at its current scale.
+        let rawCells = result.cells, sourceScale = settings.pxPerUm
+        var batchScale: Double?
+        var measuredCells: [DetectedCell] = []
+        var storage: DetectionRecord.CellsStorageSnapshot
+        repeat {
+            batchScale = image.batch?.pxPerUm
+            let scale = batchScale
+            (measuredCells, storage) = await Task.detached(priority: .userInitiated) {
+                let cells = Self.cellsAtScale(rawCells, batchScale: scale, measuredAt: sourceScale)
+                return (cells, DetectionRecord.makeStorageSnapshot(cells))
+            }.value
             try Task.checkCancellation()
             guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
-        }
-        try Task.checkCancellation()
-        let measuredCells = cellsAtBatchScale(result.cells, for: image, measuredAt: settings.pxPerUm)
+            // Edits made while inference was running belong to the saved previous
+            // variant. Drain them before replacing its detection record.
+            while let detection = image.detection, let pending = pendingCellEditTasks[detection.id] {
+                await pending.value
+                try Task.checkCancellation()
+                guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
+            }
+        } while image.batch?.pxPerUm != batchScale
         // The model and run inputs are captured before awaiting inference.
-        repos.saveDetection(measuredCells, detectorId: "\(type(of: svc))/\(settings.modelId)",
+        repos.saveDetection(snapshot: storage, cells: measuredCells,
+                            detectorId: "\(type(of: svc))/\(settings.modelId)",
                             for: image, imageStats: result.imageStats, runSettings: recordedSettings, save: false)
         try repos.context.save()
         refreshLibraryStats()
-        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+        // Name the image so open screens refresh only that row or tile.
+        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: imageId)
     }
 
     /// Reanalysis is a durable one-image background job; navigation stays usable.
@@ -1862,20 +2002,50 @@ final class AppState {
 
     /// Serialize calibration requests and only apply a prepared snapshot if no
     /// correction arrived while it was encoded. Memory is bounded to one image.
+    ///
+    /// Every analysed image of a batch is stored at the batch's `pxPerUm`,
+    /// except while a pass is under way or after one stopped partway, which
+    /// `recalibrationPending` records. So when the batch already has this
+    /// scale and no pass is pending, nothing is rewritten (a different
+    /// `source` is stored on its own). Otherwise every analysed image is
+    /// rewritten exactly as before, with a save every
+    /// `recalibrationSaveInterval` images and a short pause after each, and
+    /// the marker is cleared in the final save.
+    ///
+    /// Posts one `ccCorrectionsChanged` at the end when something changed.
     func recalibrateBatch(_ batch: BatchRecord, pxPerUm scale: Double, source: String) async throws {
+        _ = try await recalibrateBatchIfNeeded(batch, pxPerUm: scale, source: source)
+    }
+
+    /// `recalibrateBatch`, returning whether anything was changed. With
+    /// `notify` false nothing is posted, for callers that change more of the
+    /// batch afterwards and post once themselves.
+    @discardableResult
+    func recalibrateBatchIfNeeded(_ batch: BatchRecord, pxPerUm scale: Double, source: String,
+                                  notify: Bool = true) async throws -> Bool {
         calibrationUpdatesInFlight += 1
         defer { calibrationUpdatesInFlight -= 1 }
         let previous = calibrationTask
-        let task = Task { @MainActor in
+        let task = Task { @MainActor () throws -> Bool in
             _ = try? await previous?.value
             try Task.checkCancellation()
             guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
-            guard scale.isFinite, scale > 0 else { return }
+            guard scale.isFinite, scale > 0 else { return false }
+            if batch.pxPerUm == scale, !batch.recalibrationPending {
+                guard batch.pxPerUmSource != source else { return false }
+                batch.pxPerUmSource = source
+                try self.repos.context.save()
+                if notify { NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil) }
+                return true
+            }
             let oldScale = batch.pxPerUm
             batch.pxPerUm = scale; batch.pxPerUmSource = source
-            // Per-cell scale inference makes this idempotent. Visit images
-            // even when the batch already has this scale: a failed earlier
-            // pass may have stopped partway through the batch.
+            // Saved with the first rewritten images (or by any other save
+            // meanwhile), and cleared only once every image has been visited.
+            batch.recalibrationPending = true
+            var rewrittenSinceSave = 0
+            // Per-cell scale inference makes this idempotent, so a pass that
+            // completes one stopped partway visits every image again.
             for image in self.orderedImages(in: batch) {
                 while !image.isDeleted, image.modelContext != nil, let detection = image.detection {
                     try Task.checkCancellation()
@@ -1900,16 +2070,25 @@ final class AppState {
                     }
                     try self.repos.recalibrateReviewCandidates(for: detection, pxPerUm: scale)
                     detection.applyStorageSnapshot(snapshot)
+                    self.repos.noteUpkeepWork(for: detection)
+                    rewrittenSinceSave += 1
                     break
+                }
+                if rewrittenSinceSave >= max(1, self.recalibrationSaveInterval) {
+                    rewrittenSinceSave = 0
+                    try self.repos.context.save()
+                    await LibraryTransferPacing.breathe()
                 }
             }
             guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+            batch.recalibrationPending = false
             batch.contentRevision &+= 1
             try self.repos.context.save()
-            NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+            if notify { NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil) }
+            return true
         }
         calibrationTask = task
-        try await task.value
+        return try await task.value
     }
 
     nonisolated static func calibratedCells(_ cells: [DetectedCell], pxPerUm scale: Double,

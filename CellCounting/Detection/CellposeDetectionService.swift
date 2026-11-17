@@ -125,7 +125,7 @@ struct CellposeDetectionService: DetectionService {
 
         // Structured-error check, payload decode, and per-cell mapping are
         // shared across all detection families via SidecarPayload.decodeResult.
-        return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
+        return try await SidecarPayload.decodeResultOffMain(stdout: outcome.stdout, exitCode: outcome.exitCode)
     }
 
 }

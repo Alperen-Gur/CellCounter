@@ -28,6 +28,13 @@ struct PromptRefinementResult: Sendable {
 /// first and writes reusable per-image embeddings; the native adaptive
 /// connected-component fallback keeps the interaction useful offline and for
 /// non-SAM detectors.
+///
+/// micro_sam requests go to a warm `sam_detect.py --serve` worker per model
+/// type (`PromptSegmentationRunner`). It keeps the model loaded and the
+/// embeddings of the last images clicked in memory, so after the first click
+/// on an image a click runs only SAM's prompt decoder. The fallback crops
+/// each click from a grey plane of the image drawn once
+/// (`PromptImagePlaneCache`).
 enum PromptRefinementService {
     static func refine(imageURL: URL, imageId: UUID, modelId: String,
                        prompt: MaskPrompt, pxPerUm: Double,
@@ -43,8 +50,9 @@ enum PromptRefinementService {
                 backend: .cachedMicroSAM)
         }
 
+        let source = try await PromptImagePlaneCache.shared.source(for: imageURL)
         let cell = try await Task.detached(priority: .userInitiated) {
-            try adaptiveCell(imageURL: imageURL, prompt: prompt,
+            try adaptiveCell(source: source, prompt: prompt,
                              pxPerUm: pxPerUm,
                              expectedDiameterPx: expectedDiameterPx,
                              id: replacingId ?? UUID())
@@ -75,33 +83,33 @@ enum PromptRefinementService {
                      channelIntensities: cell.channelIntensities)
     }
 
-    private nonisolated static func adaptiveCell(imageURL: URL, prompt: MaskPrompt,
-                                     pxPerUm: Double,
-                                     expectedDiameterPx: Double,
-                                     id: UUID) throws -> DetectedCell {
-        guard let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            throw DetectionError.imageDecodeFailed
+    /// The native fallback for one click: in the crop around the prompt, the
+    /// Otsu-thresholded connected component under (or nearest to) the
+    /// prompt's centre.
+    nonisolated static func adaptiveCell(source: PromptPixelSource, prompt: MaskPrompt,
+                                         pxPerUm: Double,
+                                         expectedDiameterPx: Double,
+                                         id: UUID) throws -> DetectedCell {
+        let width: Int, height: Int
+        let cropPixels: (_ x: Int, _ y: Int, _ width: Int, _ height: Int) throws -> [UInt8]
+        switch source {
+        case .plane(let plane):
+            width = plane.width
+            height = plane.height
+            cropPixels = { plane.crop(x: $0, y: $1, width: $2, height: $3) }
+        case .file(let url):
+            let image = try PromptImagePlane.decodeImage(url)
+            width = image.width
+            height = image.height
+            cropPixels = { try PromptImagePlane.drawCrop(of: image, x: $0, y: $1, width: $2, height: $3) }
         }
-        let width = image.width
-        let height = image.height
         let center = prompt.center
         let crop = cropRect(prompt: prompt, center: center,
                             expectedDiameter: expectedDiameterPx,
                             imageWidth: width, imageHeight: height)
         let cropX = Int(crop.minX), cropY = Int(crop.minY)
         let cropW = max(1, Int(crop.width)), cropH = max(1, Int(crop.height))
-        var pixels = [UInt8](repeating: 0, count: cropW * cropH)
-        guard let context = CGContext(data: &pixels, width: cropW, height: cropH,
-                                      bitsPerComponent: 8, bytesPerRow: cropW,
-                                      space: CGColorSpaceCreateDeviceGray(),
-                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
-            throw DetectionError.imageDecodeFailed
-        }
-        context.interpolationQuality = .medium
-        context.translateBy(x: -CGFloat(cropX), y: CGFloat(cropH + cropY))
-        context.scaleBy(x: 1, y: -1)
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let pixels = try cropPixels(cropX, cropY, cropW, cropH)
 
         let threshold = otsuThreshold(pixels)
         var seedX = min(cropW - 1, max(0, Int(center.x) - cropX))
@@ -284,7 +292,11 @@ enum PromptRefinementService {
     }
 }
 
-private enum PromptSegmentationRunner {
+/// micro_sam point/box requests on a warm `sam_detect.py --serve` worker
+/// (`ServedDetection.samPromptSignature`), with the one-shot process as the
+/// fallback when the worker can't start or fails. The worker answers exactly
+/// as a one-shot run of the same arguments would.
+enum PromptSegmentationRunner {
     static func run(imageURL: URL, imageId: UUID, modelType: String,
                     prompt: MaskPrompt, pxPerUm: Double) async throws -> DetectionResult {
         let python = FileStore.shared.pythonInterpreterURL
@@ -293,24 +305,71 @@ private enum PromptSegmentationRunner {
                 ?? PythonRuntime.bundledPythonURL(named: "sam_detect.py") else {
             throw DetectionError.modelNotInstalled(modelId: modelType)
         }
-        try? FileManager.default.createDirectory(at: FileStore.shared.embeddingsDir,
+        let embeddings = FileStore.shared.embeddingsDir
+        try? FileManager.default.createDirectory(at: embeddings,
                                                  withIntermediateDirectories: true)
+        let args = requestArgs(
+            imageURL: imageURL, modelType: modelType, pxPerUm: pxPerUm,
+            embeddingCache: embeddingCacheURL(in: embeddings, imageId: imageId, modelType: modelType),
+            prompt: prompt)
+        let outcome = try await outcome(
+            key: workerKey(pythonURL: python, scriptURL: script, modelType: modelType),
+            pythonURL: python, scriptURL: script, requestArgs: args,
+            pool: PersistentSidecarPool.shared, oneShot: ServedDetection.processOneShot)
+        try outcome.throwIfFailed()
+        return try await SidecarPayload.decodeResultOffMain(stdout: outcome.stdout,
+                                                            exitCode: outcome.exitCode)
+    }
+
+    /// `Embeddings/<image UUID>-<model type>.zarr`; `EmbeddingCacheJanitor`
+    /// relies on this name.
+    nonisolated static func embeddingCacheURL(in directory: URL, imageId: UUID,
+                                              modelType: String) -> URL {
         let safeModel = modelType.replacingOccurrences(of: "/", with: "-")
-        let cache = FileStore.shared.embeddingsDir
-            .appendingPathComponent("\(imageId.uuidString)-\(safeModel).zarr")
-        var args = [script.path, "--image", imageURL.path,
+        return directory.appendingPathComponent("\(imageId.uuidString)-\(safeModel).zarr")
+    }
+
+    /// The per-click arguments, without the script path: the warm worker is
+    /// already running it, and a one-shot fallback prepends it.
+    nonisolated static func requestArgs(imageURL: URL, modelType: String, pxPerUm: Double,
+                                        embeddingCache: URL, prompt: MaskPrompt) -> [String] {
+        var args = ["--image", imageURL.path,
                     "--model", modelType, "--pxPerUm", String(pxPerUm),
                     "--prompts", "interactive",
-                    "--embedding-cache", cache.path]
+                    "--embedding-cache", embeddingCache.path]
         switch prompt {
         case .point(let x, let y):
             args += ["--prompt-point", String(x), String(y)]
         case .box(let x0, let y0, let x1, let y1):
             args += ["--prompt-box", String(x0), String(y0), String(x1), String(y1)]
         }
-        let outcome = try await SidecarProcessRunner.run(pythonURL: python, args: args)
-        try outcome.throwIfFailed()
-        return try SidecarPayload.decodeResult(stdout: outcome.stdout,
-                                               exitCode: outcome.exitCode)
+        return args
+    }
+
+    /// Warm-worker identity: the environment, the script and the micro_sam
+    /// model type. Refinement always uses micro_sam's default device.
+    nonisolated static func workerKey(pythonURL: URL, scriptURL: URL,
+                                      modelType: String) -> PersistentSidecarKey {
+        ServedDetection.key(pythonURL: pythonURL, scriptURL: scriptURL,
+                            signature: ServedDetection.samPromptSignature(modelType: modelType))
+    }
+
+    /// Runs one request on `pool`, falling back to `oneShot` as
+    /// `ServedDetection.run` decides.
+    ///
+    /// Like the one-shot process it replaces, a click the caller stops
+    /// waiting for (the Results view closed) still runs to the end: the
+    /// request runs in its own task, so the caller's cancellation does not
+    /// stop the worker. Stopping it would throw away the loaded model and
+    /// embeddings, and could leave a half-written embedding cache on disk.
+    /// The Cancel button and app quit still stop the worker, which is a
+    /// tracked detection process, and the click then ends as cancelled.
+    nonisolated static func outcome(key: PersistentSidecarKey, pythonURL: URL, scriptURL: URL,
+                                    requestArgs: [String], pool: PersistentSidecarPool,
+                                    oneShot: @escaping ServedDetection.OneShotLauncher) async throws -> SidecarOutcome {
+        try await Task.detached(priority: .userInitiated) {
+            try await ServedDetection.run(key: key, pythonURL: pythonURL, scriptURL: scriptURL,
+                                          requestArgs: requestArgs, pool: pool, oneShot: oneShot)
+        }.value
     }
 }

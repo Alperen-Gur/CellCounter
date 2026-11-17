@@ -11,6 +11,7 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
+                LibraryHeader(state: state)
                 DropZone(state: state)
                 ShortcutsGrid(state: state)
                 RecentsSection(state: state)
@@ -519,7 +520,10 @@ private struct RecentsSection: View {
                     ForEach(Array(real.enumerated()), id: \.element.id) { idx, batch in
                         RecentRow(batch: batch,
                                   isFirst: idx == 0,
-                                  isLast: idx == real.count - 1) {
+                                  isLast: idx == real.count - 1,
+                                  onArchive: {
+                                      BatchArchiveController.beginArchive(batchId: batch.id, state: state)
+                                  }) {
                             state.openBatch(id: batch.id)
                         }
                     }
@@ -542,6 +546,7 @@ private struct RecentRow: View {
     let batch: BatchSummary
     let isFirst: Bool
     let isLast: Bool
+    let onArchive: () -> Void
     let action: () -> Void
 
     @State private var hovered = false
@@ -613,6 +618,12 @@ private struct RecentRow: View {
         }
         .buttonStyle(.plain)
         .disabled(isEmpty)
+        .contextMenu {
+            if !isEmpty {
+                Button("Open Batch", action: action)
+                Button("Archive Batch…", action: onArchive)
+            }
+        }
         .opacity(isEmpty ? 0.55 : 1)
         .help(isEmpty ? "This batch has no images yet." : "")
         .onHover { hovered = $0 && !isEmpty }

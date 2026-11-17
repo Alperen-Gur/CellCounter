@@ -7,7 +7,8 @@ import AppKit
 struct VariantComparisonView: View {
     @Bindable var state: AppState
     let image: ImageRecord
-    let variant: SegmentationVariantRecord
+    /// A value copy; the saved mask itself is loaded by id when comparing.
+    let variant: SegmentationVariantSummary
     let onApply: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var loadedImage: NSImage?
@@ -98,9 +99,12 @@ struct VariantComparisonView: View {
         let revision = image.detection?.cellsRevision
         let detectionId = image.detection?.id
         let currentData = image.detection?.cellsData
-        let savedData = variant.cellsData
         let imageURL = image.displayURL
         guard let currentData else { loading = false; failure = "This image has no current detection to compare."; return }
+        // Saved masks may be stored compressed; the decoder accepts both forms.
+        guard let savedData = state.repos.segmentationVariant(id: variant.id)?.cellsData else {
+            loading = false; failure = "This saved mask is no longer available."; return
+        }
         let payload = await Task.detached(priority: .userInitiated) {
             let saved = DetectionRecord.decodeCellsData(savedData)
             let current = DetectionRecord.decodeCellsData(currentData)

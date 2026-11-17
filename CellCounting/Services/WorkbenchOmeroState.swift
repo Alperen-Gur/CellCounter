@@ -10,7 +10,7 @@ import Observation
         if let path = UserDefaults.standard.string(forKey: preferenceKey), path.hasPrefix("/") {
             return URL(fileURLWithPath: path)
         }
-        return FileStore.location().appendingPathComponent("omero-profiles.json")
+        return FileStore.appLocation().appendingPathComponent("omero-profiles.json")
     }
 }
 

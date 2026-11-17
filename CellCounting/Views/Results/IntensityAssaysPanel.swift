@@ -8,8 +8,8 @@ import SwiftUI
 // derived measurements, so they read as a continuation of that block:
 //
 //       MeasurementsPanel(cells: cells)
-//       IntensityAssaysPanel(cells: cells,
-//                            imageStats: state.currentImage?.detection?.imageStats ?? [:])
+//       IntensityAssaysPanel(cells: cells, imageStats: inputs.imageStats,
+//                            revision: inputs.summaryRevision)
 //
 // It draws its OWN leading `Divider()`, inside the same guard that decides
 // whether to render — like `MeasurementsPanel` and `ColoniesPanel`. Separators
@@ -45,14 +45,23 @@ import SwiftUI
 struct IntensityAssaysPanel: View {
     let cells: [DetectedCell]
     let imageStats: [String: Double]
+    /// The sidebar's key for exactly this `cells` array, or nil. With a key,
+    /// derived values are kept until the cells change instead of being
+    /// recomputed on every render.
+    var revision: ReviewDataKey? = nil
 
     /// User opt-in for the R/G/B case below. Off by default and deliberately
     /// NOT persisted: it is a per-image judgement ("this particular RGB file
     /// really is a fluorescence composite"), not a preference.
     @State private var treatRGBAsFluorescence = false
+    @State private var channelsMemo = KeyedMemo<ResultsCellsIdentity, [AssayChannel]>()
 
+    /// Scans every cell; read once per render (see `body`).
     private var channels: [AssayChannel] {
-        IntensityAssays.channels(in: cells)
+        guard let identity = ResultsCellsIdentity(revision: revision, cells: cells) else {
+            return IntensityAssays.channels(in: cells)
+        }
+        return channelsMemo.value(for: identity) { IntensityAssays.channels(in: cells) }
     }
 
     /// True when the assay sidecar has written pixel-level results for this image.
@@ -81,18 +90,18 @@ struct IntensityAssaysPanel: View {
     /// channels available" and offered "% marker-positive" pre-set to the
     /// GREEN channel — real arithmetic over a colour plane that means nothing,
     /// presented with no caveat at all.
-    private var isPlainRGBSource: Bool {
+    private static func isPlainRGBSource(_ channels: [AssayChannel]) -> Bool {
         guard channels.count == 3 else { return false }
         let names = channels.map { ($0.name ?? "").uppercased() }
         return names == ["R", "G", "B"]
     }
 
-    /// The assays render only when the channels are (or are asserted to be)
-    /// real fluorescence channels.
-    private var assaysUnlocked: Bool { !isPlainRGBSource || treatRGBAsFluorescence }
-
     var body: some View {
         let channels = self.channels
+        let isPlainRGBSource = Self.isPlainRGBSource(channels)
+        // The assays render only when the channels are (or are asserted to
+        // be) real fluorescence channels.
+        let assaysUnlocked = !isPlainRGBSource || treatRGBAsFluorescence
         if channels.isEmpty && !hasSidecarResults {
             return AnyView(EmptyView())
         }
@@ -125,7 +134,7 @@ struct IntensityAssaysPanel: View {
                     rgbSourceNote
                 } else {
                     if isPlainRGBSource { rgbOverrideBanner }
-                    PositivityAssayPanel(cells: cells, channels: channels)
+                    PositivityAssayPanel(cells: cells, channels: channels, revision: revision)
                     Divider().overlay(Tokens.divider)
                     ViabilityAssayPanel(cells: cells, channels: channels)
                     Divider().overlay(Tokens.divider)
@@ -185,6 +194,8 @@ struct IntensityAssaysPanel: View {
 struct PositivityAssayPanel: View {
     let cells: [DetectedCell]
     let channels: [AssayChannel]
+    /// See `IntensityAssaysPanel.revision`.
+    var revision: ReviewDataKey? = nil
 
     enum Preset: String, CaseIterable, Hashable {
         case marker, transfection
@@ -223,6 +234,10 @@ struct PositivityAssayPanel: View {
     @State private var mode: AssayThresholdMode = .otsu
     @State private var manualThreshold: Double? = nil
     @State private var k: Double = 3.0
+    /// Per-cell values, Otsu split and outcome, kept until one of their
+    /// inputs changes: a slider tick recomputes only the outcome, and a
+    /// re-render with unchanged inputs recomputes nothing.
+    @State private var memo = PositivityMemo()
 
     @Environment(AppTheme.self) private var theme
 
@@ -237,15 +252,30 @@ struct PositivityAssayPanel: View {
             ?? AssayChannel(index: 0, name: nil)
     }
 
+    private var valuesKey: PositivityMemo.ValuesKey? {
+        ResultsCellsIdentity(revision: revision, cells: cells).map {
+            PositivityMemo.ValuesKey(cells: $0, channel: channel.index, metric: metric)
+        }
+    }
+
     private var rawValues: [Double] {
-        IntensityAssays.values(in: cells, channel: channel.index, metric: metric)
-            .map(\.value)
+        let compute = {
+            IntensityAssays.values(in: cells, channel: channel.index, metric: metric).map(\.value)
+        }
+        guard let key = valuesKey else { return compute() }
+        return memo.values.value(for: key, compute: compute)
     }
 
     /// Seed for the manual slider: Otsu when it resolves, else the midpoint.
     private var seedThreshold: Double {
-        if let otsu = IntensityAssays.otsuThreshold(rawValues) { return otsu }
         let values = rawValues
+        let otsu: Double?
+        if let key = valuesKey {
+            otsu = memo.otsu.value(for: key) { IntensityAssays.otsuThreshold(values) }
+        } else {
+            otsu = IntensityAssays.otsuThreshold(values)
+        }
+        if let otsu { return otsu }
         guard let lo = values.min(), let hi = values.max() else { return 0 }
         return 0.5 * (lo + hi)
     }
@@ -256,12 +286,21 @@ struct PositivityAssayPanel: View {
     }
 
     private var outcome: Result<MarkerPositivityResult, AssayAvailability> {
-        IntensityAssays.markerPositive(cells: cells,
-                                       channel: channel,
-                                       metric: metric,
-                                       mode: mode,
-                                       manualThreshold: manualBinding.wrappedValue,
-                                       k: k)
+        // `markerPositive` reads the manual cut-off only in `.manual` mode and
+        // `k` only in `.negativeSD` mode. In the other modes the manual seed
+        // is not computed and neither value is part of the key; the result is
+        // the same.
+        let manual = mode == .manual ? manualBinding.wrappedValue : 0
+        let channel = self.channel
+        let compute = {
+            IntensityAssays.markerPositive(cells: cells, channel: channel, metric: metric,
+                                           mode: mode, manualThreshold: manual, k: k)
+        }
+        guard let values = valuesKey else { return compute() }
+        let key = PositivityMemo.OutcomeKey(values: values, channel: channel, mode: mode,
+                                            manual: mode == .manual ? manual : nil,
+                                            k: mode == .negativeSD ? k : nil)
+        return memo.outcome.value(for: key, compute: compute)
     }
 
     var body: some View {
@@ -337,6 +376,29 @@ struct PositivityAssayPanel: View {
     private func format(_ v: Double) -> String {
         abs(v) >= 10_000 ? String(format: "%.3g", v) : String(format: "%.2f", v)
     }
+}
+
+/// Memoized positivity maths for one `PositivityAssayPanel`.
+final class PositivityMemo {
+    struct ValuesKey: Equatable {
+        let cells: ResultsCellsIdentity
+        let channel: Int
+        let metric: AssayMetric
+    }
+
+    struct OutcomeKey: Equatable {
+        let values: ValuesKey
+        let channel: AssayChannel
+        let mode: AssayThresholdMode
+        /// Only in `.manual` mode.
+        let manual: Double?
+        /// Only in `.negativeSD` mode.
+        let k: Double?
+    }
+
+    let values = KeyedMemo<ValuesKey, [Double]>()
+    let otsu = KeyedMemo<ValuesKey, Double?>()
+    let outcome = KeyedMemo<OutcomeKey, Result<MarkerPositivityResult, AssayAvailability>>()
 }
 
 // MARK: — Shared atoms

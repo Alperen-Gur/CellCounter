@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AppKit
 
 @Observable @MainActor
 final class AnalysisJobScheduler {
@@ -10,6 +11,13 @@ final class AnalysisJobScheduler {
     private(set) var persistenceError: String?
     private(set) var activeJobId: UUID?
     private(set) var previewItemId: UUID?
+    /// Number of queued, running or pausing jobs. Stored (and only assigned when
+    /// it changes) so views that read it are not invalidated by item progress.
+    private(set) var activeCount = 0
+    /// Row label per imported image, kept current as items change.
+    private(set) var imageStatuses: [UUID: String] = [:]
+    /// Finished (completed) jobs kept in history; older ones are pruned.
+    nonisolated static let maxFinishedJobs = 50
     var maxParallel = 2
     var physicalMemory = ProcessInfo.processInfo.physicalMemory
     @ObservationIgnored private let store: AnalysisJobStore
@@ -20,8 +28,19 @@ final class AnalysisJobScheduler {
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var preparations: [UUID: Task<UUID, Error>] = [:]
     @ObservationIgnored private var restoring = false
+    @ObservationIgnored private var imageOwner: [UUID: UUID] = [:]   // imageId -> newest job holding it
+    @ObservationIgnored private var dirty = false
+    @ObservationIgnored private var debounceTask: Task<Void, Never>?
+    @ObservationIgnored var persistDelay: Duration = .seconds(2)
+    @ObservationIgnored private var terminationObserver: NSObjectProtocol?
 
-    init(store: AnalysisJobStore) { self.store = store }
+    init(store: AnalysisJobStore) {
+        self.store = store
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushForTermination() }
+        }
+    }
     func configure(prepare: @escaping Prepare, analyze: @escaping Analyze) {
         self.prepare = prepare; self.analyze = analyze
     }
@@ -34,15 +53,23 @@ final class AnalysisJobScheduler {
             return
         }
         restoring = true
-        do { jobs = try await store.load(); isLoaded = true }
+        do {
+            var loaded = try await store.load()
+            for index in loaded.indices { loaded[index].dropImportedBookmarks() }
+            jobs = loaded; pruneFinished(); refreshDerived(); isLoaded = true
+        }
         catch { persistenceError = error.localizedDescription; isLoaded = true }
     }
     func job(_ id: UUID) -> AnalysisJob? { jobs.first { $0.id == id } }
-    var activeCount: Int { jobs.filter { [.queued, .running, .pausing].contains($0.status) }.count }
+    /// O(1) label for an image's row in Results, or nil when no job holds it.
+    func statusLabel(for imageId: UUID) -> String? { imageStatuses[imageId] }
 
     @discardableResult func add(_ job: AnalysisJob) async throws -> UUID {
         guard isLoaded, persistenceError == nil else { throw unavailableError() }
+        var job = job
+        job.dropImportedBookmarks()
         jobs.append(job)
+        refreshDerived()
         try await persist()
         return job.id
     }
@@ -58,6 +85,7 @@ final class AnalysisJobScheduler {
         }
         jobs[index].settings = settings; jobs[index].taskPreset = preset
         jobs[index].status = .draft; jobs[index].error = nil
+        refreshDerived()
         try await persist()
     }
     func enqueue(_ id: UUID, importOnly: Bool = false) async throws {
@@ -73,27 +101,32 @@ final class AnalysisJobScheduler {
         if let error = jobs[index].settings.validationError { throw messageError(error) }
         jobs[index].importOnly = importOnly
         jobs[index].status = .queued; jobs[index].error = nil
+        refreshDerived()
         try await persist()
         startWorker()
     }
     func pause(_ id: UUID) async {
         guard let index = index(id), [.queued, .running].contains(jobs[index].status) else { return }
         jobs[index].status = activeJobId == id ? .pausing : .paused
+        refreshDerived()
         await persistOrPause()
     }
     func resume(_ id: UUID) async throws {
         guard let index = index(id), [.paused, .failed, .cancelled].contains(jobs[index].status) else { return }
         jobs[index].status = .queued; jobs[index].error = nil
+        refreshDerived()
         try await persist(); startWorker()
     }
     func retryFailures(_ id: UUID) async throws {
         guard let index = index(id), activeJobId != id else { return }
         jobs[index].retryFailures()
+        refreshDerived()
         try await persist(); startWorker()
     }
     func cancel(_ id: UUID) async {
         guard let index = index(id) else { return }
         jobs[index].status = .cancelled
+        refreshDerived()
         if jobs[index].items.contains(where: { $0.id == previewItemId }) { cancelPreview() }
         if activeJobId == id { worker?.cancel() }
         await persistOrPause()
@@ -101,6 +134,7 @@ final class AnalysisJobScheduler {
     func remove(_ id: UUID) async throws {
         guard activeJobId != id, previewItemId == nil else { return }
         jobs.removeAll { $0.id == id }
+        refreshDerived()
         try await persist()
     }
 
@@ -116,8 +150,8 @@ final class AnalysisJobScheduler {
               let job = job(jobId), let analyze else {
             throw messageError("Pause processing and finish training before starting a preview.")
         }
-        previewItemId = itemId
-        defer { previewItemId = nil; previewTask = nil; startWorker() }
+        previewItemId = itemId; refreshDerived()
+        defer { previewItemId = nil; previewTask = nil; refreshDerived(); startWorker() }
         let task = Task {
             let imageId = try await self.prepareItem(jobId, itemId: itemId)
             try Task.checkCancellation()
@@ -157,6 +191,7 @@ final class AnalysisJobScheduler {
         while !Task.isCancelled, let next = jobs.first(where: { $0.status == .queued }) {
             activeJobId = next.id
             if let index = index(next.id) { jobs[index].status = .running }
+            refreshDerived()
             guard await persistOrPause() else { return }
             await runJob(next.id)
             activeJobId = nil
@@ -178,7 +213,7 @@ final class AnalysisJobScheduler {
                 try Task.checkCancellation()
                 guard job(id)?.status == .running else { break }
                 mutateItem(id, item.id) { $0.status = .running }
-                guard await persistOrPause() else { return }
+                persistSoon()
 
                 if let candidate = job(id)?.items.first(where: { $0.id != item.id && $0.status == .pending }),
                    AnalysisSchedulingPolicy.canPrepareAhead(currentBytes: item.estimatedBytes,
@@ -188,14 +223,14 @@ final class AnalysisJobScheduler {
                 if !current.importOnly { try await analyze?(imageId, current.settings) }
                 try Task.checkCancellation()
                 mutateItem(id, item.id) { $0.status = .completed; $0.error = nil; $0.duration = Date().timeIntervalSince(started) }
-                guard await persistOrPause() else { return }
+                persistSoon()
             } catch {
                 if Task.isCancelled || error is CancellationError || (error as? DetectionError).map({ if case .cancelled = $0 { return true }; return false }) == true {
                     mutateItem(id, item.id) { $0.status = $0.imageId == nil ? .pending : .ready }
                     break
                 }
                 mutateItem(id, item.id) { $0.status = .failed; $0.error = error.localizedDescription }
-                guard await persistOrPause() else { return }
+                persistSoon()
             }
         }
         // Await any already-started preparation before leaving this job. Its
@@ -210,6 +245,7 @@ final class AnalysisJobScheduler {
             default: break
             }
         }
+        pruneFinished(); refreshDerived()
         await persistOrPause()
     }
     private func prepareItem(_ id: UUID, itemId: UUID) async throws -> UUID {
@@ -223,15 +259,15 @@ final class AnalysisJobScheduler {
         guard let job = job(id), let item = job.items.first(where: { $0.id == itemId }), let prepare else { throw unavailableError() }
         if let imageId = item.imageId { return imageId }
         mutateItem(id, itemId) { $0.status = .preparing }
-        try await persist()
+        persistSoon()
         do {
             let imageId = try await prepare(item, job.settings, job.batchId)
             mutateItem(id, itemId) { $0.imageId = imageId; $0.status = .ready; $0.error = nil }
-            try await persist()
+            persistSoon()
             return imageId
         } catch {
             mutateItem(id, itemId) { $0.status = .failed; $0.error = error.localizedDescription }
-            try? await persist()
+            persistSoon()
             throw error
         }
     }
@@ -239,19 +275,98 @@ final class AnalysisJobScheduler {
     private func mutateItem(_ id: UUID, _ itemId: UUID, _ mutation: (inout AnalysisJobItem) -> Void) {
         guard let index = index(id), let item = jobs[index].items.firstIndex(where: { $0.id == itemId }) else { return }
         mutation(&jobs[index].items[item]); jobs[index].updatedAt = Date()
+        if jobs[index].items[item].imageId != nil { jobs[index].items[item].sourceBookmark = nil }
+        updateLabel(jobIndex: index, itemIndex: item)
+    }
+
+    // MARK: Derived state
+
+    private func label(_ job: AnalysisJob, _ item: AnalysisJobItem) -> String {
+        if previewItemId == item.id { return "Running preview" }
+        if item.status == .completed { return job.importOnly ? "Imported · ready to analyze" : "Analysis complete" }
+        if item.status == .failed { return "Analysis failed · retry in Processing" }
+        if job.status == .draft { return "Ready for preview" }
+        return "\(job.status.title) · \(item.status.rawValue)"
+    }
+    private func updateLabel(jobIndex: Int, itemIndex: Int) {
+        let item = jobs[jobIndex].items[itemIndex]
+        guard let imageId = item.imageId else { return }
+        if imageOwner[imageId] != jobs[jobIndex].id {
+            // First time this image appears, or an older job still holds it.
+            guard imageOwner[imageId] == nil else { return }
+            imageOwner[imageId] = jobs[jobIndex].id
+        }
+        let text = label(jobs[jobIndex], item)
+        if imageStatuses[imageId] != text { imageStatuses[imageId] = text }
+    }
+    /// Rebuilds the counters and the image index after a job-level change.
+    /// Observable properties are only assigned when their value changes.
+    private func refreshDerived() {
+        let active = jobs.reduce(0) { $0 + ($1.isActive ? 1 : 0) }
+        if activeCount != active { activeCount = active }
+        var owner: [UUID: UUID] = [:]
+        var labels: [UUID: String] = [:]
+        for job in jobs {
+            for item in job.items {
+                guard let imageId = item.imageId else { continue }
+                owner[imageId] = job.id
+                labels[imageId] = label(job, item)   // later jobs win
+            }
+        }
+        imageOwner = owner
+        if imageStatuses != labels { imageStatuses = labels }
+    }
+    /// Keeps only the newest `maxFinishedJobs` completed jobs. Draft, queued,
+    /// running, paused, cancelled and failed jobs are never pruned.
+    private func pruneFinished() {
+        let finished = jobs.indices.filter { jobs[$0].status == .completed && jobs[$0].id != activeJobId }
+        guard finished.count > Self.maxFinishedJobs else { return }
+        let drop = Set(finished.dropLast(Self.maxFinishedJobs).map { jobs[$0].id })
+        jobs.removeAll { drop.contains($0.id) }
+        dirty = true
+    }
+
+    // MARK: Persistence
+
+    /// Item-level progress is written after a short quiet period; job-level
+    /// changes and job boundaries write immediately (see `persist`).
+    private func persistSoon() {
+        dirty = true
+        guard debounceTask == nil else { return }
+        let delay = persistDelay
+        debounceTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.debounceTask = nil
+            if self.dirty { await self.persistOrPause() }
+        }
+    }
+    /// Writes any pending changes now.
+    func flush() async {
+        guard dirty else { return }
+        await persistOrPause()
+    }
+    private func flushForTermination() {
+        guard dirty, isLoaded, persistenceError == nil else { return }
+        revision &+= 1
+        try? store.saveSync(jobs, revision: revision)
+        dirty = false
     }
     private func persist() async throws {
         let timing = LocalPerformanceRecorder.shared.begin(.queueSave)
         var completed = false
         defer { timing?.finish(success: completed) }
+        debounceTask?.cancel(); debounceTask = nil
+        dirty = false
         revision &+= 1
         do { try await store.save(jobs, revision: revision); persistenceError = nil; completed = true }
-        catch { persistenceError = error.localizedDescription; throw error }
+        catch { dirty = true; persistenceError = error.localizedDescription; throw error }
     }
     @discardableResult private func persistOrPause() async -> Bool {
         do { try await persist(); return true }
         catch {
-            for index in jobs.indices where [.queued, .running, .pausing].contains(jobs[index].status) { jobs[index].status = .paused }
+            for index in jobs.indices where jobs[index].isActive { jobs[index].status = .paused }
+            refreshDerived()
             return false
         }
     }

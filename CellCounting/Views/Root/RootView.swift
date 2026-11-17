@@ -28,6 +28,7 @@ struct RootView: View {
                     AppSidebar(state: state)
                 }
                 VStack(spacing: 0) {
+                    LibraryStatusBanners(state: state)
                     if !isFullScreen {
                         AppToolbar(state: state)
                     }
@@ -108,6 +109,11 @@ struct RootView: View {
                 .transition(.opacity)
                 .zIndex(80)
             }
+            if state.libraries.isSwitching {
+                LibrarySwitchingOverlay(name: state.libraries.switchingTargetName)
+                    .transition(.opacity)
+                    .zIndex(200)
+            }
         }
         .sheet(isPresented: Binding(get: { state.analysisSetupJobId != nil },
                                     set: { if !$0 { state.analysisSetupJobId = nil } })) {
@@ -116,6 +122,9 @@ struct RootView: View {
         .alert("Library capture needs attention", isPresented: Binding(get: { state.libraryMigrationError != nil }, set: { if !$0 { state.libraryMigrationError = nil } })) {
             Button("OK") { state.libraryMigrationError = nil }
         } message: { Text(state.libraryMigrationError ?? "") }
+        .alert("Library", isPresented: Binding(get: { state.libraries.alertMessage != nil }, set: { if !$0 { state.libraries.alertMessage = nil } })) {
+            Button("OK") { state.libraries.alertMessage = nil }
+        } message: { Text(state.libraries.alertMessage ?? "") }
         .sheet(isPresented: $state.showLibraryMigration) {
             WorkbenchMigrationView(session: state.workbenchSession, onOpenProject: { state.view = .workbench })
         }

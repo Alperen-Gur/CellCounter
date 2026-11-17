@@ -98,7 +98,7 @@ struct TrainingMaskReview: View {
         return actions
     }
     private func record(for id: UUID) -> ImageRecord? {
-        state.repos.allBatches().lazy.flatMap(\.images).first { $0.id == id }
+        state.repos.image(id: id)
     }
     private func calibration(for id: UUID) -> Double { max(0.0001, record(for: id)?.batch?.pxPerUm ?? 1) }
     private func loadPreview() async {

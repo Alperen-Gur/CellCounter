@@ -44,6 +44,9 @@ struct SpatialStatsPanel: View {
     /// Fingerprint of the inputs `result` was computed from — see the header
     /// note and `AssayResultKey`.
     @State private var resultKey: AssayResultKey? = nil
+    /// Image and detection revision `result` was computed from; a result is
+    /// shown only while they are current. See `AssayResultInvalidation`.
+    @State private var resultSource: AssayDetectionStamp? = nil
     @State private var errorMessage: String? = nil
 
     @Environment(AppTheme.self) private var theme
@@ -55,14 +58,20 @@ struct SpatialStatsPanel: View {
         let image = state.currentImage
         return AssayResultKey(imageId: image?.id,
                               cellCount: cells.count,
-                              cutoff: image.map { state.effectiveConfidence(for: $0) } ?? 0,
+                              cutoff: image.map { ResultsDerivedValues.shared.effectiveConfidence(for: $0, state: state) } ?? 0,
                               roiCount: roiCount)
+    }
+
+    /// The open image's detection and revision.
+    private var currentSource: AssayDetectionStamp? {
+        state.currentImage.map(AssayDetectionStamp.init)
     }
 
     /// Nil unless `result` was computed from exactly the cell set on screen
     /// right now — not merely from the same image.
     private var activeResult: SpatialStatsResult? {
-        guard let resultKey, resultKey == currentKey else { return nil }
+        guard let resultKey, resultKey == currentKey,
+              AssayResultInvalidation.isCurrent(result: resultSource, current: currentSource) else { return nil }
         return result
     }
 
@@ -79,11 +88,18 @@ struct SpatialStatsPanel: View {
 
             panelBody
         }
-        // Belt and braces alongside `AssayResultKey` — re-detect / split /
-        // merge / delete all post this.
-        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { _ in
+        // Belt and braces alongside `AssayResultKey` and `resultSource`:
+        // re-detect / split / merge / delete post this, either for this image
+        // or as a broadcast. A notification about another image is ignored,
+        // and a broadcast (every analysed image of a running batch posts one)
+        // clears the result only when this image's detection id or revision
+        // has moved.
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            guard AssayResultInvalidation.shouldClear(object: note.object, result: resultSource,
+                                                      current: currentSource) else { return }
             result = nil
             resultKey = nil
+            resultSource = nil
         }
     }
 
@@ -123,11 +139,13 @@ struct SpatialStatsPanel: View {
         errorMessage = nil
         result = nil
         resultKey = nil
+        resultSource = nil
         isRunning = true
 
         // Captured BEFORE the run so a cell edit that lands while the sidecar
         // is working invalidates the result instead of being stamped onto it.
         let startKey = currentKey
+        let startSource = currentSource
         // The REAL image dimensions, not a centroid bounding box: Clark-Evans
         // R is a function of the observed area, so letting the sidecar infer
         // the field would bias it (see SpatialStatsRunner.compute).
@@ -149,6 +167,7 @@ struct SpatialStatsPanel: View {
                                                              params: paramsSnapshot)
                 result = r
                 resultKey = startKey
+                resultSource = startSource
             } catch {
                 errorMessage = error.localizedDescription
             }

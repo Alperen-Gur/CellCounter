@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import SwiftData
 
-// MARK: — Row model (built from real `ImageRecord`s)
+// MARK: — Row model (built from per-image values read off the main actor)
 
 private struct BatchMockRow: Sendable {
     let name: String
@@ -24,16 +24,6 @@ private struct BatchMockRow: Sendable {
     let fileSizeBytes: Int64?
 }
 
-private struct BatchRowInput: Sendable {
-    let name: String
-    let cellsData: Data?
-    let storedURL: URL
-    let thumbURL: URL
-    let widthPx: Int
-    let heightPx: Int
-    let imageId: UUID
-}
-
 private struct BatchExportImageSnapshot: Sendable {
     let fileName: String
     let imageURL: URL
@@ -41,78 +31,59 @@ private struct BatchExportImageSnapshot: Sendable {
     let confidence: Double
 }
 
-nonisolated private func buildRealRows(inputs: [BatchRowInput],
-                                       thresholds: [Double]) -> [BatchMockRow] {
-    inputs
-        .enumerated()
-        .map { i, input in
-            let cells = input.cellsData.map(DetectionRecord.decodeCellsData) ?? []
-            let done = input.cellsData != nil
-            let count = done ? cells.count : nil
-            let meanDiam: Double? = {
-                guard done, !cells.isEmpty else { return nil }
-                return cells.reduce(0) { $0 + $1.diameter } / Double(cells.count)
-            }()
-            let distCounts: [Double]? = {
-                guard done, !cells.isEmpty else { return nil }
-                var bins = Array(repeating: 0.0, count: max(thresholds.count + 1, 5))
-                for c in cells {
-                    let idx = min(BinMath.binIndex(for: c.diameter, thresholds: thresholds), bins.count - 1)
-                    bins[idx] += 1
-                }
-                while bins.count < 5 { bins.append(0) }
-                return Array(bins.prefix(5))
-            }()
-            let distNorm: [Double]? = distCounts.map { bins in
-                let m = bins.max() ?? 1
-                return bins.map { m > 0 ? $0 / m * 100 : 0 }
-            }
-            let fileSizeBytes: Int64? = (try? input.storedURL.resourceValues(forKeys: [.fileSizeKey]))
-                .flatMap { $0.fileSize }
-                .map(Int64.init)
-            return BatchMockRow(name: input.name,
-                                status: done ? .done : .queued,
-                                count: count,
-                                meanDiameter: meanDiam,
-                                distNorm: distNorm,
-                                distCounts: distCounts,
-                                seed: i * 7 + 3,
-                                imageId: input.imageId,
-                                thumbURL: input.thumbURL,
-                                widthPx: input.widthPx,
-                                heightPx: input.heightPx,
-                                fileSizeBytes: fileSizeBytes)
-        }
+/// Per-image figures kept between refreshes, so a refresh decodes metrics
+/// only for images whose cells (or the batch thresholds) changed.
+private struct BatchRowFigures {
+    let key: LibraryMetricsReader.DetectionKey
+    let thresholds: [Double]
+    let summary: CellMetricsStats.ImageSummary
+}
+
+/// One table row. A row is done when the image has a detection; count, mean
+/// diameter and bins cover every stored cell (`CellMetricsStats.imageSummary`).
+private func makeBatchRow(entry: LibraryMetricsReader.ImageEntry,
+                          summary: CellMetricsStats.ImageSummary?,
+                          index: Int, fileSizeBytes: Int64?) -> BatchMockRow {
+    let summary = entry.detection == nil ? nil : summary
+    return BatchMockRow(name: entry.fileName,
+                        status: summary != nil ? .done : .queued,
+                        count: summary?.count,
+                        meanDiameter: summary?.meanDiameter,
+                        distNorm: summary?.bars,
+                        distCounts: summary?.binCounts,
+                        seed: index * 7 + 3,
+                        imageId: entry.id,
+                        thumbURL: FileStore.shared.thumbURL(for: entry.id),
+                        widthPx: entry.widthPx,
+                        heightPx: entry.heightPx,
+                        fileSizeBytes: fileSizeBytes)
+}
+
+/// Folder info per batch, kept across visits to the Batches tab and keyed by
+/// the batch's `contentRevision` when it was computed.
+@MainActor
+private enum BatchFolderInfoCache {
+    static var entries: [UUID: (revision: Int, info: BatchFolderInfo)] = [:]
+}
+
+/// `ImageRecord.storedURL` for an image entry.
+private func storedURL(of entry: LibraryMetricsReader.ImageEntry) -> URL {
+    let raw = (entry.fileName as NSString).pathExtension
+    return FileStore.shared.imageURL(for: entry.id, extension: raw.isEmpty ? "tif" : raw.lowercased())
 }
 
 // MARK: — Display helpers
 
-/// Best-effort "uploaded folder" name for a batch, derived from its images'
-/// original (pre-import) file paths — NOT `batch.displayName`. For
-/// multi-file imports `displayName` is a generic "Batch · N images · <date>"
-/// string (see `AppState.proceedWithImport`), which is exactly the "labels
-/// each batch 'Batch'" complaint from researcher feedback #7a. Returns the
-/// shared parent directory's last path component when every image in the
-/// batch was imported from the same folder; nil when that can't be
-/// determined (single image, mixed-origin batch, or blank original paths) —
-/// callers fall back to `displayName` in that case.
-private func batchFolderLabel(for batch: BatchRecord) -> String? {
-    guard batch.images.count > 1 else { return nil }
-    let parents = Set(batch.images.compactMap { img -> String? in
-        guard !img.originalPath.isEmpty else { return nil }
-        let parent = (img.originalPath as NSString).deletingLastPathComponent
-        return parent.isEmpty ? nil : parent
-    })
-    guard parents.count == 1, let common = parents.first else { return nil }
-    let name = (common as NSString).lastPathComponent
-    return name.isEmpty ? nil : name
-}
+/// One formatter for every batch date on this screen ("Jan 5, 14:32").
+private let batchDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "MMM d, HH:mm"
+    return f
+}()
 
 /// Short absolute date string ("Jan 5, 14:32") — matches `HeaderRow.subtitle`'s format.
 private func shortBatchDate(_ date: Date) -> String {
-    let f = DateFormatter()
-    f.dateFormat = "MMM d, HH:mm"
-    return f.string(from: date)
+    batchDateFormatter.string(from: date)
 }
 
 /// Snapshot a batch and export its analyzed images without touching SwiftData
@@ -121,10 +92,10 @@ private func shortBatchDate(_ date: Date) -> String {
 @MainActor
 private func beginAnnotatedBatchExport(
     batch: BatchRecord,
+    batchName: String,
     state: AppState,
     completion: @escaping (Result<ExportService.BatchAnnotatedFolderResult, Error>) -> Void
 ) {
-    let batchName = batchFolderLabel(for: batch) ?? batch.displayName
     let thresholds = batch.thresholds
     let pxPerUm = batch.pxPerUm
     let snapshots = state.orderedImages(in: batch).compactMap { image -> BatchExportImageSnapshot? in
@@ -152,20 +123,23 @@ private func beginAnnotatedBatchExport(
         Task { @MainActor in
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let inputs = snapshots.map { snapshot in
-                        ExportService.BatchAnnotatedImageInput(
-                            fileName: snapshot.fileName,
-                            imageURL: snapshot.imageURL,
-                            cells: DetectionRecord.decodeCellsData(snapshot.cellsData),
-                            confidence: snapshot.confidence)
-                    }
+                    // Decode each image's cells just before it is drawn, so only
+                    // one image's cells and bitmap are in memory at a time.
                     return try ExportService.writeBatchAnnotatedPNGs(
                         batchName: batchName,
-                        images: inputs,
+                        imageCount: snapshots.count,
                         thresholds: thresholds,
                         pxPerUm: pxPerUm,
                         overlayMode: .outline,
-                        parentDirectory: parent)
+                        parentDirectory: parent,
+                        loadImage: { index in
+                            let snapshot = snapshots[index]
+                            return ExportService.BatchAnnotatedImageInput(
+                                fileName: snapshot.fileName,
+                                imageURL: snapshot.imageURL,
+                                cells: DetectionRecord.decodeCellsData(snapshot.cellsData),
+                                confidence: snapshot.confidence)
+                        })
                 }.value
                 completion(.success(result))
             } catch {
@@ -180,17 +154,19 @@ private func beginAnnotatedBatchExport(
 struct BatchView: View {
     @Bindable var state: AppState
 
-    /// SwiftData relationship arrays (`batch.images`) are lazy and don't always
-    /// propagate insert/delete to SwiftUI through the @Observable AppState
-    /// boundary. Bumping this on `ccCorrectionsChanged`/`ccLibraryChanged`
-    /// forces `rows` to recompute.
-    @State private var refreshKey: Int = 0
-
-    /// Materialized once per change (batch switch / refreshKey bump) rather than
-    /// on every SwiftUI body pass. `buildRealRows` is O(images × cells); the old
-    /// computed `rows` re-ran it for every derived property (doneRows, totals,
-    /// sigmas, …), rescanning the whole detection 5-7× per invalidation.
+    /// Table rows for `rowsBatchId`, in display order. Built from values read
+    /// in a background context: no `ImageRecord`/`DetectionRecord` is kept
+    /// alive by this screen, and no cell outlines are decoded for it.
     @State private var rows: [BatchMockRow] = []
+    @State private var rowsBatchId: UUID? = nil
+    /// The entries behind `rows`, same order, for single-image updates.
+    @State private var entries: [LibraryMetricsReader.ImageEntry] = []
+    @State private var figures: [UUID: BatchRowFigures] = [:]
+    @State private var fileSizes: [UUID: Int64] = [:]
+    /// Coalesces change notifications: an edit to one image (notification
+    /// object = its id) rebuilds that row; anything else re-reads the batch,
+    /// decoding metrics only for images whose cells changed.
+    @State private var refresher = CoalescedRefresh()
 
     /// All batches, most-recent-first (mirrors `Repositories.allBatches()`).
     /// Fix (researcher #7b): the Batches tab previously only ever showed
@@ -198,42 +174,151 @@ struct BatchView: View {
     /// way to reach any other batch except by going back to Home. This backs
     /// the always-visible `BatchListSidebar` so every batch is one click away.
     @State private var allBatches: [BatchRecord] = []
+    /// Folder label and image count per batch, computed in the background
+    /// from image paths and refreshed when a batch's `contentRevision` moves,
+    /// so rendering the rail never walks `batch.images`.
+    @State private var folderInfo: [UUID: BatchFolderInfo] = [:]
+    @State private var batchListRefresher = CoalescedRefresh()
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     private var visibleBatches: [BatchRecord] {
         search.isEmpty ? allBatches : allBatches.filter {
-            (batchFolderLabel(for: $0) ?? $0.displayName).localizedCaseInsensitiveContains(search)
+            title(for: $0).localizedCaseInsensitiveContains(search)
                 || ($0.condition ?? "").localizedCaseInsensitiveContains(search)
         }
     }
 
-    private func recomputeRows() async {
-        guard let batch = state.currentBatch else { rows = []; return }
+    /// Researcher feedback #7a: prefer the folder the user actually dropped
+    /// (see `BatchFolderInfo.label`) over the generic `displayName`.
+    private func title(for batch: BatchRecord) -> String {
+        folderInfo[batch.id]?.label ?? batch.displayName
+    }
+
+    private func imageCount(for batch: BatchRecord) -> Int {
+        batch.imageCountSummary >= 0 ? batch.imageCountSummary : (folderInfo[batch.id]?.imageCount ?? 0)
+    }
+
+    /// Re-reads the open batch (`everything`) or only `imageIds`, then
+    /// rebuilds the rows. Metrics are decoded off the main actor, and only
+    /// for images whose `(detection, cellsRevision)` or thresholds changed.
+    private func refreshRows(everything: Bool, imageIds: Set<UUID>) async {
+        guard let batch = state.currentBatch else {
+            rows = []; entries = []; rowsBatchId = nil
+            return
+        }
         let batchId = batch.id
         let thresholds = batch.thresholds
-        // Natural/Finder ordering is cheap and must touch SwiftData on the
-        // MainActor. Everything expensive—JSON decode, stats, binning and
-        // filesystem metadata—runs on the cancellable worker below.
-        let inputs = batch.images
-            .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
-            .map { image in
-                BatchRowInput(name: image.fileName,
-                              cellsData: image.detection?.cellsData,
-                              storedURL: image.storedURL,
-                              thumbURL: image.thumbURL,
-                              widthPx: image.widthPx,
-                              heightPx: image.heightPx,
-                              imageId: image.id)
+        let container = state.repos.container
+        if rowsBatchId != batchId {
+            figures = [:]
+        }
+        let known = Set(figures.values.filter { $0.thresholds == thresholds }.map(\.key))
+
+        var updated: [LibraryMetricsReader.ImageEntry]
+        if !everything, rowsBatchId == batchId {
+            let ids = Array(imageIds)
+            guard let read = await LibraryMetricsReader.run({
+                try ids.map { try LibraryMetricsReader.image(id: $0, container: container, metrics: .allExcept(known)) }
+            }), !Task.isCancelled, state.currentBatchId == batchId else { return }
+            updated = entries
+            let positions = Dictionary(updated.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for (id, entry) in zip(ids, read) {
+                let belongs = entry?.batchId == batchId
+                switch (positions[id], belongs) {
+                case (let index?, true): updated[index] = entry!
+                case (nil, false): continue          // another batch's image
+                default:
+                    // Added to or removed from this batch: re-read it whole.
+                    refresher.request(perform: refreshRows)
+                    return
+                }
             }
-        let built = await Task.detached(priority: .userInitiated) {
-            buildRealRows(inputs: inputs, thresholds: thresholds)
-        }.value
-        guard !Task.isCancelled, state.currentBatchId == batchId else { return }
-        rows = built
+        } else {
+            guard let read = await LibraryMetricsReader.run({
+                try LibraryMetricsReader.batchImages(batchId: batchId, container: container,
+                                                     metrics: .allExcept(known))
+            }), !Task.isCancelled, state.currentBatchId == batchId else { return }
+            updated = read.sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+        }
+
+        // Figures: reuse unchanged ones, compute the rest from fresh metrics.
+        var nextFigures: [UUID: BatchRowFigures] = [:]
+        func addFigures(_ entry: LibraryMetricsReader.ImageEntry) {
+            guard let detection = entry.detection else { return }
+            if let cached = figures[entry.id], cached.key == detection.key, cached.thresholds == thresholds {
+                nextFigures[entry.id] = cached
+            } else if let metrics = detection.metrics {
+                nextFigures[entry.id] = BatchRowFigures(
+                    key: detection.key, thresholds: thresholds,
+                    summary: CellMetricsStats.imageSummary(metrics, thresholds: thresholds))
+            }
+        }
+        updated.forEach(addFigures)
+        // Safety net: an analysed image whose metrics were skipped as known
+        // but has no cached figures is read again with its metrics.
+        let missing = updated.filter { $0.detection != nil && nextFigures[$0.id] == nil }.map(\.id)
+        if !missing.isEmpty {
+            guard let reread = await LibraryMetricsReader.run({
+                try missing.compactMap { try LibraryMetricsReader.image(id: $0, container: container, metrics: .all) }
+            }), !Task.isCancelled, state.currentBatchId == batchId else { return }
+            let positions = Dictionary(updated.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for entry in reread where entry.batchId == batchId {
+                guard let index = positions[entry.id] else { continue }
+                updated[index] = entry
+                addFigures(entry)
+            }
+        }
+
+        // Stat stored copies not seen before, off the main actor.
+        let unseen = updated.filter { fileSizes[$0.id] == nil }.map { ($0.id, storedURL(of: $0)) }
+        var sizes = fileSizes
+        if !unseen.isEmpty {
+            let measured = await Task.detached(priority: .utility) { () -> [UUID: Int64] in
+                var result: [UUID: Int64] = [:]
+                for (id, url) in unseen {
+                    if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+                        result[id] = Int64(size)
+                    }
+                }
+                return result
+            }.value
+            guard !Task.isCancelled, state.currentBatchId == batchId else { return }
+            sizes.merge(measured) { _, new in new }
+        }
+
+        figures = nextFigures
+        fileSizes = sizes
+        // Metrics were only needed for the figures above.
+        entries = updated.map(\.withoutMetrics)
+        rowsBatchId = batchId
+        rows = updated.enumerated().map { index, entry in
+            makeBatchRow(entry: entry, summary: nextFigures[entry.id]?.summary,
+                         index: index, fileSizeBytes: sizes[entry.id])
+        }
     }
 
     private func reloadBatches() {
         allBatches = state.repos.allBatches()
+        // Labels already known (also from an earlier visit) show at once;
+        // they are recomputed only for batches that are new or changed.
+        for batch in allBatches where folderInfo[batch.id] == nil {
+            if let known = BatchFolderInfoCache.entries[batch.id] { folderInfo[batch.id] = known.info }
+        }
+        let stale = allBatches.filter { BatchFolderInfoCache.entries[$0.id]?.revision != $0.contentRevision }
+            .map { ($0.id, $0.contentRevision) }
+        guard !stale.isEmpty else { return }
+        let container = state.repos.container
+        Task { @MainActor in
+            let ids = stale.map(\.0)
+            guard let info = await LibraryMetricsReader.run({
+                try LibraryMetricsReader.folderInfo(batchIds: ids, container: container)
+            }) else { return }
+            for (id, revision) in stale {
+                guard let value = info[id] else { continue }
+                BatchFolderInfoCache.entries[id] = (revision, value)
+                folderInfo[id] = value
+            }
+        }
     }
 
     /// Open Results at the tapped row's image. Bug fix: a table-row tap
@@ -313,9 +398,13 @@ struct BatchView: View {
             // the currently-open one — see `allBatches` above.
             BatchListSidebar(
                 batches: visibleBatches,
+                title: title(for:),
+                imageCount: imageCount(for:),
                 search: $search, searchFocused: $searchFocused,
                 selectedId: state.currentBatchId,
-                onSelect: { batch in state.currentBatchId = batch.id }
+                onSelect: { batch in state.currentBatchId = batch.id },
+                onArchive: { batch in BatchArchiveController.beginArchive(batchId: batch.id, state: state) },
+                onRemove: { batch in BatchArchiveController.confirmRemoval(of: batch.id, state: state) }
             )
 
             if state.currentBatch == nil {
@@ -331,7 +420,8 @@ struct BatchView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        HeaderRow(state: state, pendingCount: pendingCount, totalImages: rows.count)
+                        HeaderRow(state: state, title: state.currentBatch.map(title(for:)) ?? "Batch",
+                                  pendingCount: pendingCount, totalImages: rows.count)
                             .padding(.bottom, 18)
 
                         StatsRow(
@@ -368,18 +458,26 @@ struct BatchView: View {
         // even while no batch is selected. Previously these lived only inside
         // the `else` branch, so the empty-state screen never heard about
         // newly created/deleted batches until the user navigated away and back.
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
-            refreshKey &+= 1
+        //
+        // A correction naming an image (notification object = its id) only
+        // rebuilds that row; one without an image, or a library change,
+        // re-reads the batch (coalesced, decoding only changed images).
+        .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
+            refresher.request(CoalescedRefresh.imageId(of: note), perform: refreshRows)
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccLibraryChanged"))) { _ in
-            refreshKey &+= 1
-            reloadBatches()
+        .onReceive(NotificationCenter.default.publisher(for: .ccLibraryChanged)) { _ in
+            refresher.request(perform: refreshRows)
+            batchListRefresher.request { _, _ in reloadBatches() }
         }
         .onAppear {
             reloadBatches()
         }
-        .task(id: "\(state.currentBatchId?.uuidString ?? "none"):\(refreshKey)") {
-            await recomputeRows()
+        .onDisappear {
+            refresher.cancel()
+            batchListRefresher.cancel()
+        }
+        .task(id: state.currentBatchId) {
+            refresher.request(delay: .zero, perform: refreshRows)
         }
     }
 
@@ -406,30 +504,12 @@ struct BatchView: View {
     /// Keyboard shortcut wrappers — delegate to HeaderRow logic via AppState
     private func deleteBatchShortcut() {
         guard let batch = state.currentBatch else { return }
-        let alert = NSAlert()
-        alert.messageText = "Delete this batch?"
-        alert.informativeText = "This removes all images and detections and cannot be undone."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        alert.buttons.first?.hasDestructiveAction = true
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            do { try state.repos.deleteBatch(batch) }
-            catch {
-                state.flashExport("The batch could not be deleted: \(error.localizedDescription)", isError: true)
-                return
-            }
-            state.currentBatchId = nil
-            state.view = .home
-            // Notify @Observable library stats to refresh.
-            NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
-        }
+        BatchArchiveController.confirmRemoval(of: batch.id, state: state)
     }
 
     private func exportBatchShortcut() {
         guard let batch = state.currentBatch else { return }
-        beginAnnotatedBatchExport(batch: batch, state: state) { result in
+        beginAnnotatedBatchExport(batch: batch, batchName: title(for: batch), state: state) { result in
             switch result {
             case .success(let output):
                 if let first = output.errors.first {
@@ -458,10 +538,16 @@ struct BatchView: View {
 // browsing surface on its own, independent of Home.
 private struct BatchListSidebar: View {
     let batches: [BatchRecord]
+    /// Row title and image count, from `BatchView`'s background-read
+    /// folder info (rows never walk `batch.images`).
+    let title: (BatchRecord) -> String
+    let imageCount: (BatchRecord) -> Int
     @Binding var search: String
     var searchFocused: FocusState<Bool>.Binding
     let selectedId: UUID?
     let onSelect: (BatchRecord) -> Void
+    let onArchive: (BatchRecord) -> Void
+    let onRemove: (BatchRecord) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -488,8 +574,14 @@ private struct BatchListSidebar: View {
                     LazyVStack(spacing: 1) {
                         ForEach(batches, id: \.id) { batch in
                             BatchListRow(batch: batch,
+                                        title: title(batch),
+                                        imageCount: imageCount(batch),
                                         isSelected: batch.id == selectedId,
                                         onSelect: { onSelect(batch) })
+                                .contextMenu {
+                                    Button("Archive Batch…") { onArchive(batch) }
+                                    Button("Delete Batch…") { onRemove(batch) }
+                                }
                         }
                     }
                     .padding(.horizontal, 8)
@@ -507,6 +599,8 @@ private struct BatchListSidebar: View {
 
 private struct BatchListRow: View {
     let batch: BatchRecord
+    let title: String
+    let imageCount: Int
     let isSelected: Bool
     let onSelect: () -> Void
 
@@ -514,14 +608,14 @@ private struct BatchListRow: View {
     @State private var hovered = false
 
     private var subtitle: String {
-        let n = batch.images.count
+        let n = imageCount
         return "\(n) image\(n == 1 ? "" : "s") · \(shortBatchDate(batch.createdAt))"
     }
 
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(batchFolderLabel(for: batch) ?? batch.displayName)
+                Text(title)
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(isSelected ? theme.accentColor : Tokens.text)
                     .lineLimit(1)
@@ -559,6 +653,14 @@ private struct BatchListRow: View {
 
 private struct HeaderRow: View {
     @Bindable var state: AppState
+    /// Researcher feedback #7a: this used to render `batch.displayName`
+    /// directly, which for multi-image imports is a generic
+    /// "Batch · N images · <date>" string — literally the word "Batch" the
+    /// researcher was pointing at. `BatchView` passes the folder the user
+    /// actually dropped (derived from the images' original paths), falling
+    /// back to `displayName` (e.g. the single-file case) when no common
+    /// folder can be determined.
+    let title: String
     let pendingCount: Int
     let totalImages: Int
     @Environment(AppTheme.self) private var theme
@@ -570,22 +672,8 @@ private struct HeaderRow: View {
     private var subtitle: String {
         guard let batch = state.currentBatch else { return "" }
         let modelName = state.models.first(where: { $0.id == batch.modelId })?.name ?? batch.modelId
-        let f = DateFormatter()
-        f.dateFormat = "MMM d, HH:mm"
-        let when = f.string(from: batch.createdAt)
+        let when = shortBatchDate(batch.createdAt)
         return "\(totalImages) image\(totalImages == 1 ? "" : "s") · started \(when) · \(modelName)"
-    }
-
-    /// Researcher feedback #7a: this used to render `batch.displayName`
-    /// directly, which for multi-image imports is a generic
-    /// "Batch · N images · <date>" string — literally the word "Batch" the
-    /// researcher was pointing at. Prefer the folder the user actually
-    /// dropped (derived from the images' original paths); fall back to
-    /// `displayName` (e.g. the single-file case) when no common folder can
-    /// be determined.
-    private var title: String {
-        guard let batch = state.currentBatch else { return "Batch" }
-        return batchFolderLabel(for: batch) ?? batch.displayName
     }
 
     var body: some View {
@@ -619,13 +707,26 @@ private struct HeaderRow: View {
                     .disabled(state.currentBatch == nil)
 
                     Button {
+                        archiveBatch()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "archivebox")
+                                .font(.system(size: 12))
+                            Text("Archive…")
+                        }
+                    }
+                    .appButton(.standard, size: .sm)
+                    .disabled(state.currentBatch == nil)
+                    .help("Move this batch, its images, outlines and calibration into an archive folder and free the space in your library")
+
+                    Button {
                         deleteBatch()
                     } label: {
                         Icon("trash", size: 13)
                     }
                     .appButton(.danger, size: .sm)
                     .frame(width: 28, height: 28)
-                    .help("Delete this batch")
+                    .help("Archive or delete this batch")
                 }
             }
 
@@ -657,7 +758,7 @@ private struct HeaderRow: View {
 
     private func exportBatch() {
         guard let batch = state.currentBatch else { return }
-        beginAnnotatedBatchExport(batch: batch, state: state) { result in
+        beginAnnotatedBatchExport(batch: batch, batchName: title, state: state) { result in
             switch result {
             case .success(let output):
                 if let first = output.errors.first {
@@ -704,27 +805,16 @@ private struct HeaderRow: View {
 
     // MARK: — Delete
 
+    /// Batch removal always offers archiving first; permanent deletion is the
+    /// explicit second choice (see `BatchArchiveController`).
     private func deleteBatch() {
         guard let batch = state.currentBatch else { return }
-        let alert = NSAlert()
-        alert.messageText = "Delete this batch?"
-        alert.informativeText = "This removes all images and detections and cannot be undone."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        alert.buttons.first?.hasDestructiveAction = true
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            do { try state.repos.deleteBatch(batch) }
-            catch {
-                state.flashExport("The batch could not be deleted: \(error.localizedDescription)", isError: true)
-                return
-            }
-            state.currentBatchId = nil
-            state.view = .home
-            // Notify @Observable library stats to refresh.
-            NotificationCenter.default.post(name: Notification.Name("ccLibraryChanged"), object: nil)
-        }
+        BatchArchiveController.confirmRemoval(of: batch.id, state: state)
+    }
+
+    private func archiveBatch() {
+        guard let batch = state.currentBatch else { return }
+        BatchArchiveController.beginArchive(batchId: batch.id, state: state)
     }
 }
 
@@ -1061,7 +1151,7 @@ private struct BatchTable: View {
         // the parent ScrollView, so lazy loading works as intended.
         LazyVStack(spacing: 0) {
             TableHead()
-            ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
+            ForEach(Array(rows.enumerated()), id: \.element.imageId) { i, row in
                 TableRow(row: row, isFirst: i == 0, binLabels: binLabels, onTap: onTap)
             }
         }
@@ -1125,7 +1215,7 @@ private struct TableRow: View {
                 }
                 .frame(width: 44, height: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .onAppear { loadThumb() }
+                .task(id: row.thumbURL) { await loadThumb() }
 
                 // Filename
                 VStack(alignment: .leading, spacing: 1) {
@@ -1218,14 +1308,15 @@ private struct TableRow: View {
         return trailing.isEmpty ? dims : "\(dims) · \(trailing)"
     }
 
-    private func loadThumb() {
+    /// Runs while the row is on screen; a row scrolled away before its
+    /// thumbnail is read skips the read.
+    private func loadThumb() async {
         // Capture the URL on the MainActor before hopping off the actor —
         // matches the RecentRow/ImageThumbCell thumbnail-loading pattern.
         let url = row.thumbURL
-        Task.detached(priority: .utility) {
-            let img = ImageLoader.cachedThumbnail(at: url)
-            await MainActor.run { thumb = img }
-        }
+        let img = await LibraryMetricsReader.run { ImageLoader.cachedThumbnail(at: url) }
+        guard !Task.isCancelled, let img else { return }
+        thumb = img
     }
 }
 
@@ -1238,7 +1329,7 @@ private struct RunningLabel: View {
             // Honest live label — no fabricated percentage. Cellpose 3.x has no
             // granular numeric progress callback (see AppState.processingStageLine),
             // so a hard-coded "64%" was fiction; the spinner already conveys "in
-            // progress". Note: `buildRealRows` never emits `.running` today, so
+            // progress". Note: `makeBatchRow` never emits `.running` today, so
             // this stays latent until AppState exposes the in-flight image id.
             Text("Analyzing…")
                 .font(.system(size: 12, weight: .medium))

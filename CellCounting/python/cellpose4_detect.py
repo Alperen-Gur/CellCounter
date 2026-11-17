@@ -260,6 +260,8 @@ def main(argv=None) -> None:
 
 if __name__ == "__main__":
     if "--serve" in sys.argv[1:]:
-        cc.serve_ndjson(main)
+        # Memory is released after each response is sent, so it never
+        # delays a result. The cached model stays loaded.
+        cc.serve_ndjson(main, after_response=cc.release_request_memory)
     else:
         main()

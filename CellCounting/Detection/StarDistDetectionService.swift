@@ -2,6 +2,10 @@ import Foundation
 
 /// `DetectionService` that runs StarDist 2D inference via the shared Python venv
 /// and `Resources/python/stardist_detect.py`. Throws `DetectionError` on any failure.
+///
+/// Requests go to a warm `stardist_detect.py --serve` worker per model name
+/// (see `ServedDetection`), so TensorFlow and the model load once rather than
+/// for every image. A failed worker falls back to a one-shot process.
 struct StarDistDetectionService: DetectionService {
     /// Which catalog model id this instance handles (e.g. `sd-fluo`).
     let modelId: String
@@ -39,8 +43,9 @@ struct StarDistDetectionService: DetectionService {
             throw DetectionError.modelNotInstalled(modelId: input.modelId)
         }
 
+        // Per-image arguments. The script path is not among them: the warm
+        // worker is already running it, and a one-shot fallback prepends it.
         var args = [
-            scriptURL.path,
             "--image",   imageURL.path,
             "--model",   stardistName,
             "--pxPerUm", String(input.pxPerUm),
@@ -82,7 +87,13 @@ struct StarDistDetectionService: DetectionService {
 
         let outcome: SidecarOutcome
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args)
+            outcome = try await ServedDetection.run(
+                key: Self.workerKey(pythonURL: pythonURL, scriptURL: scriptURL, model: stardistName),
+                pythonURL: pythonURL,
+                scriptURL: scriptURL,
+                requestArgs: args)
+        } catch let error as DetectionError {
+            throw error
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
@@ -96,8 +107,9 @@ struct StarDistDetectionService: DetectionService {
         // shared across all detection families via SidecarPayload.decodeResult.
         //
         // `isolatingJSON` is a StarDist-only guard — see its doc comment.
-        return try SidecarPayload.decodeResult(stdout: Self.isolatingJSON(outcome.stdout),
-                                               exitCode: outcome.exitCode)
+        return try await SidecarPayload.decodeResultOffMain(stdout: outcome.stdout,
+                                                     exitCode: outcome.exitCode,
+                                                     isolatingJSON: true)
     }
 
     /// Strip anything the stardist library printed to stdout ahead of our JSON.
@@ -120,7 +132,7 @@ struct StarDistDetectionService: DetectionService {
     /// The first offset that decodes is the payload. Confined to StarDist
     /// rather than pushed into the shared `SidecarPayload.decodeResult`, so no
     /// other detector's strictness is relaxed.
-    static func isolatingJSON(_ stdout: Data) -> Data {
+    nonisolated static func isolatingJSON(_ stdout: Data) -> Data {
         // Fast path: already clean (and the only path once the sidecar is fixed).
         if (try? JSONSerialization.jsonObject(with: stdout)) != nil { return stdout }
 
@@ -137,6 +149,13 @@ struct StarDistDetectionService: DetectionService {
         // Nothing decodable — hand back the original so the error message the
         // caller builds still shows what the sidecar actually printed.
         return stdout
+    }
+
+    /// Warm-worker identity: the environment, the script and the StarDist
+    /// model name. Everything else travels with each request.
+    nonisolated static func workerKey(pythonURL: URL, scriptURL: URL, model: String) -> PersistentSidecarKey {
+        ServedDetection.key(pythonURL: pythonURL, scriptURL: scriptURL,
+                            signature: ServedDetection.stardistSignature(model: model))
     }
 
     // MARK: — Script resolution

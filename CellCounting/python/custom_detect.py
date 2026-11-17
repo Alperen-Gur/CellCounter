@@ -36,6 +36,13 @@ to the Cellpose sidecars. All logging goes to stderr.
 
 CLI: the full shared flag set plus `--custom-kind`, `--prob-thresh`,
 `--nms-thresh`, `--diameter`.
+
+``--serve`` keeps one interpreter, with the framework imported and the model
+loaded, for many images. Requests use the `serve_ndjson` protocol in
+`_cellpose_common`. Each request runs the same `main` a one-shot process runs,
+so the payload is the same; only the model load is skipped while the model on
+disk is unchanged. The host starts one worker per model path, kind, Python
+environment and (for Cellpose) GPU setting.
 """
 
 from __future__ import annotations
@@ -59,8 +66,13 @@ _STARDIST_WEIGHT_NAMES = (
     "weights.h5",
 )
 
+# The loaded model, keyed by everything that determines it (see
+# `_model_key`). A serve worker keeps one entry; a one-shot run fills it once
+# and exits.
+_MODEL_CACHE: dict = {}
 
-def parse_args():
+
+def parse_args(argv=None):
     parser = cc.build_arg_parser(
         description="Custom (user-supplied) model detection sidecar for CellCounter",
         default_model="",
@@ -85,7 +97,7 @@ def parse_args():
              "Default 0 = derive the prior from the size bins, matching "
              "cellpose_detect.py.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def validate_path(path: str, kind: str) -> str | None:
@@ -132,6 +144,58 @@ def validate_path(path: str, kind: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Model cache
+# ---------------------------------------------------------------------------
+
+def _model_files_stamp(path: str):
+    """Size and modification time of the model on disk.
+
+    A lab may retrain and overwrite a checkpoint (or a StarDist folder's
+    weights) at the same path while a worker is warm. Including this stamp in
+    the cache key makes the next request load the new model instead of
+    reusing the old one. For a StarDist folder every file directly inside it
+    counts (config, weights, thresholds).
+    """
+    try:
+        if os.path.isdir(path):
+            entries = []
+            with os.scandir(path) as listing:
+                for entry in listing:
+                    if entry.is_file():
+                        info = entry.stat()
+                        entries.append((entry.name, info.st_size, info.st_mtime_ns))
+            return tuple(sorted(entries))
+        info = os.stat(path)
+        return (info.st_size, info.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _model_key(kind: str, path: str, *device) -> tuple:
+    return (kind, path, _model_files_stamp(path), *device)
+
+
+def _cached_model(key):
+    """The loaded model for `key`, or None after dropping any other model.
+
+    The host keys a worker by the model's path, kind and device, so a miss
+    here means the file changed. The old model is released before the new
+    one loads, so the worker never holds two.
+    """
+    model = _MODEL_CACHE.get(key)
+    if model is not None:
+        log("[cellpose_detect] reusing initialized custom model")
+    else:
+        _MODEL_CACHE.clear()
+    return model
+
+
+def _remember_model(key, model) -> None:
+    _MODEL_CACHE.clear()
+    _MODEL_CACHE[key] = model
+
+
+# ---------------------------------------------------------------------------
 # Cellpose branch
 # ---------------------------------------------------------------------------
 
@@ -159,31 +223,35 @@ def run_cellpose(args, channels) -> None:
     import torch as _torch
     override_device, use_gpu_kw = cc.resolve_device(args, _torch)
 
-    try:
+    model_key = _model_key("cellpose", args.model, str(override_device), bool(use_gpu_kw))
+    model = _cached_model(model_key)
+    if model is None:
         try:
-            model = cp_models.CellposeModel(gpu=use_gpu_kw,
-                                            pretrained_model=args.model)
-        except TypeError:
-            model = cp_models.CellposeModel(pretrained_model=args.model)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] custom checkpoint load failed: {exc!r}")
-        emit_error(
-            "custom-model-load-failed",
-            hint=f"Cellpose could not load {args.model}: {exc}",
-            exit_code=4,
-        )
-        return
-
-    if override_device is not None:
-        try:
-            if getattr(model, "net", None) is not None:
-                model.net.to(override_device)
             try:
-                model.device = override_device
-            except Exception:  # noqa: BLE001
-                pass
+                model = cp_models.CellposeModel(gpu=use_gpu_kw,
+                                                pretrained_model=args.model)
+            except TypeError:
+                model = cp_models.CellposeModel(pretrained_model=args.model)
         except Exception as exc:  # noqa: BLE001
-            log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
+            log(f"[cellpose_detect] custom checkpoint load failed: {exc!r}")
+            emit_error(
+                "custom-model-load-failed",
+                hint=f"Cellpose could not load {args.model}: {exc}",
+                exit_code=4,
+            )
+            return
+
+        if override_device is not None:
+            try:
+                if getattr(model, "net", None) is not None:
+                    model.net.to(override_device)
+                try:
+                    model.device = override_device
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                log(f"[cellpose_detect] could not move model to {override_device}: {exc!r}")
+        _remember_model(model_key, model)
 
     resolved_device = str(override_device) if override_device is not None else "cpu"
     log(f"[cellpose_detect] using device: {resolved_device} (torch {_torch.__version__})")
@@ -264,17 +332,22 @@ def run_stardist(args, channels) -> None:
     # JSON protocol and made EVERY custom-StarDist run fail to decode. stdout
     # belongs to the payload; everything the library says goes to stderr with
     # the rest of the log.
-    try:
-        with contextlib.redirect_stdout(sys.stderr):
-            model = StarDist2D(None, name=name, basedir=basedir)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[cellpose_detect] custom StarDist load failed: {exc!r}")
-        emit_error(
-            "custom-model-load-failed",
-            hint=f"StarDist could not load {args.model}: {exc}",
-            exit_code=4,
-        )
-        return
+    # TensorFlow picks the device, so the GPU flag does not change the model.
+    model_key = _model_key("stardist", args.model)
+    model = _cached_model(model_key)
+    if model is None:
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                model = StarDist2D(None, name=name, basedir=basedir)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] custom StarDist load failed: {exc!r}")
+            emit_error(
+                "custom-model-load-failed",
+                hint=f"StarDist could not load {args.model}: {exc}",
+                exit_code=4,
+            )
+            return
+        _remember_model(model_key, model)
 
     # StarDist wants float input; a 3-channel model gets RGB, everything else
     # gets luminance. `config.n_channel_in` tells us which without guessing.
@@ -322,8 +395,8 @@ def run_stardist(args, channels) -> None:
     cc.emit_payload(width_px, height_px, cells, image_stats)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv=None) -> None:
+    args = parse_args(argv)
     channels = cc.parse_channels(args.channels)
 
     problem = validate_path(args.model, args.custom_kind)
@@ -342,5 +415,15 @@ def main() -> None:
         run_stardist(args, channels)
 
 
+def serve() -> None:
+    log("[cellpose_detect] custom model worker ready; the model loads with the first image")
+    # Memory is released after each response is sent, so it never delays a
+    # result. The cached model stays loaded.
+    cc.serve_ndjson(main, after_response=cc.release_request_memory)
+
+
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv[1:]:
+        serve()
+    else:
+        main()

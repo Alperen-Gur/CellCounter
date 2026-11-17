@@ -24,15 +24,22 @@ struct RetrainBanner: View {
     /// Cached total — recomputed in `.onAppear` and on `ccCorrectionsChanged` rather than
     /// every SwiftUI body invocation (the underlying walk decodes every detection's JSON).
     @State private var cachedTotal: Int = 0
+    @State private var recomputeTask: Task<Void, Never>?
 
     private var totalCorrections: Int { cachedTotal }
 
     private func recomputeTotal() {
-        cachedTotal = state.repos.allBatches()
-            .flatMap { $0.images }
-            .compactMap { $0.detection }
-            .flatMap { $0.corrections }
-            .count
+        cachedTotal = state.repos.reachableCorrectionCount()
+    }
+
+    /// Edits arrive in bursts; recount once the burst settles.
+    private func scheduleRecompute() {
+        recomputeTask?.cancel()
+        recomputeTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            recomputeTotal()
+        }
     }
 
     private var estimatedMinutes: Int {
@@ -56,8 +63,9 @@ struct RetrainBanner: View {
             hydrateDismissal()
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ccCorrectionsChanged"))) { _ in
-            recomputeTotal()
+            scheduleRecompute()
         }
+        .onDisappear { recomputeTask?.cancel() }
     }
 
     private var content: some View {

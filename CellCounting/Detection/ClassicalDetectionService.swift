@@ -12,6 +12,11 @@ import Foundation
 /// the same labels. That makes it the detector to use when a figure has to be
 /// exactly reproducible, when the machine has no GPU or no network, and as the
 /// cheapest possible second opinion inside the Ensemble family.
+///
+/// Requests go to one warm `classical_detect.py --serve` worker shared by
+/// every threshold method (see `ServedDetection`), so NumPy, SciPy and
+/// scikit-image are imported once rather than for every image. A failed
+/// worker falls back to a one-shot process.
 struct ClassicalDetectionService: DetectionService {
     let modelId: String
 
@@ -66,8 +71,9 @@ struct ClassicalDetectionService: DetectionService {
             throw DetectionError.imageDecodeFailed
         }
 
+        // Per-image arguments. The script path is not among them: the warm
+        // worker is already running it, and a one-shot fallback prepends it.
         var args = [
-            scriptURL.path,
             "--image", imageURL.path,
             "--model", resolvedId,
             "--threshold-method", method,
@@ -112,17 +118,33 @@ struct ClassicalDetectionService: DetectionService {
         args += ["--no-gpu"]
 
         let outcome: SidecarOutcome
+        // Resolved here: the stderr callback is a Sendable closure and must
+        // not reach into main-actor state.
+        let detectionStageNotification = Notification.Name.ccDetectionStage
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args) { line in
+            outcome = try await ServedDetection.run(
+                key: Self.workerKey(pythonURL: pythonURL, scriptURL: scriptURL),
+                pythonURL: pythonURL,
+                scriptURL: scriptURL,
+                requestArgs: args) { line in
                 NotificationCenter.default.post(
-                    name: .ccDetectionStage, object: nil, userInfo: ["line": line])
+                    name: detectionStageNotification, object: nil, userInfo: ["line": line])
             }
+        } catch let error as DetectionError {
+            throw error
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
 
         try outcome.throwIfFailed()
-        return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
+        return try await SidecarPayload.decodeResultOffMain(stdout: outcome.stdout, exitCode: outcome.exitCode)
+    }
+
+    /// Warm-worker identity: the environment and the script. There is no
+    /// model, and the threshold method travels with each request.
+    nonisolated static func workerKey(pythonURL: URL, scriptURL: URL) -> PersistentSidecarKey {
+        ServedDetection.key(pythonURL: pythonURL, scriptURL: scriptURL,
+                            signature: ServedDetection.classicalSignature)
     }
 
     private static func resolveScriptURL() -> URL? {

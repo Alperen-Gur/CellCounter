@@ -53,6 +53,15 @@ enum NativeLibraryArchiveExporter {
         }
     }
 
+    /// Cell blobs leave the native store as plain JSON, which the Workbench
+    /// migration parses directly; detections (`DetectionRecord.cellsData`,
+    /// kept in `StoredCellsRecord`) and saved mask versions may be stored
+    /// compressed. A blob that cannot be decompressed is exported with its
+    /// exact stored bytes rather than dropped.
+    static func exportedCellsData(_ stored: Data) -> Data {
+        (try? CellsBlobCodec.plainJSON(stored)) ?? stored
+    }
+
     private static func writeResponse(_ object: [String: Any]) {
         if let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) {
             FileHandle.standardOutput.write(data)
@@ -109,7 +118,10 @@ enum NativeLibraryArchiveExporter {
             throw failure("capture-selection", "A selected image is absent from the consistent library snapshot. Refresh the library selection and capture again.")
         }
         let helper = try helperMetadata()
-        var files = encoder.files(root: root)
+        // Protocols and model checkpoints are app-wide. They sit inside the
+        // Default Library's folder, but beside any other library.
+        let appRoot = FileStore.appLocation().standardizedFileURL.resolvingSymlinksInPath()
+        var files = encoder.files(root: root, appRoot: appRoot)
         files.append(["role": "other", "path": snapshot.path, "relativePath": "native-store/store.sqlite", "required": true])
         // SwiftData external storage and store metadata remain opaque evidence.
         // Current entities keep inline blobs, but older stores may have sidecars.
@@ -121,6 +133,9 @@ enum NativeLibraryArchiveExporter {
             let folder = root.appendingPathComponent(name)
             if fm.fileExists(atPath: folder.path) {
                 try appendTree(folder, role: name == "Workspaces" ? "workspace" : "other", root: root, files: &files)
+            } else if name == "Protocols", appRoot.path != root.path {
+                let shared = appRoot.appendingPathComponent(name)
+                if fm.fileExists(atPath: shared.path) { try appendTree(shared, role: "other", root: appRoot, files: &files) }
             }
         }
         let jobs = root.appendingPathComponent("analysis-jobs.json")
@@ -255,7 +270,8 @@ enum NativeLibraryArchiveExporter {
                 "modelId": r.modelId, "pxPerUm": r.pxPerUm, "thresholdsData": try blob(r.thresholdsData),
                 "condition": optional(r.condition), "pxPerUmSource": optional(r.pxPerUmSource), "imageCountSummary": r.imageCountSummary,
                 "cellCountSummary": r.cellCountSummary, "contentRevision": r.contentRevision, "insightsData": try blob(r.insightsData),
-                "insightsRevision": r.insightsRevision, "images": r.images.map { $0.id.uuidString }] }
+                "insightsRevision": r.insightsRevision, "recalibrationPending": r.recalibrationPending,
+                "images": r.images.map { $0.id.uuidString }] }
             result["ImageRecord"] = try rows(ImageRecord.self) { r in
                 images.append(r); imageIDs.insert(r.id)
                 return ["id": r.id.uuidString, "fileName": r.fileName, "originalPath": r.originalPath, "widthPx": r.widthPx, "heightPx": r.heightPx,
@@ -266,12 +282,14 @@ enum NativeLibraryArchiveExporter {
             }
             result["DetectionRecord"] = try rows(DetectionRecord.self) { r in [
                 "id": r.id.uuidString, "runSettingsData": try blob(r.runSettingsData), "detectorId": r.detectorId, "ranAt": Self.date(r.ranAt),
-                "cellsData": try blob(r.cellsData), "minConfidence": r.minConfidence, "cellCountSummary": r.cellCountSummary,
+                "cellsData": try blob(NativeLibraryArchiveExporter.exportedCellsData(r.cellsData)), "minConfidence": r.minConfidence, "cellCountSummary": r.cellCountSummary,
                 "cellsRevision": r.cellsRevision, "reviewPendingCount": r.reviewPendingCount, "reviewIndexVersion": r.reviewIndexVersion,
-                "imageStatsData": try blob(r.imageStatsData), "corrections": r.corrections.map { $0.id.uuidString }, "image": Self.uuid(r.image?.id)] }
+                "imageStatsData": try blob(r.imageStatsData), "cellMetricsData": try blob(r.cellMetricsData), "cellMetricsVersion": r.cellMetricsVersion,
+                "corrections": r.corrections.map { $0.id.uuidString }, "image": Self.uuid(r.image?.id)] }
             result["SegmentationVariantRecord"] = try rows(SegmentationVariantRecord.self) { r in [
                 "id": r.id.uuidString, "imageId": r.imageId.uuidString, "detectorId": r.detectorId, "label": r.label, "createdAt": Self.date(r.createdAt),
-                "cellsData": try blob(r.cellsData), "cellCount": r.cellCount, "meanConfidence": r.meanConfidence, "image": Self.uuid(r.image?.id),
+                "cellsData": try blob(NativeLibraryArchiveExporter.exportedCellsData(r.cellsData)), "cellCount": r.cellCount, "meanConfidence": r.meanConfidence, "image": Self.uuid(r.image?.id),
+                "contentHash": optional(r.contentHash),
                 "measurementPxPerUm": Self.optional(r.measurementPxPerUm), "runSettingsData": try blob(r.runSettingsData),
                 "imageStatsData": try blob(r.imageStatsData), "detectionRanAt": r.detectionRanAt.map(Self.date) as Any? ?? NSNull()] }
             result["ReviewCandidateRecord"] = try rows(ReviewCandidateRecord.self) { r in [
@@ -300,7 +318,7 @@ enum NativeLibraryArchiveExporter {
             return result
         }
 
-        func files(root: URL) -> [[String: Any]] {
+        func files(root: URL, appRoot: URL) -> [[String: Any]] {
             let fm = FileManager.default
             var files: [[String: Any]] = []
             for image in images {
@@ -314,7 +332,12 @@ enum NativeLibraryArchiveExporter {
                 }
             }
             for model in modelVersions {
-                let path = model.checkpointPath.hasPrefix("/") ? model.checkpointPath : root.appendingPathComponent("Models").appendingPathComponent(model.checkpointPath).path
+                var path = model.checkpointPath
+                if !path.hasPrefix("/") {
+                    let local = root.appendingPathComponent("Models").appendingPathComponent(model.checkpointPath)
+                    path = fm.fileExists(atPath: local.path) ? local.path
+                        : appRoot.appendingPathComponent("Models").appendingPathComponent(model.checkpointPath).path
+                }
                 files.append(["role": "checkpoint", "path": path, "required": false])
             }
             return files

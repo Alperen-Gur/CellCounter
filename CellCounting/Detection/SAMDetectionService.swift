@@ -3,6 +3,11 @@ import Foundation
 /// SAM-family `DetectionService` that shells out to `sam_detect.py` via the
 /// shared Python venv. Routes per-model_type. Throws `DetectionError` on any
 /// failure (including CellViT, which has no installable weights).
+///
+/// Requests go to a warm `sam_detect.py --serve` worker per model type and
+/// GPU setting (see `ServedDetection`), so micro_sam and the SAM model load
+/// once rather than for every image. A failed worker falls back to a
+/// one-shot process.
 struct SAMDetectionService: DetectionService {
     let modelId: String
 
@@ -24,8 +29,9 @@ struct SAMDetectionService: DetectionService {
             throw DetectionError.imageDecodeFailed
         }
 
+        // Per-image arguments. The script path is not among them: the warm
+        // worker is already running it, and a one-shot fallback prepends it.
         var args = [
-            scriptURL.path,
             "--image", imageURL.path,
             "--model", modelType,
             "--pxPerUm", String(input.pxPerUm),
@@ -54,7 +60,14 @@ struct SAMDetectionService: DetectionService {
 
         let outcome: SidecarOutcome
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args)
+            outcome = try await ServedDetection.run(
+                key: Self.workerKey(pythonURL: pythonURL, scriptURL: scriptURL,
+                                    modelType: modelType, useGPU: input.useGPU),
+                pythonURL: pythonURL,
+                scriptURL: scriptURL,
+                requestArgs: args)
+        } catch let error as DetectionError {
+            throw error
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
@@ -65,7 +78,16 @@ struct SAMDetectionService: DetectionService {
 
         // Structured-error check, payload decode, and per-cell mapping are
         // shared across all detection families via SidecarPayload.decodeResult.
-        return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
+        return try await SidecarPayload.decodeResultOffMain(stdout: outcome.stdout, exitCode: outcome.exitCode)
+    }
+
+    /// Warm-worker identity: the environment, the script, the micro_sam
+    /// model type and the GPU setting. Everything else travels with each
+    /// request.
+    nonisolated static func workerKey(pythonURL: URL, scriptURL: URL,
+                                      modelType: String, useGPU: Bool) -> PersistentSidecarKey {
+        ServedDetection.key(pythonURL: pythonURL, scriptURL: scriptURL,
+                            signature: ServedDetection.samSignature(modelType: modelType, useGPU: useGPU))
     }
 
     // MARK: — Sidecar resolution

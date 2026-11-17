@@ -1,27 +1,15 @@
 import SwiftUI
 import CoreGraphics
 
-// MARK: — Histogram data model
-
-private struct HistogramData {
-    let buckets: [Int]       // 256 entries
-    let minVal: Int
-    let maxVal: Int
-    let mean: Double
-    let sigma: Double
-
-    static let empty = HistogramData(buckets: Array(repeating: 0, count: 256),
-                                     minVal: 0, maxVal: 0, mean: 0, sigma: 0)
-}
-
 // MARK: — Main view
 
 struct IntensityHistogram: View {
     let image: ImageRecord
     @Environment(AppTheme.self) private var theme
 
-    @State private var data: HistogramData = .empty
-    @State private var computedForId: UUID? = nil
+    @State private var data: IntensityHistogramData = .empty
+    /// The file `data` was computed from.
+    @State private var computedFor: URL? = nil
 
     private let chartH: CGFloat = 80
     private let chartW: CGFloat = 256   // one point per bucket when fully wide
@@ -80,61 +68,28 @@ struct IntensityHistogram: View {
             .font(.system(size: 9, design: .monospaced))
             .foregroundStyle(Tokens.textTertiary)
         }
-        .onAppear { recomputeIfNeeded() }
-        .onChange(of: image.id) { recomputeIfNeeded() }
+        // Cancelled when the image changes or the panel goes away; only the
+        // file URL (a value) leaves the main actor.
+        .task(id: source) { await load(source) }
     }
 
-    private func recomputeIfNeeded() {
-        guard computedForId != image.id else { return }
-        let capturedImage = image
-        Task.detached(priority: .userInitiated) {
-            let result = Self.compute(for: capturedImage)
-            await MainActor.run {
-                self.data = result
-                self.computedForId = capturedImage.id
-            }
-        }
+    /// The decodable file behind `image`, or nil when it isn't a format
+    /// `ImageLoader.load` decodes (the histogram then stays empty, as before).
+    private var source: URL? {
+        let url = ImageLoader.displayDecodableURL(for: image.displayURL)
+        return ImageLoader.nativeSupported.contains(url.pathExtension.lowercased()) ? url : nil
     }
 
-    // Off-main-actor; returns empty on failure (no fatalError, no force-unwrap).
-    private static func compute(for record: ImageRecord) -> HistogramData {
-        guard let loaded = ImageLoader.loadStored(record) else { return .empty }
-        let src = loaded.cgImage
-
-        // Downsample to 512×512 for speed
-        let maxDim = 512
-        let srcW = src.width, srcH = src.height
-        let scale = min(1.0, Double(maxDim) / Double(max(srcW, srcH)))
-        let dstW = max(1, Int(Double(srcW) * scale))
-        let dstH = max(1, Int(Double(srcH) * scale))
-
-        let space = CGColorSpaceCreateDeviceGray()
-        var pixels = [UInt8](repeating: 0, count: dstW * dstH)
-        guard let ctx = CGContext(data: &pixels,
-                                  width: dstW, height: dstH,
-                                  bitsPerComponent: 8, bytesPerRow: dstW,
-                                  space: space,
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
-            return .empty
+    private func load(_ url: URL?) async {
+        guard let url else {
+            data = .empty
+            computedFor = nil
+            return
         }
-        ctx.draw(src, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
-
-        var buckets = Array(repeating: 0, count: 256)
-        var sum: Double = 0
-        var minV = 255, maxV = 0
-        for v in pixels {
-            buckets[Int(v)] += 1
-            sum += Double(v)
-            if Int(v) < minV { minV = Int(v) }
-            if Int(v) > maxV { maxV = Int(v) }
-        }
-        let n = Double(pixels.count)
-        let mean = n > 0 ? sum / n : 0
-        var variance: Double = 0
-        for v in pixels { variance += (Double(v) - mean) * (Double(v) - mean) }
-        let sigma = n > 1 ? sqrt(variance / n) : 0
-
-        return HistogramData(buckets: buckets, minVal: minV, maxVal: maxV,
-                             mean: mean, sigma: sigma)
+        guard computedFor != url else { return }
+        guard let result = await ResultsPixelSampler.shared.histogram(at: url),
+              !Task.isCancelled else { return }
+        data = result
+        computedFor = url
     }
 }

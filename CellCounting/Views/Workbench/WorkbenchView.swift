@@ -34,7 +34,6 @@ struct WorkbenchView: View {
     @State private var variantName = ""
     @State private var copyVariantAnalysis = false
     @FocusState private var imageFocused: Bool
-    private let workerTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,15 +93,28 @@ struct WorkbenchView: View {
         .focusedSceneValue(\.cellCounterShortcuts, isActive ? shortcutActions : nil)
         .task {
             session.sharedSession.visible = isActive
+            session.sharedSession.residency = WorkbenchViewResidency(startsActive: isActive)
             visitedTasks.insert(session.task)
             await session.loadNavigationCatalog()
-            if !session.hasProject && !session.projectPath.isEmpty { session.refresh() }
+            // A hidden Workbench loads project metadata only; its image is
+            // restored when the user first opens it.
+            if !session.hasProject && !session.projectPath.isEmpty { session.refresh(loadDisplayedImage: isActive) }
             else { session.refreshProjectActivity() }
             openRequestedLayeredWorkspace()
         }
         .onChange(of: isActive) { _, active in
-            session.sharedSession.visible = active
+            session.setViewActive(active)
             if active { session.refreshProjectActivity() }
+        }
+        // Polling runs only while the Workbench is the active screen and slows
+        // down while nothing changes.
+        .task(id: isActive) {
+            guard isActive else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(session.sharedSession.poll.interval))
+                guard !Task.isCancelled else { break }
+                session.refreshBackgroundProgress()
+            }
         }
         .onChange(of: session.task) { _, task in
             visitedTasks.insert(task)
@@ -120,7 +132,6 @@ struct WorkbenchView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if isActive, session.hasProject { session.refreshProjectActivity() }
         }
-        .onReceive(workerTimer) { _ in if isActive { session.refreshBackgroundProgress() } }
         .sheet(isPresented: $showingAgentAccess) { WorkbenchAgentAccessView(session: session) }
         .sheet(isPresented: $showingLayeredWorkspace) { WorkbenchWorkspaceView(session: session, workspace: session.layeredWorkspace) }
         .sheet(isPresented: $showingLibrary) { WorkbenchLibraryView(session: session, library: session.library) }
@@ -645,7 +656,7 @@ struct WorkbenchView: View {
                             (session.jobWorkers.contains { $0.active && $0.targetKind == "tiled-analysis" }
                                 ? "Open Segmentation → Tiled analysis for progress and stop controls. The image reloads when the worker stops."
                                 : session.jobWorkers.contains { $0.active && $0.targetKind == "refresh" }
-                                ? "Open Measurements → Saved result freshness for checkpoint progress and stop controls. The image reloads when the worker stops."
+                                ? "Open Workflows → Result freshness… for checkpoint progress and stop controls. The image reloads when the worker stops."
                                 : "Open Workflows for checkpoint progress and stop controls. The image reloads when the worker stops.") :
                             session.hasProject ? "Import or select an image." : "Create or open a project."))
                         .foregroundStyle(.white).frame(maxWidth: .infinity, maxHeight: .infinity)

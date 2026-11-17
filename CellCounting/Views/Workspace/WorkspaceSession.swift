@@ -82,6 +82,7 @@ final class WorkspaceSession {
     @ObservationIgnored private var residentByteCosts: [UUID: Int] = [:]
     @ObservationIgnored private var residentBytes = 0
     private let residentByteBudget = 192 * 1_024 * 1_024
+    @ObservationIgnored nonisolated(unsafe) private var memoryPressureObserver: NSObjectProtocol?
 
     var selectedLayerID: UUID?
     var selectedLineageNodeIDs: Set<UUID> = []
@@ -102,6 +103,37 @@ final class WorkspaceSession {
         let x = WorkspaceAxis(name: "x", kind: .x, length: 1, unit: "pixel")
         workspace = MicroscopyWorkspace(name: "Untitled workspace", axes: [y, x])
         Task { await loadExtensions() }
+        memoryPressureObserver = NotificationCenter.default.addObserver(
+            forName: .ccMemoryPressure, object: nil, queue: .main) { [weak self] note in
+            let level = MemoryPressureLevel(notification: note)
+            MainActor.assumeIsolated { self?.releaseMemory(level: level) }
+        }
+    }
+
+    deinit {
+        if let memoryPressureObserver { NotificationCenter.default.removeObserver(memoryPressureObserver) }
+    }
+
+    /// Memory pressure: drops pixel planes that can be read again from their
+    /// source file or OME-Zarr array. The selected layer always stays. Visible
+    /// layers keep their planes at warning level, and at critical level lose
+    /// only the plane (their displayed bitmap stays). Layers with no source
+    /// to reload from are never dropped, and nothing is dropped while an
+    /// operation is running.
+    func releaseMemory(level: MemoryPressureLevel) {
+        guard !isBusy else { return }
+        let visible = Set(visibleImageLayers.map(\.id))
+        for id in Array(planes.keys) {
+            if id == selectedLayerID { continue }
+            if level == .warning, visible.contains(id) { continue }
+            let reloadable = zarrArrays[id] != nil
+                || (sourceURLs[id].map { !$0.hasDirectoryPath } ?? false)
+            guard reloadable else { continue }
+            residentBytes -= residentByteCosts.removeValue(forKey: id) ?? 0
+            residentOrder.removeAll { $0 == id }
+            planes[id] = nil
+            if !visible.contains(id) { displayImages[id] = nil }
+        }
     }
 
     var selectedLayer: WorkspaceLayer? {
@@ -194,7 +226,7 @@ final class WorkspaceSession {
         begin("Building workspace from \(images.count) batch images…")
         activeOperationTask?.cancel()
         activeOperationTask = Task {
-            var frames: [[DetectedCell]] = []
+            var frames: [[WorkspaceFrameCell]] = []
             var initialPlane: (WorkspacePixelPlane, CGImage?)?
             do {
                 for (index, image) in images.enumerated() {
@@ -208,7 +240,9 @@ final class WorkspaceSession {
                         }
                     }
                     guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
-                    if let detection = image.detection { frames.append(await state.loadCells(for: detection)) }
+                    // Reduce each image's cells to the few fields the workspace
+                    // keeps before loading the next image.
+                    if let detection = image.detection { frames.append(await state.loadCells(for: detection).map(WorkspaceFrameCell.init)) }
                     else { frames.append([]) }
                     progress = Double(index + 1) / Double(images.count)
                     await Task.yield()
@@ -618,7 +652,7 @@ final class WorkspaceSession {
         }
     }
 
-    private func importDetections(frames: [[DetectedCell]]) {
+    func importDetections(frames: [[WorkspaceFrameCell]]) {
         let timeAxis: WorkspaceAxis
         if let existing = workspace.axes.first(where: { $0.kind == .time }) { timeAxis = existing }
         else {
@@ -626,20 +660,9 @@ final class WorkspaceSession {
             workspace.axes.insert(timeAxis, at: 0)
         }
         for (frame, cells) in frames.enumerated() {
-            let points = cells.map { cell in
-                WorkspacePoint(id: cell.id,
-                               coordinate: WorkspaceCoordinate(x: cell.cx, y: cell.cy),
-                               position: WorkspacePosition(indices: [timeAxis.id: frame]),
-                               label: "Cell", features: [
-                                "diameter": cell.diameter,
-                                "confidence": cell.confidence,
-                               ])
-            }
-            let layer = WorkspaceLayer(name: "Cells · frame \(frame + 1)", kind: .points,
-                                       source: .generated(operation: "CellCounter detections"),
-                                       payload: .points(points), axisIDs: workspace.axes.map(\.id),
-                                       metadata: ["frame": String(frame)])
-            workspace.addLayer(layer)
+            workspace.addLayer(WorkspaceFrameCell.makeLayer(frame: frame, cells: cells,
+                                                            timeAxisID: timeAxis.id,
+                                                            axisIDs: workspace.axes.map(\.id)))
         }
     }
 

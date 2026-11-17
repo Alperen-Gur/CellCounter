@@ -555,7 +555,10 @@ private struct ViewerPanel: View {
     }
 
     private var viewerControls: some View {
-        VStack(spacing: 6) {
+        // Decoded once per change of the stats blob, not per render and per
+        // `ViewThatFits` candidate.
+        let qcStats = state.currentImage?.detection.map { ResultsDerivedValues.shared.imageStats(of: $0) }
+        return VStack(spacing: 6) {
             HStack(spacing: 8) {
                 ViewerControlsLeft(overlayMode: $overlayMode, showOverlay: $showOverlay)
                 Spacer(minLength: 4)
@@ -574,7 +577,7 @@ private struct ViewerPanel: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     ROIModePicker(mode: $roiMode)
-                    QCBadges(stats: state.currentImage?.detection?.imageStats).fixedSize()
+                    QCBadges(stats: qcStats).fixedSize()
                     Spacer(minLength: 4)
                     SplitTouchingButton(state: state)
                 }
@@ -584,7 +587,7 @@ private struct ViewerPanel: View {
                         Spacer(minLength: 4)
                         SplitTouchingButton(state: state)
                     }
-                    QCBadges(stats: state.currentImage?.detection?.imageStats)
+                    QCBadges(stats: qcStats)
                 }
             }
             if editorMode == .annotate {
@@ -743,6 +746,10 @@ private struct RealImageViewer: View {
     @State private var preparedGeometryRevision: Int?
     @State private var cellsLoadGeneration: Int = 0
     @State private var cellsLoadError: String?
+    /// What the last completed sync prepared. A sync for the same inputs is
+    /// skipped, so a broadcast about another image (each analysed image of a
+    /// running batch posts one) no longer rebuilds this image's overlay.
+    @State private var syncedOverlay: ResultsOverlaySyncState?
     @Environment(\.displayScale) private var displayScale
     /// Pass-17 (Lane B): in-memory mirror of the ground-truth annotations on
     /// this image. Synced from `state.repos.annotations(for:)` on appear / image
@@ -788,10 +795,16 @@ private struct RealImageViewer: View {
         return overlayFilterCache.value(for: key, cells: sameDetection ? liveCells : []).cells
     }
 
+    /// Called by the overlay's cell binding on every read, so the cutoff's
+    /// run-settings JSON is decoded only when it changes.
     private func overlayKey(revision: Int) -> ReviewDataKey {
         ReviewDataKey(imageId: image.id, detectionId: image.detection?.id, revision: revision,
-                      confidence: state.effectiveConfidence(for: image),
+                      confidence: effectiveConfidence,
                       regions: image.rois.map(ReviewRegion.init), pxPerUm: batchPxPerUm)
+    }
+
+    private var effectiveConfidence: Double {
+        ResultsDerivedValues.shared.effectiveConfidence(for: image, state: state)
     }
 
     private func displayPixelSize(for image: ImageRecord, zoom: Double) -> Int {
@@ -863,7 +876,7 @@ private struct RealImageViewer: View {
                     // preserving the hidden tail so a stricter cutoff doesn't
                     // discard cells from the SwiftData store. A2 owns
                     // EditableOverlay; this filter sits one layer above it.
-                    let cutoff = state.effectiveConfidence(for: image)
+                    let cutoff = effectiveConfidence
                     let visibleBinding = Binding<[DetectedCell]>(
                         get: { visibleCellsForEditing },
                         set: { newVisible in
@@ -903,6 +916,12 @@ private struct RealImageViewer: View {
                     )
                     .id(OverlayEditingSessionKey(detectionId: image.detection?.id, pxPerUm: batchPxPerUm))
                     .focusedValue(\.reviewCanvasActive, true)
+                    // The overlay draws at the final scale from the first
+                    // frame of an animated zoom or full-screen change. Taking
+                    // its final frame at once as well means its canvases are
+                    // laid out and drawn once per change, not once per
+                    // animation frame; the image still animates.
+                    .animation(nil, value: scale)
                 }
 
                 if loadedImageId == image.id, image.detection != nil, !liveCellsAreCurrent {
@@ -912,7 +931,7 @@ private struct RealImageViewer: View {
                             Text("Detections unavailable").help(cellsLoadError)
                             Button("Retry") {
                                 correctionReloadTask?.cancel()
-                                correctionReloadTask = Task { await syncFromDetection() }
+                                correctionReloadTask = Task { await syncFromDetection(force: true) }
                             }
                             .buttonStyle(.borderless)
                             .foregroundStyle(.white)
@@ -973,7 +992,17 @@ private struct RealImageViewer: View {
                 }
             }
             .frame(width: drawW, height: drawH)
-            .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+            // The drop shadow is cast by a plain opaque rectangle of the same
+            // frame, under the image, rather than by the whole composite
+            // (bitmap + overlay + ROI + profile layers): the composite no
+            // longer has to be rendered offscreen to derive its shadow each
+            // time the overlay changes. The opaque image covers the rectangle;
+            // while it loads, the rectangle has the placeholder's colour.
+            .background {
+                Rectangle()
+                    .fill(Tokens.bgSunken)
+                    .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+            }
 
             ScaleBar(pxPerUm: batchPxPerUm, fitScale: scale)
                 .padding(.leading, 16)
@@ -992,13 +1021,16 @@ private struct RealImageViewer: View {
         // (finding: overlay-stale-after-nonhandleedit-mutations).
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
             // Corrections are posted with object == nil (broadcast) or the
-            // affected image id. Resync in both cases; a broadcast may follow a
-            // re-run/split that replaced this image's DetectionRecord wholesale
-            // (which .onChange on the old relationship's count can miss).
-            if note.object == nil || (note.object as? UUID) == image.id {
-                correctionReloadTask?.cancel()
-                correctionReloadTask = Task { await syncFromDetection() }
-            }
+            // affected image id. A broadcast may follow a re-run/split that
+            // replaced this image's DetectionRecord wholesale (which .onChange
+            // on the old relationship's count can miss), so it is checked too;
+            // but when this image's detection id, revision and filter inputs
+            // are what the canvas already shows, nothing is reloaded and an
+            // in-flight load is left running.
+            guard ResultsOverlaySyncPolicy.concerns(note.object, imageId: image.id),
+                  !canSkipSync else { return }
+            correctionReloadTask?.cancel()
+            correctionReloadTask = Task { await syncFromDetection() }
         }
         // Pass-17 (Lane B): the F1 sidebar panel pings this when an external
         // tool (Reset, Export, etc.) mutates annotations so we resync.
@@ -1016,8 +1048,21 @@ private struct RealImageViewer: View {
         }
     }
 
-    private func syncFromDetection() async {
+    /// The state a sync started now would produce, compared with what the
+    /// last completed sync produced.
+    private var canSkipSync: Bool {
+        ResultsOverlaySyncPolicy.canSkip(
+            current: ResultsOverlaySyncState(preparation: cellsPreparationKey,
+                                             liveRevision: liveCellsRevision),
+            synced: syncedOverlay,
+            loadedCellsMatch: liveCellsLoadKey == cellsLoadKey,
+            hasLoadError: cellsLoadError != nil)
+    }
+
+    /// `force` (the Retry button) reloads even when nothing changed.
+    private func syncFromDetection(force: Bool = false) async {
         guard !Task.isCancelled, state.currentImage?.id == image.id else { return }
+        if !force && canSkipSync { return }
         cellsLoadGeneration &+= 1
         let generation = cellsLoadGeneration
         let loadKey = cellsLoadKey
@@ -1027,6 +1072,8 @@ private struct RealImageViewer: View {
             editableCellsKey = loadKey
             liveCellsRevision &+= 1
             preparedGeometry = nil; preparedGeometryRevision = nil
+            syncedOverlay = ResultsOverlaySyncState(preparation: cellsPreparationKey,
+                                                    liveRevision: liveCellsRevision)
             return
         }
         let cells: [DetectedCell]
@@ -1060,6 +1107,9 @@ private struct RealImageViewer: View {
         overlayFilterCache.store(prepared.summary, for: key)
         preparedGeometry = prepared.geometry
         preparedGeometryRevision = overlayFilterCache.rebuildCount
+        // The guards above tie the current inputs to the loaded revision
+        // (`loadKey`) and to the filter inputs the summary was prepared with.
+        syncedOverlay = ResultsOverlaySyncState(preparation: cellsPreparationKey, liveRevision: revision)
     }
 
     /// Pass-17 (Lane B): reload the annotations for the current image from
@@ -1203,6 +1253,9 @@ private struct RealImageViewer: View {
                     detection: currentDetection, image: image)
                 promptStatus = result.backend.rawValue
             } catch {
+                // A refinement stopped because the view went away leaves no
+                // message behind.
+                if Task.isCancelled { return }
                 promptStatus = error.localizedDescription
             }
             try? await Task.sleep(for: .seconds(3))
@@ -1694,36 +1747,55 @@ private struct ResultsSidebar: View {
         nonmutating set { workspaceRaw = newValue.rawValue }
     }
 
-    /// Pass-12: dropped the fallback-cells alternate path. The parent view
-    /// guards against `images.isEmpty` and routes to EmptyBatchState, so the
-    /// sidebar is only mounted when a real image is selected. If detection
-    /// hasn't run yet, `cells` falls back to empty — the existing
-    /// DetectionFailedBanner handles re-running.
-    private var rawCells: [DetectedCell] {
-        summaryKey?.imageId == state.currentImage?.id
-            && summaryKey?.detectionId == state.currentImage?.detection?.id ? rawCellsSnapshot : []
+    /// Everything the panels read, derived once per render. The review key
+    /// used to be a computed property evaluated many times per render (twice
+    /// per `cells` read), each time walking the ROIs and decoding the run
+    /// settings; the image stats were decoded once per panel showing them.
+    private struct RenderInputs {
+        let reviewKey: ReviewDataKey
+        /// Pass-15: the confidence slider is a real filter. Cells whose
+        /// `confidence` is below the effective cutoff (per-image override
+        /// beats global) are hidden everywhere downstream — TotalBlock count,
+        /// BinsPanel, DistributionPanel, MeasurementsPanel,
+        /// ResultsExportPanel — because they all read `cells` from here.
+        /// Underlying SwiftData rows are untouched.
+        let summary: ReviewSummary
+        /// The key `summary` was computed for, when it is this image's and
+        /// detection's; nil while another image's summary is pending.
+        let summaryRevision: ReviewDataKey?
+        /// Pass-12: dropped the fallback-cells alternate path. The parent view
+        /// guards against `images.isEmpty` and routes to EmptyBatchState, so
+        /// the sidebar is only mounted when a real image is selected. If
+        /// detection hasn't run yet, cells fall back to empty — the existing
+        /// DetectionFailedBanner handles re-running.
+        let rawCells: [DetectedCell]
+        let imageStats: [String: Double]
+
+        var cells: [DetectedCell] { summary.cells }
+        var roiCount: Int { reviewKey.regions.count }
     }
 
-    /// Pass-15: the confidence slider is now a real filter. Cells whose
-    /// `confidence` is below the effective cutoff (per-image override beats
-    /// global) are hidden everywhere downstream — TotalBlock count, BinsPanel,
-    /// DistributionPanel, MeasurementsPanel, ResultsExportPanel — *because they
-    /// all read this computed property*. Underlying SwiftData rows are
-    /// untouched, so the slider can be dragged back down freely. A2 and A4
-    /// can layer their own filters on top without rewriting this body.
-    private var displaySummary: ReviewSummary {
-        summaryKey?.imageId == reviewKey.imageId && summaryKey?.detectionId == reviewKey.detectionId
-            ? summary : ReviewSummary()
+    private func reviewKey(for image: ImageRecord?) -> ReviewDataKey {
+        ReviewDataKey(imageId: image?.id, detectionId: image?.detection?.id,
+                      revision: image?.detection?.cellsRevision ?? 0,
+                      confidence: image.map { ResultsDerivedValues.shared.effectiveConfidence(for: $0, state: state) }
+                          ?? state.confidence,
+                      regions: (image?.rois ?? []).map(ReviewRegion.init),
+                      pxPerUm: image?.batch?.pxPerUm ?? state.pxPerUm)
     }
-    private var cells: [DetectedCell] { displaySummary.cells }
-    private var regions: [ReviewRegion] { (state.currentImage?.rois ?? []).map(ReviewRegion.init) }
-    private var roiCount: Int { regions.count }
-    private var reviewKey: ReviewDataKey {
+
+    /// Fresh key for the asynchronous reload, which re-reads it after awaits.
+    private var reviewKey: ReviewDataKey { reviewKey(for: state.currentImage) }
+
+    private func renderInputs() -> RenderInputs {
         let image = state.currentImage
-        return ReviewDataKey(imageId: image?.id, detectionId: image?.detection?.id,
-                             revision: image?.detection?.cellsRevision ?? 0,
-                             confidence: image.map { state.effectiveConfidence(for: $0) } ?? state.confidence,
-                             regions: regions, pxPerUm: image?.batch?.pxPerUm ?? state.pxPerUm)
+        let key = reviewKey(for: image)
+        let current = summaryKey?.imageId == key.imageId && summaryKey?.detectionId == key.detectionId
+        return RenderInputs(reviewKey: key,
+                            summary: current ? summary : ReviewSummary(),
+                            summaryRevision: current ? summaryKey : nil,
+                            rawCells: current ? rawCellsSnapshot : [],
+                            imageStats: ResultsDerivedValues.shared.imageStats(of: image?.detection))
     }
 
     /// Channel names for the current detection, in source order — the only
@@ -1731,44 +1803,25 @@ private struct ResultsSidebar: View {
     /// `DetectedCell.channelIntensities`, which the Python side emits only for
     /// genuinely multi-channel sources). Empty for a plain grayscale image.
     /// Feeds `ChannelStackPanel`; see its mount below.
-    private var channelNames: [String] {
+    private func channelNames(in rawCells: [DetectedCell]) -> [String] {
         let sourceCell = rawCells.first { $0.channelIntensities?.isEmpty == false }
         guard let entries = sourceCell?.channelIntensities else { return [] }
         return entries.sorted { $0.channel < $1.channel }.map(\.displayName)
     }
 
     var body: some View {
+        let inputs = renderInputs()
         VStack(spacing: 0) {
             ResultsToolSelector(selection: Binding(
                 get: { workspace }, set: { workspace = $0 }))
             Divider().overlay(Tokens.divider)
             ScrollView {
-                VStack(spacing: 0) {
-                    if let failure = cellsLoadFailure, failure.key == reviewKey {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Measurements unavailable", systemImage: "exclamationmark.triangle")
-                                .font(.system(size: 12, weight: .semibold))
-                            Text(failure.message)
-                                .font(.system(size: 11)).foregroundStyle(Tokens.textTertiary)
-                            Button("Retry loading measurements") {
-                                correctionReloadTask?.cancel()
-                                correctionReloadTask = Task { await reloadCellsSnapshot() }
-                            }
-                            .font(.system(size: 11))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(18)
-                    } else {
-                        TotalBlock(summary: displaySummary)
-                            .opacity(summaryKey == reviewKey ? 1 : 0.45)
-                        if summaryKey != reviewKey {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini)
-                                Text("Updating measurements…").font(.system(size: 10))
-                            }.foregroundStyle(Tokens.textTertiary).padding(.bottom, 6)
-                        }
-                        workspaceContent
-                    }
+                // "All tools" stacks every panel; build them as they scroll
+                // into view rather than all at once.
+                if workspace == .all {
+                    LazyVStack(spacing: 0) { sidebarContent(inputs) }
+                } else {
+                    VStack(spacing: 0) { sidebarContent(inputs) }
                 }
             }
         }
@@ -1779,14 +1832,46 @@ private struct ResultsSidebar: View {
                 .frame(width: 0.5)
                 .frame(maxHeight: .infinity)
         }
-        .onChange(of: regions) { roiSignal &+= 1 }
-        .task(id: reviewKey) { await reloadCellsSnapshot() }
+        .onChange(of: inputs.reviewKey.regions) { roiSignal &+= 1 }
+        .task(id: inputs.reviewKey) { await reloadCellsSnapshot() }
         .onReceive(NotificationCenter.default.publisher(for: .ccCorrectionsChanged)) { note in
             guard note.object == nil || (note.object as? UUID) == state.currentImage?.id else { return }
+            // Already showing this image's current revision and filter: a
+            // broadcast about another image changes nothing here.
+            guard summaryKey != reviewKey else { return }
             correctionReloadTask?.cancel()
             correctionReloadTask = Task { await reloadCellsSnapshot() }
         }
         .onDisappear { correctionReloadTask?.cancel(); correctionReloadTask = nil }
+    }
+
+    @ViewBuilder
+    private func sidebarContent(_ inputs: RenderInputs) -> some View {
+        if let failure = cellsLoadFailure, failure.key == inputs.reviewKey {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Measurements unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(failure.message)
+                    .font(.system(size: 11)).foregroundStyle(Tokens.textTertiary)
+                Button("Retry loading measurements") {
+                    correctionReloadTask?.cancel()
+                    correctionReloadTask = Task { await reloadCellsSnapshot() }
+                }
+                .font(.system(size: 11))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
+        } else {
+            TotalBlock(summary: inputs.summary)
+                .opacity(summaryKey == inputs.reviewKey ? 1 : 0.45)
+            if summaryKey != inputs.reviewKey {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Updating measurements…").font(.system(size: 10))
+                }.foregroundStyle(Tokens.textTertiary).padding(.bottom, 6)
+            }
+            workspaceContent(inputs)
+        }
     }
 
     private func reloadCellsSnapshot() async {
@@ -1815,13 +1900,15 @@ private struct ResultsSidebar: View {
     }
 
     @ViewBuilder
-    private var workspaceContent: some View {
+    private func workspaceContent(_ inputs: RenderInputs) -> some View {
+        let cells = inputs.cells
+        let thresholds = state.currentBatch?.thresholds ?? state.thresholds
         switch workspace {
         case .overview:
             Divider().overlay(Tokens.divider)
             SizeBinsPanel(state: state, cells: cells, revision: summaryKey)
             Divider().overlay(Tokens.divider)
-            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds, revision: summaryKey)
+            DistributionPanel(cells: cells, thresholds: thresholds, revision: summaryKey)
             ColoniesPanel(state: state)
             Divider().overlay(Tokens.divider)
             ScalePanel(state: state)
@@ -1835,7 +1922,7 @@ private struct ResultsSidebar: View {
                 .padding(.horizontal, 18).padding(.bottom, 8)
             Divider().overlay(Tokens.divider)
             ExpectedDiameterPanel(state: state)
-            channelControls
+            channelControls(inputs.rawCells)
             Divider().overlay(Tokens.divider)
             OverlayAppearancePanel(state: state)
             Divider().overlay(Tokens.divider)
@@ -1843,7 +1930,7 @@ private struct ResultsSidebar: View {
 
         case .workflows:
             AdvancedWorkflowsPanel(state: state,
-                                   cells: rawCells,
+                                   cells: inputs.rawCells,
                                    editorMode: $editorMode,
                                    selectedCellIds: $selectedCellIds)
 
@@ -1853,18 +1940,18 @@ private struct ResultsSidebar: View {
         case .measurements:
             Divider().overlay(Tokens.divider)
             LinkedMeasurementsPanel(cells: cells, revision: summaryKey, selectedCellIds: $selectedCellIds)
-                .id(state.currentImage?.id)
-                .disabled(summaryKey != reviewKey)
-            MeasurementsPanel(summary: displaySummary)
-            IntensityAssaysPanel(cells: cells,
-                                 imageStats: state.currentImage?.detection?.imageStats ?? [:])
+                .id(inputs.reviewKey.imageId)
+                .disabled(summaryKey != inputs.reviewKey)
+            MeasurementsPanel(summary: inputs.summary)
+            IntensityAssaysPanel(cells: cells, imageStats: inputs.imageStats,
+                                 revision: inputs.summaryRevision)
 
         case .assays:
             AreaAssaysPanel(state: state)
-            PunctaPanel(state: state, cells: cells, roiCount: roiCount)
-            SpatialStatsPanel(state: state, cells: cells, roiCount: roiCount)
+            PunctaPanel(state: state, cells: cells, roiCount: inputs.roiCount)
+            SpatialStatsPanel(state: state, cells: cells, roiCount: inputs.roiCount)
             TrackingPanel(state: state, roiSignal: roiSignal)
-            NeuritePanel(state: state, cells: cells, roiCount: roiCount)
+            NeuritePanel(state: state, cells: cells, roiCount: inputs.roiCount)
 
         case .validation:
             RetrainBanner(state: state, onTrain: { state.view = .fineTune })
@@ -1891,31 +1978,31 @@ private struct ResultsSidebar: View {
             SizeBinsPanel(state: state, cells: cells, revision: summaryKey)
             Divider().overlay(Tokens.divider)
             ExpectedDiameterPanel(state: state)
-            channelControls
+            channelControls(inputs.rawCells)
             Divider().overlay(Tokens.divider)
             OverlayAppearancePanel(state: state)
             Divider().overlay(Tokens.divider)
             AdvancedWorkflowsPanel(state: state,
-                                   cells: rawCells,
+                                   cells: inputs.rawCells,
                                    editorMode: $editorMode,
                                    selectedCellIds: $selectedCellIds)
             Divider().overlay(Tokens.divider)
             QualityInsightsPanel(state: state)
             Divider().overlay(Tokens.divider)
-            DistributionPanel(cells: cells, thresholds: state.currentBatch?.thresholds ?? state.thresholds, revision: summaryKey)
+            DistributionPanel(cells: cells, thresholds: thresholds, revision: summaryKey)
             ColoniesPanel(state: state)
             Divider().overlay(Tokens.divider)
             ScalePanel(state: state)
             Divider().overlay(Tokens.divider)
             ConfidencePanel(state: state)
             LinkedMeasurementsPanel(cells: cells, revision: summaryKey, selectedCellIds: $selectedCellIds)
-                .id(state.currentImage?.id)
-                .disabled(summaryKey != reviewKey)
-            MeasurementsPanel(summary: displaySummary)
-            IntensityAssaysPanel(cells: cells,
-                                 imageStats: state.currentImage?.detection?.imageStats ?? [:])
+                .id(inputs.reviewKey.imageId)
+                .disabled(summaryKey != inputs.reviewKey)
+            MeasurementsPanel(summary: inputs.summary)
+            IntensityAssaysPanel(cells: cells, imageStats: inputs.imageStats,
+                                 revision: inputs.summaryRevision)
             AdditionalAssaysSection(state: state, cells: cells,
-                                    roiCount: roiCount, roiSignal: roiSignal)
+                                    roiCount: inputs.roiCount, roiSignal: roiSignal)
             GroundTruthPanel(state: state, detections: cells)
             Divider().overlay(Tokens.divider)
             NotesPanel(state: state)
@@ -1929,7 +2016,8 @@ private struct ResultsSidebar: View {
     }
 
     @ViewBuilder
-    private var channelControls: some View {
+    private func channelControls(_ rawCells: [DetectedCell]) -> some View {
+        let channelNames = channelNames(in: rawCells)
         if channelNames.count > 1 {
             Divider().overlay(Tokens.divider)
             ChannelStackPanel(detectedChannelNames: channelNames, zPlaneCount: 0)

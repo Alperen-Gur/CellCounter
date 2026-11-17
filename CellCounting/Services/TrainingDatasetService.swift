@@ -26,18 +26,56 @@ enum TrainingDatasetService {
     @MainActor static func samples(from images: [ImageRecord]) -> [TrainingSample] {
         images.compactMap { image in
             guard let detection = image.detection else { return nil }
-            let settings = detection.runSettings
-            let selection = sourceSelection(settings)
-            return TrainingSample(id: image.id, name: image.fileName,
-                                  sourceURL: image.storedURL, width: image.widthPx,
-                                  height: image.heightPx, cells: detection.cells,
-                                  group: image.batch.map { "\($0.displayName) [\($0.id.uuidString.prefix(8))]" } ?? "Image \(image.id.uuidString.prefix(8))",
-                                  sourceHash: image.fileHash ?? "",
-                                  zProjection: detection.runSettings?.zProjection ?? "max",
-                                  segmentChannel: selection.channel, useRGBLuminance: selection.luminance,
-                                  sourceSettingsKnown: detection.runSettings != nil,
-                                  detectionID: detection.id, detectionRevision: detection.cellsRevision)
+            return makeSample(image: image, detection: detection, cells: detection.cells)
         }
+    }
+
+    /// A sample whose cell blob has not been decoded yet. Holds plain values
+    /// only, so decoding can happen off the main actor.
+    struct PendingSample: Sendable {
+        var sample: TrainingSample
+        var cellsData: Data
+    }
+
+    /// Main-actor half of `samples(from:)`: reads stored fields and the raw
+    /// cell blob of each image without decoding it.
+    @MainActor static func pendingSamples(from images: [ImageRecord]) -> [PendingSample] {
+        images.compactMap { image in
+            guard let detection = image.detection else { return nil }
+            return PendingSample(sample: makeSample(image: image, detection: detection, cells: []),
+                                 cellsData: detection.cellsData)
+        }
+    }
+
+    /// Decodes every blob in a detached task and returns the same samples, in
+    /// the same order, that `samples(from:)` would build synchronously.
+    static func decode(_ pending: [PendingSample]) async -> [TrainingSample] {
+        await Task.detached(priority: .userInitiated) {
+            pending.map { item in
+                var sample = item.sample
+                sample.cells = DetectionRecord.decodeCellsData(item.cellsData)
+                return sample
+            }
+        }.value
+    }
+
+    @MainActor static func samplesAsync(from images: [ImageRecord]) async -> [TrainingSample] {
+        await decode(pendingSamples(from: images))
+    }
+
+    @MainActor private static func makeSample(image: ImageRecord, detection: DetectionRecord,
+                                              cells: [DetectedCell]) -> TrainingSample {
+        let settings = detection.runSettings
+        let selection = sourceSelection(settings)
+        return TrainingSample(id: image.id, name: image.fileName,
+                              sourceURL: image.storedURL, width: image.widthPx,
+                              height: image.heightPx, cells: cells,
+                              group: image.batch.map { "\($0.displayName) [\($0.id.uuidString.prefix(8))]" } ?? "Image \(image.id.uuidString.prefix(8))",
+                              sourceHash: image.fileHash ?? "",
+                              zProjection: settings?.zProjection ?? "max",
+                              segmentChannel: selection.channel, useRGBLuminance: selection.luminance,
+                              sourceSettingsKnown: settings != nil,
+                              detectionID: detection.id, detectionRevision: detection.cellsRevision)
     }
 
     private static func sourceSelection(_ settings: AnalysisRunSettings?) -> (channel: Int, luminance: Bool) {

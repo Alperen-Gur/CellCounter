@@ -70,6 +70,16 @@ nonisolated final class DecodedCellCache: @unchecked Sendable {
 
     func remove(_ id: UUID) { lock.withLock { removeLocked(id) } }
 
+    /// Drops every entry (memory pressure). Everything cached is re-decoded
+    /// from the stored blob on the next request.
+    func removeAll() {
+        lock.withLock {
+            entries.removeAll()
+            order.removeAll()
+            bytes = 0
+        }
+    }
+
     var retainedCount: Int { lock.withLock { entries.count } }
     var retainedBytes: Int { lock.withLock { bytes } }
 

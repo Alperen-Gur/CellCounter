@@ -7,6 +7,11 @@ import Foundation
 /// `python/venv_omni/` interpreter that `OmniposeDownloader` provisions.
 /// Structurally the sibling of `CellposeSAMDetectionService`: different venv,
 /// different sidecar, identical JSON contract on the way back.
+///
+/// Requests go to a warm `omnipose_detect.py --serve` worker per model and
+/// GPU setting (see `ServedDetection`), so PyTorch and the model load once
+/// rather than for every image. A failed worker falls back to a one-shot
+/// process.
 struct OmniposeDetectionService: DetectionService {
     let modelId: String
 
@@ -30,8 +35,9 @@ struct OmniposeDetectionService: DetectionService {
             throw DetectionError.imageDecodeFailed
         }
 
+        // Per-image arguments. The script path is not among them: the warm
+        // worker is already running it, and a one-shot fallback prepends it.
         var args = [
-            scriptURL.path,
             "--image", imageURL.path,
             "--model", resolvedId,
             "--pxPerUm", String(input.pxPerUm),
@@ -73,17 +79,36 @@ struct OmniposeDetectionService: DetectionService {
         }
 
         let outcome: SidecarOutcome
+        // Resolved here: the stderr callback is a Sendable closure and must
+        // not reach into main-actor state.
+        let detectionStageNotification = Notification.Name.ccDetectionStage
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args) { line in
+            outcome = try await ServedDetection.run(
+                key: Self.workerKey(pythonURL: pythonURL, scriptURL: scriptURL,
+                                    model: resolvedId, useGPU: input.useGPU),
+                pythonURL: pythonURL,
+                scriptURL: scriptURL,
+                requestArgs: args) { line in
                 NotificationCenter.default.post(
-                    name: .ccDetectionStage, object: nil, userInfo: ["line": line])
+                    name: detectionStageNotification, object: nil, userInfo: ["line": line])
             }
+        } catch let error as DetectionError {
+            throw error
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
 
         try outcome.throwIfFailed()
-        return try SidecarPayload.decodeResult(stdout: outcome.stdout, exitCode: outcome.exitCode)
+        return try await SidecarPayload.decodeResultOffMain(stdout: outcome.stdout, exitCode: outcome.exitCode)
+    }
+
+    /// Warm-worker identity: the environment, the script, the model and the
+    /// GPU setting. Thresholds, clustering and every image setting travel
+    /// with each request.
+    nonisolated static func workerKey(pythonURL: URL, scriptURL: URL,
+                                      model: String, useGPU: Bool) -> PersistentSidecarKey {
+        ServedDetection.key(pythonURL: pythonURL, scriptURL: scriptURL,
+                            signature: ServedDetection.omniposeSignature(model: model, useGPU: useGPU))
     }
 
     private static func resolveScriptURL() -> URL? {

@@ -29,6 +29,12 @@ to stdout and exits with code 2.
 
 All progress / log output is written to stderr so stdout stays parseable by
 the Swift host (StarDistDetectionService).
+
+``--serve`` keeps one interpreter, with TensorFlow imported and the model
+loaded, for many images. Requests use the `serve_ndjson` protocol in
+`_cellpose_common`. Each request runs the same `main` a one-shot process runs,
+so the payload is the same; only the model load is skipped after the first
+request. The host starts one worker per model name.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ import argparse
 import contextlib
 import json
 import math
+import os
 import sys
 import uuid
 
@@ -47,6 +54,10 @@ _VALID_MODELS = {
     "2D_versatile_he",
     "2D_paper_dsb2018",
 }
+
+# The loaded model, keyed by model name. A serve worker keeps one entry; a
+# one-shot run fills it once and exits.
+_MODEL_CACHE: dict = {}
 
 
 def log(*args, **kwargs) -> None:
@@ -63,7 +74,7 @@ def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
     sys.exit(exit_code)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="StarDist 2D detection sidecar for CellCounter")
     p.add_argument("--image", required=True, help="Path to input image (jpg/png/tif/bmp).")
     p.add_argument("--model", default="2D_versatile_fluo",
@@ -99,7 +110,39 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--large-threshold", dest="large_threshold", type=float, default=30,
                    help="Diameter threshold (µm) at or above which cells are classified 'large'. "
                         "Default 30.")
-    return p.parse_args()
+    return p.parse_args(argv)
+
+
+def _ensure_sidecar_path() -> None:
+    """Make the sibling helpers (_preprocessing, _watershed, …) importable."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+
+
+def load_pretrained_model(model_class, model_name: str):
+    """Return the StarDist model for `model_name`, loading it at most once.
+
+    stardist/csbdeep announce themselves with bare `print()` calls straight to
+    STDOUT — "Found model '2D_versatile_fluo' for 'StarDist2D'.", "Loading
+    network weights from 'weights_best.h5'.", plus a download progress bar on
+    a first run — and stdout belongs to the JSON payload. The Swift host
+    still sweeps that up (StarDistDetectionService.isolatingJSON), but the
+    redirect means its fast path is the one that runs.
+    """
+    model = _MODEL_CACHE.get(model_name)
+    if model is not None:
+        log("[stardist_detect] reusing initialized model")
+        return model
+    # Release any other model first, so the worker never holds two.
+    _MODEL_CACHE.clear()
+    with contextlib.redirect_stdout(sys.stderr):
+        model = model_class.from_pretrained(model_name)
+    # `from_pretrained` returns None for a name it does not know. Never cache
+    # that, so a later request can still succeed.
+    if model is not None:
+        _MODEL_CACHE[model_name] = model
+    return model
 
 
 def load_image_array(image_path: str):
@@ -127,175 +170,23 @@ def load_image_array(image_path: str):
     return np.array(rgb, dtype=np.float32), pil.size
 
 
-def main() -> None:
-    args = parse_args()
+def measure_instances(labels, img, args, width_px, height_px,
+                      points=None, probs=None) -> list[dict]:
+    """Per-cell measurements for a StarDist label map.
 
-    model_name = args.model
-    if model_name not in _VALID_MODELS:
-        log(f"[stardist_detect] unknown model '{model_name}', defaulting to 2D_versatile_fluo")
-        model_name = "2D_versatile_fluo"
-
-    # Lazy imports — so the import-error branch can emit a structured error
-    # without crashing on bare ImportError.
-    try:
-        import numpy as np  # noqa: F401
-        from csbdeep.utils import normalize
-        from stardist.models import StarDist2D
-    except Exception as exc:  # noqa: BLE001 — broad on purpose for first-run UX
-        log(f"[stardist_detect] import failed: {exc!r}")
-        emit_error(
-            "stardist-not-installed",
-            hint="Run scripts/install_python.sh and then activate this model again",
-            exit_code=2,
-        )
-        return
-
-    log(f"[stardist_detect] loading image: {args.image}")
-    try:
-        img, (width_px, height_px) = load_image_array(args.image)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[stardist_detect] could not open image: {exc!r}")
-        emit_error("image-open-failed", hint=str(exc), exit_code=3)
-        return
-
-    # --- C3: QC metrics on RAW image (before any preprocessing) ---
-    _image_stats: dict = {}
-    try:
-        import numpy as _qc_np
-        _qc_gray = img.astype(_qc_np.float64) if img.ndim == 2 else img.mean(axis=2).astype(_qc_np.float64)
-
-        # Focus score: Laplacian variance / 10000, clamped [0, 1].
-        # Typical well-focused images → lap_var ≥ 1000; blurry → < 200.
-        # Dividing by 10000 gives a convenient [0, 1] scale; ≥ 0.5 = acceptable focus.
-        try:
-            import cv2 as _cv2
-            _lap_var = float(_cv2.Laplacian(_qc_gray, _cv2.CV_64F).var())
-        except ImportError:
-            from scipy.ndimage import laplace as _sp_laplace
-            _lap_var = float(_sp_laplace(_qc_gray).var())
-        _focus_score = min(1.0, max(0.0, _lap_var / 10000.0))
-        _image_stats["focus_score"] = _focus_score
-        log(f"[stardist_detect] QC focus_score={_focus_score:.4f} (lap_var={_lap_var:.1f})")
-
-        _H, _W = _qc_gray.shape
-        _DS = 128
-        _ys_g = _qc_np.linspace(0, _H - 1, _DS)
-        _xs_g = _qc_np.linspace(0, _W - 1, _DS)
-        _xv, _yv = _qc_np.meshgrid(_xs_g, _ys_g)
-        _xv_f = _xv.ravel(); _yv_f = _yv.ravel()
-        _yi = _qc_np.clip(_qc_np.round(_yv_f).astype(int), 0, _H - 1)
-        _xi = _qc_np.clip(_qc_np.round(_xv_f).astype(int), 0, _W - 1)
-        _z = _qc_gray[_yi, _xi]
-        _A = _qc_np.column_stack([_xv_f ** 2, _yv_f ** 2, _xv_f * _yv_f,
-                                   _xv_f, _yv_f, _qc_np.ones(len(_xv_f))])
-        _coeffs, _, _, _ = _qc_np.linalg.lstsq(_A, _z, rcond=None)
-        _fitted = _A @ _coeffs
-        _lum_mean = float(_z.mean())
-        _illumination_residual = float((_z - _fitted).std()) / _lum_mean if _lum_mean > 1e-6 else 0.0
-        _image_stats["illumination_residual"] = _illumination_residual
-        log(f"[stardist_detect] QC illumination_residual={_illumination_residual:.4f}")
-    except Exception as _qc_exc:  # noqa: BLE001
-        log(f"[stardist_detect] QC metrics failed (non-fatal): {_qc_exc!r}")
-    # --- end C3 QC metrics ---
-
-    # --- Background subtraction (A2 preprocessing block) ---
-    import os as _os
-    import sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    import _preprocessing
-    img = _preprocessing.apply(img, args)
-    # --------------------------------------------------------
-
-    log(f"[stardist_detect] image is {width_px}x{height_px} (ndim={img.ndim}); model={model_name}")
-
-    # H&E expects RGB; the fluo/dsb models expect single-channel intensity.
-    if model_name == "2D_versatile_he":
-        if img.ndim == 2:
-            # Promote grayscale to 3-channel by stacking.
-            import numpy as np
-            img = np.stack([img, img, img], axis=-1)
-    else:
-        if img.ndim == 3:
-            # Convert to luminance for fluorescence-style models.
-            import numpy as np
-            img = img.mean(axis=2)
-
-    try:
-        img_n = normalize(img, 1, 99.8)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[stardist_detect] normalize failed: {exc!r}")
-        emit_error("image-normalize-failed", hint=str(exc), exit_code=3)
-        return
-
-    # stardist/csbdeep announce themselves with bare `print()` calls straight to
-    # STDOUT — "Found model '2D_versatile_fluo' for 'StarDist2D'.", "Loading
-    # network weights from 'weights_best.h5'.", plus a download progress bar on
-    # a first run — and stdout here belongs to the JSON payload. The Swift host
-    # currently sweeps that up (StarDistDetectionService.isolatingJSON); this is
-    # the sidecar-side fix that comment asks for, so the host's fast path is the
-    # one that runs.
-    try:
-        with contextlib.redirect_stdout(sys.stderr):
-            model = StarDist2D.from_pretrained(model_name)
-    except Exception as exc:  # noqa: BLE001
-        log(f"[stardist_detect] model load failed: {exc!r}")
-        emit_error("model-load-failed", hint=str(exc), exit_code=4)
-        return
-
-    log("[stardist_detect] running predict_instances ...")
-    try:
-        with contextlib.redirect_stdout(sys.stderr):
-            labels, details = model.predict_instances(
-                img_n,
-                prob_thresh=float(args.prob_thresh),
-                nms_thresh=float(args.nms_thresh),
-            )
-    except Exception as exc:  # noqa: BLE001
-        log(f"[stardist_detect] predict_instances failed: {exc!r}")
-        emit_error("eval-failed", hint=str(exc), exit_code=5)
-        return
-
+    ``points`` / ``probs`` are StarDist's per-instance details (``None`` after
+    a watershed re-label). Each cell is measured on a crop around its
+    bounding box (``_cellpose_common.label_crops``), which gives the same
+    numbers as a full-image mask.
+    """
     import numpy as np
 
-    # A3 (middle-of-script): optional distance-transform watershed split.
-    # Runs BETWEEN detect (above) and per-cell measure (below). points/probs
-    # are per-original-instance and will be misaligned after a watershed re-label,
-    # so we invalidate them when watershed runs and fall back to centroid + mean
-    # probability defaults in the measure loop.
-    watershed_applied = False
-    if getattr(args, "watershed", False):
-        try:
-            import _watershed
-            min_d_px = max(1, int(round(args.watershed_min_distance * args.pxPerUm)))
-            log(f"[stardist_detect] watershed split with min_distance_px={min_d_px}")
-            labels = _watershed.split(labels, min_distance_px=min_d_px)
-            watershed_applied = True
-        except Exception as exc:  # noqa: BLE001
-            log(f"[stardist_detect] watershed split failed: {exc!r}; using original labels")
-
-    points = None if watershed_applied else (details.get("points") if isinstance(details, dict) else None)
-    probs = None if watershed_applied else (details.get("prob") if isinstance(details, dict) else None)
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    from _cellpose_common import label_crops
 
     px_per_um = float(args.pxPerUm) if args.pxPerUm > 0 else 1.0
-
-    # --- C2 (pass 6): per-image colony + spatial statistics ---
-    # Runs AFTER detect+watershed, BEFORE the per-cell measure loop. Merges into
-    # the shared `_image_stats` dict alongside C3's QC metrics.
-    try:
-        import _colony
-        _image_stats.update(
-            _colony.compute(labels, args.pxPerUm, (int(height_px), int(width_px)))
-        )
-        log(f"[stardist_detect] colony: n_colonies={_image_stats.get('n_colonies', 0)} "
-            f"confluency={_image_stats.get('confluency_pct', 0):.1f}%")
-    except Exception as _col_exc:  # noqa: BLE001
-        log(f"[stardist_detect] colony stats failed (non-fatal): {_col_exc!r}")
-        try:
-            import _colony
-            _image_stats.update(_colony.zero_stats())
-        except Exception:
-            pass
-    # --- end C2 colony stats ---
 
     # A1: per-cell measurement helpers.
     try:
@@ -325,12 +216,15 @@ def main() -> None:
     label_ids = label_ids[label_ids != 0]
     log(f"[stardist_detect] found {len(label_ids)} instances")
 
-    for idx, label in enumerate(label_ids):
-        mask = (labels == label)
-        ys, xs = np.where(mask)
-        area_px = int(mask.sum())
+    # `mask` is the cell's crop, (row0, col0) its top-left corner; ys/xs are
+    # full-image coordinates.
+    for idx, (label, mask, row0, col0) in enumerate(label_crops(labels, label_ids)):
+        crop_ys, crop_xs = np.nonzero(mask)
+        area_px = int(crop_ys.size)
         if area_px < 4:
             continue
+        ys = crop_ys + row0
+        xs = crop_xs + col0
 
         # Prefer the centroid from details['points'] (in (y, x) order per StarDist
         # convention) when available, otherwise fall back to the mask centroid.
@@ -369,7 +263,14 @@ def main() -> None:
         circularity = None
         if _skimage_ok:
             try:
-                perim_px = sk_perimeter(mask, neighbourhood=8)
+                # scikit-image renamed `neighbourhood` → `neighborhood` in 0.26
+                # (older releases accept only the British spelling). The old
+                # call used only the British spelling, so on current releases
+                # it raised, and perimeter and circularity were always missing.
+                try:
+                    perim_px = sk_perimeter(mask, neighborhood=8)
+                except TypeError:
+                    perim_px = sk_perimeter(mask, neighbourhood=8)
                 if perim_px > 0:
                     perimeter_um = perim_px / px_per_um
                     circularity = min(1.0, max(0.0, 4 * math.pi * area_um2 / (perimeter_um ** 2)))
@@ -383,7 +284,7 @@ def main() -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-        mean_intensity = float(img_gray[mask].mean()) if mask.any() else None
+        mean_intensity = float(img_gray[ys, xs].mean()) if area_px else None
         integrated_density = (area_px * mean_intensity) if mean_intensity is not None else None
         # --- end A1 measurements ---
 
@@ -464,6 +365,169 @@ def main() -> None:
         if integrated_density is not None:
             cell_dict["integrated_density"] = integrated_density
         cells.append(cell_dict)
+    return cells
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv)
+
+    model_name = args.model
+    if model_name not in _VALID_MODELS:
+        log(f"[stardist_detect] unknown model '{model_name}', defaulting to 2D_versatile_fluo")
+        model_name = "2D_versatile_fluo"
+
+    # Lazy imports — so the import-error branch can emit a structured error
+    # without crashing on bare ImportError.
+    try:
+        import numpy as np  # noqa: F401
+        from csbdeep.utils import normalize
+        from stardist.models import StarDist2D
+    except Exception as exc:  # noqa: BLE001 — broad on purpose for first-run UX
+        log(f"[stardist_detect] import failed: {exc!r}")
+        emit_error(
+            "stardist-not-installed",
+            hint="Run scripts/install_python.sh and then activate this model again",
+            exit_code=2,
+        )
+        return
+
+    log(f"[stardist_detect] loading image: {args.image}")
+    try:
+        img, (width_px, height_px) = load_image_array(args.image)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[stardist_detect] could not open image: {exc!r}")
+        emit_error("image-open-failed", hint=str(exc), exit_code=3)
+        return
+
+    # --- C3: QC metrics on RAW image (before any preprocessing) ---
+    _image_stats: dict = {}
+    try:
+        import numpy as _qc_np
+        _qc_gray = img.astype(_qc_np.float64) if img.ndim == 2 else img.mean(axis=2).astype(_qc_np.float64)
+
+        # Focus score: Laplacian variance / 10000, clamped [0, 1].
+        # Typical well-focused images → lap_var ≥ 1000; blurry → < 200.
+        # Dividing by 10000 gives a convenient [0, 1] scale; ≥ 0.5 = acceptable focus.
+        try:
+            import cv2 as _cv2
+            _lap_var = float(_cv2.Laplacian(_qc_gray, _cv2.CV_64F).var())
+        except ImportError:
+            from scipy.ndimage import laplace as _sp_laplace
+            _lap_var = float(_sp_laplace(_qc_gray).var())
+        _focus_score = min(1.0, max(0.0, _lap_var / 10000.0))
+        _image_stats["focus_score"] = _focus_score
+        log(f"[stardist_detect] QC focus_score={_focus_score:.4f} (lap_var={_lap_var:.1f})")
+
+        _H, _W = _qc_gray.shape
+        _DS = 128
+        _ys_g = _qc_np.linspace(0, _H - 1, _DS)
+        _xs_g = _qc_np.linspace(0, _W - 1, _DS)
+        _xv, _yv = _qc_np.meshgrid(_xs_g, _ys_g)
+        _xv_f = _xv.ravel(); _yv_f = _yv.ravel()
+        _yi = _qc_np.clip(_qc_np.round(_yv_f).astype(int), 0, _H - 1)
+        _xi = _qc_np.clip(_qc_np.round(_xv_f).astype(int), 0, _W - 1)
+        _z = _qc_gray[_yi, _xi]
+        _A = _qc_np.column_stack([_xv_f ** 2, _yv_f ** 2, _xv_f * _yv_f,
+                                   _xv_f, _yv_f, _qc_np.ones(len(_xv_f))])
+        _coeffs, _, _, _ = _qc_np.linalg.lstsq(_A, _z, rcond=None)
+        _fitted = _A @ _coeffs
+        _lum_mean = float(_z.mean())
+        _illumination_residual = float((_z - _fitted).std()) / _lum_mean if _lum_mean > 1e-6 else 0.0
+        _image_stats["illumination_residual"] = _illumination_residual
+        log(f"[stardist_detect] QC illumination_residual={_illumination_residual:.4f}")
+    except Exception as _qc_exc:  # noqa: BLE001
+        log(f"[stardist_detect] QC metrics failed (non-fatal): {_qc_exc!r}")
+    # --- end C3 QC metrics ---
+
+    # --- Background subtraction (A2 preprocessing block) ---
+    _ensure_sidecar_path()
+    import _preprocessing
+    img = _preprocessing.apply(img, args)
+    # --------------------------------------------------------
+
+    log(f"[stardist_detect] image is {width_px}x{height_px} (ndim={img.ndim}); model={model_name}")
+
+    # H&E expects RGB; the fluo/dsb models expect single-channel intensity.
+    if model_name == "2D_versatile_he":
+        if img.ndim == 2:
+            # Promote grayscale to 3-channel by stacking.
+            import numpy as np
+            img = np.stack([img, img, img], axis=-1)
+    else:
+        if img.ndim == 3:
+            # Convert to luminance for fluorescence-style models.
+            import numpy as np
+            img = img.mean(axis=2)
+
+    try:
+        img_n = normalize(img, 1, 99.8)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[stardist_detect] normalize failed: {exc!r}")
+        emit_error("image-normalize-failed", hint=str(exc), exit_code=3)
+        return
+
+    try:
+        model = load_pretrained_model(StarDist2D, model_name)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[stardist_detect] model load failed: {exc!r}")
+        emit_error("model-load-failed", hint=str(exc), exit_code=4)
+        return
+
+    log("[stardist_detect] running predict_instances ...")
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            labels, details = model.predict_instances(
+                img_n,
+                prob_thresh=float(args.prob_thresh),
+                nms_thresh=float(args.nms_thresh),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log(f"[stardist_detect] predict_instances failed: {exc!r}")
+        emit_error("eval-failed", hint=str(exc), exit_code=5)
+        return
+
+    import numpy as np
+
+    # A3 (middle-of-script): optional distance-transform watershed split.
+    # Runs BETWEEN detect (above) and per-cell measure (below). points/probs
+    # are per-original-instance and will be misaligned after a watershed re-label,
+    # so we invalidate them when watershed runs and fall back to centroid + mean
+    # probability defaults in the measure loop.
+    watershed_applied = False
+    if getattr(args, "watershed", False):
+        try:
+            import _watershed
+            min_d_px = max(1, int(round(args.watershed_min_distance * args.pxPerUm)))
+            log(f"[stardist_detect] watershed split with min_distance_px={min_d_px}")
+            labels = _watershed.split(labels, min_distance_px=min_d_px)
+            watershed_applied = True
+        except Exception as exc:  # noqa: BLE001
+            log(f"[stardist_detect] watershed split failed: {exc!r}; using original labels")
+
+    points = None if watershed_applied else (details.get("points") if isinstance(details, dict) else None)
+    probs = None if watershed_applied else (details.get("prob") if isinstance(details, dict) else None)
+
+    # --- C2 (pass 6): per-image colony + spatial statistics ---
+    # Runs AFTER detect+watershed, BEFORE the per-cell measure loop. Merges into
+    # the shared `_image_stats` dict alongside C3's QC metrics.
+    try:
+        import _colony
+        _image_stats.update(
+            _colony.compute(labels, args.pxPerUm, (int(height_px), int(width_px)))
+        )
+        log(f"[stardist_detect] colony: n_colonies={_image_stats.get('n_colonies', 0)} "
+            f"confluency={_image_stats.get('confluency_pct', 0):.1f}%")
+    except Exception as _col_exc:  # noqa: BLE001
+        log(f"[stardist_detect] colony stats failed (non-fatal): {_col_exc!r}")
+        try:
+            import _colony
+            _image_stats.update(_colony.zero_stats())
+        except Exception:
+            pass
+    # --- end C2 colony stats ---
+
+    cells = measure_instances(labels, img, args, width_px, height_px,
+                              points=points, probs=probs)
 
     payload = {
         "width": int(width_px),
@@ -476,5 +540,16 @@ def main() -> None:
     log(f"[stardist_detect] emitted {len(cells)} cells")
 
 
+def serve() -> None:
+    _ensure_sidecar_path()
+    import _cellpose_common as cc
+
+    log("[stardist_detect] worker ready; the model loads with the first image")
+    cc.serve_ndjson(main, after_response=cc.release_request_memory)
+
+
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv[1:]:
+        serve()
+    else:
+        main()

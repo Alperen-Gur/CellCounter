@@ -102,6 +102,10 @@ final class TrainingService: ObservableObject {
         }
         stagingTask = staging
         prepareTask = Task { [weak self] in
+            // Training loads its own copy of the model. Warm detection workers
+            // stop now if idle, or as soon as an in-flight image finishes, so
+            // their models and accelerator caches are not held alongside it.
+            await PersistentSidecarPool.shared.retireAllWhenIdle()
             do {
                 let manifest = try await staging.value
                 guard let self, self.runID == token, !Task.isCancelled else {

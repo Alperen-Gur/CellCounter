@@ -109,6 +109,10 @@ struct AppSidebar: View {
                 }
                 .menuStyle(.borderlessButton)
                 .help("Review existing library data and jobs, or copy them into a microscopy project.")
+                Text((state.libraries.isArchive ? "Archive: " : "") + state.libraries.summary(imageCount: state.libraryImageCount))
+                    .font(.caption).foregroundStyle(Tokens.textSecondary)
+                    .lineLimit(2).padding(.horizontal, 10).padding(.bottom, 4)
+                    .help("Open library: \(state.libraries.libraryRoot.path). Switch with File ▸ Open Library….")
 
                 Spacer()
 

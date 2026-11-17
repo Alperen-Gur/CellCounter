@@ -3,6 +3,7 @@ import SwiftData
 
 @Model
 final class BatchRecord {
+    #Index<BatchRecord>([\.createdAt], [\.condition])
     @Attribute(.unique) var id: UUID
     var name: String
     var createdAt: Date
@@ -35,6 +36,13 @@ final class BatchRecord {
     /// Persisted heuristic/plot snapshot. Optional for migration safety.
     var insightsData: Data? = nil
     var insightsRevision: Int = -1
+    /// True from the start of a recalibration (`AppState.recalibrateBatch`)
+    /// until every analysed image has been rewritten at `pxPerUm`. It is set
+    /// together with the new `pxPerUm`, so any save that stores part of a
+    /// pass stores it too, and a pass stopped partway (error, quit, crash) is
+    /// completed by the next recalibration even at the same scale. Defaulted,
+    /// so existing rows and older archives read false.
+    var recalibrationPending: Bool = false
     @Relationship(deleteRule: .cascade, inverse: \ImageRecord.batch)
     var images: [ImageRecord] = []
 
@@ -69,6 +77,7 @@ final class BatchRecord {
 
 @Model
 final class ImageRecord {
+    #Index<ImageRecord>([\.jobItemId], [\.fileHash])
     var sourcePxPerUm: Double? = nil
     var sourceCalibrationSource: String? = nil
     var jobItemId: UUID? = nil
@@ -135,6 +144,7 @@ final class ImageRecord {
 
 @Model
 final class DetectionRecord {
+    #Index<DetectionRecord>([\.reviewIndexVersion])
     var runSettingsData: Data? = nil
     var runSettings: AnalysisRunSettings? {
         get { runSettingsData.flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) } }
@@ -143,8 +153,15 @@ final class DetectionRecord {
     @Attribute(.unique) var id: UUID
     var detectorId: String           // "cellpose-cp-cyto3", "yolo-yo-s", custom uuid — "mock" only in legacy records (pass-8 removed mock detection)
     var ranAt: Date
-    /// Encoded `[CellPayload]` (see below).
-    var cellsData: Data
+    /// Cell bytes of rows written before `StoredCellsRecord` existed (the
+    /// store column is still `cellsData`). Empty once the row has been moved;
+    /// read and write the cells through `cellsData`.
+    @Attribute(originalName: "cellsData") var legacyCellsData: Data = Data()
+    /// The stored cell array, in its own row: firing this record's fault
+    /// loads every column of its row, so a blob kept here would come along
+    /// with every read of a small field such as `cellCountSummary`.
+    @Relationship(deleteRule: .cascade, inverse: \StoredCellsRecord.detection)
+    var cellsStorage: StoredCellsRecord? = nil
     /// Minimum confidence across all detected cells — denormalised so the review-queue
     /// badge can run a SwiftData predicate instead of decoding every row's JSON.
     /// Defaults to 1.0 for empty detections (i.e. "no uncertain cells").
@@ -163,23 +180,71 @@ final class DetectionRecord {
     /// Keys: "focus_score" (Double, 0–1), "illumination_residual" (Double, ≥ 0),
     /// plus any C2 colony keys. Nil for legacy detections.
     var imageStatsData: Data?
+    // MARK: Compact per-cell metrics (see CellMetrics.swift)
+    /// `CellMetricsCodec` bytes for the cells in `cellsData` (diameters,
+    /// confidence, centroid; no outlines), read by list and compare screens
+    /// instead of the full payload. Every cell write below keeps them in sync;
+    /// rows saved before they existed are filled in by
+    /// `Repositories.backfillCellMetrics()`.
+    var cellMetricsData: Data? = nil
+    /// `CellMetricsCodec.version` of `cellMetricsData`; 0 = not written yet.
+    var cellMetricsVersion: Int = 0
     @Relationship(deleteRule: .cascade, inverse: \CorrectionRecord.detection)
     var corrections: [CorrectionRecord] = []
     var image: ImageRecord?
 
-    init(detectorId: String, cells: [DetectedCell], imageStats: [String: Double] = [:]) {
+    convenience init(detectorId: String, cells: [DetectedCell], imageStats: [String: Double] = [:]) {
+        self.init(detectorId: detectorId, storage: Self.makeStorageSnapshot(cells), cells: cells,
+                  imageStats: imageStats)
+    }
+
+    /// `storage` must be `makeStorageSnapshot(cells)`, normally made on a
+    /// detached task, so creating the record encodes and compresses nothing.
+    init(detectorId: String, storage: CellsStorageSnapshot, cells: [DetectedCell],
+         imageStats: [String: Double] = [:]) {
         self.id = UUID()
         self.detectorId = detectorId
         self.ranAt = Date()
-        let payload = cells.map(CellPayload.init)
-        self.cellsData = (try? JSONEncoder().encode(payload)) ?? Data()
-        self.minConfidence = cells.map { $0.confidence }.min() ?? 1.0
-        self.cellCountSummary = cells.count
+        self.minConfidence = storage.minimumConfidence
+        self.cellCountSummary = storage.count
         self.cellsRevision = 0
         self.reviewPendingCount = cells.filter { $0.confidence < 0.65 }.count
         self.reviewIndexVersion = 0
         self.imageStatsData = imageStats.isEmpty ? nil : (try? JSONEncoder().encode(imageStats))
+        storeCells(storage.data, contentHash: storage.contentHash)
+        // No metrics for a payload that failed to encode: readers then see
+        // the same (empty) cells as the payload.
+        self.cellMetricsData = storage.data.isEmpty ? nil : (storage.cellMetrics ?? CellMetricsCodec.encode(cells))
+        self.cellMetricsVersion = storage.data.isEmpty ? 0 : CellMetricsCodec.version
         DecodedCellCache.shared.insert(cells, for: id, revision: 0)
+    }
+
+    /// Stored `[CellPayload]`: compressed (`CellsBlobCodec`) or plain JSON;
+    /// every decoder accepts both. Reads the separate row, or the inline
+    /// bytes of a row the background upkeep has not moved yet. Setting it
+    /// stores the bytes as given, with no content hash.
+    var cellsData: Data {
+        get { cellsStorage?.data ?? legacyCellsData }
+        set { storeCells(newValue, contentHash: nil) }
+    }
+
+    /// SHA-256 of the plain JSON of `cellsData`, when known.
+    var cellsContentHash: String? { cellsStorage?.contentHash }
+
+    /// Writes the stored bytes into the separate row and empties the inline
+    /// column, in the same change. Callers keep the summaries in step.
+    func storeCells(_ stored: Data, contentHash: String?) {
+        if let storage = cellsStorage {
+            storage.data = stored
+            storage.storageFormat = CellsBlobCodec.storageFormat(of: stored)
+            storage.contentHash = contentHash
+        } else {
+            let storage = StoredCellsRecord(data: stored, contentHash: contentHash)
+            // An uninserted record is inserted together with this one.
+            modelContext?.insert(storage)
+            cellsStorage = storage
+        }
+        if !legacyCellsData.isEmpty { legacyCellsData = Data() }
     }
 
     /// Decoded view of `imageStatsData`. Returns an empty dict when the blob is
@@ -198,11 +263,8 @@ final class DetectionRecord {
             return decoded
         }
         set {
-            let payload = newValue.map(CellPayload.init)
-            cellsData = (try? JSONEncoder().encode(payload)) ?? Data()
-            minConfidence = newValue.map { $0.confidence }.min() ?? 1.0
-            cellCountSummary = newValue.count
-            cellsRevision &+= 1
+            // Stores the payload, summaries and compact metrics together.
+            applyStorageSnapshot(Self.makeStorageSnapshot(newValue))
             cacheDecodedCells(newValue, revision: cellsRevision)
         }
     }
@@ -215,18 +277,36 @@ final class DetectionRecord {
         let data: Data
         let minimumConfidence: Double
         let count: Int
+        /// SHA-256 of the plain JSON behind `data`; nil when unknown.
+        var contentHash: String? = nil
+        /// `CellMetricsCodec` bytes for the same cells. A snapshot built
+        /// without them stores none; readers then use the payload until the
+        /// backfill fills them in.
+        var cellMetrics: Data? = nil
     }
 
-    /// Encode the large cell array away from the MainActor. Manual edits only
-    /// mutate the small in-memory overlay immediately; JSON serialization no
-    /// longer blocks pointer interaction or image navigation.
+    /// Encode, hash and compress the large cell array away from the
+    /// MainActor. Manual edits only mutate the small in-memory overlay
+    /// immediately; serialization no longer blocks pointer interaction or
+    /// image navigation. `data` is empty when the cells cannot be encoded.
     nonisolated static func makeStorageSnapshot(_ cells: [DetectedCell]) -> CellsStorageSnapshot {
-        let payload = cells.map(CellPayload.init)
+        let json = encodePlainCellsJSON(cells)
+        let compressed = CellsBlobCodec.compress(json)
+        // Kept only if it decompresses to the same bytes; plain JSON otherwise.
+        let stored = (try? CellsBlobCodec.plainJSON(compressed)) == json ? compressed : json
         return CellsStorageSnapshot(
-            data: (try? JSONEncoder().encode(payload)) ?? Data(),
+            data: stored,
             minimumConfidence: cells.map(\.confidence).min() ?? 1.0,
-            count: cells.count
+            count: cells.count,
+            contentHash: json.isEmpty ? nil : CellsBlobCodec.sha256Hex(json),
+            cellMetrics: CellMetricsCodec.encode(cells)
         )
+    }
+
+    /// Plain `[CellPayload]` JSON, the form content hashes are computed over.
+    /// Empty when the cells cannot be encoded.
+    nonisolated static func encodePlainCellsJSON(_ cells: [DetectedCell]) -> Data {
+        (try? JSONEncoder().encode(cells.map(CellPayload.init))) ?? Data()
     }
 
     nonisolated static func decodeCellsData(_ data: Data) -> [DetectedCell] {
@@ -235,8 +315,9 @@ final class DetectionRecord {
 
     /// Repair and undo must distinguish an empty detection from unreadable
     /// measurements; otherwise they can silently replace data with an empty set.
+    /// Accepts plain JSON and `CellsBlobCodec`-compressed blobs alike.
     nonisolated static func decodeCellsDataForReview(_ data: Data) throws -> [DetectedCell] {
-        try JSONDecoder().decode([CellPayload].self, from: data).map(\.cell)
+        try JSONDecoder().decode([CellPayload].self, from: CellsBlobCodec.plainJSON(data)).map(\.cell)
     }
 
     /// Share an off-main decode with direct model consumers when it still
@@ -252,25 +333,65 @@ final class DetectionRecord {
     }
 
     func applyStorageSnapshot(_ snapshot: CellsStorageSnapshot) {
-        cellsData = snapshot.data
+        storeCells(snapshot.data, contentHash: snapshot.contentHash)
         minConfidence = snapshot.minimumConfidence
         cellCountSummary = snapshot.count
+        storeCellMetrics(snapshot.data.isEmpty ? nil : snapshot.cellMetrics)
         cellsRevision &+= 1
         DecodedCellCache.shared.remove(id)
+    }
+}
+
+/// One detection's stored cell array, split from `DetectionRecord` so that
+/// reading a detection's small fields never loads it. Read and written only
+/// through `DetectionRecord.cellsData` / `storeCells`.
+///
+/// The class name is the store's entity name and is chosen to sort after
+/// every older entity: entity numbers follow name order, and a new entity
+/// sorting earlier renumbers, and so rewrites, every row of the tables
+/// after it when an existing library is upgraded.
+@Model
+final class StoredCellsRecord {
+    @Attribute(.unique) var id: UUID
+    var data: Data
+    /// `CellsBlobCodec` format of `data`, so rows still stored as plain JSON
+    /// can be found without reading them.
+    var storageFormat: Int = 0
+    /// SHA-256 (hex) of the plain JSON; nil until known. Lets a re-run save
+    /// the previous mask as a version, de-duplicated, without decompressing.
+    var contentHash: String? = nil
+    var detection: DetectionRecord?
+
+    init(data: Data, contentHash: String?) {
+        self.id = UUID()
+        self.data = data
+        self.storageFormat = CellsBlobCodec.storageFormat(of: data)
+        self.contentHash = contentHash
     }
 }
 
 /// A saved alternative segmentation for Mask Curator-style comparison.
 ///
 /// Re-running a detector no longer destroys the previous mask. Variants are
-/// compact JSON snapshots and are materialized only when the user opens the
-/// curator or chooses one, so large libraries pay no render-time cost.
+/// materialized only when the user compares or uses one, so large libraries
+/// pay no render-time cost. A version is saved from the detection's existing
+/// JSON bytes as they are (no decode, no re-encode); background upkeep in
+/// `Repositories.compactSegmentationVariants()` later compresses it with
+/// `CellsBlobCodec` and fills in what was not known at save time.
 @Model
 final class SegmentationVariantRecord {
+    #Index<SegmentationVariantRecord>([\.imageId])
     var measurementPxPerUm: Double? = nil
     var runSettingsData: Data? = nil
     var imageStatsData: Data? = nil
     var detectionRanAt: Date? = nil
+    /// SHA-256 (hex) of the plain JSON cell array, used to avoid saving the
+    /// same mask twice for an image. Nil on versions saved before this field
+    /// existed until the background upkeep fills it in.
+    var contentHash: String? = nil
+    /// How `cellsData` is stored: 0 = plain JSON, 1 = compressed
+    /// (`CellsBlobCodec`). Existing rows are plain JSON and start at 0.
+    var storageFormat: Int = 0
     var runSettings: AnalysisRunSettings? {
         get { runSettingsData.flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) } }
         set { runSettingsData = newValue.flatMap { try? JSONEncoder().encode($0) } }
@@ -280,8 +401,10 @@ final class SegmentationVariantRecord {
     var detectorId: String
     var label: String
     var createdAt: Date
+    /// Plain or compressed `[CellPayload]` JSON; see `storageFormat`.
     var cellsData: Data
     var cellCount: Int
+    /// Mean cell confidence, or -1 while it has not been computed yet.
     var meanConfidence: Double
     var image: ImageRecord?
 
@@ -292,16 +415,38 @@ final class SegmentationVariantRecord {
         self.detectorId = detectorId
         self.label = label
         self.createdAt = Date()
-        let snapshot = DetectionRecord.makeStorageSnapshot(cells)
-        self.cellsData = snapshot.data
-        self.cellCount = snapshot.count
-        self.meanConfidence = cells.isEmpty
-            ? 0
-            : cells.reduce(0) { $0 + $1.confidence } / Double(cells.count)
+        let json = DetectionRecord.encodePlainCellsJSON(cells)
+        self.cellsData = json
+        self.cellCount = cells.count
+        self.meanConfidence = Self.meanConfidence(of: cells)
+        self.contentHash = CellsBlobCodec.sha256Hex(json)
+        self.storageFormat = CellsBlobCodec.plainJSONFormat
+        self.image = image
+    }
+
+    /// Keeps already-encoded bytes (plain or compressed JSON) exactly as
+    /// given, so saving a version never decodes or re-encodes a cell array.
+    /// Pass -1 for `meanConfidence` when it is not known yet.
+    init(image: ImageRecord, detectorId: String, label: String,
+         plainJSON: Data, cellCount: Int, meanConfidence: Double, contentHash: String?) {
+        self.id = UUID()
+        self.imageId = image.id
+        self.detectorId = detectorId
+        self.label = label
+        self.createdAt = Date()
+        self.cellsData = plainJSON
+        self.cellCount = cellCount
+        self.meanConfidence = meanConfidence
+        self.contentHash = contentHash
+        self.storageFormat = CellsBlobCodec.storageFormat(of: plainJSON)
         self.image = image
     }
 
     var cells: [DetectedCell] { DetectionRecord.decodeCellsData(cellsData) }
+
+    nonisolated static func meanConfidence(of cells: [DetectedCell]) -> Double {
+        cells.isEmpty ? 0 : cells.reduce(0) { $0 + $1.confidence } / Double(cells.count)
+    }
 }
 
 /// Normalized, queryable row for one low-confidence cell.
@@ -312,6 +457,7 @@ final class SegmentationVariantRecord {
 /// badge counts a `fetchCount` and let the queue fetch one small page at a time.
 @Model
 final class ReviewCandidateRecord {
+    #Index<ReviewCandidateRecord>([\.imageId], [\.detectionId], [\.sortKey], [\.triaged, \.confidence, \.sortKey])
     @Attribute(.unique) var id: UUID
     var cellId: UUID
     /// Stable tie-breaker for keyset paging when confidence scores are equal.
@@ -546,6 +692,7 @@ private struct CellPayload: Codable, Sendable {
 /// from counts/stats. Stored in source-image pixel space.
 @Model
 final class ROIRecord {
+    #Index<ROIRecord>([\.imageId])
     @Attribute(.unique) var id: UUID
     /// FK to the owning ImageRecord (denormalised; relationship lives on `image`).
     var imageId: UUID
@@ -615,6 +762,7 @@ final class ConditionRecord {
 /// imageId → ImageRecord lookup in code.
 @Model
 final class GroundTruthAnnotation {
+    #Index<GroundTruthAnnotation>([\.imageId])
     @Attribute(.unique) var id: UUID
     /// Back-reference to the `ImageRecord` this annotation belongs to.
     var imageId: UUID

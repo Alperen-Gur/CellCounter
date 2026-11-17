@@ -100,7 +100,7 @@ struct SupportSheet: View {
                             .appButton(.primary, size: .sm)
 
                             Button {
-                                NSWorkspace.shared.activateFileViewerSelecting([FileStore.shared.root])
+                                NSWorkspace.shared.activateFileViewerSelecting([FileStore.shared.appRoot])
                             } label: {
                                 HStack(spacing: 6) {
                                     Icon("folder", size: 13)
@@ -124,7 +124,7 @@ struct SupportSheet: View {
                         VStack(spacing: 0) {
                             SupportHintRow(
                                 question: "Where is my data stored?",
-                                answer: "~/Library/Containers/alguer.CellCounting/Data/Library/Application Support/CellCounter/ — all images, thumbnails and the SQLite database live here."
+                                answer: "The open library (images, thumbnails and the SQLite database) is at \(FileStore.shared.libraryRoot.path). Python environments, models and protocols are shared by all libraries and live at \(FileStore.shared.appRoot.path)."
                             )
                             SupportHintRow(
                                 question: "Is anything uploaded?",

@@ -13,6 +13,11 @@ import Foundation
 /// Which interpreter runs it depends on the entry's `runtime`:
 ///   * `.base`      → the shared `venv/` (Cellpose 3.x and StarDist live here)
 ///   * `.cellpose4` → the isolated `venv4/` (Cellpose-SAM checkpoints)
+///
+/// Requests go to a warm `custom_detect.py --serve` worker per model (see
+/// `ServedDetection`), so the framework and the model load once rather than
+/// for every image. The worker reloads the model if the file at its path
+/// changes. A failed worker falls back to a one-shot process.
 struct CustomModelDetectionService: DetectionService {
     let modelId: String
 
@@ -50,9 +55,10 @@ struct CustomModelDetectionService: DetectionService {
         }
 
         // Exactly the shared flag set every other sidecar takes, plus
-        // --custom-kind. `--model` carries the absolute path.
+        // --custom-kind. `--model` carries the absolute path. The script path
+        // is not among them: the warm worker is already running it, and a
+        // one-shot fallback prepends it.
         var args = [
-            scriptURL.path,
             "--image", imageURL.path,
             "--model", entry.path,
             "--custom-kind", entry.kind.rawValue,
@@ -90,11 +96,23 @@ struct CustomModelDetectionService: DetectionService {
         }
 
         let outcome: SidecarOutcome
+        // Resolved here: the stderr callback is a Sendable closure and must
+        // not reach into main-actor state.
+        let detectionStageNotification = Notification.Name.ccDetectionStage
         do {
-            outcome = try await SidecarProcessRunner.run(pythonURL: pythonURL, args: args) { line in
+            outcome = try await ServedDetection.run(
+                key: Self.workerKey(pythonURL: pythonURL, scriptURL: scriptURL,
+                                    modelPath: entry.path, kind: entry.kind.rawValue,
+                                    usesCellpose4Runtime: entry.runtime == .cellpose4,
+                                    useGPU: input.useGPU),
+                pythonURL: pythonURL,
+                scriptURL: scriptURL,
+                requestArgs: args) { line in
                 NotificationCenter.default.post(
-                    name: .ccDetectionStage, object: nil, userInfo: ["line": line])
+                    name: detectionStageNotification, object: nil, userInfo: ["line": line])
             }
+        } catch let error as DetectionError {
+            throw error
         } catch {
             throw DetectionError.sidecarFailed(exitCode: -1, stderr: error.localizedDescription)
         }
@@ -107,12 +125,26 @@ struct CustomModelDetectionService: DetectionService {
         // sidecar-side silencing is the real fix; this is the same host-side
         // safety net `StarDistDetectionService` already applies, reused here
         // rather than duplicated.
-        return try SidecarPayload.decodeResult(
-            stdout: StarDistDetectionService.isolatingJSON(outcome.stdout),
-            exitCode: outcome.exitCode)
+        return try await SidecarPayload.decodeResultOffMain(
+            stdout: outcome.stdout,
+            exitCode: outcome.exitCode,
+            isolatingJSON: true)
     }
 
     // MARK: — Resolution
+
+    /// Warm-worker identity: the environment, the script, the model path and
+    /// kind, and (for a Cellpose checkpoint) the GPU setting. Everything else
+    /// travels with each request.
+    nonisolated static func workerKey(pythonURL: URL, scriptURL: URL, modelPath: String,
+                                      kind: String, usesCellpose4Runtime: Bool,
+                                      useGPU: Bool) -> PersistentSidecarKey {
+        ServedDetection.key(
+            pythonURL: pythonURL, scriptURL: scriptURL,
+            signature: ServedDetection.customSignature(
+                path: modelPath, kind: kind,
+                usesCellpose4Runtime: usesCellpose4Runtime, useGPU: useGPU))
+    }
 
     /// Pick the interpreter for this entry's runtime, or throw a message that
     /// tells the user which environment they still need to install.

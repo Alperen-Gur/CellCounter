@@ -168,9 +168,15 @@ final class DetectorRegistry: ObservableObject {
         switch info.family {
         case .cellpose, .stardist, .sam:
             // StarDist and SAM install dependencies into the Cellpose 3 venv.
-            warmWorkerPrefix = "cellpose3|"
+            // Every worker running there carries this prefix, including SAM
+            // detection and point/box refinement (micro_sam).
+            warmWorkerPrefix = ServedDetection.baseRuntimePrefix
         case .cellpose4:
             warmWorkerPrefix = "cellpose4|"
+        case .omnipose:
+            // Omnipose workers are now kept warm too; a reinstall must not
+            // leave one running with the old packages loaded.
+            warmWorkerPrefix = ServedDetection.omniposeRuntimePrefix
         default:
             warmWorkerPrefix = nil
         }

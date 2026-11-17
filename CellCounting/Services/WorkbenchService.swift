@@ -462,11 +462,13 @@ final class WorkbenchSession {
         }
     }
 
-    func refresh() {
+    func refresh() { refresh(loadDisplayedImage: true) }
+
+    func refresh(loadDisplayedImage: Bool) {
         guard !projectPath.isEmpty else { return }
         perform("Refreshing project…") {
             try await self.inspect()
-            if !self.hasActiveWorkers { try await self.loadImage() }
+            if loadDisplayedImage, !self.hasActiveWorkers { try await self.loadImage() }
             self.status = "Project is current at revision \(self.revision ?? 0)."
         }
     }
@@ -984,6 +986,32 @@ final class WorkbenchSession {
         drawingPolygon = false
         displayedParameters = nil
         volume.invalidateDisplay()
+    }
+
+    /// Drops the decoded preview, overlays and volume slices while the
+    /// Workbench is not on screen. Selection, project and drafts are kept; the
+    /// view restores the image lazily when it becomes active again.
+    func releaseDisplayedImage() {
+        imageGeneration += 1
+        clearDisplayedImage()
+    }
+
+    /// Called by the view whenever it becomes active or inactive.
+    func setViewActive(_ active: Bool) {
+        sharedSession.visible = active
+        let action = sharedSession.residency.transition(
+            toActive: active, hasUnsavedDraft: !canRefreshWithoutDiscardingEdits || busy,
+            hasDisplayedImage: hasDisplayedImage)
+        sharedSession.poll.reset()
+        switch action {
+        case .none: break
+        case .release: releaseDisplayedImage()
+        case .restore:
+            if !hasProject { refresh() }
+            else if selectedImageID != nil, !hasDisplayedImage {
+                perform("Restoring image…", refreshOnConflict: false) { try await self.loadImage() }
+            }
+        }
     }
 
     private func restoreParameters(for image: WorkbenchImage) {

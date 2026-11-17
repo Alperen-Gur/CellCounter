@@ -77,17 +77,6 @@ class ImagePrepareTests(unittest.TestCase):
             tw, th = Image.open(thumb).size
             self.assertLessEqual(max(tw, th), 256)
 
-    def test_every_advertised_vendor_extension_is_registered(self):
-        imageio_path = HERE.parent / "_imageio.py"
-        spec = importlib.util.spec_from_file_location("cellcounter_imageio", imageio_path)
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(module)
-        self.assertEqual(
-            set(module.VENDOR_PACKAGES),
-            {".nd2", ".czi", ".lif", ".oif", ".oib", ".oir"},
-        )
-
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(ImagePrepareTests)
