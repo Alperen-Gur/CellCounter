@@ -24,7 +24,7 @@ export interface WindowsParityCapability {
   state: ParityState;
   windowsSurface: string;
   note: string;
-  /** `relative/path#literal symbol` references checked by verify:parity. */
+  /** `relative/path#literal symbol` references naming the source that implements the capability. */
   evidence: readonly string[];
 }
 

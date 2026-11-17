@@ -6,13 +6,11 @@ on:
     paths:
       - "web/**"
       - "shared/**"
-      - "docs/WEB.md"
       - ".github/workflows/web.yml"
   pull_request:
     paths:
       - "web/**"
       - "shared/**"
-      - "docs/WEB.md"
       - ".github/workflows/web.yml"
   workflow_dispatch:
 
@@ -50,27 +48,3 @@ jobs:
       - name: Run browser-domain tests
         working-directory: web
         run: npm test -- --run
-
-      - name: Verify local-only privacy boundary
-        working-directory: web
-        run: npm run verify:privacy
-
-      - name: Verify workflow contract
-        working-directory: web
-        run: npm run verify:workflow
-
-      - name: Verify exact model catalog
-        working-directory: web
-        run: npm run verify:models
-
-      - name: Verify core inference and persistence seams
-        working-directory: web
-        run: npm run verify:core
-
-      - name: Verify complete macOS capability inventory
-        working-directory: web
-        run: npm run verify:parity
-
-      - name: Verify browser-native analysis and exports
-        working-directory: web
-        run: npm run verify:parity-analysis

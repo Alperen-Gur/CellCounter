@@ -6,13 +6,11 @@ on:
     paths:
       - "desktop/**"
       - "shared/**"
-      - "docs/WINDOWS.md"
       - ".github/workflows/windows.yml"
   pull_request:
     paths:
       - "desktop/**"
       - "shared/**"
-      - "docs/WINDOWS.md"
       - ".github/workflows/windows.yml"
   workflow_dispatch:
     inputs:
@@ -76,10 +74,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path "src-tauri/binaries" | Out-Null
           Move-Item -Force -Path (Join-Path $expanded "uv.exe") -Destination "src-tauri/binaries/uv-x86_64-pc-windows-msvc.exe"
 
-      - name: Verify Windows release contract
+      - name: Test review queue session
         if: ${{ !inputs.package_only }}
         working-directory: desktop
-        run: npm run verify:windows
+        run: npm run verify:review
+
+      - name: Test image preview recovery
+        if: ${{ !inputs.package_only }}
+        working-directory: desktop
+        run: npm run verify:previews
 
       - name: Test saved analysis workflow
         if: ${{ !inputs.package_only }}

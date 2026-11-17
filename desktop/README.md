@@ -69,7 +69,6 @@ Microsoft C++ Build Tools and WebView2. From `desktop/`:
 
 ```powershell
 npm ci
-npm run verify:windows
 npm run tauri -- dev
 ```
 

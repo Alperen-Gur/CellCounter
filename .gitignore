@@ -57,9 +57,6 @@ sample_data/private/
 *.key
 secrets.*
 
-# Local development tooling
-.unlazy/
-
 # Internal working references stay local and are not release documentation.
 AGENTS.md
 docs/design-reference.md

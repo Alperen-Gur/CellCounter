@@ -68,12 +68,6 @@ Serve the contents of `dist/` from the web root. See the
 
 ```sh
 npm test -- --run
-npm run verify:privacy
-npm run verify:workflow
-npm run verify:models
-npm run verify:core
-npm run verify:parity
-npm run verify:parity-analysis
 ```
 
 See [architecture](../docs/ARCHITECTURE.md) and
