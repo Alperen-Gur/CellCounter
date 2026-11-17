@@ -541,6 +541,11 @@ struct UpkeepAndRecalibrationTests {
         let fixtures = (0..<6).map { cells(4 + $0, offset: Double($0) * 100) }
         let (_, images) = makeBatch(in: repos, fixtures)
         var inline: Set<UUID> = []
+        // Unreadable: marked compressed, but not an LZFSE stream. (Plain bytes
+        // that are not valid cell JSON still decompress to themselves, so the
+        // upkeep compresses and hashes them like any other row.)
+        var damaged = Data("CCZ1".utf8)
+        damaged.append(contentsOf: [7, 7, 7])
         for (index, image) in images.enumerated() where index != 4 {
             // As written before cells had their own row; one is unreadable.
             let detection = try #require(image.detection)
@@ -548,7 +553,7 @@ struct UpkeepAndRecalibrationTests {
                 detection.cellsStorage = nil
                 repos.context.delete(storage)
             }
-            detection.legacyCellsData = index == 5 ? Data("{truncated".utf8)
+            detection.legacyCellsData = index == 5 ? damaged
                 : DetectionRecord.encodePlainCellsJSON(fixtures[index])
             DecodedCellCache.shared.remove(detection.id)
             inline.insert(detection.id)
@@ -561,9 +566,11 @@ struct UpkeepAndRecalibrationTests {
         let visited = visits.ids[.detectionCellStorage] ?? []
         #expect(visited.count == Set(visited).count, "No row is read twice")
         #expect(Set(visited).intersection(inline) == inline)
-        let truncated = try #require(images[5].detection)
+        let unreadable = try #require(images[5].detection)
         // The unreadable row moves as is, and its separate row is read once in phase two.
-        #expect(Set(visited).subtracting(inline) == [try #require(truncated.cellsStorage).id])
+        #expect(unreadable.legacyCellsData.isEmpty && unreadable.cellsData == damaged)
+        #expect(unreadable.cellsContentHash == nil)
+        #expect(Set(visited).subtracting(inline) == [try #require(unreadable.cellsStorage).id])
         for (index, image) in images.enumerated() where index != 5 {
             #expect(try decoded(image) == fixtures[index])
             #expect(image.detection?.cellsStorage?.storageFormat == CellsBlobCodec.compressedFormat)

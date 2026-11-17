@@ -304,9 +304,16 @@ final class DetectionRecord {
     }
 
     /// Plain `[CellPayload]` JSON, the form content hashes are computed over.
-    /// Empty when the cells cannot be encoded.
+    /// Every stored or hashed cell array is encoded here. Keys are sorted, so
+    /// the same cells always give the same bytes and the same hash: without
+    /// `.sortedKeys`, `JSONEncoder` may order keys differently on each call,
+    /// which made identical masks look different to de-duplication. Blobs
+    /// written before keys were sorted decode as before; their hashes are
+    /// taken over their own stored bytes. Empty when the cells cannot be encoded.
     nonisolated static func encodePlainCellsJSON(_ cells: [DetectedCell]) -> Data {
-        (try? JSONEncoder().encode(cells.map(CellPayload.init))) ?? Data()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(cells.map(CellPayload.init))) ?? Data()
     }
 
     nonisolated static func decodeCellsData(_ data: Data) -> [DetectedCell] {

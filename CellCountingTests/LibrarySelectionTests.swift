@@ -155,7 +155,7 @@ struct LibrarySelectionTests {
         #expect(resolution.isDefaultLibrary)
         #expect(resolution.notice?.contains("is not a CellCounter library") == true)
         #expect(!LibraryLayout.isLibrary(at: plain))
-        #expect(LibraryController.notALibraryMessage(for: plain).contains("Import Image Folder"))
+        #expect(LibraryController.notALibraryMessage(for: plain).contains("use Choose folder… in the Library overview"))
         let inside = try sandbox.makeLibrary("Parent").appendingPathComponent("Images", isDirectory: true)
         #expect(LibraryController.notALibraryMessage(for: inside).contains("inside the library “Parent”"))
     }

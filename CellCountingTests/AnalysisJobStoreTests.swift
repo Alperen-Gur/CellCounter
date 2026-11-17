@@ -75,29 +75,41 @@ struct AnalysisJobStoreTests {
         scheduler.persistDelay = .seconds(60)
         let job = makeJob()
         var analyzed: [UUID] = []
+        var fileAtCrash: Data?
         var restarted: AnalysisJobScheduler?
         scheduler.configure(prepare: { item, _, _ in try #require(item.imageId) }, analyze: { imageId, _ in
             analyzed.append(imageId)
             if analyzed.count == 2 {
-                // Simulate the process dying mid-job: only the debounced state is lost.
+                // Simulate the process dying mid-job: what is on disk right
+                // after this flush is all a crash here would leave; only the
+                // debounced item progress after it is lost.
                 await scheduler.flush()
+                fileAtCrash = try? Data(contentsOf: url)
             }
         })
         await scheduler.restore(); try await scheduler.add(job); try await scheduler.enqueue(job.id)
-        #expect(await waitUntil { analyzed.count >= 2 })
-        let snapshot = try #require(try await AnalysisJobStore(url: url).load().first)
+        #expect(await waitUntil { fileAtCrash != nil })
+        // This scheduler did not die: it finishes the job and writes that at
+        // once (a job boundary), so the file at `url` soon describes the
+        // finished job. Recovery is checked on the copy taken at the crash.
+        #expect(await waitUntil { scheduler.job(job.id)?.status == .completed && scheduler.activeJobId == nil })
+        let crashURL = directory.appendingPathComponent("jobs-at-crash.json")
+        try #require(fileAtCrash).write(to: crashURL)
+        let snapshot = try #require(try await AnalysisJobStore(url: crashURL).load().first)
         #expect(snapshot.status == .paused)
         #expect(snapshot.items.map(\.status).contains(.ready) || snapshot.items.map(\.status).contains(.completed))
         #expect(!snapshot.items.contains { [.running, .preparing].contains($0.status) })
-        #expect(await waitUntil { scheduler.job(job.id)?.status == .completed })
-        let next = AnalysisJobScheduler(store: AnalysisJobStore(url: url))
+        let next = AnalysisJobScheduler(store: AnalysisJobStore(url: crashURL))
         restarted = next
         var again: [UUID] = []
         next.configure(prepare: { item, _, _ in try #require(item.imageId) }, analyze: { imageId, _ in again.append(imageId) })
         await next.restore()
-        #expect(next.job(job.id)?.status != .running)
+        #expect(next.job(job.id)?.status == .paused)
         try await next.resume(job.id)
         #expect(await waitUntil { next.job(job.id)?.status == .completed && next.activeJobId == nil })
+        // The image finished before the crash is not analysed again; the
+        // one in progress and the one not started are.
+        #expect(Set(again) == Set(job.items.dropFirst().compactMap(\.imageId)))
         #expect(Set(analyzed + again) == Set(job.items.compactMap(\.imageId)))
         _ = restarted
     }
@@ -175,6 +187,8 @@ struct AnalysisJobStoreTests {
         let loaded = try #require(scheduler.jobs.first)
         #expect(loaded.id == job.id && loaded.status == .paused)
         #expect(loaded.items.count == 3 && loaded.items[0].sourceBookmark == nil)
-        #expect(scheduler.statusLabel(for: try #require(job.items[0].imageId)) == "Paused · pending")
+        // The item was imported (it has an image), so it is ready, not pending.
+        #expect(loaded.items[0].status == .ready)
+        #expect(scheduler.statusLabel(for: try #require(job.items[0].imageId)) == "Paused · ready")
     }
 }

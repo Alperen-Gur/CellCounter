@@ -275,10 +275,15 @@ final class Repositories {
 
     /// Number of corrections attached to a detection of an image that belongs
     /// to a batch; the same set a batch -> image -> detection -> corrections
-    /// walk visits, answered by a count query.
+    /// walk visits, answered by a count query. Written with `flatMap`: the
+    /// SQLite store cannot translate a chain of two optional relationships
+    /// (`$0.detection?.image?.batch`) and throws an Objective-C exception
+    /// that ends the app; `flatMap` becomes two outer joins in one count.
     func reachableCorrectionCount() -> Int {
         let desc = FetchDescriptor<CorrectionRecord>(
-            predicate: #Predicate { $0.detection?.image?.batch != nil })
+            predicate: #Predicate<CorrectionRecord> { correction in
+                correction.detection.flatMap { $0.image.flatMap { $0.batch } } != nil
+            })
         return (try? context.fetchCount(desc)) ?? 0
     }
 
