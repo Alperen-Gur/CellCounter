@@ -97,5 +97,5 @@ layer workspaces, processing jobs and file exports. Images are processed locally
 See the [browser guide](WEB.md) for setup and workspace tools.
 
 For desktop installation, see the [macOS guide](INSTALL.md) or [Windows guide](WINDOWS.md).
-Release notes: [macOS](releases/v1.1.0.md) ([unreleased changes](releases/unreleased.md)),
+Release notes: [macOS](releases/v1.2.0.md),
 [Windows](releases/windows-v1.3.0.md), [browser](releases/web-v0.3.2.md).

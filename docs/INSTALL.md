@@ -2,7 +2,7 @@
 
 | Platform | Download | Guide |
 | --- | --- | --- |
-| macOS 15 or later, Apple silicon and Intel | [1.1.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) | This page |
+| macOS 15 or later, Apple silicon and Intel | [1.2.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0) | This page |
 | Windows 10/11, x64 | [1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) | [Windows guide](WINDOWS.md) |
 | Browser | [0.3.2 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) | [Browser guide](WEB.md) |
 
@@ -15,12 +15,12 @@ CellCounter for macOS is a universal app for Apple silicon and Intel Macs runnin
 
 ### Install
 
-1. Download `CellCounter-v1.1.0.zip` and its `.sha256` file from the
-   [release page](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0).
+1. Download `CellCounter-v1.2.0.zip` and its `.sha256` file from the
+   [release page](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0).
 2. Check the download in Terminal and compare the result with the supplied hash:
 
    ```sh
-   shasum -a 256 ~/Downloads/CellCounter-v1.1.0.zip
+   shasum -a 256 ~/Downloads/CellCounter-v1.2.0.zip
    ```
 
 3. Unzip it and move **CellCounting.app** to **Applications**.

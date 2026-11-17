@@ -8,7 +8,7 @@
 
 Import images, review and correct cell masks, quantify experiments, and export results with their analysis history.
 
-[![macOS](https://img.shields.io/badge/macOS-1.1.0-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0)
+[![macOS](https://img.shields.io/badge/macOS-1.2.0-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0)
 [![Windows](https://img.shields.io/badge/Windows-1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
 [![Web](https://img.shields.io/badge/Web-0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -29,7 +29,7 @@ Analysis runs on your computer. No account required.
 
 | Edition | Requirements | Download |
 | --- | --- | --- |
-| **macOS 1.1.0** | macOS 15 or later; Apple silicon or Intel | [Universal application](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) |
+| **macOS 1.2.0** | macOS 15 or later; Apple silicon or Intel | [Universal application](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0) |
 | **Windows 1.3.0** | Windows 10 or 11, 64-bit | [EXE and MSI installers](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) |
 | **Web 0.3.2 preview** | A supported modern browser; served over HTTPS or localhost | [Static PWA package](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) |
 | **Python SDK 0.1.0** | Python 3.11 or later and the required analysis dependencies | [Wheel and source package](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) |
