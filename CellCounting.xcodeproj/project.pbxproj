@@ -495,7 +495,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.3.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCounting;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -530,7 +530,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.3.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCounting;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -553,7 +553,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.3.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -575,7 +575,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.3.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";

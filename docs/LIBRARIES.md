@@ -91,12 +91,12 @@ came from.
 
 | Item | Contents |
 | --- | --- |
-| `README.txt` | Batch name, condition, dates, image and cell counts, model, scale and where each part is stored. |
-| `store.sqlite` | The batch with every detected cell, corrections, regions of interest, review decisions, saved mask versions, ground-truth points, run settings and calibration. |
+| `README.txt` | Batch name, condition, dates, image and cell counts, model, the scales in use and where each part is stored. |
+| `store.sqlite` | The batch with every detected cell, corrections, regions of interest, review decisions, saved mask versions, ground-truth points, run settings and each image's scale. |
 | `Images/`, `DisplayImages/`, `Thumbnails/` | The original image files, viewable copies and previews. |
-| `Exports/images.csv` | Image IDs mapped to original file names, with pixel dimensions, checksum, the scale found in the file and cell count. |
-| `Exports/cells/` | One CSV per analyzed image, one row per cell. |
-| `Exports/per-image-summary.csv` | One row per image: counts, mean diameter and size bins. |
+| `Exports/images.csv` | Image IDs mapped to original file names, with pixel dimensions, checksum, the scale found in the file, the scale each image's measurements use (`px_per_um`, `px_per_um_source`, and `segmented_px_per_um` when it was segmented at another scale) and cell count. |
+| `Exports/cells/` | One CSV per analyzed image, one row per cell, at that image's own scale. |
+| `Exports/per-image-summary.csv` | One row per image: counts, mean diameter, size bins and the image's scale. |
 | `Exports/provenance.json` | Model, settings and calibration recorded for each image. |
 | `CellCounterLibrary.json` | Machine-readable description of the archive. |
 

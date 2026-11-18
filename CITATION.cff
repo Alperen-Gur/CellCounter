@@ -2,8 +2,8 @@ cff-version: 1.2.0
 title: "CellCounter: a local microscopy workbench for image analysis and quantification"
 message: "If you use this software, please cite it and the segmentation model you ran (e.g. Cellpose)."
 type: software
-version: 1.2.0
-date-released: 2026-11-17
+version: 1.3.0
+date-released: 2026-11-18
 authors:
   - given-names: Alperen
     family-names: Gur

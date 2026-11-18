@@ -4,7 +4,7 @@ Import images, segment cells, review masks and turn measurements into experiment
 The desktop Workbench keeps images, settings, corrections and analysis history together in
 one project.
 
-Available as **macOS 1.1.0**, **Windows 1.3.0** and a **Web 0.3.2 preview**.
+Available as **macOS 1.3.0**, **Windows 1.3.0** and a **Web 0.3.2 preview**.
 See the [edition comparison](PLATFORM-PARITY.md), [Workbench guide](WORKBENCH.md) or
 [comparison with other microscopy tools](COMPARISON.md).
 
@@ -17,6 +17,7 @@ See the [edition comparison](PLATFORM-PARITY.md), [Workbench guide](WORKBENCH.md
 | OME-Zarr / OME-NGFF | Read NGFF 0.4/Zarr v2 and 0.5/Zarr v3 datasets with their storage dependencies. |
 | OMERO | Connect to your server and import image regions using a local connection profile. |
 | Calibration | Read image metadata or enter X, Y and Z spacing. Measurements update when calibration changes. |
+| Per-image pixel scale (library) | Every image keeps the scale recorded in its file, so batches can mix objectives. Set a scale for images without one by drawing on the scale bar or typing px/µm, and save your own presets. Overriding a file's scale is explicit and recorded. See [Pixel scale](INSTALL.md#pixel-scale-pxµm). |
 | Acquisition library | Search and browse acquisitions, inspect their history, and copy existing libraries into Workbench projects. |
 | Experiments | Organize conditions, plates, wells and biological specimens. Record sample assignments and exclusions. |
 
@@ -97,5 +98,5 @@ layer workspaces, processing jobs and file exports. Images are processed locally
 See the [browser guide](WEB.md) for setup and workspace tools.
 
 For desktop installation, see the [macOS guide](INSTALL.md) or [Windows guide](WINDOWS.md).
-Release notes: [macOS](releases/v1.2.0.md),
+Release notes: [macOS](releases/v1.3.0.md),
 [Windows](releases/windows-v1.3.0.md), [browser](releases/web-v0.3.2.md).
