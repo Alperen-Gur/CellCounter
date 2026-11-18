@@ -175,7 +175,7 @@ final class ReviewQueueSession {
                 pageStart = end
                 includeStart = false
             }
-            errorMessage = "The review index contains stale entries. Close and reopen CellCounter to finish repairing it, then retry."
+            errorMessage = "The review index contains stale entries. Close and reopen Cellographer to finish repairing it, then retry."
         } catch {
             errorMessage = "Could not load the review queue: \(error.localizedDescription)"
         }

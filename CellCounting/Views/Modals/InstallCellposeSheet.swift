@@ -163,7 +163,7 @@ private struct InstallHeader: View {
         case .alreadyInstalled:
             return "Cellpose is already set up. You can close this sheet."
         case .freshInstall:
-            return "CellCounter needs the Cellpose Python package to run real cell detection. This sets up a local virtual environment under the app's Resources folder (≈2 GB)."
+            return "Cellographer needs the Cellpose Python package to run real cell detection. This sets up a local virtual environment under the app's Resources folder (≈2 GB)."
         }
     }
 

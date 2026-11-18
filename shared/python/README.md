@@ -10,7 +10,7 @@ server uses the same runtime.
 ## Installation
 
 Use Python 3.11 or later. Download the **0.1.0 wheel** from the
-[1.1.0 release](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0),
+[1.1.0 release](https://github.com/Alperen-Gur/Cellographer/releases/tag/v1.1.0),
 then install it:
 
 ```sh

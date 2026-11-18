@@ -93,7 +93,7 @@ extension WorkbenchSession {
             self.sharedSession.poll.record(changed: projectChanged || self.hasActiveWorkers || self.sharedSession.hasPendingNavigation || self.models.hasActiveTraining)
             guard self.sharedSession.visible else { return }
             if self.sharedSession.id == nil || self.sharedSession.record["closed"].bool == true {
-                self.sharedSession.record = try await self.call("session.open", arguments: ["name": .string("CellCounter on macOS"), "clientKind": .string("native")])["result"]["session"]
+                self.sharedSession.record = try await self.call("session.open", arguments: ["name": .string("Cellographer on macOS"), "clientKind": .string("native")])["result"]["session"]
             } else if let id = self.sharedSession.id {
                 self.sharedSession.record = try await self.call("session.get", arguments: ["sessionId": .string(id)])["result"]["session"]
             }

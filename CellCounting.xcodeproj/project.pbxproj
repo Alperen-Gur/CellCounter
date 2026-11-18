@@ -17,7 +17,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		03CDA9552FC5E31D008B70EB /* CellCounting.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CellCounting.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		03CDA9552FC5E31D008B70EB /* Cellographer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cellographer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		03CDA9672FC5E31F008B70EB /* CellCountingTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CellCountingTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -64,7 +64,7 @@
 		03CDA9562FC5E31D008B70EB /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				03CDA9552FC5E31D008B70EB /* CellCounting.app */,
+				03CDA9552FC5E31D008B70EB /* Cellographer.app */,
 				03CDA9672FC5E31F008B70EB /* CellCountingTests.xctest */,
 			);
 			name = Products;
@@ -93,7 +93,7 @@
 			packageProductDependencies = (
 			);
 			productName = CellCounting;
-			productReference = 03CDA9552FC5E31D008B70EB /* CellCounting.app */;
+			productReference = 03CDA9552FC5E31D008B70EB /* Cellographer.app */;
 			productType = "com.apple.product-type.application";
 		};
 		03CDA9662FC5E31F008B70EB /* CellCountingTests */ = {
@@ -495,10 +495,11 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCounting;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = CellCounting;
+				PRODUCT_NAME = Cellographer;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -530,10 +531,11 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCounting;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = CellCounting;
+				PRODUCT_NAME = Cellographer;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -553,7 +555,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -562,7 +564,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CellCounting.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CellCounting";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cellographer.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cellographer";
 			};
 			name = Debug;
 		};
@@ -575,7 +577,7 @@
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				ARCHS = arm64;
 				PRODUCT_BUNDLE_IDENTIFIER = alguer.CellCountingTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -584,7 +586,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CellCounting.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/CellCounting";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cellographer.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cellographer";
 			};
 			name = Release;
 		};

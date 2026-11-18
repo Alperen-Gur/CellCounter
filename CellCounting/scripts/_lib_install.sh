@@ -62,7 +62,7 @@ cc_install_run() {
     local PY_DIR
     PY_DIR="$(dirname "${VENV_DIR}")"
 
-    echo "==> CellCounter ${CC_FAMILY_LABEL} sidecar installer"
+    echo "==> Cellographer ${CC_FAMILY_LABEL} sidecar installer"
     echo "    venv:        ${VENV_DIR}"
     echo "    scripts dir: ${SCRIPTS_DIR}"
 

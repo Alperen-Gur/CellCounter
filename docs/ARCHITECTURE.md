@@ -1,6 +1,6 @@
-# CellCounter architecture
+# Cellographer architecture
 
-CellCounter has a native macOS app, a Windows desktop app and a browser preview.
+Cellographer has a native macOS app, a Windows desktop app and a browser preview.
 The desktop Workbench shares its analysis runtime with the CLI, Python SDK and
 MCP server. The browser uses shared image and workspace components with its own
 local processing and storage.

@@ -219,19 +219,19 @@ nonisolated enum LibraryStoreBackup {
 
     /// Shown once, after a copy was made and the library was upgraded.
     static func notice(for backup: URL) -> String {
-        "CellCounter has upgraded this library (compact cell outlines and a pixel scale for each image). "
+        "Cellographer has upgraded this library (compact cell outlines and a pixel scale for each image). "
             + "Before doing so it saved a copy of the library’s database at \(backup.path). "
-            + "Do not open this library with an older version of CellCounter from now on: "
+            + "Do not open this library with an older version of Cellographer or CellCounter from now on: "
             + "it would drop data saved in the new format. To go back to an older "
-            + "version, quit CellCounter and put the copy in place of store.sqlite first "
+            + "version, quit Cellographer and put the copy in place of store.sqlite first "
             + "(work done since the upgrade would be lost)."
     }
 
     /// Why the library was not opened when the copy could not be made.
     static func failureMessage(_ reason: String) -> String {
-        "Before upgrading this library, CellCounter saves a safety copy of its database, "
+        "Before upgrading this library, Cellographer saves a safety copy of its database, "
             + "and that copy could not be made (\(reason)). The library was not opened and "
             + "nothing in it has changed. If the disk is full or the folder is read-only, fix "
-            + "that and restart CellCounter."
+            + "that and restart Cellographer."
     }
 }

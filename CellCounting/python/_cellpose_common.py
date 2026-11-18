@@ -897,7 +897,7 @@ def build_with_weight_recovery(build, managed_names, models_directory):
             raise
         kept = ", ".join(os.path.basename(path) for path in moved)
         raise WeightsUnusableError(
-            f"CellCounter downloaded the {names} model weights again, but Cellpose still "
+            f"Cellographer downloaded the {names} model weights again, but Cellpose still "
             f"cannot load them ({second}). The damaged copies are kept as {kept} in "
             f"{models_directory}.") from second
 

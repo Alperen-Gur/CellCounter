@@ -4,7 +4,10 @@ CellCounter brings image analysis, project workflows and AI-agent access to
 Windows. Import images, segment and correct cells, measure signals and export
 results. The GUI, CLI, Python SDK and MCP server share the same project operations.
 
-[Download Windows 1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
+The project is now called Cellographer. The Windows app, its installers and its folders
+still carry the CellCounter name until its next release.
+
+[Download Windows 1.3.0](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0)
 · [Features](FEATURES.md) · [Workbench guide](WORKBENCH.md)
 
 ## System requirements
@@ -20,7 +23,7 @@ model setup, select the Python environment with the backend you want to use.
 
 ## Choose an installer
 
-The [release page](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
+The [release page](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0)
 has two installers and `SHA256SUMS.txt`:
 
 | Installer | Use |

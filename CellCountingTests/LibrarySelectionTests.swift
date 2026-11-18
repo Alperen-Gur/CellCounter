@@ -153,7 +153,7 @@ struct LibrarySelectionTests {
         sandbox.defaults.set(plain.path, forKey: LibraryPreferences.currentLibraryKey)
         let resolution = sandbox.resolve()
         #expect(resolution.isDefaultLibrary)
-        #expect(resolution.notice?.contains("is not a CellCounter library") == true)
+        #expect(resolution.notice?.contains("is not a Cellographer library") == true)
         #expect(!LibraryLayout.isLibrary(at: plain))
         #expect(LibraryController.notALibraryMessage(for: plain).contains("use Choose folder… in the Library overview"))
         let inside = try sandbox.makeLibrary("Parent").appendingPathComponent("Images", isDirectory: true)
@@ -389,7 +389,7 @@ struct LibrarySelectionTests {
 
     @Test func relaunchArgumentsRoundTripAndGuardTheEnvironment() throws {
         let arguments = LibraryRelaunch.arguments(previousProcess: 123, expectedDataRoot: "/private/tmp/data")
-        let request = LibraryRelaunch.parse(["/Applications/CellCounting.app/Contents/MacOS/CellCounting"] + arguments)
+        let request = LibraryRelaunch.parse(["/Applications/Cellographer.app/Contents/MacOS/Cellographer"] + arguments)
         #expect(request == LibraryRelaunch.Request(previousProcess: 123, expectedDataRoot: "/private/tmp/data"))
         #expect(!LibraryRelaunch.environmentSatisfies(request, environment: [:]))
         #expect(!LibraryRelaunch.environmentSatisfies(request, environment: [LibrarySelection.dataRootVariable: "/other"]))

@@ -1,29 +1,37 @@
-# Install CellCounter
+# Install Cellographer
+
+Cellographer was called CellCounter until version 1.3.
 
 | Platform | Download | Guide |
 | --- | --- | --- |
-| macOS 15 or later on Apple silicon | [1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.3.0) | This page |
-| Windows 10/11, x64 | [1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) | [Windows guide](WINDOWS.md) |
-| Browser | [0.3.2 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) | [Browser guide](WEB.md) |
+| macOS 15 or later on Apple silicon | [1.4.0](https://github.com/Alperen-Gur/Cellographer/releases/tag/v1.4.0) | This page |
+| Windows 10/11, x64 | [1.3.0](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0) | [Windows guide](WINDOWS.md) |
+| Browser | [0.3.2 preview](https://github.com/Alperen-Gur/Cellographer/releases/tag/web-v0.3.2) | [Browser guide](WEB.md) |
+
+The Windows and browser apps still carry the CellCounter name until their next release.
 
 For scripts and notebooks, see the [Python SDK](WORKBENCH.md#python-sdk).
 
 ## macOS
 
-CellCounter for macOS runs on Macs with Apple silicon and **macOS 15 or later**.
+Cellographer for macOS runs on Macs with Apple silicon and **macOS 15 or later**.
 
 ### Install
 
-1. Download `CellCounter-v1.3.0.zip` and its `.sha256` file from the
-   [release page](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.3.0).
+1. Download `Cellographer-v1.4.0.zip` and its `.sha256` file from the
+   [release page](https://github.com/Alperen-Gur/Cellographer/releases/tag/v1.4.0).
 2. Check the download in Terminal and compare the result with the supplied hash:
 
    ```sh
-   shasum -a 256 ~/Downloads/CellCounter-v1.3.0.zip
+   shasum -a 256 ~/Downloads/Cellographer-v1.4.0.zip
    ```
 
-3. Unzip it and move **CellCounting.app** to **Applications**.
-4. Open the app.
+3. Unzip it and move **Cellographer.app** to **Applications**.
+4. If you are updating from CellCounter, quit it and delete **CellCounting.app** from
+   **Applications**. Cellographer uses the same data, so your libraries, settings and models
+   are kept. The data folders keep the old name, for example
+   `~/Library/Application Support/CellCounter`.
+5. Open the app.
 
 The app is ad-hoc signed and not notarized. If macOS blocks the first launch, open
 **System Settings → Privacy & Security** and choose **Open Anyway**. On a managed Mac,
@@ -31,8 +39,9 @@ your IT team may need to approve the app.
 
 ### Upgrade from an earlier version
 
-Quit CellCounter, then replace **CellCounting.app** in Applications with the new copy.
-Your libraries, projects, models and Python environments are kept.
+Quit Cellographer, then replace **Cellographer.app** in Applications with the new copy.
+Your libraries, projects, models and Python environments are kept. If you are updating
+from CellCounter, follow step 4 of [Install](#install).
 
 When a new version first opens a library that uses an older storage format, it upgrades
 the library and first saves a verified copy of its database in the library's `Backups/`
@@ -40,13 +49,13 @@ folder (for the Default Library, `~/Library/Application Support/CellCounter/Back
 A banner shows where the copy is. If the copy cannot be made, the library is not opened
 and nothing in it changes.
 
-After the upgrade, do not open that library with an older version of CellCounter. To go
-back to an older version, quit CellCounter and put the saved copy in place of the
-library's `store.sqlite`. Changes made since the upgrade are lost.
+After the upgrade, do not open that library with an older version. To go back to an
+older version, quit Cellographer and put the saved copy in place of the library's
+`store.sqlite`. Changes made since the upgrade are lost.
 
 #### Cellpose-SAM 4.2.1.1
 
-CellCounter installs and tests Cellpose-SAM with **Cellpose 4.2.1.1** (PyTorch 2.12,
+Cellographer installs and tests Cellpose-SAM with **Cellpose 4.2.1.1** (PyTorch 2.12,
 torchvision 0.27, OpenCV 4.13, NumPy 2), in a Python 3.12 or later environment. If your
 Cellpose-SAM environment has an older Cellpose, **Models** shows
 **Update Cellpose-SAM to 4.2.1.1**. Nothing changes until you click it: analyses keep
@@ -61,7 +70,7 @@ An environment made with a Python older than 3.12 is moved aside
 
 **Cellpose-SAM v2** (`cpsam_v2`) is the revised model. It needs Cellpose 4.2.1.1 and its
 own one-time download of about 1.2 GB. **Cellpose-DINO** models are listed but cannot be
-chosen: they need the `dinov3` package, which CellCounter does not install.
+chosen: they need the `dinov3` package, which Cellographer does not install.
 
 ### Analyze images in the Workbench
 
@@ -113,12 +122,12 @@ objectives.
   draw a line along the image's scale bar and enter its length, or type px/µm. You can
   save it as a preset named after your microscope and objective (for example
   “Nikon Ts2 · 10×”). Your default for images without a scale is in
-  **Settings → Pixel scale**. CellCounter has no built-in scale or presets.
+  **Settings → Pixel scale**. Cellographer has no built-in scale or presets.
 - **Process batch** stays off while any image has no scale. Setup lists the scales it
   found, for example “8 images · 4.1666 px/µm (from file) · 8 images · 8.3333 px/µm
   (from file)”, and warns when file names such as `10x` and `20x` don't match the scales.
 - A typed value, a scale-bar measurement or a preset only applies to images without a
-  scale. To replace a file's scale, tick **Override the file's scale**. CellCounter shows
+  scale. To replace a file's scale, tick **Override the file's scale**. Cellographer shows
   both values and what changes (“Your value is 1.6× smaller than the file's, so sizes
   would be 1.6× larger”) and records it as `manual override (file: X px/µm)`.
 - **Changing the scale of analysed images** (Results → **Calibrate…**): if the model uses
@@ -140,7 +149,7 @@ objectives.
 
 **Settings → General → Performance** sets how much of your Mac the models may use. You
 can also change it while an analysis runs: from the **Resource use** menu next to
-**Pause** and **Cancel**, from **CellCounting → Model Resource Use** in the menu bar, or in
+**Pause** and **Cancel**, from **Cellographer → Model Resource Use** in the menu bar, or in
 **Set up analysis**.
 
 | Choice | CPU | GPU memory | Priority |
@@ -172,7 +181,7 @@ work when the image has focus.
 
 ## Back up your data
 
-Keep your original images. Quit CellCounter and stop background work before copying:
+Keep your original images. Quit Cellographer and stop background work before copying:
 
 - **Libraries:** copy the whole library folder. See
   [Back up a library](LIBRARIES.md#back-up-a-library).
@@ -198,7 +207,7 @@ After changing an analysis, export a new report to include the changes.
 | **Library not available** at launch | Connect the drive that holds the library, then choose **File → Open Recent Library**. |
 | Library switching has to wait | Finish or pause imports, analyses and training, and save Workbench changes. |
 
-Report problems on the [issue tracker](https://github.com/Alperen-Gur/CellCounter/issues).
+Report problems on the [issue tracker](https://github.com/Alperen-Gur/Cellographer/issues).
 Include the app version, platform, steps and the exact error. Remove private image and
 sample information before posting.
 

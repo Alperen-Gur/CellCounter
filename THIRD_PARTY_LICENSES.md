@@ -1,6 +1,6 @@
 # Third-party licenses
 
-CellCounter itself is released under the MIT License (see [LICENSE](LICENSE)).
+Cellographer itself is released under the MIT License (see [LICENSE](LICENSE)).
 It builds on open-source models and libraries. Model weights are not included in
 the source package. Canonical Workbench model registration uses an explicitly
 selected local checkpoint and interpreter, without downloading weights or
@@ -9,7 +9,7 @@ the user chooses a model; those weights retain their upstream terms.
 
 ## Segmentation models
 
-| Component | Role in CellCounter | License | Upstream |
+| Component | Role in Cellographer | License | Upstream |
 |---|---|---|---|
 | **Cellpose** | Registered Cellpose 3 inference/training; compatible legacy models | BSD-3-Clause | Stringer & Pachitariu, MouseLand/cellpose |
 | **Cellpose-SAM** (CPSAM) | Optional SAM-based segmenter | BSD-3-Clause | MouseLand/cellpose |
@@ -38,7 +38,7 @@ runtime. The runtime archive is pinned and verified during packaging.
 | oiffile (Olympus `.oif`/`.oib`) | BSD-3-Clause |
 | oirfile (Olympus `.oir`) | BSD-3-Clause |
 
-The Python SDK contains CellCounter's shared runtime source and pinned dependency
+The Python SDK contains Cellographer's shared runtime source and pinned dependency
 requirements. Optional MCP, reporting and local OME-Zarr environments install
 their own upstream distributions and license notices. The OMERO client is an
 explicitly configured separate environment; its client, Ice runtime and server
@@ -49,7 +49,7 @@ or models.
 
 ## No AGPL / Ultralytics components
 
-CellCounter does **not** include, link against, or download any AGPL-3.0
+Cellographer does **not** include, link against, or download any AGPL-3.0
 component. In particular it ships **no Ultralytics YOLO** code or weights: there
 is no YOLO detection service, downloader, model-catalog entry, or sidecar in the
 source tree or in any built release. If a box-only detector is added in the
@@ -57,7 +57,7 @@ future it will use a permissively-licensed implementation.
 
 ## A note on model provenance
 
-CellCounter is a GUI and workflow layer. It does not claim authorship of the
-underlying segmentation models. If you use CellCounter in published work, please
-cite both CellCounter and the specific model you ran (e.g. Cellpose) — see the
+Cellographer is a GUI and workflow layer. It does not claim authorship of the
+underlying segmentation models. If you use Cellographer in published work, please
+cite both Cellographer and the specific model you ran (e.g. Cellpose) — see the
 "Citing" section of the README.

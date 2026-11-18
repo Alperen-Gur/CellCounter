@@ -120,7 +120,7 @@ struct CellposeSAMUpdateTests {
         for id in ["cpdino", "cpdino-vitb"] {
             let row = try #require(rows.first { $0.id == id })
             #expect(!row.isSelectable && !row.comingSoon)
-            #expect(row.unavailableReason == "Needs the dinov3 package, which CellCounter does not install.")
+            #expect(row.unavailableReason == "Needs the dinov3 package, which Cellographer does not install.")
             // Saved results and settings that name them still resolve.
             #expect(CellposeSAMDetectionService.isKnownModelId(id))
         }

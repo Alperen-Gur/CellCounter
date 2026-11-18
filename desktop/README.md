@@ -4,17 +4,20 @@
 
 Local microscopy analysis, repeatable workflows and AI-agent access.
 
-[![Windows release](https://img.shields.io/badge/Windows-v1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
-[![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/windows.yml?branch=main&label=Windows%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/windows.yml)
+[![Windows release](https://img.shields.io/badge/Windows-v1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0)
+[![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/Cellographer/windows.yml?branch=main&label=Windows%20build)](https://github.com/Alperen-Gur/Cellographer/actions/workflows/windows.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) · [Windows guide](../docs/WINDOWS.md) · [Workbench guide](../docs/WORKBENCH.md) · [Main project](../README.md)
+[Download](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0) · [Windows guide](../docs/WINDOWS.md) · [Workbench guide](../docs/WORKBENCH.md) · [Main project](../README.md)
 
 </div>
 
 Import images, segment and correct cells, measure signals and export results.
 CellCounter combines a batch image library with a project workbench, built with
 React and Tauri.
+
+The project is now called Cellographer. The Windows app still carries the CellCounter
+name until its next release.
 
 ## Features
 
@@ -32,7 +35,7 @@ See [features](../docs/FEATURES.md), the
 ## Install and get started
 
 1. Download the `.exe` or `.msi` and `SHA256SUMS.txt` from the
-   [Windows release](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0).
+   [Windows release](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0).
 2. Check the hash and install. Use `.exe` for a standard workstation or `.msi`
    for managed deployment. The installers are unsigned.
 3. Open **Workbench → AI agent access → Install or repair runtime**.
@@ -89,6 +92,6 @@ Installers are written to `src-tauri/target/release/bundle/`. See the
 
 ## License
 
-CellCounter is MIT licensed. Model weights and optional dependencies have their
+Cellographer is MIT licensed. Model weights and optional dependencies have their
 own terms. See [LICENSE](../LICENSE) and
 [third-party notices](../THIRD_PARTY_LICENSES.md).

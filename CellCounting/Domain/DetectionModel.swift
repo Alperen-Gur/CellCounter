@@ -167,7 +167,7 @@ enum ModelCatalog {
     ]
 
     /// Why the Cellpose-DINO rows cannot be chosen.
-    static let dinov3UnavailableReason = "Needs the dinov3 package, which CellCounter does not install."
+    static let dinov3UnavailableReason = "Needs the dinov3 package, which Cellographer does not install."
 
     static let stardist: [DetectionModelInfo] = [
         .init(id: "sd-fluo", family: .stardist, name: "StarDist 2D versatile fluo",

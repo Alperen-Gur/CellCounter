@@ -67,7 +67,7 @@ struct SupportSheet: View {
                     VStack(spacing: 0) {
                         SupportInfoRow(label: "App version", value: appVersion)
                         SupportInfoRow(label: "macOS", value: osVersion)
-                        SupportInfoRow(label: "Issues", value: "github.com/Alperen-Gur/CellCounter")
+                        SupportInfoRow(label: "Issues", value: "github.com/Alperen-Gur/Cellographer")
                     }
                     .background(
                         RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
@@ -89,7 +89,7 @@ struct SupportSheet: View {
                                 let body = "App version: \(appVersion)\nmacOS: \(osVersion)\n\n(Describe the problem here.)"
                                     .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                                 NSWorkspace.shared.open(
-                                    URL(string: "https://github.com/Alperen-Gur/CellCounter/issues/new?body=\(body)")!
+                                    URL(string: "https://github.com/Alperen-Gur/Cellographer/issues/new?body=\(body)")!
                                 )
                             } label: {
                                 HStack(spacing: 6) {

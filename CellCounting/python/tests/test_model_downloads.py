@@ -329,7 +329,7 @@ class VerifiedDownloadTests(DownloadTestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(server.requests), 1)
         self.assertEqual((self.models / "cyto2torch_0").read_bytes(), data)
-        self.assertIn("another CellCounter worker is downloading cyto2torch_0; waiting for it", self.logs)
+        self.assertIn("another Cellographer worker is downloading cyto2torch_0; waiting for it", self.logs)
 
     def test_a_resume_asks_for_the_same_file_version_with_if_range(self):
         data = self.payload(2 * MIB)

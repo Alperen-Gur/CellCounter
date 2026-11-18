@@ -1853,7 +1853,7 @@ private struct AboutSection: View {
                 .frame(width: 72, height: 72)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("CellCounter")
+                    Text("Cellographer")
                         .font(.system(size: 22, weight: .bold))
                         .tracking(-0.02 * 22)
                         .foregroundStyle(Tokens.text)
@@ -1952,7 +1952,7 @@ private struct AboutSection: View {
             }
             let failed = NSAlert()
             failed.messageText = "Couldn't fully reset data."
-            failed.informativeText = "Reset could not finish: \(error.localizedDescription). Restart CellCounter and try again."
+            failed.informativeText = "Reset could not finish: \(error.localizedDescription). Restart Cellographer and try again."
             failed.alertStyle = .warning
             failed.addButton(withTitle: "OK")
             failed.runModal()
@@ -1992,7 +1992,7 @@ private struct AboutSection: View {
         // (which would require tearing down the entire view tree).
         let done = NSAlert()
         done.messageText = "Data cleared."
-        done.informativeText = "All imported images, detections, batches, and corrections have been removed. Quit and reopen CellCounter for the cleanest state."
+        done.informativeText = "All imported images, detections, batches, and corrections have been removed. Quit and reopen Cellographer for the cleanest state."
         done.alertStyle = .informational
         done.addButton(withTitle: "OK")
         done.runModal()
@@ -2001,7 +2001,7 @@ private struct AboutSection: View {
     private func confirmReset(state: AppState) {
         let alert = NSAlert()
         alert.messageText = "Reset all settings?"
-        alert.informativeText = "This will clear all CellCounter preferences and restart the onboarding flow. Your batches and images are not affected."
+        alert.informativeText = "This will clear all Cellographer preferences and restart the onboarding flow. Your batches and images are not affected."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
@@ -2255,7 +2255,7 @@ private struct PrivacyContent: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(
                 "Everything runs locally on your Mac. No images, measurements, or detection results are ever transmitted anywhere. " +
-                "CellCounter has no telemetry; if we ever add optional analytics they will be strictly opt-in.\n\n" +
+                "Cellographer has no telemetry; if we ever add optional analytics they will be strictly opt-in.\n\n" +
                 "Python runs in an isolated virtual environment on your machine. Model weights are downloaded from public sources " +
                 "(Cellpose model hub, Hugging Face) only when you tap \"Get\" on a model card — never automatically. " +
                 "Fine-tuned models stay on your Mac unless you manually export them."

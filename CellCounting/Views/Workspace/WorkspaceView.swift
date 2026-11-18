@@ -706,7 +706,7 @@ struct WorkspaceView: View {
 
     private func presentAnimationSave() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "CellCounter-workspace.gif"
+        panel.nameFieldStringValue = "Cellographer-workspace.gif"
         panel.allowedContentTypes = [.gif]
         if panel.runModal() == .OK, let url = panel.url {
             guard !FileManager.default.fileExists(atPath: url.path) else { session.errorMessage = "Choose a new filename; existing exports remain unchanged."; return }

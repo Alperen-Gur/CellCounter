@@ -271,7 +271,7 @@ enum CustomModelStore {
                 license: "yours",
                 note: stillValid ? nil : "Path missing",
                 architecture: "\(framework) (user-supplied checkpoint)",
-                trainingData: "Your own — trained outside CellCounter",
+                trainingData: "Your own — trained outside Cellographer",
                 paper: "—",
                 outputType: "Masks + boxes + outlines"
             )

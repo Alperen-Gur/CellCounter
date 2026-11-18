@@ -248,7 +248,7 @@ struct ChannelStackPanel: View {
         if isStack { return zProjection.explanation }
         if !zDepthKnown {
             return zProjection.explanation
-                + " Applies to the next detection run; CellCounter can't read "
+                + " Applies to the next detection run; Cellographer can't read "
                 + "the plane count back from the loader, so this is shown for "
                 + "every image and is ignored for single-plane files."
         }

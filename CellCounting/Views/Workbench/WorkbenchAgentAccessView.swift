@@ -34,7 +34,7 @@ struct WorkbenchAgentAccessView: View {
         return result
     }
     private var configuration: String {
-        let object: [String: Any] = ["mcpServers": ["CellCounter": ["command": command, "args": arguments]]]
+        let object: [String: Any] = ["mcpServers": ["Cellographer": ["command": command, "args": arguments]]]
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
               let string = String(data: data, encoding: .utf8) else { return "" }
         return string
@@ -48,7 +48,7 @@ struct WorkbenchAgentAccessView: View {
                 Spacer()
                 Button("Done") { dismiss() }.disabled(installer.isRunning)
             }
-            Text("Connect an MCP client to this project using the installed CellCounter application. GUI, CLI and agent operations use the same project revisions, masks and saved history.")
+            Text("Connect an MCP client to this project using the installed Cellographer application. GUI, CLI and agent operations use the same project revisions, masks and saved history.")
                 .font(.callout).foregroundStyle(.secondary)
             if session.hasProject {
                 LabeledContent("Project", value: session.projectName).font(.headline)

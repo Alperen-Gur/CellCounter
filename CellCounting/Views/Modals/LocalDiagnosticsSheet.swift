@@ -53,7 +53,7 @@ struct LocalDiagnosticsSheet: View {
                             Button("Export reviewed text…", action: save).disabled(!reviewed || !validDraft || saving)
                             Button("Discard draft") { draft = nil; reviewed = false; message = "" }.disabled(saving)
                         }
-                        Text("Anything you add may contain personal information. Your chosen export destination may be synced by other software. No automatic draft backup is made, and CellCounter does not share the exported file.").font(.callout)
+                        Text("Anything you add may contain personal information. Your chosen export destination may be synced by other software. No automatic draft backup is made, and Cellographer does not share the exported file.").font(.callout)
                     } else {
                         Toggle("Include optional state summary (approximate counts and status flags)", isOn: $includeState)
                         Toggle("Include recorded real-workflow timings", isOn: $includeTimings)
@@ -87,7 +87,7 @@ struct LocalDiagnosticsSheet: View {
     private func finishDraft(librarySize: [String]?) {
         let raw = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let version = raw.range(of: #"^\d{1,4}\.\d{1,4}\.\d{1,4}$"#, options: .regularExpression) != nil ? raw : "unknown"
-        var lines = ["CellCounter local diagnostics · format 1", "", "Application version: \(version)", "Platform: macOS", "", "Prepared locally on request. Recording requires explicit opt-in. No automatic uploads.", "Excluded: images, measurements, names, IDs, paths, logs, crash dumps, serial numbers and other device identifiers, network details and timestamps."]
+        var lines = ["Cellographer local diagnostics · format 1", "", "Application version: \(version)", "Platform: macOS", "", "Prepared locally on request. Recording requires explicit opt-in. No automatic uploads.", "Excluded: images, measurements, names, IDs, paths, logs, crash dumps, serial numbers and other device identifiers, network details and timestamps."]
         if includeState {
             lines += ["", "Optional state snapshot (cached; may be stale or incomplete):", "Library images: \(band(state.libraryImageCount))", "Library batches: \(band(state.libraryBatchCount))", "Review candidates: \(band(state.reviewQueueCount))", "Review index building: \(state.isReviewIndexing ? "yes" : "no")", "Review index error present: \(state.reviewIndexError != nil ? "yes" : "no")", "Detection error present: \(state.lastDetectionError != nil ? "yes" : "no")"]
         }
@@ -100,7 +100,7 @@ struct LocalDiagnosticsSheet: View {
         guard !saving, reviewed, validDraft, let text = draft else { return }
         saving = true
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "CellCounter-diagnostics.txt"
+        panel.nameFieldStringValue = "Cellographer-diagnostics.txt"
         panel.allowedContentTypes = [.plainText]
         panel.canCreateDirectories = true
         panel.begin { response in

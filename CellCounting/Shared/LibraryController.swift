@@ -93,7 +93,7 @@ final class LibraryController {
                                                        environment: [String: String]) -> String? {
         switch source {
         case .testProcess:
-            return "Libraries cannot be switched while CellCounter is running tests."
+            return "Libraries cannot be switched while Cellographer is running tests."
         case .environment where LibrarySelection.dataRootOverride(environment) == nil:
             return "Libraries cannot be switched because \(LibrarySelection.dataRootVariable) is not an absolute path."
         default:
@@ -125,7 +125,7 @@ final class LibraryController {
             return false
         }
         if let reason = busyReason(state) {
-            alertMessage = "CellCounter cannot switch library right now. \(reason)"
+            alertMessage = "Cellographer cannot switch library right now. \(reason)"
             return false
         }
         return true
@@ -173,7 +173,7 @@ final class LibraryController {
         guard ensureCanSwitch(state) else { return }
         let panel = NSOpenPanel()
         panel.title = "Open Library"
-        panel.message = "Choose a CellCounter library (.\(LibraryLayout.packageExtension)) or a batch archive."
+        panel.message = "Choose a Cellographer library (.\(LibraryLayout.packageExtension)) or a batch archive."
         panel.prompt = "Open"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -204,7 +204,7 @@ final class LibraryController {
         if !FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
             return "“\(url.lastPathComponent)” could not be found at \(url.path). If it is on an external or network drive, connect the drive and try again."
         }
-        return "“\(url.lastPathComponent)” is not a CellCounter library. A library is a folder made with File ▸ New Library… or Archive Batch…, and it contains a database file named store.sqlite. To add the images in this folder to the open library, use Choose folder… in the Library overview instead."
+        return "“\(url.lastPathComponent)” is not a Cellographer library. A library is a folder made with File ▸ New Library… or Archive Batch…, and it contains a database file named store.sqlite. To add the images in this folder to the open library, use Choose folder… in the Library overview instead."
     }
 
     func openRecent(_ recent: RecentLibrary, state: AppState) {
@@ -268,7 +268,7 @@ final class LibraryController {
             }
             if let reason = busyReason(state) {
                 isSwitching = false
-                alertMessage = "CellCounter cannot switch library right now. \(reason)"
+                alertMessage = "Cellographer cannot switch library right now. \(reason)"
                 return
             }
 
@@ -292,7 +292,7 @@ final class LibraryController {
                 preferences.restoreCurrentLibraryPath(previousPreference)
                 refreshRecentLibraries()
                 isSwitching = false
-                alertMessage = "CellCounter could not restart with the other library, so “\(displayName)” stays open. \(error.localizedDescription)"
+                alertMessage = "Cellographer could not restart with the other library, so “\(displayName)” stays open. \(error.localizedDescription)"
                 return
             }
             // Final save for anything that landed while the new instance
@@ -302,7 +302,7 @@ final class LibraryController {
             // Only reached if termination was cancelled. The other library is
             // already open in the new instance; say so instead of hanging.
             isSwitching = false
-            alertMessage = "The other library opened in a new CellCounter window, but this one could not quit. Quit this window (⌘Q) so only one library stays open."
+            alertMessage = "The other library opened in a new Cellographer window, but this one could not quit. Quit this window (⌘Q) so only one library stays open."
         }
     }
 }

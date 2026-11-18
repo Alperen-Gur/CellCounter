@@ -11,7 +11,7 @@
 # Usage:  ./scripts/metrics.sh
 set -euo pipefail
 
-REPO="${CC_REPO:-Alperen-Gur/CellCounter}"
+REPO="${CC_REPO:-Alperen-Gur/Cellographer}"
 
 hr() { printf '%s\n' "────────────────────────────────────────────────────────"; }
 

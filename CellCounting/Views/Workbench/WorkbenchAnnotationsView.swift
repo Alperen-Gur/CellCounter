@@ -292,7 +292,7 @@ struct WorkbenchAnnotationsView: View {
         panel.allowedContentTypes = [.json]
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.message = "Choose a CellCounter geometry JSON export from the same acquisition. Import creates a new annotation."
+        panel.message = "Choose a Cellographer geometry JSON export from the same acquisition. Import creates a new annotation."
         panel.begin { response in
             guard response == .OK, let source = panel.url else { return }
             session.previewAnnotationImport(source)

@@ -250,7 +250,7 @@ struct WorkbenchMigrationView: View {
 
     private func number(_ value: WorkbenchJSON) -> String { value.number.map { $0.formatted(.number.precision(.fractionLength(0...3))) } ?? "—" }
     private func chooseSource() {
-        let panel = NSOpenPanel(); panel.title = "Choose the native CellCounter library root"
+        let panel = NSOpenPanel(); panel.title = "Choose the native Cellographer library root"
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
@@ -259,7 +259,7 @@ struct WorkbenchMigrationView: View {
     }
     private func capture() {
         let panel = NSSavePanel(); panel.title = "Save a new read-only library archive"
-        panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "CellCounter-library-archive.json"
+        panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "Cellographer-library-archive.json"
         panel.begin { response in guard response == .OK, let url = panel.url else { return }; page = 0; session.captureLibraryArchive(to: url) }
     }
     private func openArchive() {

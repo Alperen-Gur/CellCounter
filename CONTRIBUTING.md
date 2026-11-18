@@ -1,12 +1,12 @@
-# Contributing to CellCounter
+# Contributing to Cellographer
 
 Bug reports, documentation improvements and focused pull requests are welcome.
 
 ## Report a problem
 
-Open a [GitHub issue](https://github.com/Alperen-Gur/CellCounter/issues) with:
+Open a [GitHub issue](https://github.com/Alperen-Gur/Cellographer/issues) with:
 
-- Your operating system and CellCounter version.
+- Your operating system and app version.
 - Steps to reproduce the problem, what you expected and what happened.
 - The file format, model or operation involved, plus any error message.
 - A small example using synthetic or shareable data, if possible.
@@ -64,6 +64,9 @@ for the shared microscopy engine, which must be staged before a full build:
      -project CellCounting.xcodeproj -scheme CellCounting \
      -destination 'platform=macOS' -only-testing:CellCountingTests
    ```
+
+The Xcode project, scheme and source folders keep the CellCounting name; the app they
+build is **Cellographer.app**.
 
 Set `CELLCOUNTER_DATA_ROOT` to the absolute path of an empty folder when you run a
 development build, so it works on its own data instead of your Default Library. App

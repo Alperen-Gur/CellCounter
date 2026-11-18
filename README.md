@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/branding/CellCounter-icon.png" alt="CellCounter app icon" width="112" height="112">
+<img src="docs/branding/CellCounter-icon.png" alt="Cellographer app icon" width="112" height="112">
 
-# CellCounter
+# Cellographer
 
 **Segment, correct and measure cells across entire experiments — on your own computer.**
 
@@ -10,9 +10,11 @@ Run Cellpose-SAM, Cellpose, StarDist, Omnipose, SAM or classical pipelines, revi
 images into counts, size distributions, shape, intensity, assay and tracking results you can reproduce
 and export.
 
-[![macOS](https://img.shields.io/badge/macOS-1.3.0-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.3.0)
-[![Windows](https://img.shields.io/badge/Windows-1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0)
-[![Web](https://img.shields.io/badge/Web-0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
+Cellographer was called CellCounter until version 1.3.
+
+[![macOS](https://img.shields.io/badge/macOS-1.4.0-0a7ea4?logo=apple&logoColor=white)](https://github.com/Alperen-Gur/Cellographer/releases/tag/v1.4.0)
+[![Windows](https://img.shields.io/badge/Windows-1.3.0-0078D4?logo=windows11&logoColor=white)](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0)
+[![Web](https://img.shields.io/badge/Web-0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/Cellographer/releases/tag/web-v0.3.2)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [Download](#download) · [Features](#features) · [Comparison](#feature-comparison) · [Quick start](#quick-start) · [AI-agent access](#automation-and-ai-agents) · [Documentation](#documentation)
@@ -21,7 +23,7 @@ and export.
 
 ---
 
-CellCounter brings image analysis, manual correction and experimental results into one project. Use the
+Cellographer brings image analysis, manual correction and experimental results into one project. Use the
 desktop app, command line, Python SDK or Model Context Protocol (MCP) to work with the same images,
 masks, measurements and history.
 
@@ -31,13 +33,19 @@ Analysis runs on your computer. No account required.
 
 | Edition | Requirements | Download |
 | --- | --- | --- |
-| **macOS 1.3.0** | macOS 15 or later on Apple silicon | [Application](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.3.0) |
-| **Windows 1.3.0** | Windows 10 or 11, 64-bit | [EXE and MSI installers](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) |
-| **Web 0.3.2 preview** | A supported modern browser; served over HTTPS or localhost | [Static PWA package](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) |
-| **Python SDK 0.1.0** | Python 3.11 or later and the required analysis dependencies | [Wheel and source package](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) |
+| **macOS 1.4.0** | macOS 15 or later on Apple silicon | [`Cellographer-v1.4.0.zip`](https://github.com/Alperen-Gur/Cellographer/releases/tag/v1.4.0) |
+| **Windows 1.3.0** | Windows 10 or 11, 64-bit | [EXE and MSI installers](https://github.com/Alperen-Gur/Cellographer/releases/tag/windows-v1.3.0) |
+| **Web 0.3.2 preview** | A supported modern browser; served over HTTPS or localhost | [Static PWA package](https://github.com/Alperen-Gur/Cellographer/releases/tag/web-v0.3.2) |
+| **Python SDK 0.1.0** | Python 3.11 or later and the required analysis dependencies | [Wheel and source package](https://github.com/Alperen-Gur/Cellographer/releases/tag/v1.1.0) |
 
 Follow the [macOS guide](docs/INSTALL.md) or [Windows guide](docs/WINDOWS.md) for installation and
 first-launch help. In the desktop app, choose **Install or repair** to set up the analysis runtime.
+
+On macOS the app is now **Cellographer.app**. If you are updating from CellCounter, install
+Cellographer.app, then delete CellCounting.app; your libraries, settings and models are kept. See
+[Install](docs/INSTALL.md#install).
+
+The Windows and browser apps still carry the CellCounter name until their next release.
 
 The **web preview** runs in your browser and includes classical segmentation, measurements, assays and
 portable workspaces. See the [web guide](docs/WEB.md) and [edition comparison](docs/PLATFORM-PARITY.md).
@@ -64,11 +72,11 @@ from import to export.
 
 ## Feature comparison
 
-CellCounter desktop alongside other open-source microscopy tools. Updated **23 October 2026**.
+Cellographer desktop alongside other open-source microscopy tools. Updated **23 October 2026**.
 
 **✓** included · **Plugin** extension · **?** undocumented
 
-| Feature | **CellCounter** | [Cell-ACDC](https://cell-acdc.readthedocs.io/en/stable/) | [Fiji / ImageJ](https://imagej.net/learn/) | [napari](https://napari.org/stable/) | [CellProfiler](https://cellprofiler.org/) | [QuPath](https://qupath.readthedocs.io/en/stable/) |
+| Feature | **Cellographer** | [Cell-ACDC](https://cell-acdc.readthedocs.io/en/stable/) | [Fiji / ImageJ](https://imagej.net/learn/) | [napari](https://napari.org/stable/) | [CellProfiler](https://cellprofiler.org/) | [QuPath](https://qupath.readthedocs.io/en/stable/) |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: |
 | Classical segmentation | ✓ | ✓ | ✓ | Plugin | ✓ | ✓ |
 | Learned segmentation | Cellpose / StarDist / SAM | ✓ | Plugin | Plugin | Plugin | Plugin |
@@ -131,29 +139,29 @@ Use these packages to share an analysis or return to it later.
 | [Workbench](docs/WORKBENCH.md) | Analysis, correction, workflows, experiments, export, CLI, SDK and MCP |
 | [Libraries and batch archives](docs/LIBRARIES.md) | macOS image libraries, archiving and restoring batches, saved mask versions |
 | [Portable workspace](docs/PORTABLE-WORKSPACE.md) | Browser workspace formats, layers and editing tools |
-| [Release notes](docs/releases/) · [Releases](https://github.com/Alperen-Gur/CellCounter/releases) | Changes in each version, downloads and checksums |
+| [Release notes](docs/releases/) · [Releases](https://github.com/Alperen-Gur/Cellographer/releases) | Changes in each version, downloads and checksums |
 | [Architecture](docs/ARCHITECTURE.md) | How the apps, analysis runtime and storage fit together |
 | [Contributing](CONTRIBUTING.md) | Building from source, reporting bugs and contributing changes |
 
 ## Support and citation
 
-Report problems or request features in [GitHub Issues](https://github.com/Alperen-Gur/CellCounter/issues).
+Report problems or request features in [GitHub Issues](https://github.com/Alperen-Gur/Cellographer/issues).
 Include your application version, operating system, relevant settings and steps to reproduce the problem.
 Share only image data or logs you are permitted to disclose.
 
-If you use CellCounter in research, cite the software and the segmentation models you ran, and record the
+If you use Cellographer in research, cite the software and the segmentation models you ran, and record the
 application and model versions in your methods:
 
-> Gur, A. *CellCounter: a local microscopy workbench for image analysis and quantification.*
-> https://github.com/Alperen-Gur/CellCounter
+> Gur, A. *Cellographer: a local microscopy workbench for image analysis and quantification.*
+> https://github.com/Alperen-Gur/Cellographer
 
 Citation metadata is in [CITATION.cff](CITATION.cff); GitHub's **Cite this repository** button exports it as APA or BibTeX.
 
-CellCounter builds on open-source scientific software, including [Cellpose](https://github.com/MouseLand/cellpose),
+Cellographer builds on open-source scientific software, including [Cellpose](https://github.com/MouseLand/cellpose),
 [StarDist](https://github.com/stardist/stardist) and [Omnipose](https://github.com/kevinjohncutler/omnipose).
 See [third-party acknowledgments and licenses](THIRD_PARTY_LICENSES.md).
 
 ## License
 
-CellCounter source code is available under the [MIT License](LICENSE). Optional dependencies and model weights
+Cellographer source code is available under the [MIT License](LICENSE). Optional dependencies and model weights
 retain their respective licenses.

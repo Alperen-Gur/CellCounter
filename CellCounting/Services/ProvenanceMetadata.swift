@@ -197,7 +197,7 @@ struct ProvenanceMetadata: Codable, Sendable {
     var asMarkdown: String {
         var parts: [String] = []
         parts.append("**Provenance**")
-        parts.append("- App: CellCounter v\(appVersion) (build \(appBuild))" +
+        parts.append("- App: Cellographer v\(appVersion) (build \(appBuild))" +
                      (appBuildSHA.map { " · \($0)" } ?? ""))
         parts.append("- OS: \(osVersion)")
         parts.append("- Model: \(modelName) [\(modelId), family=\(modelFamily)]" +

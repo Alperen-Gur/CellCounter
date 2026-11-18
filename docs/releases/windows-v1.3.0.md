@@ -15,4 +15,4 @@ This release adds a project workbench whose GUI, CLI, Python SDK and MCP server 
 
 The MSI and NSIS installers include a Node runtime for the shared workspace engine. Install the Workbench Python runtime from **Workbench → AI agent access → Install or repair runtime**; model and OMERO environments are set up separately. Existing library data is preserved, and copying a library into a project starts with a preview.
 
-Follow the [Windows guide](https://github.com/Alperen-Gur/CellCounter/blob/windows-v1.3.0/docs/WINDOWS.md) and [Workbench guide](https://github.com/Alperen-Gur/CellCounter/blob/windows-v1.3.0/docs/WORKBENCH.md).
+Follow the [Windows guide](https://github.com/Alperen-Gur/Cellographer/blob/windows-v1.3.0/docs/WINDOWS.md) and [Workbench guide](https://github.com/Alperen-Gur/Cellographer/blob/windows-v1.3.0/docs/WORKBENCH.md).

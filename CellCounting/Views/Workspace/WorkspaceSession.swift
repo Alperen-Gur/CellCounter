@@ -89,7 +89,7 @@ final class WorkspaceSession {
     var inspectorTab: WorkspaceInspectorTab = .dataset
     var isBusy = false
     var progress: Double = 0
-    var statusMessage = "Open images, a CellCounter batch, or a local OME-Zarr dataset."
+    var statusMessage = "Open images, a Cellographer batch, or a local OME-Zarr dataset."
     var errorMessage: String?
 
     var isRecording = false
@@ -216,7 +216,7 @@ final class WorkspaceSession {
 
     func importCurrentBatch(state: AppState) {
         guard let batch = state.currentBatch else {
-            errorMessage = "Open a CellCounter batch first."
+            errorMessage = "Open a Cellographer batch first."
             return
         }
         let images = state.orderedImages(in: batch)

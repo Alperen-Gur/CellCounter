@@ -23,7 +23,7 @@ nonisolated final class AnalysisJobStore: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: url))
         guard document.schemaVersion == 1 else {
-            throw NSError(domain: "AnalysisJobs", code: 1, userInfo: [NSLocalizedDescriptionKey: "This processing queue was saved by a newer version of CellCounter."])
+            throw NSError(domain: "AnalysisJobs", code: 1, userInfo: [NSLocalizedDescriptionKey: "This processing queue was saved by a newer version of Cellographer."])
         }
         return document.jobs.map { var job = $0; job.recoverAfterLaunch(); return job }
     }

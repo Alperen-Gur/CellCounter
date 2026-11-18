@@ -74,11 +74,11 @@ jobs:
 
       - name: Verify app bundle
         run: |
-          APP="$RUNNER_TEMP/build/Build/Products/Release/CellCounting.app"
+          APP="$RUNNER_TEMP/build/Build/Products/Release/Cellographer.app"
           BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
           test "$BUNDLE_VERSION" = "$VERSION" \
             || { echo "::error::Bundle version $BUNDLE_VERSION does not match $VERSION"; exit 1; }
-          ARCHITECTURES=$(lipo -archs "$APP/Contents/MacOS/CellCounting")
+          ARCHITECTURES=$(lipo -archs "$APP/Contents/MacOS/Cellographer")
           test "$ARCHITECTURES" = "arm64" \
             || { echo "::error::Expected an arm64-only binary, found: $ARCHITECTURES"; exit 1; }
           codesign --verify --deep --strict --verbose=2 "$APP"
@@ -87,20 +87,20 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/dist"
           ditto -c -k --sequesterRsrc --keepParent \
-            "$RUNNER_TEMP/build/Build/Products/Release/CellCounting.app" \
-            "$RUNNER_TEMP/dist/CellCounter-${TAG}.zip"
+            "$RUNNER_TEMP/build/Build/Products/Release/Cellographer.app" \
+            "$RUNNER_TEMP/dist/Cellographer-${TAG}.zip"
           cd "$RUNNER_TEMP/dist"
-          shasum -a 256 "CellCounter-${TAG}.zip" > "CellCounter-${TAG}.zip.sha256"
-          cp "CellCounter-${TAG}.zip.sha256" SHA256SUMS.txt
+          shasum -a 256 "Cellographer-${TAG}.zip" > "Cellographer-${TAG}.zip.sha256"
+          cp "Cellographer-${TAG}.zip.sha256" SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Publish release
         run: |
           gh release create "${TAG}" \
             --target "${GITHUB_SHA}" \
-            --title "CellCounter ${TAG} for macOS" \
+            --title "Cellographer ${TAG} for macOS" \
             --notes-file "docs/releases/${TAG}.md" \
             --latest \
-            "$RUNNER_TEMP/dist/CellCounter-${TAG}.zip" \
-            "$RUNNER_TEMP/dist/CellCounter-${TAG}.zip.sha256" \
+            "$RUNNER_TEMP/dist/Cellographer-${TAG}.zip" \
+            "$RUNNER_TEMP/dist/Cellographer-${TAG}.zip.sha256" \
             "$RUNNER_TEMP/dist/SHA256SUMS.txt"

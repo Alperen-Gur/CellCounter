@@ -32,15 +32,15 @@ All commands are in the **File** menu.
 | **Open Default Library** | Returns to the Default Library. |
 | **Show Library in Finder** | Reveals the open library's folder. |
 
-CellCounter opens one library at a time. Switching saves your work and relaunches the app
+Cellographer opens one library at a time. Switching saves your work and relaunches the app
 with the other library, which stays open on the next launch.
 
-Finish or pause running work before you switch. CellCounter asks you to wait while images
+Finish or pause running work before you switch. Cellographer asks you to wait while images
 are importing, an analysis is running or queued, a model is training, library data is being
 copied into a project, or the Workbench is busy or has unsaved changes.
 
 If the remembered library cannot be found at launch, for example because its drive is
-disconnected, CellCounter opens the Default Library and shows **Library not available**.
+disconnected, Cellographer opens the Default Library and shows **Library not available**.
 Connect the drive and choose **File → Open Recent Library**.
 
 ### What a library folder contains
@@ -51,7 +51,7 @@ Connect the drive and choose **File → Open Recent Library**.
 | `Images/` | Imported image files, named by image ID. |
 | `DisplayImages/` | Viewable copies of microscope-vendor files. |
 | `Thumbnails/` | Small previews. |
-| `Embeddings/` | Image caches for prompt-assisted correction. CellCounter rebuilds them when needed. |
+| `Embeddings/` | Image caches for prompt-assisted correction. Cellographer rebuilds them when needed. |
 | `analysis-jobs.json` | Saved processing jobs. |
 | `Backups/` | Safety copies of the database made before an upgrade. See [Upgrade from an earlier version](INSTALL.md#upgrade-from-an-earlier-version). |
 | `CellCounterLibrary.json` | The library's name and type. |
@@ -71,12 +71,12 @@ Start an archive from any of these places:
 - **Archive Batch…** in the batch list's context menu or the **Recent** list in **Library overview**.
 - **File → Archive Batch…** while a batch is open.
 
-Choose where to save the archive. CellCounter suggests
+Choose where to save the archive. Cellographer suggests
 `~/Documents/CellCounter Archives/<batch> – archived <date>.cellcounterlibrary`. The
-archive must be outside the library folder, and CellCounter never replaces an existing
+archive must be outside the library folder, and Cellographer never replaces an existing
 folder.
 
-CellCounter then copies the batch, writes CSV files and a README, and checks the copy
+Cellographer then copies the batch, writes CSV files and a README, and checks the copy
 against the original record by record and file by file. Only then does it remove the batch
 from your library. If you cancel or anything fails before that point, the incomplete archive
 is removed and your library is unchanged.
@@ -101,7 +101,7 @@ came from.
 | `CellCounterLibrary.json` | Machine-readable description of the archive. |
 
 The CSV files open in Excel, R or Python. Lines starting with `#` record the confidence
-cut-off, size bins, model and scale. As in other CellCounter exports, the CSV files leave
+cut-off, size bins, model and scale. As in other Cellographer exports, the CSV files leave
 out cells below an image's confidence cut-off; the database keeps every detected cell.
 
 To browse an archive without restoring it, open it with **File → Open Library…**.
@@ -112,7 +112,7 @@ Choose **File → Restore Archived Batch…** and select the archive folder. The
 to the open library with the same IDs, outlines, measurements and calibration. The archive
 itself is not changed, so you can keep it as a backup.
 
-CellCounter does not restore a batch that is already in the open library.
+Cellographer does not restore a batch that is already in the open library.
 
 ## Delete a batch
 
@@ -125,7 +125,7 @@ Deleting a batch from the trash button or **Delete Batch…** asks
 
 ## Saved mask versions
 
-When you analyze an image again, CellCounter keeps the previous mask as a saved version.
+When you analyze an image again, Cellographer keeps the previous mask as a saved version.
 Find them under **Saved mask variants** in the **Review & validation** and
 **Smart correction** tools of the results view.
 
@@ -146,7 +146,7 @@ Choose how many versions each image keeps in **Settings → General → Saved ma
 
 ## Large libraries
 
-CellCounter is built to stay responsive as a library grows:
+Cellographer is built to stay responsive as a library grows:
 
 - Cell outlines and measurements are stored compactly, separately from image records.
 - Batch lists, the image library and **Compare conditions** read compact measurements stored
@@ -164,6 +164,6 @@ only, with no names, paths or IDs. See [Optional local diagnostics](INSTALL.md#o
 
 ## Back up a library
 
-Quit CellCounter, then copy the whole library folder. For the Default Library, copy
+Quit Cellographer, then copy the whole library folder. For the Default Library, copy
 `~/Library/Application Support/CellCounter`; it also holds your installed models and Python
 environments. Archives are ordinary folders and can be backed up the same way.

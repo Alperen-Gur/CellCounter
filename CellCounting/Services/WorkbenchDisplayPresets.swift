@@ -195,7 +195,7 @@ extension WorkbenchSession {
             let response = try await self.call("display.preset.import.preview", arguments: ["path": .string(url.path)])
             let result = response["result"]
             guard result["previewFingerprint"].string != nil, result["preset"]["name"].string != nil else {
-                throw WorkbenchFailure(code: "invalid-response", message: "The preset file could not be previewed. Choose a CellCounter display preset JSON file and try again.")
+                throw WorkbenchFailure(code: "invalid-response", message: "The preset file could not be previewed. Choose a Cellographer display preset JSON file and try again.")
             }
             state.importPath = url.path
             state.importPreview = result

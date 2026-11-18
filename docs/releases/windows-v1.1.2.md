@@ -13,4 +13,4 @@ Requires **Windows 10 or 11 x64**. The NSIS `.exe` and WiX `.msi` contain the sa
 
 ## Update
 
-Quit CellCounter and install the new `.exe` or `.msi`, using the same installer format as before. Keep existing application data. A library reset or model reinstall is not required. See the [Windows guide](https://github.com/Alperen-Gur/CellCounter/blob/windows-v1.1.2/docs/WINDOWS.md).
+Quit CellCounter and install the new `.exe` or `.msi`, using the same installer format as before. Keep existing application data. A library reset or model reinstall is not required. See the [Windows guide](https://github.com/Alperen-Gur/Cellographer/blob/windows-v1.1.2/docs/WINDOWS.md).

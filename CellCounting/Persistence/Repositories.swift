@@ -133,7 +133,7 @@ final class Repositories {
                     for: schema,
                     configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
             } catch {
-                fatalError("CellCounter could not create its in-memory data store: \(error)")
+                fatalError("Cellographer could not create its in-memory data store: \(error)")
             }
             seedDefaultsIfNeeded()
             return
@@ -156,7 +156,7 @@ final class Repositories {
                 self.diskStoreError = opened.error ?? "unknown error"
             } catch let memoryError {
                 fatalError("""
-                CellCounter could not open its data store.
+                Cellographer could not open its data store.
                 On-disk store failed: \(opened.error ?? "unknown error")
                 In-memory fallback also failed: \(memoryError)
                 This usually indicates a schema/migration problem rather than a disk issue. \

@@ -92,7 +92,7 @@ struct AddCustomModelSheet: View {
 
     @ViewBuilder
     private var customForm: some View {
-        Text("Point CellCounter at a model you already trained. It runs through the same "
+        Text("Point Cellographer at a model you already trained. It runs through the same "
              + "measurement and export path as the built-in models, so the numbers are "
              + "directly comparable.")
             .font(.system(size: 12))
@@ -193,7 +193,7 @@ struct AddCustomModelSheet: View {
                             Icon("trash", size: 12).foregroundStyle(Tokens.textTertiary)
                         }
                         .appButton(.ghost, size: .sm)
-                        .help("Remove from CellCounter. Your model file is not deleted.")
+                        .help("Remove from Cellographer. Your model file is not deleted.")
                     }
                 }
             }

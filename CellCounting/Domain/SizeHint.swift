@@ -125,7 +125,7 @@ nonisolated enum SizeHint {
         var message: String {
             switch self {
             case .belowMinimum(let px):
-                return "About \(SizeHint.format(px, digits: 0)) px is below the 15 px minimum. CellCounter uses 15 px, so cells this small may be missed. Check the calibration."
+                return "About \(SizeHint.format(px, digits: 0)) px is below the 15 px minimum. Cellographer uses 15 px, so cells this small may be missed. Check the calibration."
             case .heavyShrink(let px):
                 return "About \(SizeHint.format(px, digits: 0)) px. Images will be scaled down heavily for segmentation, which can lose small cells. Check the calibration and the value."
             }

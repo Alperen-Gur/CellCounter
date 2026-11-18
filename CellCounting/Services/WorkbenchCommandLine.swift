@@ -18,7 +18,7 @@ enum WorkbenchCommandLine {
             let pythonDirectory = FileStore.appLocation().appendingPathComponent("python", isDirectory: true)
             let python = PythonRuntime.workbenchInterpreter(pythonDirectory: pythonDirectory)
             guard FileManager.default.isExecutableFile(atPath: python.path) else {
-                throw WorkbenchFailure(code: "runtime-unavailable", message: "The installed workbench Python environment is unavailable. Install it once from CellCounter’s AI agent and command-line access panel, then retry this command. No library was opened or changed.")
+                throw WorkbenchFailure(code: "runtime-unavailable", message: "The installed workbench Python environment is unavailable. Install it once from Cellographer’s AI agent and command-line access panel, then retry this command. No library was opened or changed.")
             }
             let script = try PythonRuntime.stageWorkbenchSnapshot(pythonDirectory: pythonDirectory)
             var command = [python.path, script.path]

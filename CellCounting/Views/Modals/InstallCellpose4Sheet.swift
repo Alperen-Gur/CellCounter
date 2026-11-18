@@ -189,7 +189,7 @@ private struct CP4Header: View {
         case .freshInstall:
             return "Cellpose-SAM (Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion)) runs in a SEPARATE Python environment from Cellpose 3.x — both can coexist. This is a one-time setup."
         case .updateAvailable(let installed):
-            return "This Mac has Cellpose \(installed ?? "4 (version unknown)"). CellCounter is tested with Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion)."
+            return "This Mac has Cellpose \(installed ?? "4 (version unknown)"). Cellographer is tested with Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion)."
         }
     }
 
@@ -250,7 +250,7 @@ private struct CP4UpdateBody: View {
 
     private var points: [String] {
         [
-            "Installs Cellpose \(pinned) with PyTorch 2.12, OpenCV 4.13 and NumPy 2, the set CellCounter is tested with. Your model weights are kept.",
+            "Installs Cellpose \(pinned) with PyTorch 2.12, OpenCV 4.13 and NumPy 2, the set Cellographer is tested with. Your model weights are kept.",
             "Results can differ slightly from runs made with \(old). The Cellpose version, PyTorch and NumPy versions, device and weights file are recorded with every result, so each result shows which version produced it.",
             "Until you update, analyses keep using \(old). Results you already have are not changed.",
             "Before anything changes, the current package list is saved next to the environment, so the old setup can be recreated.",

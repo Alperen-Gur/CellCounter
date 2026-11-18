@@ -52,7 +52,7 @@ CC_PIP_PACKAGES='cellpose>=3.0,<4 numpy<2 pillow scikit-image tifffile torch tor
 # compressed CZI/TIFF payloads and ships as a binary wheel.
 CC_PIP_OPTIONAL_PACKAGES='imagecodecs czifile>=2019.7.2,<2027 nd2>=0.10,<1 liffile<2027 oiffile<2027 oirfile<2027'
 CC_DONE_EXTRA_NOTE="Expect roughly ~2 GB of disk used (torch + cellpose weights cache on first
-run can add more). The CellCounter app picks this up automatically through
+run can add more). The Cellographer app picks this up automatically through
 CellposeAvailability.swift — no further configuration needed."
 
 cc_install_run "$@"

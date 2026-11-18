@@ -1,6 +1,6 @@
 # Microscopy software comparison
 
-CellCounter brings segmentation, correction, measurements and experiment analysis into one
+Cellographer brings segmentation, correction, measurements and experiment analysis into one
 workbench, with desktop, command-line, Python and AI-agent access.
 
 The [open-source feature matrix](../README.md#feature-comparison) compares the desktop app
@@ -13,7 +13,7 @@ at commercial alternatives. Updated **23 October 2026**.
 
 | Software | Features | Documentation |
 | --- | --- | --- |
-| **CellCounter** | Segmentation, mask editing, measurements, assays, review, workflows and portable analysis packages. The GUI, CLI, Python SDK and MCP server work with the same projects. | [Features](FEATURES.md), [Workbench](WORKBENCH.md), [editions](PLATFORM-PARITY.md) |
+| **Cellographer** | Segmentation, mask editing, measurements, assays, review, workflows and portable analysis packages. The GUI, CLI, Python SDK and MCP server work with the same projects. | [Features](FEATURES.md), [Workbench](WORKBENCH.md), [editions](PLATFORM-PARITY.md) |
 | **Cell-ACDC** | Live-cell segmentation and tracking, correction propagation, cell-cycle and lineage annotation, 3D segmentation and batch processing. Save workflow recipes and run them from the CLI, or add models and trackers through Python. | [Overview](https://cell-acdc.readthedocs.io/en/stable/overview.html), [application and batch processing](https://cell-acdc.readthedocs.io/en/stable/), [workflow implementation](https://github.com/SchmollerLab/Cell_ACDC/blob/main/cellacdc/segm.py#L932), [model interfaces](https://cell-acdc.readthedocs.io/en/stable/models.html) |
 | **Fiji / ImageJ** | Image processing, measurement, macros and plugins. TrackMate adds tracking and lineage analysis; BigDataViewer handles multiresolution viewing. The Fiji LLM extension connects agents through MCP. | [ImageJ documentation](https://imagej.net/learn/), [TrackMate](https://imagej.net/plugins/trackmate/), [BigDataViewer](https://imagej.net/plugins/bdv/), [Fiji LLM / MCP](https://github.com/fiji/fiji-llm#mcp-server) |
 | **napari** | Multidimensional viewing, volumetric label painting, shapes and tracks. Python and plugins add segmentation, measurement and tracking. The napari MCP plugin connects AI agents. | [Tutorials](https://napari.org/stable/tutorials/index.html), [label editing](https://napari.org/stable/howtos/layers/labels.html), [headless use](https://napari.org/stable/howtos/headless.html), [napari MCP](https://github.com/royerlab/napari-mcp) |
@@ -24,7 +24,7 @@ at commercial alternatives. Updated **23 October 2026**.
 
 | Software | Segmentation and measurement | Imaging and tracking | Workflows and automation |
 | --- | --- | --- | --- |
-| **CellCounter** | Classical and learned segmentation, mask editing, cellular assays and biological-replicate statistics. | 3D threshold/watershed analysis, multiscale region viewing, tracking and division review. | Branching workflows, resumable jobs, CLI, Python SDK and MCP. [Feature guide](FEATURES.md). |
+| **Cellographer** | Classical and learned segmentation, mask editing, cellular assays and biological-replicate statistics. | 3D threshold/watershed analysis, multiscale region viewing, tracking and division review. | Branching workflows, resumable jobs, CLI, Python SDK and MCP. [Feature guide](FEATURES.md). |
 | **Imaris** | Spot, surface, cell and filament analysis, object statistics and colocalization. | 3D/4D visualization and analysis, TrackLineage motion tracking and lineage trees, stitching and deconvolution. | Saved protocols, Imaris Batch and Imaris XT customization with Python, MATLAB, Java and R. [Packages](https://imaris.oxinst.com/products/imaris-packages). |
 | **ZEISS arivis Pro** | Classical, machine-learning and deep-learning segmentation, measurements and interactive object correction. | Large multidimensional datasets, 3D/4D analysis and tracking, and 3D semantic ONNX models. | Visual pipelines, batch processing, Python extensions and Microscopy Copilot help. [Product](https://www.zeiss.com/microscopy/en/products/software/arivis-pro.html), [4.6 release notes](https://knowledge.zeiss.com/rms/en/arivis-pro/release-notes/arivis-pro-4-6). |
 | **Leica Aivia** | Learned segmentation, phenotyping, cellular and neuronal analysis, multiwell assays. | 2D/3D object analysis and tracking, multidimensional visualization and large-volume display. | Recipes, batch workflows and custom model integration across editions; multiwell condition summaries and dose-response analysis. [Product and editions](https://www.leica-microsystems.com/products/microscope-software/p/aivia/), [visualization and tracking](https://www.aivia-software.com/). |
@@ -34,7 +34,7 @@ at commercial alternatives. Updated **23 October 2026**.
 
 ## AI agents and scripting
 
-Connect an AI agent to CellCounter through [MCP](WORKBENCH.md#mcp-connection), or use the
+Connect an AI agent to Cellographer through [MCP](WORKBENCH.md#mcp-connection), or use the
 [CLI](WORKBENCH.md#cli-example) and [Python SDK](WORKBENCH.md#python-sdk) in your own scripts.
 Agents can inspect images, run analyses, edit masks and export results using the same
 operations as the desktop app. You choose their project and folder access.
@@ -43,4 +43,4 @@ Fiji and napari offer MCP through [Fiji LLM](https://github.com/fiji/fiji-llm#mc
 and [napari MCP](https://github.com/royerlab/napari-mcp). Other scripting options include
 ImageJ macros, Cell-ACDC recipes, CellProfiler pipelines, QuPath Groovy, Imaris XT and Amira Python.
 
-For CellCounter's desktop and browser features, see the [edition comparison](PLATFORM-PARITY.md).
+For Cellographer's desktop and browser features, see the [edition comparison](PLATFORM-PARITY.md).

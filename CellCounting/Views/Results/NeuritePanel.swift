@@ -221,7 +221,7 @@ struct NeuritePanel: View {
                         .foregroundStyle(Tokens.textTertiary)
                 }
                 Slider(value: $somaRadiusUm, in: 2...40).tint(theme.accentColor)
-                Text("Cell bodies are modelled as discs of this radius — CellCounter stores "
+                Text("Cell bodies are modelled as discs of this radius — Cellographer stores "
                      + "centroids, not a labelled soma raster.")
                     .font(.system(size: 10))
                     .foregroundStyle(Tokens.textQuaternary)

@@ -4,17 +4,20 @@
 
 Private microscopy analysis that runs entirely in your browser.
 
-[![Web preview](https://img.shields.io/badge/Web-v0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
-[![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/CellCounter/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/CellCounter/actions/workflows/web.yml)
+[![Web preview](https://img.shields.io/badge/Web-v0.3.2%20preview-5b5bd6?logo=pwa&logoColor=white)](https://github.com/Alperen-Gur/Cellographer/releases/tag/web-v0.3.2)
+[![CI](https://img.shields.io/github/actions/workflow/status/Alperen-Gur/Cellographer/web.yml?branch=main&label=Web%20build)](https://github.com/Alperen-Gur/Cellographer/actions/workflows/web.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../LICENSE)
 
-[Download preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
+[Download preview](https://github.com/Alperen-Gur/Cellographer/releases/tag/web-v0.3.2) · [Browser guide](../docs/WEB.md) · [Main project](../README.md)
 
 </div>
 
 Import images, run classical segmentation, correct masks and export measurements
 on your device. CellCounter Web is an installable progressive web app (PWA) that
 needs no account. Serve the release files over HTTPS or localhost.
+
+The project is now called Cellographer. The browser app still carries the CellCounter
+name until its next release.
 
 ## Features
 
@@ -75,5 +78,5 @@ See [architecture](../docs/ARCHITECTURE.md) and
 
 ## License
 
-CellCounter is MIT licensed. See [LICENSE](../LICENSE) and
+Cellographer is MIT licensed. See [LICENSE](../LICENSE) and
 [third-party notices](../THIRD_PARTY_LICENSES.md).

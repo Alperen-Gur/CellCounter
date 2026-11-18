@@ -1,10 +1,11 @@
-# CellCounter features
+# Cellographer features
 
 Import images, segment cells, review masks and turn measurements into experiment results.
 The desktop Workbench keeps images, settings, corrections and analysis history together in
 one project.
 
-Available as **macOS 1.3.0**, **Windows 1.3.0** and a **Web 0.3.2 preview**.
+Available as **macOS 1.4.0**, **Windows 1.3.0** and a **Web 0.3.2 preview**. The Windows
+and browser apps still carry the former name, CellCounter, until their next release.
 See the [edition comparison](PLATFORM-PARITY.md), [Workbench guide](WORKBENCH.md) or
 [comparison with other microscopy tools](COMPARISON.md).
 
@@ -98,5 +99,5 @@ layer workspaces, processing jobs and file exports. Images are processed locally
 See the [browser guide](WEB.md) for setup and workspace tools.
 
 For desktop installation, see the [macOS guide](INSTALL.md) or [Windows guide](WINDOWS.md).
-Release notes: [macOS](releases/v1.3.0.md),
+Release notes: [macOS](releases/v1.4.0.md),
 [Windows](releases/windows-v1.3.0.md), [browser](releases/web-v0.3.2.md).

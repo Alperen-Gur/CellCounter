@@ -77,7 +77,7 @@ run cellpose 4 will additionally fetch ~1.15 GB of CPSAM transformer weights
 into ~/.cellpose/models/ (Cellpose-SAM v2 downloads its own ~1.2 GB file the
 first time it is used). Total disk impact: ~3.5 GB.
 
-The CellCounter app picks this venv up automatically through
+The Cellographer app picks this venv up automatically through
 Cellpose4Availability.swift — no further configuration needed."
 
 cc_install_run "$@"

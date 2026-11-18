@@ -1,4 +1,4 @@
-# CellCounter app icon
+# Cellographer app icon
 
 `CellCounter-icon.png` is the 1024 × 1024 RGBA master. The ten 16–1024 pixel macOS
 variants are installed in `CellCounting/Assets.xcassets/AppIcon.appiconset/`.

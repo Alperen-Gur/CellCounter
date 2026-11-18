@@ -87,7 +87,7 @@ enum NativeLibraryArchiveExporter {
         }
         let sourceStore = root.appendingPathComponent("store.sqlite")
         guard fm.isReadableFile(atPath: sourceStore.path) else {
-            throw failure("capture-source", "The selected library has no readable store.sqlite. Choose the CellCounter library root.")
+            throw failure("capture-source", "The selected library has no readable store.sqlite. Choose the Cellographer library root.")
         }
         try fm.createDirectory(at: evidence, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         // Keep owned evidence on failure so no captured research data is discarded.
@@ -172,7 +172,7 @@ enum NativeLibraryArchiveExporter {
         defer { try? handle.close() }
         var hash = SHA256()
         while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
-        return ["name": "CellCounter native library capture", "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+        return ["name": "Cellographer native library capture", "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
                 "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
                 "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
                 "executableSha256": hash.finalize().map { String(format: "%02x", $0) }.joined(), "archiveSchemaVersion": 1]

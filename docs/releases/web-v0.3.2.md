@@ -10,4 +10,4 @@ This maintenance release updates the shared microscopy workspace engine and its 
 
 ## Install
 
-Serve the release archive from a web root over HTTPS or localhost. The browser edition is a local static PWA; the Python Workbench, CLI and MCP server are part of the desktop apps. See the [browser guide](https://github.com/Alperen-Gur/CellCounter/blob/web-v0.3.2/docs/WEB.md).
+Serve the release archive from a web root over HTTPS or localhost. The browser edition is a local static PWA; the Python Workbench, CLI and MCP server are part of the desktop apps. See the [browser guide](https://github.com/Alperen-Gur/Cellographer/blob/web-v0.3.2/docs/WEB.md).

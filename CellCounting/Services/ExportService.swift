@@ -436,7 +436,7 @@ enum ExportService {
         let f1Line = snapshot.f1.map { String(format: "%.3f", $0) } ?? "no annotations"
 
         let md = """
-        # CellCounter analysis — \(snapshot.fileName)
+        # Cellographer analysis — \(snapshot.fileName)
         - Date: \(snapshot.dateISO)
         - Model: \(snapshot.modelName)
         - pxPerUm: \(String(format: "%.4g", snapshot.pxPerUm))
@@ -761,8 +761,8 @@ enum ExportService {
         var pngOptions: CFDictionary? = nil
         if let provenance {
             let pngDict: [CFString: Any] = [
-                kCGImagePropertyPNGDescription: "CellCounter analysis — see provenance.json",
-                kCGImagePropertyPNGSoftware: "CellCounter \(provenance.appVersion) (\(provenance.appBuild))",
+                kCGImagePropertyPNGDescription: "Cellographer analysis — see provenance.json",
+                kCGImagePropertyPNGSoftware: "Cellographer \(provenance.appVersion) (\(provenance.appBuild))",
                 kCGImagePropertyPNGComment: provenance.asCSVHeader,
             ]
             pngOptions = [kCGImagePropertyPNGDictionary as CFString: pngDict] as CFDictionary

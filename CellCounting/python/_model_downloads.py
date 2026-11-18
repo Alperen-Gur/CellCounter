@@ -211,7 +211,7 @@ class _NoDowngradeRedirect(urllib.request.HTTPRedirectHandler):
         if old == "https" and new != "https":
             raise ModelDownloadError(
                 f"The server redirected the download to an insecure address ({newurl}); "
-                "CellCounter only downloads model weights over verified HTTPS.")
+                "Cellographer only downloads model weights over verified HTTPS.")
         # Range survives: only Content-Length/Content-Type are dropped.
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -328,7 +328,7 @@ def _open_locked_part(part: str, dst: str, pinned, name: str, log, progress: boo
             if not _try_lock(fd):
                 if waiting_since is None:
                     waiting_since = time.monotonic()
-                    log(f"another CellCounter worker is downloading {name}; waiting for it")
+                    log(f"another Cellographer worker is downloading {name}; waiting for it")
                     reporter = _Progress(pinned, log, enabled=progress)
                 try:
                     reporter.update(os.path.getsize(part))
@@ -467,7 +467,7 @@ def _connect(opener, url: str, offset: int, timeout: float, name: str, validator
 def _certificate_message(host, reason) -> str:
     detail = getattr(reason, "verify_message", None) or str(reason)
     return (f"The HTTPS certificate of {host} could not be verified ({detail}). "
-            "CellCounter only downloads model weights over verified connections. "
+            "Cellographer only downloads model weights over verified connections. "
             "If this network inspects HTTPS traffic, its certificate authority has to be "
             "trusted by the Python environment; otherwise try another network.")
 
@@ -601,11 +601,11 @@ def _download_locked(fd, url, part, dst, name, directory, pinned, progress,
         encoding = (response.headers.get("Content-Encoding") or "identity").strip().lower()
         if encoding not in ("", "identity"):
             raise ModelDownloadError(
-                f"The server sent the {name} weights encoded as {encoding!r}; CellCounter needs the raw file.")
+                f"The server sent the {name} weights encoded as {encoding!r}; Cellographer needs the raw file.")
         if pinned is not None and total is not None and total != pinned:
             raise UnexpectedSizeError(
-                f"The server offers {total} bytes for {name}, but CellCounter expects "
-                f"{pinned} bytes. The published file may have changed; update CellCounter.")
+                f"The server offers {total} bytes for {name}, but Cellographer expects "
+                f"{pinned} bytes. The published file may have changed; update Cellographer.")
         expected = pinned if pinned is not None else total
         if expected is not None:
             free = shutil.disk_usage(directory).free

@@ -102,7 +102,7 @@ def check_model_name(cp_models, model_name: str, cellpose_version: str):
     if model_name in _DINO_MODELS and importlib.util.find_spec("dinov3") is None:
         return ("model-needs-dinov3",
                 f"Cellpose-DINO ('{model_name}') needs the dinov3 package, which "
-                "CellCounter does not install. Choose Cellpose-SAM or Cellpose-SAM v2.")
+                "Cellographer does not install. Choose Cellpose-SAM or Cellpose-SAM v2.")
     return None
 
 
@@ -189,7 +189,7 @@ def main(argv=None) -> None:
             break
     if model_name in ("cyto3", "cyto2", "nuclei", "cyto"):
         log(f"[cellpose_detect] '{model_name}' is a cellpose 3 model name; "
-            "using 'cpsam' (CellCounter's Cellpose-SAM default).")
+            "using 'cpsam' (Cellographer's Cellpose-SAM default).")
         model_name = "cpsam"
 
     # Refuse a name this Cellpose does not know instead of letting it load

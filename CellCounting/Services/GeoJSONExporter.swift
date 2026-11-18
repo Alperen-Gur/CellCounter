@@ -91,7 +91,7 @@ enum GeoJSONExporter {
         // (`ExportService.configHeaderComment`), just as a real JSON object
         // instead of a comment string.
         let collectionProperties: [String: Any] = [
-            "generator": "CellCounter \(Self.appVersion) (\(Self.appBuild))",
+            "generator": "Cellographer \(Self.appVersion) (\(Self.appBuild))",
             "coordinate_space": "image_pixels_top_left_origin_y_down",
             "note": "Coordinates are in SOURCE IMAGE PIXEL SPACE (origin top-left, x right, y down) — not geographic. No CRS transform is defined; import directly into QuPath / Shapely / GeoPandas without reprojecting.",
             "image_filename": imageFileName,

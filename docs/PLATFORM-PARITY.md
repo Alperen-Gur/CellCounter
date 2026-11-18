@@ -1,6 +1,8 @@
 # Platform comparison
 
-Current releases: **macOS 1.1.0**, **Windows 1.3.0** and **Web 0.3.2 preview**.
+Current releases: **macOS 1.4.0**, **Windows 1.3.0** and **Web 0.3.2 preview**.
+The Windows and browser apps still carry the former name, CellCounter, until their next
+release.
 
 macOS and Windows share the project Workbench, CLI, Python SDK and MCP server.
 CellCounter Web runs in your browser.

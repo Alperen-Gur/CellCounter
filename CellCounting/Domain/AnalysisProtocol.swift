@@ -151,9 +151,9 @@ struct AnalysisProtocol: Codable, Identifiable, Hashable, Sendable {
         var errorDescription: String? {
             switch self {
             case .notAProtocolFile:
-                return "This file isn't a CellCounter analysis protocol."
+                return "This file isn't a Cellographer analysis protocol."
             case .unsupportedSchemaVersion(let found, let newest):
-                return "This protocol was saved by a newer version of CellCounter (schema \(found); this build supports up to \(newest)). Update CellCounter to open it."
+                return "This protocol was saved by a newer version of Cellographer (schema \(found); this build supports up to \(newest)). Update Cellographer to open it."
             case .malformed(let detail):
                 return "This protocol file is damaged or incomplete: \(detail)"
             }

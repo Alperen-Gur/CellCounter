@@ -43,7 +43,7 @@ nonisolated enum WorkspaceExtensionError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidIdentifier: return "The extension identifier is invalid."
-        case .untrustedPublisher: return "Only extensions curated by CellCounter are accepted in this release."
+        case .untrustedPublisher: return "Only extensions curated by Cellographer are accepted in this release."
         case .executableExtensionsUnavailable: return "Executable third-party plugins are not supported."
         case .incompatibleSchema(let version): return "This extension requires workspace schema \(version)."
         case .duplicateIdentifier: return "An extension with this identifier is already registered."

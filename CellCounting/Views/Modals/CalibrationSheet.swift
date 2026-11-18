@@ -471,7 +471,7 @@ private struct CalibDirectTab: View {
                     .font(.system(size: 11.5, design: .monospaced))
                     .foregroundStyle(Tokens.textSecondary)
             }
-            Text("Acquisition software usually reports physical pixel size in µm/pixel. Enter that number directly—CellCounter handles the reciprocal conversion.")
+            Text("Acquisition software usually reports physical pixel size in µm/pixel. Enter that number directly—Cellographer handles the reciprocal conversion.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(Tokens.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1250,7 +1250,7 @@ private struct OnboardingStep {
         ),
         .init(
             title: "Every image has its own scale",
-            desc: "CellCounter needs to know how many pixels make a micrometer (px/µm). Each image uses the scale recorded in its own file, so a folder can mix objectives. For images without one, draw a line on the scale bar or type px/µm, and save it as a preset named after your microscope and objective. Every size in µm, and the scaling used for segmentation, depends on it."
+            desc: "Cellographer needs to know how many pixels make a micrometer (px/µm). Each image uses the scale recorded in its own file, so a folder can mix objectives. For images without one, draw a line on the scale bar or type px/µm, and save it as a preset named after your microscope and objective. Every size in µm, and the scaling used for segmentation, depends on it."
         ),
         .init(
             title: "Set the expected cell size",

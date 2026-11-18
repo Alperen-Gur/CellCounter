@@ -64,7 +64,7 @@ struct AppSidebar: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
                     AppMark(size: 22)
-                    Text("CellCounter")
+                    Text("Cellographer")
                         .font(.system(size: 13.5, weight: .bold))
                         .tracking(-0.01 * 13.5)
                 }

@@ -21,19 +21,19 @@ nonisolated enum BatchArchiveError: LocalizedError, Equatable {
         case .batchNotFound:
             return "This batch is no longer in the library."
         case .destinationExists(let name):
-            return "A folder named “\(name)” already exists there. Choose another name; CellCounter never replaces an existing folder."
+            return "A folder named “\(name)” already exists there. Choose another name; Cellographer never replaces an existing folder."
         case .destinationInsideLibrary:
-            return "Choose a folder outside CellCounter's own library folder for the archive."
+            return "Choose a folder outside Cellographer's own library folder for the archive."
         case .sourceFileMissing(let image):
             return "The image file for “\(image)” is missing from the library, so the batch cannot be archived completely. Nothing was changed."
         case .sourceChecksumMismatch(let image):
-            return "The library's copy of “\(image)” no longer matches the checksum recorded when it was imported, so CellCounter will not move it into an archive. Nothing was changed."
+            return "The library's copy of “\(image)” no longer matches the checksum recorded when it was imported, so Cellographer will not move it into an archive. Nothing was changed."
         case .verificationFailed(let detail):
             return "The archive could not be verified: \(detail). The incomplete archive was removed and nothing was changed in your library."
         case .batchChangedDuringArchive:
             return "The batch changed while it was being archived. The archive was discarded and the batch is still in your library. Try again."
         case .notALibrary(let name):
-            return "“\(name)” is not a CellCounter archive or library folder (it has no store.sqlite)."
+            return "“\(name)” is not a Cellographer archive or library folder (it has no store.sqlite)."
         case .archiveHasNoBatches:
             return "This archive does not contain any batches. Nothing was restored."
         case .alreadyInLibrary(let names):
@@ -510,7 +510,7 @@ final class BatchArchiveService {
         func esc(_ value: String) -> String { ExportService.csvEscape(value, separator: ",") }
         func number(_ value: Double?) -> String { value.map { String(format: "%g", $0) } ?? "" }
         var lines = [
-            "# CellCounter image index for batch \(snapshot.batch.id.uuidString). Image files are named by image_id.",
+            "# Cellographer image index for batch \(snapshot.batch.id.uuidString). Image files are named by image_id.",
             ["image_id", "file_name", "stored_file", "display_file", "original_path", "imported_at",
              "width_px", "height_px", "source_px_per_um", "source_calibration", "sha256",
              "analyzed", "n_cells_detected", "cells_csv", "confidence_cutoff", "notes",
@@ -611,7 +611,7 @@ final class BatchArchiveService {
         }
         switch source {
         case "manual": return "entered by hand (manual)"
-        case "default": return "the default scale set in CellCounter for images without one (default)"
+        case "default": return "the default scale set in Cellographer for images without one (default)"
         default: return "\(ImageScale.label(source)) (\(source))"
         }
     }
@@ -645,10 +645,10 @@ final class BatchArchiveService {
         }
         let name = info.displayName.isEmpty ? info.name : info.displayName
         return """
-        CellCounter batch archive
-        =========================
+        Cellographer batch archive
+        ==========================
 
-        This folder is a complete CellCounter library holding one archived batch.
+        This folder is a complete Cellographer library holding one archived batch.
         Nothing in it depends on the library it came from.
 
           Batch:          \(name)
@@ -662,10 +662,10 @@ final class BatchArchiveService {
           Batch scale:    \(String(format: "%g", info.pxPerUm)) px/µm (\(umPerPx) µm per pixel), for images without their own
           Scale source:   \(describeCalibrationSource(info.pxPerUmSource))\(scaleNote)
           Archived from:  \(info.sourceLibraryPath ?? "unknown")
-          CellCounter:    \(manifest.appVersion)
+          Cellographer:   \(manifest.appVersion)
 
         What is in this folder
-          store.sqlite               The CellCounter database for this batch: images, every
+          store.sqlite               The Cellographer database for this batch: images, every
                                      detected cell with its outline and measurements, your
                                      corrections, regions of interest, review decisions, saved
                                      alternative segmentations, ground-truth points, the
@@ -683,16 +683,17 @@ final class BatchArchiveService {
           CellCounterLibrary.json    Machine-readable description of this archive.
 
         The CSV files open in Excel, R or Python. Lines starting with # record the settings
-        used (confidence cut-off, size bins, model, px/µm). As in CellCounter's own exports,
+        used (confidence cut-off, size bins, model, px/µm). As in Cellographer's own exports,
         cells below an image's confidence cut-off are left out of the CSV files; the
         database keeps every detected cell.
 
         How to bring the batch back
-          In CellCounter choose File > Restore Archived Batch… and select this folder. The
+          In Cellographer choose File > Restore Archived Batch… and select this folder. The
           batch is copied back into your library with the same IDs, outlines and calibration.
           The archive itself is not changed, so you can keep it as a backup.
-          Because the folder is a complete library, a CellCounter version that can open
-          libraries can also open it directly.
+          Because the folder is a complete library, a Cellographer version (or a CellCounter
+          version, as older releases were named) that can open libraries can also open it
+          directly.
 
         Please keep the folder together: moving or renaming files inside it breaks the
         link between the database and the images.

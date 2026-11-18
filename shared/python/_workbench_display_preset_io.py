@@ -150,7 +150,7 @@ def _validate_file(parsed):
     import _workbench_display_presets as presets
     fields = {"schemaVersion", "format", "preset", "definitionSha256", "origin", "provenance", "provenanceSha256"}
     if not isinstance(parsed, dict) or set(parsed) != fields or type(parsed.get("schemaVersion")) is not int or parsed["schemaVersion"] != 1 or parsed.get("format") != FORMAT:
-        fail("invalid-preset-file", "Choose a CellCounter display-preset JSON export with schema version 1.")
+        fail("invalid-preset-file", "Choose a Cellographer display-preset JSON export with schema version 1.")
     try:
         definition = presets.normalize_definition(parsed["preset"])
         validate_value(parsed["origin"], _object({"projectId": _ID, "presetId": _ID,

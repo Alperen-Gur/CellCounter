@@ -3,7 +3,10 @@
 Import images, segment cells, correct masks and export measurements in your
 browser. CellCounter Web runs locally and needs no account.
 
-Download the [release archive](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2)
+The project is now called Cellographer. The browser app still carries the CellCounter
+name until its next release.
+
+Download the [release archive](https://github.com/Alperen-Gur/Cellographer/releases/tag/web-v0.3.2)
 and serve the extracted files over HTTPS or localhost.
 
 ## Get started

@@ -15,7 +15,7 @@ struct LibraryStatusBanners: View {
                     tint: Tokens.danger,
                     icon: "exclamationmark.octagon.fill",
                     title: "Changes will not be saved",
-                    message: "CellCounter could not open the library database at \(state.libraries.libraryRoot.path) and is working from temporary memory. Everything you import or edit in this session is lost when you quit. (\(error))",
+                    message: "Cellographer could not open the library database at \(state.libraries.libraryRoot.path) and is working from temporary memory. Everything you import or edit in this session is lost when you quit. (\(error))",
                     actions: {
                         Button("Show in Finder") { state.libraries.showLibraryInFinder() }
                             .appButton(.standard, size: .sm)
@@ -121,7 +121,7 @@ struct LibrarySwitchingOverlay: View {
             VStack(spacing: 12) {
                 ProgressView().controlSize(.regular)
                 Text("Opening “\(name)”…").font(.system(size: 13, weight: .semibold))
-                Text("CellCounter saves your work and restarts with the other library.")
+                Text("Cellographer saves your work and restarts with the other library.")
                     .font(.system(size: 12))
                     .foregroundStyle(Tokens.textSecondary)
             }

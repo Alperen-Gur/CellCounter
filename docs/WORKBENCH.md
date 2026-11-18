@@ -1,4 +1,4 @@
-# CellCounter Workbench
+# Cellographer Workbench
 
 The Workbench keeps image analysis, mask correction, measurements and export
 together in one project. The desktop app, command line, Python SDK and MCP
@@ -9,7 +9,7 @@ available in all the others.
 | --- | --- |
 | [Desktop workflow](#desktop-workflow) | [Analyze an image](#analyze-an-image) · [Correct masks](#correct-masks) · [Volumes and time series](#volumes-and-time-series) · [Results, refresh and runtime](#results-refresh-and-runtime) |
 | [Command line, Python and MCP](#command-line-python-and-mcp) | [Standalone runtime](#standalone-runtime) · [CLI example](#cli-example) · [Python SDK](#python-sdk) · [MCP connection](#mcp-connection) · [Operation discovery](#operation-discovery-and-compact-mcp) · [Runtime configuration](#runtime-configuration-and-plugin-environments) · [Shared sessions](#shared-project-sessions-and-agent-navigation) |
-| [Images and sources](#images-and-sources) | [Metadata and repair](#acquisition-library-metadata-and-repair) · [Large TIFF sources](#large-tiff-sources-and-regions) · [OMERO](#read-only-omero-import) · [Registration](#translation-registration) · [Channel display](#multi-channel-fluorescence-display) · [Existing libraries](#import-an-existing-cellcounter-library) |
+| [Images and sources](#images-and-sources) | [Metadata and repair](#acquisition-library-metadata-and-repair) · [Large TIFF sources](#large-tiff-sources-and-regions) · [OMERO](#read-only-omero-import) · [Registration](#translation-registration) · [Channel display](#multi-channel-fluorescence-display) · [Existing libraries](#import-an-existing-image-library) |
 | [Segmentation and models](#segmentation-and-models) | [Classical segmentation](#classical-segmentation) · [Plugins and models](#plugins-and-local-learned-models) · [Registered models](#registered-segmentation-models) · [Preprocessing, masks and assays](#preprocessing-independent-masks-and-assays) |
 | [Measurements and analysis](#measurements-and-analysis) | [Annotations](#annotations-and-intensity-profiles) · [Tracking and lineage](#tracking-and-lineage) · [Experiments](#experiments-and-biological-replicates) · [Statistics](#experimental-designs-and-statistical-reports) · [Layouts and exclusions](#reusable-experimental-layouts-and-exclusions) · [Wound and paired assays](#wound-closure-series-and-paired-assays) |
 | [Review and quality control](#review-and-quality-control) | Flags, random samples, blinded review and adjudication |
@@ -495,9 +495,9 @@ windows are recalculated for the target. Pass the returned `presetRef` with a
 composite request to record the preset version, and save a new version after
 editing settings.
 
-### Import an existing CellCounter library
+### Import an existing image library
 
-Copy images and results from an existing CellCounter image library into a
+Copy images and results from an existing image library into a
 Workbench project. In the macOS app, choose **Copy existing library into a
 project…** in the Workbench, or **Existing library → Copy library data into a
 project…** in the sidebar. The copy is previewed first and the original library
@@ -650,8 +650,8 @@ CSV. Save edited geometry, then call `annotation.export`. Geometry JSON includes
 the source selection and edit history. Profile CSV contains sample index,
 coordinates, distance, intensity and `valid`; missing values use `valid=0`.
 
-To transfer geometry, call `annotation.import.preview` with a CellCounter
-annotation JSON file. The source pixels and grid must match the target. Apply
+To transfer geometry, call `annotation.import.preview` with a geometry JSON
+file from `annotation.export`. The source pixels and grid must match the target. Apply
 with `annotation.import.run` and the `previewFingerprint`. The imported
 annotation gets a new local ID, keeps its original history and uses the target
 calibration. MCP imports and exports need the corresponding path grants.

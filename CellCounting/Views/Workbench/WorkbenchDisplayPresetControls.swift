@@ -164,7 +164,7 @@ struct WorkbenchDisplayPresetControls: View {
     private func chooseImport() {
         let panel = NSOpenPanel()
         panel.title = "Import display preset"
-        panel.message = "Choose a CellCounter display preset JSON file to preview."
+        panel.message = "Choose a Cellographer display preset JSON file to preview."
         panel.allowedContentTypes = [.json]
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.begin { result in

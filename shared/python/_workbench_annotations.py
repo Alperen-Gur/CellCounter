@@ -289,7 +289,7 @@ def _read_import_file(value):
     from _workbench_schema import absolute_path
     path = absolute_path(value, "path")
     if path.suffix.lower() != ".json":
-        fail("unsupported-annotation-file", "Annotation import requires a CellCounter geometry JSON export.")
+        fail("unsupported-annotation-file", "Annotation import requires a Cellographer geometry JSON export.")
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         with os.fdopen(descriptor, "rb") as stream:
@@ -329,7 +329,7 @@ def _import_preview(store, document, image, args):
     path, contents, checksum, payload = _read_import_file(args["path"])
     if (not isinstance(payload, dict) or type(payload.get("schemaVersion")) is not int or
             payload["schemaVersion"] != 1 or payload.get("format") != "cellcounter-annotation"):
-        fail("unsupported-annotation-file", "This file is not a supported CellCounter annotation geometry export.")
+        fail("unsupported-annotation-file", "This file is not a supported Cellographer annotation geometry export.")
     annotation, provenance = payload.get("annotation"), payload.get("provenance")
     if not isinstance(annotation, dict) or not isinstance(provenance, dict):
         fail("invalid-annotation-file", "Annotation JSON must contain saved geometry and provenance.")

@@ -584,7 +584,7 @@ def prepare_annotation_export(store, document, arguments, revision, request_id, 
             "Coordinates use local image pixel edges; the first acquired sample centre is 0.5.",
             "Slice orientations specify the horizontal and vertical source axes; slice indices and CSV sample indices are zero-based.",
             "Physical calibration is captured at export time. Unavailable physical values remain null in JSON and empty in CSV.",
-            "Geometry JSON uses CellCounter's local image coordinates, without a geographic coordinate reference system.",
+            "Geometry JSON uses Cellographer's local image coordinates, without a geographic coordinate reference system.",
             "CSV strings that could be interpreted as spreadsheet formulas are prefixed with an apostrophe.",
         ],
     }

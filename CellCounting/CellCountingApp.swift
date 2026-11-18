@@ -43,7 +43,7 @@ struct CellCountingApp: App {
     }
 
     var body: some Scene {
-        Window("CellCounter", id: "main") {
+        Window("Cellographer", id: "main") {
             RootView(state: state, showShortcuts: $showShortcuts)
                 .environment(theme)
                 .frame(minWidth: 1080, minHeight: 720)

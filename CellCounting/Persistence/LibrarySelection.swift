@@ -213,9 +213,9 @@ nonisolated enum LibrarySelection {
         let name = LibraryLayout(root: url).displayName
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            return "The folder “\(name)” at \(url.path) is not a CellCounter library (it has no store.sqlite), so \(fallbackName) was opened instead."
+            return "The folder “\(name)” at \(url.path) is not a Cellographer library (it has no store.sqlite), so \(fallbackName) was opened instead."
         }
-        return "CellCounter could not find the library “\(name)” at \(url.path). If it is on an external or network drive, connect the drive and choose File ▸ Open Recent Library. \(fallbackName.prefix(1).uppercased() + fallbackName.dropFirst()) is open for now."
+        return "Cellographer could not find the library “\(name)” at \(url.path). If it is on an external or network drive, connect the drive and choose File ▸ Open Recent Library. \(fallbackName.prefix(1).uppercased() + fallbackName.dropFirst()) is open for now."
     }
 
     // MARK: - Paths
