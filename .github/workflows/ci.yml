@@ -48,7 +48,7 @@ jobs:
           python3 - <<'PYCODE'
           import json, os, pathlib, subprocess, urllib.request
           pins = json.loads(pathlib.Path('shared/microscopy-worker/node-runtime.json').read_text())
-          for platform in ('darwin-arm64', 'darwin-x64'):
+          for platform in ('darwin-arm64',):
               artifact = pins['artifacts'][platform]
               archive = pathlib.Path(os.environ['RUNNER_TEMP']) / artifact['file']
               urllib.request.urlretrieve('https://nodejs.org/download/release/v' + pins['version'] + '/' + artifact['file'], archive)

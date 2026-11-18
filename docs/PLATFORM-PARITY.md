@@ -28,7 +28,7 @@ CellCounter Web runs in your browser.
 
 ## Installation and privacy
 
-macOS requires version 15 or later and supports Intel and Apple Silicon. Windows
+macOS requires version 15 or later on Apple silicon. Windows
 requires Windows 10/11 x64 and WebView2. For the browser edition, serve the release
 files over HTTPS or localhost.
 

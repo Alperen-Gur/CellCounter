@@ -2,7 +2,7 @@
 
 | Platform | Download | Guide |
 | --- | --- | --- |
-| macOS 15 or later, Apple silicon and Intel | [1.2.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0) | This page |
+| macOS 15 or later on Apple silicon | [1.2.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0) | This page |
 | Windows 10/11, x64 | [1.3.0](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) | [Windows guide](WINDOWS.md) |
 | Browser | [0.3.2 preview](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) | [Browser guide](WEB.md) |
 
@@ -10,8 +10,7 @@ For scripts and notebooks, see the [Python SDK](WORKBENCH.md#python-sdk).
 
 ## macOS
 
-CellCounter for macOS is a universal app for Apple silicon and Intel Macs running
-**macOS 15 or later**.
+CellCounter for macOS runs on Macs with Apple silicon and **macOS 15 or later**.
 
 ### Install
 

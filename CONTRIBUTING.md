@@ -55,7 +55,6 @@ for the shared microscopy engine, which must be staged before a full build:
      --output shared/microscopy-worker/dist/darwin-arm64
    ```
 
-   Repeat with `darwin-x64` for Intel.
 
 3. Open `CellCounting.xcodeproj` and run the **CellCounting** scheme, or run the tests
    from Terminal:

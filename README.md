@@ -31,7 +31,7 @@ Analysis runs on your computer. No account required.
 
 | Edition | Requirements | Download |
 | --- | --- | --- |
-| **macOS 1.2.0** | macOS 15 or later; Apple silicon or Intel | [Universal application](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0) |
+| **macOS 1.2.0** | macOS 15 or later on Apple silicon | [Application](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.2.0) |
 | **Windows 1.3.0** | Windows 10 or 11, 64-bit | [EXE and MSI installers](https://github.com/Alperen-Gur/CellCounter/releases/tag/windows-v1.3.0) |
 | **Web 0.3.2 preview** | A supported modern browser; served over HTTPS or localhost | [Static PWA package](https://github.com/Alperen-Gur/CellCounter/releases/tag/web-v0.3.2) |
 | **Python SDK 0.1.0** | Python 3.11 or later and the required analysis dependencies | [Wheel and source package](https://github.com/Alperen-Gur/CellCounter/releases/tag/v1.1.0) |
