@@ -317,7 +317,8 @@ struct ImageScaleTests {
         // Moving it to its file's scale converts its sizes and records the scale.
         try await state.rescaleImages([image.id: twentyX], in: batch)
         #expect(image.measuredScale == twentyX)
-        let diameter = try #require(try #require(image.detection).cells.first?.diameter)
+        let detection = try #require(image.detection)
+        let diameter = try #require(detection.cells.first?.diameter)
         #expect(abs(diameter - 25 / 8.3333) < 1e-9)
         #expect(ImageScale.notice(measured: image.measuredScale, effective: image.effectiveScale) == nil)
     }
