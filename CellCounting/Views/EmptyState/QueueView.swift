@@ -47,7 +47,7 @@ struct QueueEmpty: View {
                                     Text(state.processingStageLine.isEmpty ? "Preparing image…" : state.processingStageLine)
                                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                                 }
-                                Text("\(job.importOnly ? "Import only" : job.settings.modelName) · \(job.settings.pxPerUm.formatted()) px/µm · \(job.settings.zProjection) Z")
+                                Text("\(job.importOnly ? "Import only" : job.settings.modelName) · each image at its own scale · \(job.settings.zProjection) Z")
                                     .font(.caption).foregroundStyle(.secondary)
                                 HStack {
                                     Button("Open batch") { state.openBatch(id: job.batchId) }
@@ -65,6 +65,11 @@ struct QueueEmpty: View {
                                         Button("Retry failed") { action { try await state.jobScheduler.retryFailures(job.id) } }
                                     }
                                     Spacer()
+                                    // Switchable while the job runs: the running
+                                    // model picks the change up at once.
+                                    if [.running, .queued, .pausing].contains(job.status) {
+                                        ModelResourceMenu(state: state)
+                                    }
                                     if [.running, .queued, .pausing].contains(job.status) {
                                         Button("Cancel", role: .destructive) { Task { await state.jobScheduler.cancel(job.id) } }
                                     } else {

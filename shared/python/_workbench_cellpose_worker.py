@@ -188,7 +188,11 @@ def _infer(request, output):
                 "normalize": True}
     if backend == "cellpose3":
         controls["channels"] = [0, 0]
-    predicted = model.eval(raw, **controls)[0]
+    # Cellpose 4.2 normalizes a float32 2-D plane in place (it no longer pads
+    # it into a new 3-channel array first), which fails on this read-only
+    # memory map. Give it a private copy with the same values.
+    image = np.array(raw) if backend == "cellpose4" and not raw.flags.writeable else raw
+    predicted = model.eval(image, **controls)[0]
     labels = _labels(np, predicted, raw.shape)
     np.save(output / "labels.npy", labels, allow_pickle=False)
     return {"backend": backend, "adapterVersion": backend + "-plane-1", "cellposeVersion": version,
@@ -305,6 +309,16 @@ def _train(request, output):
             "testUsage": "after-selection-only"}
 
 
+def _follow_resource_limits():
+    """CellCounter's Model resource use for this model run, including changes
+    made while it runs. Adds nothing to the result or environment record."""
+    try:
+        from _workbench_resource_limits import activate
+    except ImportError:
+        return
+    activate()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--request", required=True)
@@ -358,6 +372,7 @@ def main():
                       "cuda": bool(torch.cuda.is_available()),
                       "mps": bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available())}
         else:
+            _follow_resource_limits()
             result = _train(request, output) if request["mode"] == "train" else _infer(request, output)
         result["environment"] = environment
         _write(output / "result.json", result)

@@ -277,7 +277,10 @@ enum NativeLibraryArchiveExporter {
                 return ["id": r.id.uuidString, "fileName": r.fileName, "originalPath": r.originalPath, "widthPx": r.widthPx, "heightPx": r.heightPx,
                         "importedAt": Self.date(r.importedAt), "sourcePxPerUm": Self.optional(r.sourcePxPerUm), "sourceCalibrationSource": optional(r.sourceCalibrationSource),
                         "jobItemId": Self.uuid(r.jobItemId), "sourceOrder": Self.optional(r.sourceOrder), "confidenceOverride": Self.optional(r.confidenceOverride),
-                        "fileHash": optional(r.fileHash), "notes": optional(r.notes), "detection": Self.uuid(r.detection?.id),
+                        "fileHash": optional(r.fileHash), "notes": optional(r.notes),
+                        "scalePxPerUm": Self.optional(r.scalePxPerUm), "scaleSource": optional(r.scaleSource),
+                        "measuredPxPerUm": Self.optional(r.measuredPxPerUm), "measuredScaleSource": optional(r.measuredScaleSource),
+                        "detection": Self.uuid(r.detection?.id),
                         "rois": r.rois.map { $0.id.uuidString }, "batch": Self.uuid(r.batch?.id)]
             }
             result["DetectionRecord"] = try rows(DetectionRecord.self) { r in [

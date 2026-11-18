@@ -51,6 +51,9 @@ final class AppState {
     /// toolbar pill / Models row routes to whichever matches the active
     /// model's family.
     var showInstallCellpose4: Bool = false
+    /// The Cellpose-SAM sheet was opened by "Update Cellpose-SAM" and starts
+    /// the update itself. Reset when the sheet closes.
+    var cellpose4UpdateRequested: Bool = false
 
     /// Presents the analysis-protocol library sheet (save/apply a named,
     /// versioned snapshot of the current detection + calibration +
@@ -81,12 +84,18 @@ final class AppState {
             UserDefaults.standard.set(try? JSONEncoder().encode(thresholds), forKey: "cc-thresholds")
         }
     }
+    /// The user's default scale for images without one (px/µm); 0 when not
+    /// set. New batches take it as their scale for images without one. It
+    /// never replaces a scale recorded in a file.
     var pxPerUm: Double {
         didSet {
             guard !suppressDefaultsWriteback else { return }
-            UserDefaults.standard.set(pxPerUm, forKey: "cc-pxperum")
+            if pxPerUm > 0 { UserDefaults.standard.set(pxPerUm, forKey: "cc-pxperum") }
+            else { UserDefaults.standard.removeObject(forKey: "cc-pxperum") }
         }
     }
+    /// The default scale, nil when not set.
+    var defaultScale: ImageScale.Value? { ImageScale.Value(pxPerUm, source: ImageScale.defaultSource) }
     var confidence: Double {
         didSet {
             guard !suppressDefaultsWriteback else { return }
@@ -202,6 +211,45 @@ final class AppState {
             UserDefaults.standard.set(maxParallel, forKey: "cc-max-parallel")
         }
     }
+
+    /// How much CPU and memory model processes may use (Settings → General →
+    /// Model resource use). Every launch site reads the stored keys through
+    /// `ModelResourceLimits.current`, so each is written before the warm
+    /// pool is told about the change. Default Balanced.
+    var modelResourcePreset: ModelResourcePreset {
+        didSet {
+            if !suppressDefaultsWriteback {
+                UserDefaults.standard.set(modelResourcePreset.rawValue, forKey: ModelResourceChoice.presetKey)
+            }
+            modelResourcesDidChange()
+        }
+    }
+    /// Custom CPU cores; 0 until chosen (Balanced's value applies).
+    var modelResourceCustomCores: Int {
+        didSet {
+            if !suppressDefaultsWriteback {
+                UserDefaults.standard.set(modelResourceCustomCores, forKey: ModelResourceChoice.customCPUCoresKey)
+            }
+            modelResourcesDidChange()
+        }
+    }
+    /// Custom memory limit in GB; 0 until chosen (Balanced's value applies).
+    var modelResourceCustomMemoryGB: Int {
+        didSet {
+            if !suppressDefaultsWriteback {
+                UserDefaults.standard.set(modelResourceCustomMemoryGB, forKey: ModelResourceChoice.customMemoryGBKey)
+            }
+            modelResourcesDidChange()
+        }
+    }
+    /// The limits the warm pool was last configured with.
+    @ObservationIgnored private var appliedModelResourceLimits: ModelResourceLimits?
+    /// Confirmation shown (RootView) when Model resource use changes while a
+    /// model is running: what applied now and what waits.
+    var modelResourceNotice: String?
+    @ObservationIgnored private var modelResourceNoticeToken = 0
+    /// Settings opens on this section once, then clears it.
+    var settingsSectionRequest: SettingsSection?
 
     /// Size-bin swatches and overlay rendering colors. Persisted as one Codable
     /// value so future plugin overlays can reuse the same appearance contract.
@@ -467,10 +515,9 @@ final class AppState {
             self.thresholds = [20, 30]
         }
         let storedPx = UserDefaults.standard.double(forKey: "cc-pxperum")
-        // Pass-15: default scale matches the seeded 10× preset (2.6 px/µm).
-        // Existing users keep whatever `storedPx > 0` they had — only fresh
-        // installs (storedPx == 0) pick up the new default.
-        self.pxPerUm = storedPx > 0 ? storedPx : 2.6
+        // No built-in scale: a stored value is the user's own default for
+        // images without a scale; nothing stored means "not set" (0).
+        self.pxPerUm = storedPx.isFinite && storedPx > 0 ? storedPx : 0
         let storedConf = UserDefaults.standard.double(forKey: "cc-confidence")
         self.confidence = storedConf > 0 ? storedConf : 0.50
         // Explicit expected diameter defaults to 0 == "Auto" (bin-derived size
@@ -521,6 +568,16 @@ final class AppState {
         // have a workstation that benefits.
         let storedParallel = UserDefaults.standard.integer(forKey: "cc-max-parallel")
         self.maxParallel = storedParallel > 0 ? storedParallel : 1
+        let resourceChoice = ModelResourceChoice.load(from: .standard)
+        self.modelResourcePreset = resourceChoice.preset
+        self.modelResourceCustomCores = resourceChoice.customCPUCores
+        self.modelResourceCustomMemoryGB = resourceChoice.customMemoryGB
+        // `PersistentSidecarPool.shared` reads the same stored choice when
+        // it is created, so nothing needs configuring until it changes. The
+        // live control file starts with it too.
+        let initialResourceLimits = ModelResourceLimits.resolve(resourceChoice, machine: .current)
+        self.appliedModelResourceLimits = initialResourceLimits
+        ModelResourceControl.publish(initialResourceLimits.liveState)
         self.overlayPalette = OverlayPalette.load()
 
         if let raw = UserDefaults.standard.string(forKey: "cc-model-filter"),
@@ -542,6 +599,14 @@ final class AppState {
            let defaultId = UserDefaults.standard.string(forKey: "cc-default-model"),
            !defaultId.isEmpty {
             self.activeModelId = defaultId
+        }
+        // A model older versions offered but CellCounter can't run (Cellpose-
+        // DINO) would fail every run; fall back to Cellpose-SAM, its family's
+        // default.
+        if let info = models.first(where: { $0.id == activeModelId }), info.unavailableReason != nil {
+            NSLog("CellCounter: active model %@ is unavailable (%@); using Cellpose-SAM",
+                  activeModelId, info.unavailableReason ?? "")
+            self.activeModelId = "cpsam"
         }
 
         // Now that downloaders are registered and the active model id is loaded,
@@ -809,7 +874,9 @@ final class AppState {
             thresholds = arr
         }
         let storedPx = ud.double(forKey: "cc-pxperum")
-        if storedPx > 0 && storedPx != pxPerUm { pxPerUm = storedPx }
+        // A removed key clears the default (0 = not set).
+        let defaultPx = storedPx.isFinite && storedPx > 0 ? storedPx : 0
+        if defaultPx != pxPerUm { pxPerUm = defaultPx }
         let storedConf = ud.double(forKey: "cc-confidence")
         if storedConf > 0 && storedConf != confidence { confidence = storedConf }
         // 0 is a valid value here ("Auto"), so compare with != rather than > 0 —
@@ -857,8 +924,93 @@ final class AppState {
         }
         let mp = ud.integer(forKey: "cc-max-parallel")
         if mp > 0 && mp != maxParallel { maxParallel = mp }
+        let resources = ModelResourceChoice.load(from: ud)
+        if resources.preset != modelResourcePreset { modelResourcePreset = resources.preset }
+        if resources.customCPUCores != modelResourceCustomCores { modelResourceCustomCores = resources.customCPUCores }
+        if resources.customMemoryGB != modelResourceCustomMemoryGB {
+            modelResourceCustomMemoryGB = resources.customMemoryGB
+        }
         let storedPalette = OverlayPalette.load(defaults: ud)
         if storedPalette != overlayPalette { overlayPalette = storedPalette }
+    }
+
+    // MARK: — Model resource use
+
+    var modelResourceChoice: ModelResourceChoice {
+        ModelResourceChoice(preset: modelResourcePreset,
+                            customCPUCores: modelResourceCustomCores,
+                            customMemoryGB: modelResourceCustomMemoryGB)
+    }
+
+    /// What the current choice means on this Mac.
+    var modelResourceLimits: ModelResourceLimits {
+        ModelResourceLimits.resolve(modelResourceChoice, machine: .current)
+    }
+
+    /// Switching to Custom for the first time starts from the values that
+    /// were in effect, so the steppers begin somewhere familiar.
+    func selectModelResourcePreset(_ preset: ModelResourcePreset) {
+        if preset == .custom {
+            let effective = modelResourceLimits
+            if modelResourceCustomCores <= 0 {
+                modelResourceCustomCores = effective.cpuThreads ?? effective.totalCPUCores
+            }
+            if modelResourceCustomMemoryGB <= 0 {
+                let range = MachineResources.current.customMemoryRangeGB
+                let start = effective.memoryLimitGB ?? range.upperBound
+                modelResourceCustomMemoryGB = min(range.upperBound, max(range.lowerBound, start))
+            }
+        }
+        modelResourcePreset = preset
+    }
+
+    /// Opens Settings → General, where Model resource use lives.
+    func openModelResourceSettings() {
+        settingsSectionRequest = .general
+        view = .settings
+    }
+
+    /// A model is analysing images now (a processing job, training or a
+    /// single-image run).
+    var isModelWorkActive: Bool {
+        jobScheduler.activeCount > 0 || TrainingService.isTrainingActive || processingProgress > 0
+    }
+
+    /// Applies a new choice to everything already running, without reloading
+    /// any model (see `ModelResourceChange`):
+    /// - the live control file is rewritten, then every running model process
+    ///   gets the background state (Light) set or cleared and is asked to
+    ///   re-read the file: PyTorch's thread count and a higher or removed GPU
+    ///   memory cap apply at once, a lower cap after the current image;
+    /// - the warm pool takes the new number of models and unload time;
+    /// - what only a new process picks up (launch priority class, soft memory
+    ///   limit, thread counts of non-PyTorch libraries) applies when a model
+    ///   next starts. Nothing is restarted for it.
+    private func modelResourcesDidChange() {
+        let limits = modelResourceLimits
+        guard limits != appliedModelResourceLimits else { return }
+        let change = appliedModelResourceLimits.map { ModelResourceChange(from: $0, to: limits) }
+        appliedModelResourceLimits = limits
+        ModelResourceControl.publish(limits.liveState)
+        ChildProcessTracker.shared.applyModelResourceLimits(background: limits.runsInBackground)
+        Task {
+            await PersistentSidecarPool.shared.configure(maxWarmWorkers: limits.maxWarmWorkers,
+                                                         idleTimeout: limits.idleTimeout)
+        }
+        if let change, !change.isEmpty, isModelWorkActive {
+            showModelResourceNotice(change.confirmation(for: limits))
+        }
+    }
+
+    private func showModelResourceNotice(_ message: String) {
+        modelResourceNotice = message
+        modelResourceNoticeToken &+= 1
+        let token = modelResourceNoticeToken
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, self.modelResourceNoticeToken == token else { return }
+            withAnimation(Tokens.Motion.ease) { self.modelResourceNotice = nil }
+        }
     }
 
     // MARK: — Convenience
@@ -1198,6 +1350,11 @@ final class AppState {
             NSLog("CellCounter: activate(%@) refused — coming-soon model", id)
             return
         }
+        // Listed but cannot run with what CellCounter installs (Cellpose-DINO).
+        if let info = models.first(where: { $0.id == id }), info.unavailableReason != nil {
+            NSLog("CellCounter: activate(%@) refused — unavailable model", id)
+            return
+        }
         // Guard: only activate a model that's actually installed.
         // For Cellpose-family models, open the install sheet instead.
         guard detectorRegistry.isInstalled(id, models: models) else {
@@ -1304,10 +1461,13 @@ final class AppState {
             AnalysisJobItem.Source(url: url, knownHash: knownDigests[url]?.hash,
                                    knownHashStamp: knownDigests[url]?.stamp)
         })
+        // Each image keeps the scale its own file records (read into the
+        // items above). The batch's scale for images without one starts as
+        // the user's default, when set; there is no built-in value.
         let batch = repos.createBatch(displayName: title, modelId: settings.modelId,
                                       pxPerUm: settings.pxPerUm, thresholds: settings.thresholds, condition: condition)
-        var job = AnalysisJob(batchId: batch.id, title: title, settings: settings, items: items)
-        job.settings.calibrationSource = "unconfirmed"
+        if settings.pxPerUm > 0 { batch.pxPerUmSource = settings.calibrationSource; try? repos.context.save() }
+        let job = AnalysisJob(batchId: batch.id, title: title, settings: settings, items: items)
         currentBatchId = batch.id; currentImageIdx = 0
         refreshLibraryStats()
         Task { [weak self] in
@@ -1317,15 +1477,7 @@ final class AppState {
                 try await self.jobScheduler.add(job)
                 self.analysisSetupJobId = job.id
                 if let first = job.items.first {
-                    let imageId = try await self.jobScheduler.prepareSample(job.id, itemId: first.id)
-                    if let image = self.repos.image(id: imageId), let px = image.sourcePxPerUm {
-                        var calibrated = job.settings
-                        calibrated.pxPerUm = px
-                        calibrated.calibrationSource = image.sourceCalibrationSource ?? "metadata"
-                        try await self.jobScheduler.updateDraft(job.id, settings: calibrated, preset: .countCells)
-                        batch.pxPerUm = px; batch.pxPerUmSource = calibrated.calibrationSource
-                        try self.repos.context.save()
-                    }
+                    _ = try await self.jobScheduler.prepareSample(job.id, itemId: first.id)
                     // Keep the presenting screen stable while setup is open.
                     // Import already selected this batch/image; navigation is an
                     // explicit setup action, not a second layout during presentation.
@@ -1352,18 +1504,23 @@ final class AppState {
         let images = orderedImages(in: batch)
         let sample = currentImage?.batch?.id == batch.id ? currentImage : images.first
         var settings = sample?.detection?.runSettings ?? AnalysisRunSettings.capture(state: self)
-        settings.pxPerUm = batch.pxPerUm; settings.calibrationSource = batch.pxPerUmSource ?? "manual"
+        // The job's scale is the batch's scale for images without one; each
+        // image keeps its own (`ImageScale`).
+        settings.pxPerUm = batch.pxPerUm
+        settings.calibrationSource = batch.pxPerUmSource ?? (batch.pxPerUm > 0 ? "manual" : ImageScale.unsetSource)
         settings.thresholds = batch.thresholds
         let sources = images.map { image in
             AnalysisJobItem.Source(url: image.storedURL, imageId: image.id, knownHash: image.fileHash,
-                                   displayName: image.fileName)
+                                   displayName: image.fileName, fileScale: image.fileScale,
+                                   ownScale: image.ownScale)
         }
         let savedRunSettings = images.map { $0.detection?.runSettingsData }
+        let scales = images.map(\.effectiveScale)
         let batchId = batch.id, title = batch.displayName
         analysisSetupsInPreparation.insert(batchId)
         Task { [weak self] in
             let items = await Self.analysisSetupItems(sources, savedRunSettings: savedRunSettings,
-                                                      settings: settings)
+                                                      scales: scales, settings: settings)
             guard let self else { return }
             defer { self.analysisSetupsInPreparation.remove(batchId) }
             let job = AnalysisJob(batchId: batchId, title: title, settings: settings, items: items)
@@ -1376,13 +1533,19 @@ final class AppState {
     /// every image and the comparison with each image's saved run settings
     /// (`DetectionRecord.runSettings` decodes `runSettingsData` the same way).
     /// Same items, order and statuses as building them on the main actor.
+    /// An image counts as done when it was analysed with these settings at
+    /// its own scale (`scales`, one per source).
     @concurrent
     private static func analysisSetupItems(_ sources: [AnalysisJobItem.Source], savedRunSettings: [Data?],
+                                           scales: [ImageScale.Resolved?],
                                            settings: AnalysisRunSettings) async -> [AnalysisJobItem] {
         var items = await AnalysisJobItem.make(sources)
         for (index, data) in zip(items.indices, savedRunSettings) {
             let saved = data.flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) }
-            if saved?.hasSameInputs(as: settings) == true { items[index].status = .completed }
+            let scale = index < scales.count ? scales[index] : nil
+            if scale != nil, saved?.hasSameInputs(as: settings.withScale(scale)) == true {
+                items[index].status = .completed
+            }
         }
         return items
     }
@@ -1394,9 +1557,29 @@ final class AppState {
         }
         // Preview and Run both commit; pressing either again with the same
         // settings changes nothing, rewrites nothing and wakes no screen.
-        var changed = try await recalibrateBatchIfNeeded(batch, pxPerUm: job.settings.pxPerUm,
-                                                         source: job.settings.calibrationSource, notify: false)
+        // Scales are per image: committing records the batch's scale for
+        // images without one and the scales set for single images. No stored
+        // numbers are rescaled here; images whose scale changed are analysed
+        // again by this job, and until then keep their numbers (and say so).
+        var changed = try await pinLegacyMeasurementScales(batch)
         guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+        let fallback = ImageScale.isUsable(job.settings.pxPerUm) ? job.settings.pxPerUm : 0
+        let fallbackSource: String? = fallback > 0 ? job.settings.calibrationSource : nil
+        if batch.pxPerUm != fallback || (fallback > 0 && batch.pxPerUmSource != fallbackSource) {
+            batch.pxPerUm = fallback
+            batch.pxPerUmSource = fallbackSource
+            changed = true
+        }
+        let imagesById = Dictionary(orderedImages(in: batch).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for item in job.items {
+            guard let imageId = item.imageId, let image = imagesById[imageId] else { continue }
+            let own = item.ownScale
+            if image.scalePxPerUm != own?.pxPerUm || image.scaleSource != own?.source {
+                image.scalePxPerUm = own?.pxPerUm
+                image.scaleSource = own?.source
+                changed = true
+            }
+        }
         if batch.modelId != job.settings.modelId {
             batch.modelId = job.settings.modelId
             changed = true
@@ -1408,6 +1591,61 @@ final class AppState {
         if changed { batch.contentRevision &+= 1 }
         try repos.context.save()
         if changed { NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil) }
+    }
+
+    /// One image's scale in Analysis setup.
+    struct SetupScaleEntry: Identifiable, Equatable {
+        /// The job item's id.
+        let id: UUID
+        let imageId: UUID?
+        let fileName: String
+        let file: ImageScale.Value?
+        let own: ImageScale.Value?
+        let scale: ImageScale.Resolved?
+        /// A microscope file whose scale is read when it is imported.
+        let readOnImport: Bool
+
+        var summaryEntry: ImageScale.Entry {
+            if let scale { return .scale(scale.value) }
+            return readOnImport ? .readOnImport : .missing
+        }
+    }
+
+    /// Every image's scale in a setup job: imported images from their record,
+    /// the others from what their file recorded when the job was made.
+    /// `ownScales` are scales chosen in the open sheet (a nil value removes
+    /// one); `fallback` is the job's scale for images without one.
+    func setupScaleEntries(jobId: UUID, fallback: ImageScale.Value?,
+                           ownScales: [UUID: ImageScale.Value?] = [:]) -> [SetupScaleEntry] {
+        guard let job = jobScheduler.job(jobId) else { return [] }
+        let records: [UUID: ImageRecord] = repos.batch(id: job.batchId).map { batch in
+            Dictionary(orderedImages(in: batch).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        } ?? [:]
+        return job.items.map { item in
+            let image = item.imageId.flatMap { records[$0] }
+            let file: ImageScale.Value? = image.map { $0.fileScale } ?? item.fileScale
+            let own: ImageScale.Value?
+            if let change = ownScales[item.id] { own = change } else { own = item.ownScale }
+            return SetupScaleEntry(id: item.id, imageId: item.imageId, fileName: item.fileName,
+                                   file: file, own: own,
+                                   scale: ImageScale.resolve(explicit: own, file: file, fallback: fallback),
+                                   readOnImport: image == nil && item.scaleReadOnImport)
+        }
+    }
+
+    /// Saves Analysis setup's draft with the scales chosen for single images.
+    /// Only images whose scale changes are analysed again.
+    func saveAnalysisSetupDraft(_ jobId: UUID, settings: AnalysisRunSettings, preset: AnalysisTaskPreset,
+                                ownScales: [UUID: ImageScale.Value?]) async throws {
+        guard let job = jobScheduler.job(jobId) else { return }
+        let before = setupScaleEntries(jobId: jobId, fallback: ImageScale.Value(job.settings.pxPerUm,
+                                                                                source: job.settings.calibrationSource))
+        let after = setupScaleEntries(jobId: jobId, fallback: ImageScale.Value(settings.pxPerUm, source: settings.calibrationSource),
+                                      ownScales: ownScales)
+        var resets = Set<UUID>()
+        for (old, new) in zip(before, after) where old.scale?.pxPerUm != new.scale?.pxPerUm { resets.insert(new.id) }
+        try await jobScheduler.updateDraft(jobId, settings: settings, preset: preset,
+                                           itemScales: ownScales, scaleResets: resets)
     }
 
     /// O(1): the scheduler keeps a per-image status index up to date.
@@ -1456,6 +1694,9 @@ final class AppState {
         image.fileHash = actualHash
         image.sourcePxPerUm = imported.exifPxPerUm
         image.sourceCalibrationSource = imported.exifSource
+        // A scale set for this image in Analysis setup before it was imported.
+        image.scalePxPerUm = item.ownScale?.pxPerUm
+        image.scaleSource = item.ownScale?.source
         image.jobItemId = item.id
         image.sourceOrder = jobScheduler.jobs.first(where: { $0.batchId == batchId && $0.items.contains(where: { $0.id == item.id }) })?.items.firstIndex(where: { $0.id == item.id })
         repos.attach(image: image, to: batch, save: false)
@@ -1483,11 +1724,13 @@ final class AppState {
         }
     }
 
-    /// Store fresh measurements at the batch's current calibration, which may
-    /// have changed since the run settings were captured.
-    func cellsAtBatchScale(_ cells: [DetectedCell], for image: ImageRecord,
-                           measuredAt sourceScale: Double) -> [DetectedCell] {
-        Self.cellsAtScale(cells, batchScale: image.batch?.pxPerUm, measuredAt: sourceScale)
+    /// Fresh measurements at the image's own current scale, which may have
+    /// changed while the model ran; returns the scale they are stored at.
+    func cellsAtImageScale(_ cells: [DetectedCell], for image: ImageRecord,
+                           measuredAt sourceScale: Double,
+                           source: String) -> (cells: [DetectedCell], scale: ImageScale.Value) {
+        let target = image.effectiveScale?.value ?? ImageScale.Value(pxPerUm: sourceScale, source: source)
+        return (Self.cellsAtScale(cells, batchScale: target.pxPerUm, measuredAt: sourceScale), target)
     }
 
     nonisolated static func cellsAtScale(_ cells: [DetectedCell], batchScale: Double?,
@@ -1496,15 +1739,20 @@ final class AppState {
         return calibratedCells(cells, pxPerUm: scale, fallbackScale: sourceScale)
     }
 
-    private func analyzeJobImage(_ imageId: UUID, settings: AnalysisRunSettings) async throws {
+    private func analyzeJobImage(_ imageId: UUID, settings jobSettings: AnalysisRunSettings) async throws {
         guard let image = repos.image(id: imageId) else { throw DetectionError.imageDecodeFailed }
-        let svc = try detectionService(for: settings)
-        if let sourcePx = image.sourcePxPerUm,
-           settings.calibrationSource != "manual", settings.calibrationSource != "unconfirmed",
-           abs(sourcePx - settings.pxPerUm) / settings.pxPerUm > 0.01 {
-            throw NSError(domain: "AnalysisJobs", code: 2, userInfo: [NSLocalizedDescriptionKey:
-                "This image has a different pixel scale. Analyze it in a separate batch or explicitly confirm a manual scale."])
+        // Each image is analysed at its own scale: its own value, else its
+        // file's, else the batch's for images without one. A value that
+        // disagrees with the file is only accepted as an explicit override.
+        if let problem = ImageScale.mismatch(explicit: image.ownScale, file: image.fileScale) {
+            throw NSError(domain: "AnalysisJobs", code: 2, userInfo: [NSLocalizedDescriptionKey: problem])
         }
+        guard let scale = image.effectiveScale else {
+            throw NSError(domain: "AnalysisJobs", code: 4, userInfo: [NSLocalizedDescriptionKey: ImageScale.missingMessage])
+        }
+        // The size hint in pixels follows the image's scale.
+        let settings = jobSettings.withScale(scale)
+        let svc = try detectionService(for: settings)
         // Finish committed corrections before saving the previous mask variant.
         if let detection = image.detection { try await finishPendingCellEdits(for: detection) }
         guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
@@ -1519,18 +1767,20 @@ final class AppState {
         }
         let result = try await svc.detectWithLocalTiming(settings.detectionInput(imageURL: source))
         guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
+        // What the sidecar reports it ran replaces the values probed above.
+        recordedSettings = recordedSettings.recording(result.runtime)
         // Scale, encode, hash and compress the cells on a detached task, so
-        // the main actor only links rows. Redone if the batch calibration
-        // changes meanwhile: the cells are stored at its current scale.
+        // the main actor only links rows. Redone if the image's scale changes
+        // meanwhile: the cells are stored at its current scale.
         let rawCells = result.cells, sourceScale = settings.pxPerUm
-        var batchScale: Double?
+        var target = scale.value
         var measuredCells: [DetectedCell] = []
         var storage: DetectionRecord.CellsStorageSnapshot
         repeat {
-            batchScale = image.batch?.pxPerUm
-            let scale = batchScale
+            target = image.effectiveScale?.value ?? scale.value
+            let targetScale = target.pxPerUm
             (measuredCells, storage) = await Task.detached(priority: .userInitiated) {
-                let cells = Self.cellsAtScale(rawCells, batchScale: scale, measuredAt: sourceScale)
+                let cells = Self.cellsAtScale(rawCells, batchScale: targetScale, measuredAt: sourceScale)
                 return (cells, DetectionRecord.makeStorageSnapshot(cells))
             }.value
             try Task.checkCancellation()
@@ -1542,11 +1792,15 @@ final class AppState {
                 try Task.checkCancellation()
                 guard !image.isDeleted, image.modelContext != nil else { throw CancellationError() }
             }
-        } while image.batch?.pxPerUm != batchScale
+        } while (image.effectiveScale?.value ?? scale.value) != target
         // The model and run inputs are captured before awaiting inference.
+        // The replaced detection is kept as a version at its own scale, so
+        // the image's new scale is recorded after it is saved.
         repos.saveDetection(snapshot: storage, cells: measuredCells,
                             detectorId: "\(type(of: svc))/\(settings.modelId)",
                             for: image, imageStats: result.imageStats, runSettings: recordedSettings, save: false)
+        image.measuredPxPerUm = target.pxPerUm
+        image.measuredScaleSource = target.source
         try repos.context.save()
         refreshLibraryStats()
         // Name the image so open screens refresh only that row or tile.
@@ -1562,9 +1816,16 @@ final class AppState {
     func reRunDetection(on image: ImageRecord, useSavedSettings: Bool = false) {
         guard !isRerunning(image), let batch = image.batch,
               !jobScheduler.jobs.contains(where: { [.queued, .running, .pausing].contains($0.status) && $0.items.contains(where: { $0.imageId == image.id }) }) else { return }
+        guard image.effectiveScale != nil else {
+            flashExport("This image has no pixel scale. Set one with Calibrate… first.", isError: true)
+            return
+        }
         var settings = useSavedSettings ? (image.detection?.runSettings ?? AnalysisRunSettings.capture(state: self))
             : AnalysisRunSettings.capture(state: self)
-        settings.pxPerUm = batch.pxPerUm; settings.calibrationSource = batch.pxPerUmSource ?? "manual"
+        // The job's scale is the batch's for images without one; the image is
+        // analysed at its own scale.
+        settings.pxPerUm = batch.pxPerUm
+        settings.calibrationSource = batch.pxPerUmSource ?? (batch.pxPerUm > 0 ? "manual" : ImageScale.unsetSource)
         settings.thresholds = batch.thresholds
         let job = AnalysisJob(batchId: batch.id, title: image.fileName, settings: settings,
             items: [AnalysisJobItem(url: image.storedURL, imageId: image.id, knownHash: image.fileHash, displayName: image.fileName)])
@@ -1738,7 +1999,8 @@ final class AppState {
         let cy = selected.reduce(0) { $0 + $1.cy } / Double(selected.count)
         let diameterPx = areaPx > 0 ? 2 * sqrt(areaPx / .pi)
             : selected.map(\.diameterPx).max() ?? 1
-        let px = image.batch?.pxPerUm ?? pxPerUm
+        // The image's own scale: the one its other cells are stored at.
+        let px = image.currentPxPerUm > 0 ? image.currentPxPerUm : pxPerUm
         let merged = DetectedCell(cx: cx, cy: cy,
                                   diameter: diameterPx / max(px, 0.000_001),
                                   diameterPx: diameterPx, confidence: 1,
@@ -1803,7 +2065,7 @@ final class AppState {
             guard !image.isDeleted, image.modelContext != nil,
                   image.detection?.id == detection.id,
                   let currentCells = cellsForEditing(in: image) else { continue }
-            let px = image.batch?.pxPerUm ?? pxPerUm
+            let px = image.currentPxPerUm > 0 ? image.currentPxPerUm : pxPerUm
             let calibrated = additions.filter { candidate in
                 candidate.cx >= 0 && candidate.cy >= 0
                     && candidate.cx < Double(image.widthPx) && candidate.cy < Double(image.heightPx)
@@ -1817,10 +2079,13 @@ final class AppState {
                 cell.centroidUmY = cell.cy / max(px, 0.000_001)
                 return cell
             }
-            guard !calibrated.isEmpty else { continue }
+            // Frames of one batch can have different scales: sizes are
+            // converted to this frame's own scale (outlines stay in pixels).
+            let scaled = px > 0 ? Self.calibratedCells(calibrated, pxPerUm: px, fallbackScale: px) : calibrated
+            guard !scaled.isEmpty else { continue }
             let result = repos.commitCellEdit(
-                cells: currentCells + calibrated,
-                corrections: calibrated.map { CorrectionSpec(kind: "propagate", cell: $0) },
+                cells: currentCells + scaled,
+                corrections: scaled.map { CorrectionSpec(kind: "propagate", cell: $0) },
                 detection: detection, image: image)
             reviewDelta += result.reviewCountDelta
             added += calibrated.count
@@ -1960,23 +2225,12 @@ final class AppState {
         return f.string(from: Date())
     }
 
-    /// Maps a px/µm value to a human-readable objective label using the
-    /// Olympus IX73 preset ladder (1.3 / 2.6 / 5.2 / 10.4 px/µm → 5× / 10× / 20× / 40×)
-    /// with ±25% tolerance. Mirrors ScalePanel.objectiveLabel so the calibration
-    /// toast and the scale panel agree on the objective string.
-    static func objectiveLabel(for pxPerUm: Double) -> String {
-        let presets: [(Double, String)] = [
-            (1.3, "5×"), (2.6, "10×"), (5.2, "20×"), (10.4, "40×"),
-        ]
-        if let match = presets.first(where: { abs(pxPerUm - $0.0) / $0.0 < 0.25 }) {
-            return "\(match.1) objective"
-        }
-        return "custom scale"
-    }
-
-    /// Apply a physical scale and recompute existing µm measurements from
-    /// their pixel-space source values. This runs in yielding chunks so fixing
-    /// calibration on a 700-image batch doesn't freeze the app.
+    /// Sets the user's default scale for images without one (Home and
+    /// Settings). It is used by batches imported from now on and never
+    /// replaces a scale recorded in a file. With `updateCurrentBatch`, the
+    /// open batch's scale for images without one changes too: its analysed
+    /// images that use that scale have their sizes converted (the calibration
+    /// sheet offers re-segmenting instead, through `applyScaleChange`).
     func applyCalibration(_ newPxPerUm: Double,
                           source: String,
                           updateCurrentBatch: Bool = true) {
@@ -1990,20 +2244,292 @@ final class AppState {
         // Home owns the default for FUTURE imports. Reaching an old batch via
         // `currentBatchId` must not make a Home calibration silently rewrite
         // that analyzed batch's measurements or scale bar.
-        guard updateCurrentBatch, let batch = currentBatch else { return }
+        guard updateCurrentBatch, let batch = currentBatch,
+              let context = scaleChangeContext(for: batch) else { return }
+        let plan = ScaleChange.plan(.init(value: ImageScale.Value(pxPerUm: newPxPerUm, source: source),
+                                          scope: .imagesWithoutOwnScale),
+                                    context: context)
+        applyScaleChange(plan, batchId: batch.id, resegment: false)
+    }
+
+    // MARK: — Per-image scale
+
+    @ObservationIgnored private var calibrationNoteToken = 0
+
+    /// Shows a calibration note in Results for a few seconds.
+    func showCalibrationNote(_ text: String) {
+        lastCalibrationNote = text
+        calibrationNoteToken &+= 1
+        let token = calibrationNoteToken
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, self.calibrationNoteToken == token else { return }
+            withAnimation(Tokens.Motion.ease) { self.lastCalibrationNote = nil }
+        }
+    }
+
+    /// Every image of `batch` as the calibration sheet sees it.
+    func scaleChangeContext(for batch: BatchRecord, currentImageId: UUID? = nil) -> ScaleChange.Context? {
+        guard !batch.isDeleted, batch.modelContext != nil else { return nil }
+        let images = orderedImages(in: batch).map { image -> ScaleChange.ImageState in
+            let run = image.detection?.runSettings
+            let depends = run.map { ImageScale.segmentationDependsOnScale($0) }
+                ?? ImageScale.segmentationDependsOnScale(modelFamily: "", modelId: batch.modelId,
+                                                         expectedDiameterUm: 0, watershedSplit: false)
+            return ScaleChange.ImageState(id: image.id, fileName: image.fileName,
+                                          explicit: image.ownScale, file: image.fileScale,
+                                          measured: image.measuredScale,
+                                          segmentationDependsOnScale: depends)
+        }
+        return ScaleChange.Context(batchId: batch.id, images: images, fallback: batch.fallbackScale,
+                                   currentImageId: currentImageId)
+    }
+
+    /// Applies a scale change from the calibration sheet. Analysed images
+    /// whose scale changes are segmented again at their new scale when
+    /// `resegment` is set and their outlines depend on the scale; all others
+    /// keep their outlines and have their sizes converted, and are then marked
+    /// "segmented at X, measured at Y". Refused while a job runs on the batch.
+    func applyScaleChange(_ plan: ScaleChange.Plan, batchId: UUID, resegment: Bool) {
+        guard !plan.isEmpty, let batch = repos.batch(id: batchId) else { return }
+        if jobScheduler.jobs.contains(where: { $0.batchId == batchId && $0.isActive }) {
+            flashExport("Pause this batch in Processing before changing its scale.", isError: true)
+            return
+        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await self.recalibrateBatch(batch, pxPerUm: newPxPerUm, source: source)
-                self.lastCalibrationNote = String(format: "Calibration applied: %.5g px/µm (%@).", newPxPerUm, source)
+                try await self.pinLegacyMeasurementScales(batch)
+                guard !batch.isDeleted, batch.modelContext != nil else { return }
+                if let fallback = plan.fallback {
+                    batch.pxPerUm = fallback.pxPerUm
+                    batch.pxPerUmSource = fallback.source
+                }
+                let images = Dictionary(self.orderedImages(in: batch).map { ($0.id, $0) },
+                                        uniquingKeysWith: { first, _ in first })
+                for (id, own) in plan.explicit {
+                    guard let image = images[id] else { continue }
+                    image.scalePxPerUm = own?.pxPerUm
+                    image.scaleSource = own?.source
+                }
+                for (id, label) in plan.relabel {
+                    guard let image = images[id], image.measuredPxPerUm == label.pxPerUm else { continue }
+                    image.measuredScaleSource = label.source
+                }
+                batch.contentRevision &+= 1
+                try self.repos.context.save()
+                let rerun = resegment ? plan.resegment : []
+                let rescale = plan.changed.filter { !rerun.contains($0.key) }
+                if !rescale.isEmpty { try await self.rescaleImages(rescale, in: batch, notify: false) }
+                if !rerun.isEmpty { self.rerunImages(rerun, in: batch) }
+                NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil)
+                self.showCalibrationNote(Self.scaleChangeNote(plan, rescaled: rescale.count, rerun: rerun.count))
             } catch { self.flashExport(error.localizedDescription, isError: true) }
         }
+    }
+
+    private static func scaleChangeNote(_ plan: ScaleChange.Plan, rescaled: Int, rerun: Int) -> String {
+        var parts: [String] = []
+        if let fallback = plan.fallback {
+            parts.append("\(ImageScale.format(fallback.pxPerUm)) px/µm for images without a scale")
+        } else if plan.explicit.count == 1, let own = plan.explicit.values.first {
+            parts.append(own.map { "\(ImageScale.format($0.pxPerUm)) px/µm for this image" } ?? "this image uses its file's scale")
+        }
+        if plan.overridden > 0 { parts.append("file's scale overridden for \(ImageScale.countText(plan.overridden))") }
+        if rescaled > 0 { parts.append("sizes of \(ImageScale.countText(rescaled)) converted") }
+        if rerun > 0 { parts.append("\(ImageScale.countText(rerun)) queued to segment again") }
+        return "Scale updated: " + parts.joined(separator: "; ") + "."
+    }
+
+    /// Records the scale of the batch on each image analysed before images
+    /// had their own scale, which is what their numbers are at, so changing
+    /// the batch's scale for images without one never changes what those
+    /// numbers mean. A batch-wide pass that stopped partway is completed
+    /// first. Changes are saved by the caller.
+    @discardableResult
+    func pinLegacyMeasurementScales(_ batch: BatchRecord) async throws -> Bool {
+        var changed = false
+        if batch.recalibrationPending {
+            let source = batch.pxPerUmSource
+            changed = try await recalibrateBatchIfNeeded(batch, pxPerUm: batch.pxPerUm,
+                                                         source: source ?? "manual", notify: false)
+            batch.pxPerUmSource = source
+        }
+        guard !batch.isDeleted, batch.modelContext != nil, ImageScale.isUsable(batch.pxPerUm) else { return changed }
+        let legacy = ImageScale.batchSource(batch.pxPerUmSource)
+        for image in orderedImages(in: batch) where image.measuredPxPerUm == nil && image.detection != nil {
+            image.measuredPxPerUm = batch.pxPerUm
+            image.measuredScaleSource = legacy
+            changed = true
+        }
+        return changed
+    }
+
+    /// Keeps an analysed image's numbers at the scale they were measured at,
+    /// as an explicit override of its file's scale: the answer to "measured
+    /// at X; the file says Y" when X was right.
+    func keepMeasuredScale(of image: ImageRecord) {
+        guard let measured = image.measuredScale, let file = image.fileScale, let batch = image.batch else { return }
+        if jobScheduler.jobs.contains(where: { $0.batchId == batch.id && $0.isActive }) {
+            flashExport("Pause this batch in Processing before changing its scale.", isError: true)
+            return
+        }
+        let override = ImageScale.Value(pxPerUm: measured.pxPerUm,
+                                        source: ImageScale.overrideSource(filePxPerUm: file.pxPerUm))
+        image.scalePxPerUm = override.pxPerUm
+        image.scaleSource = override.source
+        image.measuredPxPerUm = override.pxPerUm
+        image.measuredScaleSource = override.source
+        batch.contentRevision &+= 1
+        try? repos.context.save()
+        NotificationCenter.default.post(name: .ccCorrectionsChanged, object: image.id)
+    }
+
+    /// Queues segmentation again for `ids`, each image at its own current
+    /// scale and with the settings it was analysed with.
+    func rerunImages(_ ids: Set<UUID>, in batch: BatchRecord) {
+        let busy = Set(jobScheduler.jobs.filter(\.isActive).flatMap { $0.items.compactMap(\.imageId) })
+        let images = orderedImages(in: batch).filter { ids.contains($0.id) && !busy.contains($0.id) && !isRerunning($0) }
+        guard !images.isEmpty else { return }
+        // One job per distinct saved settings.
+        var groups: [(settings: AnalysisRunSettings, images: [ImageRecord])] = []
+        for image in images {
+            var settings = image.detection?.runSettings ?? AnalysisRunSettings.capture(state: self)
+            settings.pxPerUm = batch.pxPerUm
+            settings.calibrationSource = batch.pxPerUmSource ?? (batch.pxPerUm > 0 ? "manual" : ImageScale.unsetSource)
+            settings.thresholds = batch.thresholds
+            if let index = groups.firstIndex(where: { $0.settings.hasSameInputs(as: settings) }) {
+                groups[index].images.append(image)
+            } else {
+                groups.append((settings, [image]))
+            }
+        }
+        for group in groups {
+            let sources = group.images.map { image in
+                AnalysisJobItem.Source(url: image.storedURL, imageId: image.id, knownHash: image.fileHash,
+                                       displayName: image.fileName)
+            }
+            let title = group.images.count == 1 ? group.images[0].fileName
+                : "\(batch.displayName) · \(group.images.count) images at their new scale"
+            let settings = group.settings, batchId = batch.id
+            Task { [weak self] in
+                let items = await AnalysisJobItem.make(sources)
+                guard let self else { return }
+                let job = AnalysisJob(batchId: batchId, title: title, settings: settings, items: items)
+                do {
+                    try await self.jobScheduler.add(job)
+                    self.jobScheduler.maxParallel = self.maxParallel
+                    try await self.jobScheduler.enqueue(job.id)
+                } catch { self.flashExport(error.localizedDescription, isError: true) }
+            }
+        }
+    }
+
+    /// The scales in use in `batch`: each analysed image at its measurements'
+    /// scale, each other image at the scale it will be analysed at. Cached
+    /// per batch until its contents change.
+    func scaleSummary(for batch: BatchRecord) -> ImageScale.Summary {
+        let count = batch.images.count
+        if let cached = scaleSummaryCache[batch.id], cached.revision == batch.contentRevision,
+           cached.count == count, cached.fallback == batch.pxPerUm {
+            return cached.summary
+        }
+        let summary = ImageScale.summarize(orderedImages(in: batch).map { image in
+            image.currentScale.map { ImageScale.Entry.scale($0) } ?? .missing
+        })
+        scaleSummaryCache[batch.id] = (batch.contentRevision, count, batch.pxPerUm, summary)
+        return summary
+    }
+    @ObservationIgnored private var scaleSummaryCache: [UUID: (revision: Int, count: Int, fallback: Double, summary: ImageScale.Summary)] = [:]
+
+    /// Brings the stored µm values of analysed images to new per-image scales
+    /// and records them on the images; pixel outlines are kept. Serialized
+    /// with every other calibration change, saved every
+    /// `recalibrationSaveInterval` images, and safe against concurrent edits,
+    /// like `recalibrateBatchIfNeeded`.
+    @discardableResult
+    func rescaleImages(_ targets: [UUID: ImageScale.Value], in batch: BatchRecord,
+                       notify: Bool = true) async throws -> Bool {
+        calibrationUpdatesInFlight += 1
+        defer { calibrationUpdatesInFlight -= 1 }
+        let previous = calibrationTask
+        let task = Task { @MainActor () throws -> Bool in
+            _ = try? await previous?.value
+            try Task.checkCancellation()
+            guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+            var changed = false
+            var rewrittenSinceSave = 0
+            for image in self.orderedImages(in: batch) {
+                guard let target = targets[image.id], ImageScale.isUsable(target.pxPerUm),
+                      !image.isDeleted, image.modelContext != nil, image.detection != nil else { continue }
+                let oldScale = image.measuredScale?.pxPerUm ?? target.pxPerUm
+                if oldScale != target.pxPerUm {
+                    guard try await self.rewriteStoredMeasurements(of: image, in: batch,
+                                                                   to: target.pxPerUm, from: oldScale) else { continue }
+                    rewrittenSinceSave += 1
+                }
+                // Recorded in the same save as the rewritten cells.
+                image.measuredPxPerUm = target.pxPerUm
+                image.measuredScaleSource = target.source
+                changed = true
+                if rewrittenSinceSave >= max(1, self.recalibrationSaveInterval) {
+                    rewrittenSinceSave = 0
+                    try self.repos.context.save()
+                    await LibraryTransferPacing.breathe()
+                }
+            }
+            guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+            if changed { batch.contentRevision &+= 1 }
+            try self.repos.context.save()
+            if changed, notify { NotificationCenter.default.post(name: .ccCorrectionsChanged, object: nil) }
+            return changed
+        }
+        calibrationTask = task
+        return try await task.value
+    }
+
+    /// Rewrites one image's stored µm values at `scale` (pixel outlines are
+    /// kept), waiting for pending edits and starting over when its cells
+    /// change meanwhile. False when the image or its detection went away.
+    private func rewriteStoredMeasurements(of image: ImageRecord, in batch: BatchRecord,
+                                           to scale: Double, from oldScale: Double) async throws -> Bool {
+        while !image.isDeleted, image.modelContext != nil, let detection = image.detection {
+            try Task.checkCancellation()
+            guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+            if let pending = pendingCellEditTasks[detection.id] { await pending.value; continue }
+            let revision = detection.cellsRevision
+            let cells = try await loadReviewCells(for: detection)
+            let snapshot = await Task.detached(priority: .utility) {
+                DetectionRecord.makeStorageSnapshot(Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: oldScale))
+            }.value
+            try Task.checkCancellation()
+            guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
+            guard !image.isDeleted, image.modelContext != nil,
+                  !detection.isDeleted, detection.modelContext != nil else { return false }
+            guard image.detection?.id == detection.id,
+                  detection.cellsRevision == revision,
+                  pendingCellEditTasks[detection.id] == nil else { continue }
+            guard !snapshot.data.isEmpty else {
+                throw NSError(domain: "CellCounter.Calibration", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "The calibrated measurements could not be encoded. The original measurements were preserved."
+                ])
+            }
+            try repos.recalibrateReviewCandidates(for: detection, pxPerUm: scale)
+            detection.applyStorageSnapshot(snapshot)
+            repos.noteUpkeepWork(for: detection)
+            return true
+        }
+        return false
     }
 
     /// Serialize calibration requests and only apply a prepared snapshot if no
     /// correction arrived while it was encoded. Memory is bounded to one image.
     ///
-    /// Every analysed image of a batch is stored at the batch's `pxPerUm`,
+    /// The batch-wide recalibration of images analysed before images had
+    /// their own scale (no `measuredPxPerUm`); the app now uses it only to
+    /// complete such a pass that stopped partway (`pinLegacyMeasurementScales`),
+    /// and changes scales per image with `rescaleImages`.
+    /// Every such image of a batch is stored at the batch's `pxPerUm`,
     /// except while a pass is under way or after one stopped partway, which
     /// `recalibrationPending` records. So when the batch already has this
     /// scale and no pass is pending, nothing is rewritten (a different
@@ -2045,34 +2571,12 @@ final class AppState {
             batch.recalibrationPending = true
             var rewrittenSinceSave = 0
             // Per-cell scale inference makes this idempotent, so a pass that
-            // completes one stopped partway visits every image again.
-            for image in self.orderedImages(in: batch) {
-                while !image.isDeleted, image.modelContext != nil, let detection = image.detection {
-                    try Task.checkCancellation()
-                    guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
-                    if let pending = self.pendingCellEditTasks[detection.id] { await pending.value; continue }
-                    let revision = detection.cellsRevision
-                    let cells = try await self.loadReviewCells(for: detection)
-                    let snapshot = await Task.detached(priority: .utility) {
-                        DetectionRecord.makeStorageSnapshot(Self.calibratedCells(cells, pxPerUm: scale, fallbackScale: oldScale))
-                    }.value
-                    try Task.checkCancellation()
-                    guard !batch.isDeleted, batch.modelContext != nil else { throw CancellationError() }
-                    guard !image.isDeleted, image.modelContext != nil,
-                          !detection.isDeleted, detection.modelContext != nil else { break }
-                    guard image.detection?.id == detection.id,
-                          detection.cellsRevision == revision,
-                          self.pendingCellEditTasks[detection.id] == nil else { continue }
-                    guard !snapshot.data.isEmpty else {
-                        throw NSError(domain: "CellCounter.Calibration", code: 1, userInfo: [
-                            NSLocalizedDescriptionKey: "The calibrated measurements could not be encoded. The original measurements were preserved."
-                        ])
-                    }
-                    try self.repos.recalibrateReviewCandidates(for: detection, pxPerUm: scale)
-                    detection.applyStorageSnapshot(snapshot)
-                    self.repos.noteUpkeepWork(for: detection)
+            // completes one stopped partway visits every image again. Images
+            // with their own recorded scale are not at the batch's scale and
+            // are left alone (`rescaleImages` moves those).
+            for image in self.orderedImages(in: batch) where image.measuredPxPerUm == nil {
+                if try await self.rewriteStoredMeasurements(of: image, in: batch, to: scale, from: oldScale) {
                     rewrittenSinceSave += 1
-                    break
                 }
                 if rewrittenSinceSave >= max(1, self.recalibrationSaveInterval) {
                     rewrittenSinceSave = 0

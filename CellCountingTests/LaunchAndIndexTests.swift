@@ -570,6 +570,8 @@ struct LaunchAndIndexTests {
         detachedCorrection.detection = detached
         try repos.context.save()
         #expect(repos.reviewIndexCheck.needsCheck)
+        // No presets are shipped; a user's own preset survives the reset.
+        repos.upsertCalibrationPreset(CalibrationPresetRecord(name: "Lab scope · 10×", pxPerUm: 4.1666))
 
         try repos.deleteAllLibraryRecords()
 

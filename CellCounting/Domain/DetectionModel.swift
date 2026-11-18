@@ -61,6 +61,14 @@ struct DetectionModelInfo: Identifiable, Hashable {
     /// chip in lieu of the install/activate buttons; AppState.activate()
     /// refuses these as defense-in-depth.
     var comingSoon: Bool = false
+
+    /// Listed, but cannot run with what CellCounter installs; the reason is
+    /// shown on the row. Handled like `comingSoon`: no install or activate
+    /// button, refused by `AppState.activate`, left out of model pickers.
+    var unavailableReason: String? = nil
+
+    /// Whether the model can be installed, activated or picked at all.
+    var isSelectable: Bool { !comingSoon && unavailableReason == nil }
 }
 
 enum ModelCatalog {
@@ -120,21 +128,22 @@ enum ModelCatalog {
               trainingData: "Cellpose-SAM generalist set (2025)",
               paper: "Stringer & Pachitariu — Cellpose-SAM (2025)",
               outputType: "Masks + boxes + outlines"),
-        // The three entries below are the newer checkpoints documented at
-        // https://cellpose.readthedocs.io/en/latest/models.html (verified
-        // against that page). They are drop-in: same `venv4/` install, same
-        // `pretrained_model=` constructor, same licence — the only difference
-        // is the weights file cellpose downloads on first use. No extra
-        // dependency and no extra disk beyond the per-model weights.
+        // The entries below are the newer checkpoints Cellpose 4.2.1.1 knows
+        // (`models.MODEL_NAMES`). Same `venv4/` install and `pretrained_model=`
+        // constructor; each downloads its own weights file on first use.
+        // Cellpose 4.1.1 knew only `cpsam` and silently ran it for these ids;
+        // the sidecar now refuses a name its Cellpose does not know.
         .init(id: "cpsam_v2", family: .cellpose4, name: "Cellpose-SAM v2",
-              sizeMB: 1150, sizeLabel: "~1.15 GB weights",
-              desc: "Updated Cellpose-SAM with better handling of low-contrast regions. Same cost as cpsam.",
+              sizeMB: 1200, sizeLabel: "~1.2 GB weights",
+              desc: "The revised Cellpose-SAM model, with its own weights, so results can differ from Cellpose-SAM. Needs its own one-time ~1.2 GB download.",
               state: .off, speed: .slow, accuracy: .high,
               tags: ["fluor", "bf", "phase", "histo"], recommended: false,
               architecture: "SAM ViT-L encoder (CellposeSAM v2)",
               trainingData: "Cellpose-SAM generalist set, revised",
               paper: "Stringer & Pachitariu — Cellpose-SAM (2025/2026 revision)",
               outputType: "Masks + boxes + outlines"),
+        // Cellpose-DINO needs `dinov3`, which Cellpose does not declare and
+        // CellCounter does not install: listed, not selectable.
         .init(id: "cpdino", family: .cellpose4, name: "Cellpose-DINO (ViT-L)",
               sizeMB: 1200, sizeLabel: "~1.2 GB weights",
               desc: "DINOv3-ViTL backbone instead of SAM. Supports adjustable tile size, so large fields tile more efficiently.",
@@ -143,7 +152,8 @@ enum ModelCatalog {
               architecture: "DINOv3 ViT-L encoder (CellposeDINO)",
               trainingData: "Cellpose generalist set, DINOv3 backbone",
               paper: "Cellpose model zoo — CellposeDINO",
-              outputType: "Masks + boxes + outlines"),
+              outputType: "Masks + boxes + outlines",
+              unavailableReason: ModelCatalog.dinov3UnavailableReason),
         .init(id: "cpdino-vitb", family: .cellpose4, name: "Cellpose-DINO (ViT-B)",
               sizeMB: 400, sizeLabel: "~400 MB weights",
               desc: "Smaller DINOv3-ViTB variant. Noticeably lighter and faster than the ViT-L models.",
@@ -152,8 +162,12 @@ enum ModelCatalog {
               architecture: "DINOv3 ViT-B encoder (CellposeDINO)",
               trainingData: "Cellpose generalist set, DINOv3 backbone",
               paper: "Cellpose model zoo — CellposeDINO",
-              outputType: "Masks + boxes + outlines"),
+              outputType: "Masks + boxes + outlines",
+              unavailableReason: ModelCatalog.dinov3UnavailableReason),
     ]
+
+    /// Why the Cellpose-DINO rows cannot be chosen.
+    static let dinov3UnavailableReason = "Needs the dinov3 package, which CellCounter does not install."
 
     static let stardist: [DetectionModelInfo] = [
         .init(id: "sd-fluo", family: .stardist, name: "StarDist 2D versatile fluo",

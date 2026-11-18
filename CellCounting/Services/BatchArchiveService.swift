@@ -377,6 +377,8 @@ final class BatchArchiveService {
         let ranAt: Date
         let confidence: Double
         let provenance: ProvenanceMetadata?
+        /// The image's own scale (`ImageScale`).
+        var scale: ExportService.SummaryScale? = nil
     }
 
     private nonisolated struct CellExportOutcome: Sendable {
@@ -423,7 +425,8 @@ final class BatchArchiveService {
                                       imageStatsData: detection.imageStatsData,
                                       detectorId: detection.detectorId, ranAt: detection.ranAt,
                                       confidence: effective[image.id] ?? fallback,
-                                      provenance: provenance[image.id]))
+                                      provenance: provenance[image.id],
+                                      scale: Self.exportScale(of: image, batch: snapshot.batch)))
         }
 
         var outcomes: [UUID: CellExportOutcome] = [:]
@@ -445,7 +448,8 @@ final class BatchArchiveService {
             ExportService.PerImageSummaryInput(fileName: image.fileName,
                                                importedAt: image.importedAt,
                                                confidenceOverride: image.confidenceOverride,
-                                               detection: outcomes[image.id]?.summary)
+                                               detection: outcomes[image.id]?.summary,
+                                               scale: Self.exportScale(of: image, batch: snapshot.batch))
         }
         let index = Self.imageIndexCSV(snapshot: snapshot, copied: copied, csvNames: csvNames,
                                        cellCounts: outcomes.mapValues(\.cellCount),
@@ -468,10 +472,13 @@ final class BatchArchiveService {
         try jobs.map { job in
             try autoreleasepool {
                 let cells = DetectionRecord.decodeCellsData(job.cellsData)
+                // Each image at its own scale.
                 try ExportService.writeCSVCore(cells: cells, imageFileName: job.fileName,
-                                               thresholds: thresholds, pxPerUm: pxPerUm,
+                                               thresholds: thresholds, pxPerUm: job.scale?.pxPerUm ?? pxPerUm,
                                                confidence: job.confidence, modelId: modelId,
                                                separator: ",", provenance: job.provenance,
+                                               scaleSource: job.scale?.source,
+                                               segmentedPxPerUm: job.scale?.segmentedPxPerUm,
                                                to: folder.appendingPathComponent(job.csvName))
                 // The summary needs measurements, not outlines; dropping the
                 // contours keeps a 600-image batch's memory use small.
@@ -506,11 +513,13 @@ final class BatchArchiveService {
             "# CellCounter image index for batch \(snapshot.batch.id.uuidString). Image files are named by image_id.",
             ["image_id", "file_name", "stored_file", "display_file", "original_path", "imported_at",
              "width_px", "height_px", "source_px_per_um", "source_calibration", "sha256",
-             "analyzed", "n_cells_detected", "cells_csv", "confidence_cutoff", "notes"].joined(separator: ","),
+             "analyzed", "n_cells_detected", "cells_csv", "confidence_cutoff", "notes",
+             "px_per_um", "px_per_um_source", "segmented_px_per_um"].joined(separator: ","),
         ]
         for image in snapshot.images {
             let files = relative[image.id] ?? [:]
             let analyzed = image.detection != nil
+            let scale = exportScale(of: image, batch: snapshot.batch)
             lines.append([
                 image.id.uuidString,
                 esc(image.fileName),
@@ -528,9 +537,34 @@ final class BatchArchiveService {
                 esc(csvNames[image.id].map { "Exports/cells/\($0)" } ?? ""),
                 analyzed ? String(format: "%.2f", effective[image.id] ?? fallback) : "",
                 esc(image.notes ?? ""),
+                number(scale?.pxPerUm),
+                esc(scale?.source ?? ""),
+                number(scale?.segmentedPxPerUm),
             ].joined(separator: ","))
         }
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// An archived image's own scale: its measurements' scale once analysed
+    /// (images analysed before images had their own scale are at the batch's),
+    /// otherwise the scale it would be analysed at.
+    nonisolated static func exportScale(of image: BatchRecordsSnapshot.Image,
+                                        batch: BatchRecordsSnapshot.Batch) -> ExportService.SummaryScale? {
+        let measured: ImageScale.Value?
+        if image.detection != nil {
+            measured = ImageScale.Value(image.measuredPxPerUm, source: image.measuredScaleSource)
+                ?? ImageScale.Value(batch.pxPerUm, source: ImageScale.batchSource(batch.pxPerUmSource))
+        } else {
+            measured = nil
+        }
+        let next = ImageScale.resolve(explicit: ImageScale.Value(image.scalePxPerUm, source: image.scaleSource),
+                                      file: ImageScale.Value(image.sourcePxPerUm,
+                                                             source: image.sourceCalibrationSource ?? "metadata"),
+                                      fallback: ImageScale.Value(batch.pxPerUm, source: batch.pxPerUmSource))
+        guard let value = measured ?? next?.value else { return nil }
+        let segmented = image.detection?.runSettingsData
+            .flatMap { try? JSONDecoder().decode(AnalysisRunSettings.self, from: $0) }?.pxPerUm
+        return ExportService.SummaryScale(pxPerUm: value.pxPerUm, source: value.source, segmentedPxPerUm: segmented)
     }
 
     private struct ProvenanceFile: Encodable {
@@ -577,8 +611,8 @@ final class BatchArchiveService {
         }
         switch source {
         case "manual": return "entered by hand (manual)"
-        case "default": return "CellCounter's default value, not measured for this microscope (default)"
-        default: return source
+        case "default": return "the default scale set in CellCounter for images without one (default)"
+        default: return "\(ImageScale.label(source)) (\(source))"
         }
     }
 
@@ -588,17 +622,25 @@ final class BatchArchiveService {
         date.locale = Locale(identifier: "en_US_POSIX")
         date.dateFormat = "yyyy-MM-dd HH:mm"
         let umPerPx = info.pxPerUm > 0 ? String(format: "%.4g", 1 / info.pxPerUm) : "unknown"
-        let differing = snapshot.images.filter { image in
-            guard let own = image.sourcePxPerUm, own > 0, info.pxPerUm > 0 else { return false }
-            return abs(own - info.pxPerUm) / info.pxPerUm > 0.005
+        // Each image has its own scale; an analysed image whose file records
+        // another scale than its measurements use is pointed out.
+        let scales = snapshot.images.map { exportScale(of: $0, batch: snapshot.batch) }
+        let differing = zip(snapshot.images, scales).filter { image, scale in
+            guard image.detection != nil, let own = image.sourcePxPerUm, let used = scale?.pxPerUm else { return false }
+            return !ImageScale.same(own, used)
         }.count
-        var scaleNote = ""
+        let imageScales = ImageScale.summarize(scales.map { scale in
+            scale.map { ImageScale.Entry.scale(ImageScale.Value(pxPerUm: $0.pxPerUm, source: $0.source)) } ?? .missing
+        })
+        var scaleNote = "\n  Image scales:   " + (imageScales.text.isEmpty ? "none set" : imageScales.text)
+            + (imageScales.missingLine.map { " · \($0)" } ?? "")
+            + "\n                  Each image's own scale is in Exports/images.csv (column px_per_um)."
         if differing > 0 {
-            scaleNote = """
+            scaleNote += """
 
-              Note: \(differing) image\(differing == 1 ? "" : "s") carried a different scale in \
+              Note: \(differing) analysed image\(differing == 1 ? "" : "s") carried a different scale in \
             \(differing == 1 ? "its" : "their") own metadata (column source_px_per_um in \
-            Exports/images.csv). The measurements use the batch scale above.
+            Exports/images.csv) than \(differing == 1 ? "its" : "their") measurements use (column px_per_um).
             """
         }
         let name = info.displayName.isEmpty ? info.name : info.displayName
@@ -617,7 +659,7 @@ final class BatchArchiveService {
           Images:         \(info.imageCount)
           Cells stored:   \(info.cellCount)
           Model:          \(info.modelId)
-          Scale:          \(String(format: "%g", info.pxPerUm)) px/µm (\(umPerPx) µm per pixel)
+          Batch scale:    \(String(format: "%g", info.pxPerUm)) px/µm (\(umPerPx) µm per pixel), for images without their own
           Scale source:   \(describeCalibrationSource(info.pxPerUmSource))\(scaleNote)
           Archived from:  \(info.sourceLibraryPath ?? "unknown")
           CellCounter:    \(manifest.appVersion)

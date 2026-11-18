@@ -1,5 +1,16 @@
 import SwiftUI
 
+/// The scale an area assay runs at: the picked file's own scale when it
+/// records one, else the default for images without a scale. Nil when
+/// neither is set, so µm² are never computed at a made-up 1 px/µm.
+private func areaAssayScale(for url: URL, fallback: Double) -> Double? {
+    if let file = EXIFCalibration.usableScale(at: url) { return file.pxPerUm }
+    return fallback.isFinite && fallback > 0 ? fallback : nil
+}
+
+private let areaAssayNoScaleMessage =
+    "This file has no pixel scale. Set a default scale for images without one in Settings → Pixel scale, then run it again."
+
 // MOUNTED BY `ResultsView.swift`'s `AdditionalAssaysSection`:
 //
 //       AreaAssaysPanel(state: state)
@@ -317,8 +328,11 @@ private struct ConfluenceAssayView: View {
         guard let pickedURL else { return }
         errorMessage = nil
         result = nil
+        guard let pxPerUm = areaAssayScale(for: pickedURL, fallback: state.pxPerUm) else {
+            errorMessage = areaAssayNoScaleMessage
+            return
+        }
         isRunning = true
-        let pxPerUm = state.pxPerUm
         let src = source
         let invertFlag = invert
         Task { @MainActor in
@@ -439,8 +453,13 @@ private struct ScratchWoundAssayView: View {
             tps = parsed
         }
 
+        // A time series comes from one microscope setup: the first file's scale.
+        guard let first = urls.first,
+              let pxPerUm = areaAssayScale(for: first, fallback: state.pxPerUm) else {
+            errorMessage = areaAssayNoScaleMessage
+            return
+        }
         isRunning = true
-        let pxPerUm = state.pxPerUm
         Task { @MainActor in
             defer { isRunning = false }
             do {
@@ -563,8 +582,11 @@ private struct SpheroidAssayView: View {
         guard let pickedURL else { return }
         errorMessage = nil
         result = nil
+        guard let pxPerUm = areaAssayScale(for: pickedURL, fallback: state.pxPerUm) else {
+            errorMessage = areaAssayNoScaleMessage
+            return
+        }
         isRunning = true
-        let pxPerUm = state.pxPerUm
         let invertFlag = darkObject
         Task { @MainActor in
             defer { isRunning = false }

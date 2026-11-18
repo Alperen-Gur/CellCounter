@@ -2,22 +2,33 @@ import SwiftUI
 
 // MARK: - CalibrationSheet
 
+/// Sets a pixel scale. From Home it sets the user's default for images
+/// without a scale. From Results/Batch it applies to the open batch: by
+/// default only to images without a scale of their own; replacing a scale
+/// recorded in a file needs the explicit "Override the file's scale" choice.
+/// When analysed images change scale and their model used the scale to
+/// segment, the sheet asks whether to segment them again or only rescale.
 struct CalibrationSheet: View {
     let current: Double
     let onClose: () -> Void
+    /// Home: saves the user's default for images without a scale.
     let onSave: (Double, String) -> Void
     /// Bug #11: optional URL of the currently-open image for "Draw on scale bar" tab.
     var imageURL: URL? = nil
     /// False on Home: saving changes only the default for future imports.
-    /// True from Results/Batch: saving intentionally recalibrates that batch.
+    /// True from Results/Batch: the value applies to the open batch's images.
     var appliesToOpenBatch: Bool = false
-    /// Optional repository handle so the "Use preset" tab can show user
-    /// presets alongside built-ins and the inline "New preset…" can persist
-    /// a new `CalibrationPresetRecord` without a round-trip through Settings.
-    /// Nil-safe: when not passed, the tab degrades to built-ins only.
+    /// Lets the "Preset" tab list the user's presets and "Save as preset"
+    /// store new ones. Nil-safe: without it, presets are not offered.
     var repos: Repositories? = nil
+    /// The open batch's images and scales, read once when the sheet opens.
+    var loadContext: (() -> ScaleChange.Context?)? = nil
+    /// Applies a change to the open batch; `true` segments again the analysed
+    /// images whose outlines depend on the scale.
+    var onApply: ((ScaleChange.Plan, Bool) -> Void)? = nil
 
     enum CalibTab { case metadata, direct, drawline, preset }
+    enum Scope: Hashable { case withoutScale, thisImage }
 
     @State private var tab: CalibTab
     @State private var val: Double
@@ -25,10 +36,15 @@ struct CalibrationSheet: View {
     /// yet") so the drawline tab can't Save a stale value before the user draws.
     @State private var lineLength: Double = 0
     @State private var refUm: Double = 100
-    @State private var selectedPreset: String = "Olympus IX73 — 20×"
+    @State private var selectedPreset: String = ""
     @State private var appeared = false
     @State private var metadataResult: EXIFCalibration.Result? = nil
     @State private var metadataCheckComplete = false
+    @State private var context: ScaleChange.Context? = nil
+    @State private var scope: Scope = .withoutScale
+    @State private var overrideFiles = false
+    /// Set while asking whether to segment analysed images again.
+    @State private var pendingPlan: ScaleChange.Plan? = nil
 
     @Environment(AppTheme.self) private var theme
 
@@ -36,15 +52,20 @@ struct CalibrationSheet: View {
          imageURL: URL? = nil,
          appliesToOpenBatch: Bool = false,
          repos: Repositories? = nil,
+         loadContext: (() -> ScaleChange.Context?)? = nil,
+         onApply: ((ScaleChange.Plan, Bool) -> Void)? = nil,
          onClose: @escaping () -> Void,
          onSave: @escaping (Double, String) -> Void) {
         self.current = current
         self.imageURL = imageURL
         self.appliesToOpenBatch = appliesToOpenBatch
         self.repos = repos
+        self.loadContext = loadContext
+        self.onApply = onApply
         self.onClose = onClose
         self.onSave = onSave
-        self._val = State(initialValue: current > 0 ? current : 5.2)
+        // No made-up starting value: an unset scale starts empty.
+        self._val = State(initialValue: current > 0 ? current : 0)
         // Reliability over cleverness: when an image is open, land on the
         // "Draw on scale bar" tab — clicking the burnt-in scale bar is the most
         // accurate calibration path. Fall back to manual entry when there's no
@@ -102,28 +123,30 @@ struct CalibrationSheet: View {
                     }
                 }
 
-                CalibFooter(
-                    saveDisabled: {
-                        switch tab {
-                        case .metadata: return metadataResult == nil
-                        case .direct: return val <= 0
-                        case .drawline: return derivedVal <= 0
-                        case .preset: return false
-                        }
-                    }(),
-                    onClose: onClose
-                ) {
-                    let saveVal: Double
-                    switch tab {
-                    case .metadata: saveVal = metadataResult?.pxPerUm ?? 0
-                    case .direct: saveVal = val
-                    case .drawline: saveVal = derivedVal
-                    case .preset: saveVal = CalibrationPreset.builtIn.first(where: { $0.name == selectedPreset })?.pxPerUm ?? val
-                    }
-                    // B4-4: guard against zero/negative pxPerUm to prevent divide-by-zero downstream
-                    guard saveVal > 0 else { return }
-                    onSave(saveVal, provenanceSource)
-                    onClose()
+                if let repos, tab == .direct || tab == .drawline, saveValue > 0, pendingPlan == nil {
+                    CalibSavePresetRow(value: saveValue, repos: repos)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 16)
+                }
+
+                if batchMode, let context, pendingPlan == nil {
+                    CalibScopeSection(context: context, value: saveValue,
+                                      usesOwnFileScale: usesOwnFileScale,
+                                      scope: $scope, overrideFiles: $overrideFiles)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 18)
+                }
+
+                if let plan = pendingPlan, let context {
+                    CalibResegmentChoice(plan: plan, context: context,
+                                         onRerun: { apply(plan, resegment: true) },
+                                         onRescale: { apply(plan, resegment: false) },
+                                         onBack: { withAnimation(Tokens.Motion.ease) { pendingPlan = nil } })
+                } else {
+                    CalibFooter(saveTitle: batchMode ? "Apply" : "Save as default",
+                                saveDisabled: saveDisabled,
+                                onClose: onClose,
+                                onSave: save)
                 }
             }
             .frame(width: 560)
@@ -136,29 +159,14 @@ struct CalibrationSheet: View {
         }
         .onAppear {
             withAnimation(Tokens.Motion.easeSlow) { appeared = true }
+            if appliesToOpenBatch { context = loadContext?() }
             detectMetadata()
         }
         .keyboardShortcut(.cancelAction)
         // Enter — save when valid
         .onKeyPress(.return) {
-            let saveDisabled: Bool
-            switch tab {
-            case .metadata:  saveDisabled = metadataResult == nil
-            case .direct:    saveDisabled = val <= 0
-            case .drawline:  saveDisabled = derivedVal <= 0
-            case .preset:    saveDisabled = false
-            }
-            guard !saveDisabled else { return .ignored }
-            let saveVal: Double
-            switch tab {
-            case .metadata: saveVal = metadataResult?.pxPerUm ?? 0
-            case .direct:   saveVal = val
-            case .drawline: saveVal = derivedVal
-            case .preset:   saveVal = CalibrationPreset.builtIn.first(where: { $0.name == selectedPreset })?.pxPerUm ?? val
-            }
-            guard saveVal > 0 else { return .ignored }
-            onSave(saveVal, provenanceSource)
-            onClose()
+            guard pendingPlan == nil, !saveDisabled else { return .ignored }
+            save()
             return .handled
         }
         .onChange(of: tab) { _, newTab in
@@ -176,10 +184,83 @@ struct CalibrationSheet: View {
     private var provenanceSource: String {
         switch tab {
         case .metadata: return metadataResult?.source.provenanceKey ?? "metadata"
-        case .direct: return "manual-entry"
-        case .drawline: return "scale-bar"
-        case .preset: return "preset-\(selectedPreset)"
+        case .direct: return ImageScale.typedSource
+        case .drawline: return ImageScale.scaleBarSource
+        case .preset: return ImageScale.presetSource(selectedPreset)
         }
+    }
+
+    /// The value the open tab would save.
+    private var saveValue: Double {
+        switch tab {
+        case .metadata: return metadataResult?.pxPerUm ?? 0
+        case .direct: return val
+        case .drawline: return derivedVal
+        case .preset: return selectedPreset.isEmpty ? 0 : val
+        }
+    }
+
+    /// Applying to the open batch's images (Results/Batch).
+    private var batchMode: Bool { appliesToOpenBatch && context != nil && onApply != nil }
+
+    private var currentImage: ScaleChange.ImageState? { context?.currentImage }
+
+    /// The open image goes back to its own file's scale.
+    private var usesOwnFileScale: Bool {
+        tab == .metadata && scope == .thisImage && currentImage?.file != nil
+    }
+
+    private var request: ScaleChange.Request? {
+        guard batchMode, saveValue > 0 else { return nil }
+        var source = provenanceSource
+        // Another image's file value used for images without a scale is
+        // recorded as such, not as "from file".
+        if tab == .metadata, scope == .withoutScale, let name = currentImage?.fileName {
+            source = ImageScale.otherFilePrefix + name
+        }
+        let target: ScaleChange.Scope
+        switch scope {
+        case .withoutScale:
+            target = .imagesWithoutOwnScale
+        case .thisImage:
+            guard let id = context?.currentImageId else { return nil }
+            target = .image(id)
+        }
+        return ScaleChange.Request(value: ImageScale.Value(pxPerUm: saveValue, source: source), scope: target,
+                                   overrideFiles: overrideFiles, useFileScale: usesOwnFileScale)
+    }
+
+    private var saveDisabled: Bool {
+        // B4-4: never a zero/negative px/µm (divide-by-zero downstream).
+        guard saveValue > 0 else { return true }
+        guard batchMode else { return false }
+        if scope == .thisImage {
+            guard let image = currentImage else { return true }
+            // A file's scale is replaced only by an explicit override.
+            if image.file != nil, !usesOwnFileScale, !overrideFiles { return true }
+        }
+        return false
+    }
+
+    private func save() {
+        guard !saveDisabled else { return }
+        guard batchMode, let request, let context else {
+            onSave(saveValue, provenanceSource)
+            onClose()
+            return
+        }
+        let plan = ScaleChange.plan(request, context: context)
+        guard !plan.isEmpty else { onClose(); return }
+        if plan.offersResegmentation {
+            withAnimation(Tokens.Motion.ease) { pendingPlan = plan }
+            return
+        }
+        apply(plan, resegment: false)
+    }
+
+    private func apply(_ plan: ScaleChange.Plan, resegment: Bool) {
+        onApply?(plan, resegment)
+        onClose()
     }
 
     private func detectMetadata() {
@@ -209,13 +290,13 @@ private struct CalibHeader: View {
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Calibrate scale")
+                Text("Pixel scale")
                     .font(.system(size: 18, weight: .bold))
                     .tracking(-0.01 * 18)
                     .foregroundStyle(Tokens.text)
                 Text(appliesToOpenBatch
-                     ? "Recalibrates the open batch and its saved measurements."
-                     : "Sets the default scale for future imports; analyzed batches stay unchanged.")
+                     ? "Each image has its own scale. A scale in an image's file is used unless you override it."
+                     : "Your default for images without a scale in their file. Images whose file has a scale keep it; analysed batches stay unchanged.")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Tokens.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -506,14 +587,9 @@ private struct CalibDrawlineTab: View {
                 Text("=")
                     .font(.system(size: 12.5))
                     .foregroundStyle(Tokens.textSecondary)
-                Text(String(format: "%.2f px / µm", derivedVal))
+                Text(derivedVal > 0 ? "\(ImageScale.format(derivedVal)) px / µm" : "— px / µm")
                     .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
                     .foregroundStyle(derivedVal > 0 ? Tokens.text : Tokens.textTertiary)
-                if derivedVal > 0 {
-                    Text("· \(AppState.objectiveLabel(for: derivedVal))")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Tokens.textTertiary)
-                }
                 Spacer(minLength: 0)
             }
         }
@@ -620,21 +696,10 @@ private struct CalibDrawlineTab: View {
 
     /// Convert view-space points to image-pixel distances and update lineLength.
     private func updateLineLengthFromPoints(_ a: CGPoint, _ b: CGPoint, in viewSize: CGSize) {
-        guard viewSize.width > 0, viewSize.height > 0 else { return }
-        let imgSize = sourcePixelSize
-        guard imgSize.width > 0, imgSize.height > 0 else { return }
-
-        // Aspect-fit scale: same logic SwiftUI uses for .aspectRatio(contentMode: .fit)
-        let scaleX = viewSize.width / imgSize.width
-        let scaleY = viewSize.height / imgSize.height
-        let fitScale = min(scaleX, scaleY)
-
-        // Convert point distance to image-pixel distance
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        let viewDist = hypot(dx, dy)
-        let pixelDist = viewDist / fitScale
-
+        // Aspect-fit conversion shared with the cell-size measurement in
+        // Analysis setup.
+        guard let pixelDist = LineMeasurement.imagePixelLength(
+            from: a, to: b, viewSize: viewSize, imageSize: sourcePixelSize) else { return }
         if pixelDist > 1 {
             lineLength = pixelDist
         }
@@ -744,58 +809,55 @@ private struct CalibPresetTab: View {
     let theme: AppTheme
     let onSelect: (String, Double) -> Void
 
-    /// User-saved presets fetched from SwiftData on appear and after each
-    /// inline-create. The built-in array is unchanged.
+    /// The user's presets, fetched from SwiftData on appear and after each
+    /// inline-create. CellCounter ships none.
     @State private var userPresets: [CalibrationPresetRecord] = []
     @State private var addingNew: Bool = false
     @State private var newPresetName: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(spacing: 0) {
-                // SwiftData is the single source of truth for presets:
-                // `Repositories.init` seeds `CalibrationPreset.builtIn` into the
-                // store on first launch, then Settings → Calibration presets +
-                // this sheet's inline "+ Save current value…" both write through
-                // here too. Looping `builtIn` separately would duplicate those
-                // four rows. If the store is empty (legacy install before the
-                // seed code shipped, or all presets deleted by the user), we
-                // fall back to the hardcoded array so the tab is never empty.
-                let rows: [(id: AnyHashable, name: String, px: Double, record: CalibrationPresetRecord?)] = {
-                    if !userPresets.isEmpty {
-                        return userPresets.map {
-                            (AnyHashable($0.id), $0.name, $0.pxPerUm, Optional($0))
+            if userPresets.isEmpty {
+                // Presets are the user's own: CellCounter ships none, since a
+                // px/µm value is only right for the microscope it was measured on.
+                Text("No saved presets yet. Measure a scale bar or type a value, then choose “Save as preset” and name it after your microscope and objective (for example “Nikon Ts2 · 10×”).")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Tokens.bgSunken)
+                    .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous))
+            } else {
+                VStack(spacing: 0) {
+                    // SwiftData is the single source of truth for presets:
+                    // Settings → Calibration presets and "Save as preset" write here.
+                    ForEach(Array(userPresets.enumerated()), id: \.element.id) { idx, preset in
+                        PresetRow(name: preset.name,
+                                  pxPerUm: preset.pxPerUm,
+                                  selected: selectedPreset == preset.name,
+                                  theme: theme,
+                                  note: CalibrationPreset.wasShipped(name: preset.name, pxPerUm: preset.pxPerUm)
+                                      ? CalibrationPreset.shippedNote : nil,
+                                  onTap: { onSelect(preset.name, preset.pxPerUm) },
+                                  onDelete: repos.map { r in
+                                      { r.deleteCalibrationPreset(preset); refresh() }
+                                  })
+                        if idx < userPresets.count - 1 {
+                            Divider().padding(.horizontal, 14)
                         }
                     }
-                    return CalibrationPreset.builtIn.map {
-                        (AnyHashable($0.id), $0.name, $0.pxPerUm, nil)
-                    }
-                }()
-                ForEach(Array(rows.enumerated()), id: \.element.id) { idx, row in
-                    PresetRow(name: row.name,
-                              pxPerUm: row.px,
-                              selected: selectedPreset == row.name,
-                              theme: theme,
-                              onTap: { onSelect(row.name, row.px) },
-                              onDelete: row.record.flatMap { rec in
-                                  repos.map { r in
-                                      { r.deleteCalibrationPreset(rec); refresh() }
-                                  }
-                              })
-                    if idx < rows.count - 1 {
-                        Divider().padding(.horizontal, 14)
-                    }
                 }
+                .background(Tokens.bgSunken)
+                .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous))
             }
-            .background(Tokens.bgSunken)
-            .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous))
 
             // Inline "Save current value as preset" affordance — only offered
             // when a repo was wired up.
             if repos != nil {
                 if addingNew {
                     HStack(spacing: 8) {
-                        TextField("Preset name (e.g. \"IX73 — 20×\")", text: $newPresetName)
+                        TextField("Preset name (e.g. \"Nikon Ts2 · 10×\")", text: $newPresetName)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12.5))
                             .padding(.horizontal, 10)
@@ -859,8 +921,10 @@ private struct PresetRow: View {
     let pxPerUm: Double
     let selected: Bool
     let theme: AppTheme
+    /// A warning shown under the value (presets older versions shipped).
+    var note: String? = nil
     let onTap: () -> Void
-    /// nil for built-in fallback rows (no SwiftData record to delete).
+    /// nil when there is no repository to delete from.
     let onDelete: (() -> Void)?
 
     @State private var hovering = false
@@ -872,9 +936,15 @@ private struct PresetRow: View {
                     Text(name)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Tokens.text)
-                    Text(String(format: "%.1f px / µm", pxPerUm))
+                    Text("\(ImageScale.format(pxPerUm)) px / µm")
                         .font(.system(size: 11.5, design: .monospaced))
                         .foregroundStyle(Tokens.textTertiary)
+                    if let note {
+                        Text(note)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Tokens.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer()
                 if hovering, let onDelete {
@@ -903,6 +973,7 @@ private struct PresetRow: View {
 }
 
 private struct CalibFooter: View {
+    var saveTitle: String = "Save"
     let saveDisabled: Bool
     let onClose: () -> Void
     let onSave: () -> Void
@@ -912,7 +983,7 @@ private struct CalibFooter: View {
             Spacer()
             Button("Cancel", action: onClose)
                 .appButton(.standard)
-            Button("Save calibration", action: onSave)
+            Button(saveTitle, action: onSave)
                 .appButton(.primary)
                 // B4-4: disable save when derived or entered value is zero/negative
                 .disabled(saveDisabled)
@@ -924,6 +995,170 @@ private struct CalibFooter: View {
         .overlay(
             Divider().frame(maxWidth: .infinity, maxHeight: 0.5), alignment: .top
         )
+    }
+}
+
+/// Which images of the open batch a value applies to. By default only images
+/// without a scale of their own; a file's scale is replaced only when the
+/// user ticks "Override the file's scale", which says what that does.
+private struct CalibScopeSection: View {
+    let context: ScaleChange.Context
+    let value: Double
+    let usesOwnFileScale: Bool
+    @Binding var scope: CalibrationSheet.Scope
+    @Binding var overrideFiles: Bool
+
+    private var currentImage: ScaleChange.ImageState? { context.currentImage }
+
+    /// Images whose file's scale this choice would replace.
+    private var overridable: [ScaleChange.ImageState] {
+        switch scope {
+        case .withoutScale: return context.fileScaled
+        case .thisImage:
+            guard !usesOwnFileScale, let image = currentImage, image.file != nil else { return [] }
+            return [image]
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Apply to")
+                .font(.system(size: 11))
+                .foregroundStyle(Tokens.textTertiary)
+            Picker("Apply to", selection: $scope) {
+                Text("Images without a scale (\(context.withoutOwnScaleCount))").tag(CalibrationSheet.Scope.withoutScale)
+                if currentImage != nil {
+                    Text("Only this image").tag(CalibrationSheet.Scope.thisImage)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+            .font(.system(size: 12.5))
+
+            if scope == .withoutScale, context.withoutOwnScaleCount == 0, overridable.isEmpty == false, !overrideFiles {
+                Text("Every image in this batch has a scale from its file, so this changes nothing unless you override the file's scale.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if usesOwnFileScale {
+                Text("This image goes back to the scale recorded in its file.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+            }
+            if !overridable.isEmpty {
+                Toggle(isOn: $overrideFiles) {
+                    Text(overridable.count == 1 && scope == .thisImage
+                         ? "Override the file's scale for this image"
+                         : "Override the file's scale for \(ImageScale.countText(overridable.count))")
+                        .font(.system(size: 12.5))
+                }
+                .toggleStyle(.checkbox)
+                if overrideFiles, value > 0 {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Your value: \(ImageScale.format(value)) px/µm")
+                        ForEach(ImageScale.overrideLines(yours: value, files: overridable.compactMap { $0.file?.pxPerUm }),
+                                id: \.self) { line in
+                            Text(line)
+                        }
+                        Text("Recorded as “manual override (file: … px/µm)”. Use this only if you know the file's scale is wrong.")
+                            .foregroundStyle(Tokens.textTertiary)
+                    }
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                } else if scope == .thisImage {
+                    Text("This image's file records \(ImageScale.format(currentImage?.file?.pxPerUm ?? 0)) px/µm. Choose the Metadata tab to use it, or override it here.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Tokens.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .onChange(of: scope) { _, _ in overrideFiles = false }
+    }
+}
+
+/// "Save as preset" after a scale-bar measurement or a typed value. Presets
+/// are named by the user after their own microscope and objective.
+private struct CalibSavePresetRow: View {
+    let value: Double
+    let repos: Repositories
+    @State private var name = ""
+    @State private var saved: String? = nil
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("Save as preset, e.g. Nikon Ts2 · 10×", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12.5))
+                .onSubmit(save)
+            Button("Save as preset", action: save)
+                .appButton(.standard, size: .sm)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || value <= 0)
+            if let saved {
+                Text("Saved “\(saved)”")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func save() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, value > 0 else { return }
+        repos.upsertCalibrationPreset(CalibrationPresetRecord(name: trimmed, pxPerUm: value))
+        saved = trimmed
+        name = ""
+    }
+}
+
+/// Asked when analysed images change scale and their model used the scale to
+/// decide how large a cell is in pixels.
+private struct CalibResegmentChoice: View {
+    let plan: ScaleChange.Plan
+    let context: ScaleChange.Context
+    let onRerun: () -> Void
+    let onRescale: () -> Void
+    let onBack: () -> Void
+
+    private var example: (old: Double, new: Double)? {
+        guard let id = plan.resegment.first,
+              let old = context.images.first(where: { $0.id == id })?.measured?.pxPerUm,
+              let new = plan.changed[id]?.pxPerUm else { return nil }
+        return (old, new)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("\(ImageScale.countText(plan.changed.count)) already analysed change scale")
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(Tokens.text)
+            Text("The model was told the cell size in pixels from the old scale, so it looked for cells of the wrong size. Segmenting again at the new scale gives outlines that match it.")
+            if let example {
+                Text("Only rescaling keeps the outlines and converts their sizes. Those results are then marked “segmented at \(ImageScale.format(example.old)) px/µm, measured at \(ImageScale.format(example.new)) px/µm”.")
+            }
+            if plan.changed.count > plan.resegment.count {
+                Text("\(ImageScale.countText(plan.changed.count - plan.resegment.count)) used a model that does not depend on the scale; their sizes are converted either way.")
+            }
+            HStack(spacing: 8) {
+                Button("Back", action: onBack)
+                    .appButton(.ghost)
+                Spacer()
+                Button("Only rescale sizes", action: onRescale)
+                    .appButton(.standard)
+                Button("Re-run segmentation for \(ImageScale.countText(plan.resegment.count)) (recommended)", action: onRerun)
+                    .appButton(.primary)
+            }
+            .padding(.top, 4)
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(Tokens.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .background(Tokens.bgSunken)
     }
 }
 
@@ -1014,8 +1249,12 @@ private struct OnboardingStep {
             desc: "Import microscope images, check calibration and channels on a representative image, then preview the masks before processing your batch. You can inspect images before installing a detector."
         ),
         .init(
-            title: "Calibrate per objective",
-            desc: "Tell CellCounter how many pixels equal a micrometer. Draw on a scale bar, pick a saved preset, or let it read the value straight from your image's EXIF metadata."
+            title: "Every image has its own scale",
+            desc: "CellCounter needs to know how many pixels make a micrometer (px/µm). Each image uses the scale recorded in its own file, so a folder can mix objectives. For images without one, draw a line on the scale bar or type px/µm, and save it as a preset named after your microscope and objective. Every size in µm, and the scaling used for segmentation, depends on it."
+        ),
+        .init(
+            title: "Set the expected cell size",
+            desc: "Before segmentation, images are scaled so a cell of this diameter matches the size the model was trained on, which changes both speed and results. Automatic uses the midpoint of your size classes; for best results, set it close to the typical diameter of your cells or measure one on the preview in Analysis setup."
         ),
         .init(
             title: "Correct detections, improve your model",
@@ -1052,9 +1291,10 @@ private struct OnboardHero: View {
                 switch step {
                 case 0: IlluCells(accentColor: theme.accentColor)
                 case 1: IlluCalibrate(accentColor: theme.accentColor)
-                case 2: IlluBins(accentColor: theme.accentColor)
-                case 3: IlluTrain(accentColor: theme.accentColor)
-                case 4: IlluLocal(accentColor: theme.accentColor, accentSoft: theme.accentSoft)
+                case 2: IlluCellSize(accentColor: theme.accentColor)
+                case 3: IlluBins(accentColor: theme.accentColor)
+                case 4: IlluTrain(accentColor: theme.accentColor)
+                case 5: IlluLocal(accentColor: theme.accentColor, accentSoft: theme.accentSoft)
                 default: EmptyView()
                 }
             }
@@ -1140,7 +1380,44 @@ private struct IlluCalibrate: View {
     }
 }
 
-// MARK: Step 2 — Ascending bin bars
+// MARK: Step 2 — A cell measured across its diameter
+
+private struct IlluCellSize: View {
+    let accentColor: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            let midY = size.height * 0.45
+            let neighbours: [(x: CGFloat, r: CGFloat)] = [(0.2, 20), (0.8, 24)]
+            for cell in neighbours {
+                let rect = CGRect(x: size.width * cell.x - cell.r, y: midY - cell.r, width: cell.r * 2, height: cell.r * 2)
+                ctx.stroke(Path(ellipseIn: rect), with: .color(Tokens.textSecondary.opacity(0.6)), lineWidth: 1.5)
+            }
+            let r: CGFloat = 38
+            let center = CGPoint(x: size.width * 0.5, y: midY)
+            let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+            ctx.fill(Path(ellipseIn: rect), with: .color(accentColor.opacity(0.15)))
+            ctx.stroke(Path(ellipseIn: rect), with: .color(accentColor), lineWidth: 1.5)
+            var line = Path()
+            line.move(to: CGPoint(x: center.x - r, y: center.y))
+            line.addLine(to: CGPoint(x: center.x + r, y: center.y))
+            ctx.stroke(line, with: .color(accentColor), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            for x in [center.x - r, center.x + r] {
+                ctx.fill(Path(ellipseIn: CGRect(x: x - 3, y: center.y - 3, width: 6, height: 6)), with: .color(accentColor))
+            }
+            ctx.draw(
+                Text("25 µm ≈ 65 px")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(accentColor),
+                at: CGPoint(x: center.x, y: center.y + r + 18),
+                anchor: .center
+            )
+        }
+        .frame(width: 320, height: 140)
+    }
+}
+
+// MARK: Step 3 — Ascending bin bars
 
 private struct IlluBins: View {
     let accentColor: Color
@@ -1181,7 +1458,7 @@ private struct IlluBins: View {
     }
 }
 
-// MARK: Step 3 — Loss curves
+// MARK: Step 4 — Loss curves
 
 private struct IlluTrain: View {
     let accentColor: Color
@@ -1231,7 +1508,7 @@ private struct IlluTrain: View {
     }
 }
 
-// MARK: Step 4 — Window outline + bars + check
+// MARK: Step 5 — Window outline + bars + check
 
 private struct IlluLocal: View {
     let accentColor: Color

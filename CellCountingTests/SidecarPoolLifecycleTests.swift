@@ -177,6 +177,73 @@ struct SidecarPoolLifecycleTests {
         #expect(busy.terminateCount == 0)
     }
 
+    // MARK: - Live limits (Settings → Model resource use)
+
+    @Test func loweringTheWarmLimitStopsIdleWorkersButNeverABusyOne() async throws {
+        let factory = FakeWorkerFactory()
+        let pool = PersistentSidecarPool(maxWarmWorkers: 3, idleTimeout: nil, launcher: factory.launcher)
+        let (a, b, busyKey) = (Self.key("a"), Self.key("b"), Self.key("busy"))
+        _ = try await Self.run(pool, a)
+        _ = try await Self.run(pool, b)
+        let held = Task { try await Self.run(pool, busyKey, args: ["hold"]) }
+        #expect(await Self.eventually { factory.latest(for: busyKey)?.heldCount == 1 })
+        let busy = try #require(factory.latest(for: busyKey))
+        #expect(await pool.workerCount == 3)
+
+        // The busy worker counts against the new limit, so both idle ones go now.
+        await pool.configure(maxWarmWorkers: 1, idleTimeout: nil)
+        #expect(await pool.workerCount == 1)
+        #expect(await pool.hasWorker(for: busyKey))
+        #expect(factory.latest(for: a)?.shutdownCount == 1)
+        #expect(factory.latest(for: b)?.shutdownCount == 1)
+        #expect(busy.isHealthy)
+        #expect(busy.shutdownCount == 0)
+        #expect(busy.terminateCount == 0)
+
+        busy.finishHeldRequests()
+        #expect(try await held.value.exitCode == 0)
+        #expect(busy.terminateCount == 0)
+        #expect(await pool.hasWorker(for: busyKey))
+
+        // Later admissions use the new limit: a new model replaces the idle one.
+        _ = try await Self.run(pool, a)
+        #expect(await pool.workerCount == 1)
+        #expect(busy.shutdownCount == 1)
+        #expect(factory.workers(for: a).count == 2)
+
+        // Raising it again lets two stay.
+        await pool.configure(maxWarmWorkers: 2, idleTimeout: nil)
+        _ = try await Self.run(pool, b)
+        #expect(await pool.workerCount == 2)
+        await pool.retireAll()
+    }
+
+    @Test func aNewIdleTimeoutAppliesToIdleWorkersFromNow() async throws {
+        let clock = ManualTestClock()
+        let factory = FakeWorkerFactory()
+        let pool = PersistentSidecarPool(maxWarmWorkers: 2, idleTimeout: .seconds(600),
+                                         clock: SidecarIdleClock(clock), launcher: factory.launcher)
+        let a = Self.key("a")
+        _ = try await Self.run(pool, a)
+        clock.advance(by: .seconds(30))
+        await Self.settle()
+
+        await pool.configure(maxWarmWorkers: 2, idleTimeout: .seconds(60))
+        clock.advance(by: .seconds(59))
+        await Self.settle()
+        #expect(await pool.hasWorker(for: a))
+
+        clock.advance(by: .seconds(1))
+        #expect(await Self.eventually { await pool.workerCount == 0 })
+        #expect(factory.latest(for: a)?.shutdownCount == 1)
+        #expect(factory.latest(for: a)?.terminateCount == 0)
+
+        // The next idle period uses the new timeout too.
+        _ = try await Self.run(pool, a)
+        clock.advance(by: .seconds(60))
+        #expect(await Self.eventually { await pool.workerCount == 0 })
+    }
+
     // MARK: - Newline framing
 
     @Test func lineSplitAcrossSeveralChunksIsReassembled() {

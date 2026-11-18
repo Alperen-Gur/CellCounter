@@ -234,8 +234,10 @@ enum WorkbenchService {
                                  "--microscopy-runtime", microscopy.manifestURL.deletingLastPathComponent().path]
         }
         processArguments += ["request", "--file", requestURL.path]
+        // An interactive app request, not a model run: no Model resource use
+        // limits (Light would make every Workbench action slow).
         let output = try await SidecarProcessRunner.run(
-            pythonURL: python, args: processArguments, trackerKind: .other)
+            pythonURL: python, args: processArguments, trackerKind: .other, modelLimits: false)
         guard let envelope = try? JSONDecoder().decode(WorkbenchJSON.self, from: output.stdout) else {
             let diagnostic = String(data: output.stderr.suffix(1200), encoding: .utf8) ?? ""
             throw WorkbenchFailure(code: "invalid-response",

@@ -30,6 +30,11 @@ final class CellposeSAMInstaller: ObservableObject {
 
     private var process: Process?
     private var streamTask: Task<Void, Never>?
+    /// The run started over a working install (an update). If it fails, that
+    /// install is checked again and kept in use when it still imports.
+    private var updatingWorkingInstall = false
+    /// Cellpose version of that install, for the failure message.
+    private var previousVersion: String?
 
     func reinstall() {
         cancel()
@@ -101,12 +106,28 @@ final class CellposeSAMInstaller: ObservableObject {
         done = false
         isRunning = true
 
+        // Re-running the script over a working venv4 updates it in place to
+        // the pinned set. Remember that, before the flags below are cleared.
+        // Not yet probed counts too: a failure is only forgiven after an
+        // import check passes.
+        let cachedImportable = UserDefaults.standard.object(
+            forKey: Cellpose4Availability.importableCacheKey) as? Bool
+        updatingWorkingInstall = cachedImportable != false
+            && !fm.fileExists(atPath: FileStore.shared.cellpose4InstallIncompleteSentinel.path)
+            && fm.fileExists(atPath: pipURL.path)
+        let storedVersion = UserDefaults.standard.string(forKey: CellposeSAMRuntime.installedVersionCacheKey)
+        previousVersion = updatingWorkingInstall && storedVersion != CellposeSAMRuntime.unreadableVersion
+            ? storedVersion : nil
+
         // Drop the cp4 sentinel + invalidate the cp4 cached probe. Both keys
         // are DISTINCT from the 3.x ones so this never disturbs the 3.x install.
+        // While the sentinel exists no Cellpose-SAM analysis starts, so none
+        // runs on half-replaced packages.
         try? fm.createDirectory(at: FileStore.shared.pythonDir,
                                 withIntermediateDirectories: true)
         try? Data().write(to: FileStore.shared.cellpose4InstallIncompleteSentinel)
         UserDefaults.standard.set(false, forKey: Cellpose4Availability.importableCacheKey)
+        CellposeSAMRuntime.forgetCachedVersion()
         NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
 
         let proc = Process()
@@ -195,9 +216,38 @@ final class CellposeSAMInstaller: ObservableObject {
             if error == nil {
                 error = "Install failed (exit code \(exitCode))"
             }
+            if updatingWorkingInstall {
+                keepPreviousInstallIfItStillWorks(exitCode: exitCode)
+            }
         }
+        updatingWorkingInstall = false
         // A failed or cancelled pip run may also have changed the runtime.
         NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
+    }
+
+    /// An update that did not finish (no network, no Python 3.12, cancelled)
+    /// usually leaves the old packages in place: pip resolves and downloads
+    /// everything before it changes anything. If Cellpose still imports, keep
+    /// using it instead of reporting a broken install. Each result records
+    /// the versions that actually ran, so a mixed state cannot go unnoticed.
+    private func keepPreviousInstallIfItStillWorks(exitCode: Int32) {
+        let python = FileStore.shared.pythonInterpreter4URL
+        let venv = FileStore.shared.pythonVenv4Dir
+        let sentinel = FileStore.shared.cellpose4InstallIncompleteSentinel
+        let previous = previousVersion
+        Task { [weak self] in
+            let version: String? = await Task.detached(priority: .userInitiated) {
+                guard CellposeSAMRuntime.isImportable(pythonURL: python) else { return nil }
+                return CellposeSAMRuntime.installedVersion(venv: venv) ?? previous ?? "4.x"
+            }.value
+            guard let version, let self, !self.isRunning else { return }
+            try? FileManager.default.removeItem(at: sentinel)
+            // Re-probe rather than assume; the probe also re-reads the version.
+            UserDefaults.standard.removeObject(forKey: Cellpose4Availability.importableCacheKey)
+            NotificationCenter.default.post(name: .ccVenv4Changed, object: nil)
+            self.error = "The update did not finish (exit code \(exitCode)). Cellpose \(version) "
+                + "is still installed, and analyses keep using it. Check the log above, then retry."
+        }
     }
 
     // MARK: — Helpers

@@ -284,7 +284,9 @@ struct TrackingPanel: View {
         let startKey = liveKey(imagesSnapshot)
         // PIXELS PER MICROMETRE — forwarded to `--px-per-um` verbatim. Never
         // the reciprocal `pixel_size_um`; see TrackingRunner's header note.
-        let pxPerUm = state.currentBatch?.pxPerUm ?? state.pxPerUm
+        // A time series shares one scale: the first frame's own.
+        let pxPerUm = imagesSnapshot.first.map(\.currentPxPerUm).flatMap { $0 > 0 ? $0 : nil }
+            ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
         let maxDisp = maxDisplacementUm
         let applyDrift = correctDrift
         let settingsKey = currentSettingsKey

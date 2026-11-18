@@ -10,7 +10,16 @@ import ImageIO
 ///   3. Olympus vendor tag (OlympusIni / ImageDescription "Calibration Value") — low confidence.
 ///
 /// All parsers are defensive: malformed XML / missing fields → nil, not a crash.
-enum EXIFCalibration {
+nonisolated enum EXIFCalibration {
+
+    /// The scale an image takes from its file: high- and medium-confidence
+    /// results only, as at import (`ImageLoader.importFile`). Low-confidence
+    /// vendor tags are offered in the calibration sheet but never applied on
+    /// their own.
+    static func usableScale(at url: URL) -> (pxPerUm: Double, source: String)? {
+        guard let result = detectPxPerUm(at: url), result.confidence != .low else { return nil }
+        return (result.pxPerUm, result.source.provenanceKey)
+    }
 
     struct Result: Sendable, Equatable {
         let pxPerUm: Double
@@ -310,7 +319,7 @@ enum EXIFCalibration {
 
 private extension String {
     /// Returns the first match for `pattern` in self, or nil.
-    func firstMatch(for pattern: String) -> String? {
+    nonisolated func firstMatch(for pattern: String) -> String? {
         guard let r = range(of: pattern, options: .regularExpression) else { return nil }
         return String(self[r])
     }

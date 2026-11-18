@@ -53,7 +53,8 @@ except Exception as exc:
 """#
         do {
             let result = try await SidecarProcessRunner.run(pythonURL: python,
-                args: ["-I", "-c", script, requirements.path, analysisRequirements.path, zarrRequirements.path, reportingRequirements.path], trackerKind: .other)
+                args: ["-I", "-c", script, requirements.path, analysisRequirements.path, zarrRequirements.path, reportingRequirements.path],
+                trackerKind: .other, modelLimits: false)
             guard result.exitCode == 0,
                   let value = try? JSONDecoder().decode(WorkbenchJSON.self, from: result.stdout) else {
                 return Result(ready: false, summary: "The Python environment could not complete its readiness check. Use Install or repair, then check again.")

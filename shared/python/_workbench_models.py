@@ -161,6 +161,19 @@ def operations():
     return result
 
 
+def _runtime_budget(mode):
+    """Seconds a model run may take. Light (background priority) can make a
+    run several times slower, so it gets four times the usual budget."""
+    if mode in ("probe", "environment"):
+        return 60
+    try:
+        import _workbench_resource_limits as resource_limits
+        state = resource_limits.read()
+    except Exception:  # noqa: BLE001 — limits are optional
+        state = None
+    return 1200 if state and state.get("background") else 300
+
+
 def fail(code, message, details=None):
     from _workbench_schema import WorkbenchError
     raise WorkbenchError(code, message, details)
@@ -326,9 +339,17 @@ def _worker(backend="cellpose3"):
 
 
 def _environment():
-    return {key: value for key, value in os.environ.items() if key in
-            ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "APPDATA", "LOCALAPPDATA",
-             "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "CUDA_VISIBLE_DEVICES")}
+    environment = {key: value for key, value in os.environ.items() if key in
+                   ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "APPDATA", "LOCALAPPDATA",
+                    "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "CUDA_VISIBLE_DEVICES")}
+    # Plus CellCounter's Model resource use: thread counts, GPU memory limits
+    # and the live control file, read when each model run starts. They are not
+    # part of the captured environment inventory or any result.
+    try:
+        from _workbench_resource_limits import environment as with_resource_limits
+    except ImportError:
+        return environment
+    return with_resource_limits(environment)
 
 
 def _read_json(path, maximum=4 * 1024 ** 2):
@@ -373,8 +394,13 @@ def _invoke(store, model, request, prepare=None, consume=None):
                                         "--output", str(directory)], stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, env=_environment(), start_new_session=os.name != "nt")
             started = time.monotonic()
+            budget, checked = _runtime_budget(request["mode"]), started
             while process.poll() is None:
-                if (time.monotonic() - started > (60 if request["mode"] in ("probe", "environment") else 300)
+                now = time.monotonic()
+                if now - checked > 2:
+                    # Never shortened: a run slowed by Light keeps its longer budget.
+                    budget, checked = max(budget, _runtime_budget(request["mode"])), now
+                if (now - started > budget
                         or stdout.tell() + stderr.tell() > MAX_LOG_BYTES):
                     process.kill()
                     process.wait()

@@ -153,7 +153,8 @@ struct SpatialStatsPanel: View {
         let heightPx = image.heightPx
         // PIXELS PER MICROMETRE — forwarded to `--pxPerUm` verbatim. Never the
         // reciprocal `pixel_size_um`; see SpatialStatsRunner's header note.
-        let pxPerUm = state.pxPerUm
+        // The image's own scale (each image has one).
+        let pxPerUm = image.currentPxPerUm > 0 ? image.currentPxPerUm : state.pxPerUm
         let cellsSnapshot = cells
         let paramsSnapshot = params
 

@@ -57,6 +57,7 @@ struct CellCountingApp: App {
             AnalysisProtocolCommands(state: state, shortcutsPresented: showShortcuts)
             LibraryCommands(state: state)
             BatchArchiveCommands(state: state)
+            ModelResourceCommands(state: state)
         }
     }
 }

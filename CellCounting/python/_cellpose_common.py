@@ -21,6 +21,19 @@ Public API (callers in cellpose_detect.py / cellpose4_detect.py):
 
     log(*args, **kwargs) -> None
     emit_error(error: str, hint: str = "", exit_code: int = 2) -> NoReturn
+        A PyTorch MPS out-of-memory hint is reported as `memory-limit`.
+
+    apply_cpu_thread_limit(torch_mod=None) -> None
+        Applies the host's `CC_CPU_THREADS` to PyTorch once per process,
+        then the live control file. Call after importing torch, before
+        loading a model.
+
+    install_limits_control() -> bool / apply_live_limits(...) -> bool
+        Live limits: on SIGINFO, re-read `CC_LIMITS_FILE` and apply PyTorch's
+        thread count and GPU memory cap without reloading the model.
+        `run_sidecar` and `serve_ndjson` install the handler.
+
+    is_memory_limit_error(error) -> bool / memory_limit_hint() -> str
 
     build_arg_parser(description: str, default_model: str) -> argparse.ArgumentParser
         Adds every CLI flag both scripts share. Caller adds version-specific
@@ -68,6 +81,19 @@ Public API (callers in cellpose_detect.py / cellpose4_detect.py):
     compute_colony_stats(masks, args, height_px, width_px) -> dict
     emit_payload(width_px, height_px, cells, image_stats) -> None
 
+    model_loading_progress(package="cellpose") -> context manager
+        Routes Cellpose's lazy weight downloads through `_model_downloads`
+        (verified TLS, resumable `.cellcounter-part`, size checks) and cleans the models
+        folder first. Yields the models folder.
+
+    build_with_weight_recovery(build, managed_names, models_directory)
+        Constructs a model; a truncated/corrupt checkpoint that CellCounter
+        downloaded is moved aside, downloaded once more, and loaded again.
+
+    run_sidecar(entry)
+        Entry-point wrapper: SIGTERM unwinds the stack (finally blocks run,
+        partial downloads stay resumable), then the process ends by SIGTERM.
+
 The logger prefix is "[cellpose_detect]" in both scripts. We keep that exact
 spelling so the existing UI parser (ccDetectionStage) doesn't have to learn
 two prefixes.
@@ -81,9 +107,18 @@ import io
 import json
 import math
 import os
+import signal
+import stat
 import sys
+import threading
 import uuid
 from typing import Any
+
+try:
+    import _model_downloads as downloads
+except ImportError:  # imported from outside the sidecar folder
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import _model_downloads as downloads
 
 
 # ---------------------------------------------------------------------------
@@ -96,13 +131,404 @@ def log(*args, **kwargs) -> None:
 
 
 def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
-    """Write a structured error JSON to stdout and exit."""
+    """Write a structured error JSON to stdout and exit.
+
+    Whatever stage raised it, a PyTorch GPU out-of-memory failure is reported
+    as `memory-limit` with a plain hint (see `memory_limit_failure`).
+    """
+    error, hint = memory_limit_failure(error, hint)
     payload: dict = {"error": error}
     if hint:
         payload["hint"] = hint
     sys.stdout.write(json.dumps(payload))
     sys.stdout.flush()
     sys.exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# Resource limits (Settings → General → Model resource use). The host passes
+# them in the environment: thread counts for every numeric library,
+# `CC_CPU_THREADS` for PyTorch (applied below), PyTorch's own
+# PYTORCH_MPS_HIGH/LOW_WATERMARK_RATIO, and `CC_MEMORY_LIMIT_GB` to name the
+# limit in an error. They change speed and memory use, not processing steps.
+# ---------------------------------------------------------------------------
+
+MEMORY_LIMIT_ERROR = "memory-limit"
+
+_cpu_threads_applied = False
+
+
+def cpu_thread_limit():
+    """The thread count the host chose (`CC_CPU_THREADS`), or None for no limit."""
+    raw = os.environ.get("CC_CPU_THREADS", "").strip()
+    if not raw:
+        return None
+    try:
+        threads = int(raw)
+    except ValueError:
+        log(f"[cellpose_detect] ignoring CC_CPU_THREADS={raw!r}")
+        return None
+    return threads if threads > 0 else None
+
+
+def apply_cpu_thread_limit(torch_mod=None) -> None:
+    """Limit PyTorch's CPU threads to `CC_CPU_THREADS`, once per process.
+
+    Call after importing torch and before loading a model. ``torch_mod``
+    defaults to an already imported torch; this never imports it. The
+    inter-op pool can only be sized before any parallel work has started,
+    so a refusal there is logged and ignored. Then applies the live control
+    file, in case Settings changed after this process started.
+    """
+    global _cpu_threads_applied
+    torch_mod = torch_mod if torch_mod is not None else sys.modules.get("torch")
+    if _cpu_threads_applied or torch_mod is None:
+        return
+    _cpu_threads_applied = True
+    threads = cpu_thread_limit()
+    if threads is None:
+        # Started without a limit: this is PyTorch's own default, which
+        # Maximum returns to after a live change.
+        try:
+            _live["default_threads"] = int(torch_mod.get_num_threads())
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            torch_mod.set_num_threads(threads)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] could not limit CPU threads: {exc!r}")
+        else:
+            try:
+                # Matches TF_NUM_INTEROP_THREADS on the host side.
+                torch_mod.set_num_interop_threads(max(1, min(2, threads)))
+            except Exception as exc:  # noqa: BLE001
+                log(f"[cellpose_detect] inter-op threads left unchanged: {exc!r}")
+            log(f"[cellpose_detect] CPU threads limited to {threads}")
+    apply_live_limits(torch_mod, initial=True)
+    flush_live_notes()
+
+
+def is_memory_limit_error(error) -> bool:
+    """Whether `error` (an exception or its text) is PyTorch running out of MPS memory.
+
+    PyTorch raises ``MPS backend out of memory (MPS allocated: …, max allowed:
+    …)`` both when the limit set in Settings is reached and when the Mac
+    itself has no memory left.
+    """
+    text = str(error).lower()
+    return "out of memory" in text and ("mps backend" in text or "mps allocated" in text)
+
+
+def memory_limit_hint() -> str:
+    """Plain advice for a `memory-limit` error.
+
+    Names the limit in force: the one set live from Settings, if any,
+    otherwise the one this process started with.
+    """
+    if _live["limit_set_live"]:
+        limit = str(_live["limit_gb"] or "")
+    else:
+        limit = os.environ.get("CC_MEMORY_LIMIT_GB", "").strip()
+    if limit:
+        return (f"The model needed more memory than the {limit} GB limit set in "
+                "Settings → General → Model resource use. Raise the limit or "
+                "choose Maximum, then run it again.")
+    return ("The model ran out of GPU memory. Close apps that use a lot of "
+            "memory or try a smaller image, then run it again.")
+
+
+def memory_limit_failure(error: str, hint: str):
+    """(error, hint) to report: a PyTorch out-of-memory failure becomes `memory-limit`."""
+    if error == MEMORY_LIMIT_ERROR or not is_memory_limit_error(hint):
+        return error, hint
+    log(f"[cellpose_detect] {error} was PyTorch running out of GPU memory: {hint}")
+    return MEMORY_LIMIT_ERROR, memory_limit_hint()
+
+
+# ---------------------------------------------------------------------------
+# Live limits. When the choice changes in Settings, the host rewrites the JSON
+# file named in `CC_LIMITS_FILE` and sends SIGINFO; the handler applies
+# PyTorch's thread count and GPU memory cap without reloading the model.
+# Priority (Darwin background state) is set by the host itself.
+#
+# SIGINFO, not SIGUSR1: its default action is to ignore the signal, so a
+# process that is still starting, or a helper that never installs the
+# handler, is not stopped by it.
+#
+# A Python signal handler runs in the main thread between bytecodes, never
+# inside a torch call, so setting the thread count or the allocator limit
+# there is safe. It writes nothing (an interrupted write to stderr could be
+# re-entered); notes are logged later at a safe point.
+# ---------------------------------------------------------------------------
+
+LIMITS_FILE_ENV = "CC_LIMITS_FILE"
+LIMITS_SIGNAL = getattr(signal, "SIGINFO", None)
+# PyTorch's default MPS high watermark: "no cap set by CellCounter".
+PYTORCH_DEFAULT_MPS_FRACTION = 1.7
+
+
+def _fresh_live_state() -> dict:
+    return {
+        # Between requests in a serve loop; a one-shot run is one request.
+        "in_request": True,
+        # Threads this process set live, and PyTorch's default when the
+        # process started without a limit.
+        "threads": None,
+        "default_threads": None,
+        # MPS cap this process set live; a lower one waiting for the request.
+        "fraction": None,
+        "pending": None,
+        # The hard cap's size for the error hint, once set live.
+        "limit_gb": None,
+        "limit_set_live": False,
+        "handler_installed": False,
+        "notes": [],
+    }
+
+
+_live = _fresh_live_state()
+
+
+def _note(message: str) -> None:
+    notes = _live["notes"]
+    notes.append(message)
+    del notes[:-10]
+
+
+def flush_live_notes() -> None:
+    """Log what the live handler did. Call only outside the handler."""
+    notes, _live["notes"] = _live["notes"], []
+    for message in notes:
+        log(f"[cellpose_detect] {message}")
+
+
+def _positive_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _mps_fraction(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if 0 < value <= 2 else None
+
+
+def read_live_limits(path=None):
+    """The host's live limits (`CC_LIMITS_FILE`), or None if absent or unreadable."""
+    path = path or os.environ.get(LIMITS_FILE_ENV, "")
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            state = json.loads(handle.read(65536))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or state.get("version") != 1:
+        return None
+    return state
+
+
+def install_limits_control() -> bool:
+    """Apply new limits when the host sends SIGINFO. Main thread only; idempotent.
+
+    Leaves a handler some other code installed alone. Interrupted system
+    calls restart, so native code never sees EINTR because of it.
+    """
+    if _live["handler_installed"]:
+        return True
+    if LIMITS_SIGNAL is None or not os.environ.get(LIMITS_FILE_ENV):
+        return False
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    try:
+        if signal.getsignal(LIMITS_SIGNAL) not in (signal.SIG_DFL, signal.SIG_IGN, None):
+            return False
+        signal.signal(LIMITS_SIGNAL, _on_limits_signal)
+        signal.siginterrupt(LIMITS_SIGNAL, False)
+    except (ValueError, OSError, AttributeError):
+        return False
+    _live["handler_installed"] = True
+    return True
+
+
+def _on_limits_signal(signum, frame) -> None:
+    try:
+        apply_live_limits()
+    except Exception as exc:  # noqa: BLE001
+        _note(f"could not apply new limits: {exc!r}")
+
+
+def apply_live_limits(torch_mod=None, *, initial=False) -> bool:
+    """Apply the live control file to this process.
+
+    Sets PyTorch's thread count, and its GPU memory cap: a higher or removed
+    cap at once; a lower one at once only between requests (or when
+    ``initial``, before any model is loaded), otherwise after the current
+    request (`apply_deferred_live_limits`), so a running image never fails
+    because of the change. Does nothing before torch is imported; never
+    imports it. Returns whether a state was read.
+    """
+    torch_mod = torch_mod if torch_mod is not None else sys.modules.get("torch")
+    if torch_mod is None:
+        return False
+    state = read_live_limits()
+    if state is None:
+        return False
+    _apply_live_threads(torch_mod, state)
+    _apply_live_memory(torch_mod, state, allow_lower=initial or not _live["in_request"])
+    return True
+
+
+def _apply_live_threads(torch_mod, state) -> None:
+    target = _positive_int(state.get("cpu_threads"))
+    launched = cpu_thread_limit()
+    current = _live["threads"] if _live["threads"] is not None else launched
+    if target is None:
+        # Maximum: PyTorch's own default. A process that never had a limit
+        # keeps running exactly as it started.
+        if current is None:
+            return
+        target = _live["default_threads"] or _positive_int(state.get("default_cpu_threads"))
+        if target is None:
+            return
+    if target == current:
+        return
+    try:
+        torch_mod.set_num_threads(target)
+    except Exception as exc:  # noqa: BLE001
+        _note(f"could not change CPU threads: {exc!r}")
+        return
+    _live["threads"] = target
+    _note(f"CPU threads now {target} (Settings changed)")
+
+
+def _launch_mps_fraction() -> float:
+    try:
+        return float(os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO", ""))
+    except ValueError:
+        return PYTORCH_DEFAULT_MPS_FRACTION
+
+
+def _developer_memory_cap() -> bool:
+    """A cap CellCounter did not set; it always names its own in CC_MEMORY_LIMIT_GB."""
+    return (bool(os.environ.get("PYTORCH_MPS_HIGH_WATERMARK_RATIO"))
+            and not os.environ.get("CC_MEMORY_LIMIT_GB"))
+
+
+def _apply_live_memory(torch_mod, state, allow_lower) -> None:
+    if _developer_memory_cap():
+        return
+    target = _mps_fraction(state.get("memory_fraction"))
+    limit_gb = _positive_int(state.get("memory_limit_gb")) if target is not None else None
+    if target is None:
+        target = PYTORCH_DEFAULT_MPS_FRACTION
+    current = _live["fraction"] if _live["fraction"] is not None else _launch_mps_fraction()
+    if abs(target - current) < 1e-9:
+        _live["pending"] = None
+        return
+    if target < current and not allow_lower:
+        _live["pending"] = (target, limit_gb)
+        _note(f"GPU memory cap lowers after the current image (fraction {target:.4f})")
+        return
+    _set_mps_fraction(torch_mod, target, limit_gb)
+
+
+def _set_mps_fraction(torch_mod, fraction, limit_gb) -> bool:
+    mps = getattr(torch_mod, "mps", None)
+    backend = getattr(getattr(torch_mod, "backends", None), "mps", None)
+    setter = getattr(mps, "set_per_process_memory_fraction", None)
+    try:
+        if setter is None or backend is None or not backend.is_available():
+            return False
+        setter(float(fraction))
+    except Exception as exc:  # noqa: BLE001
+        _note(f"could not change the GPU memory cap: {exc!r}")
+        return False
+    _live.update(fraction=float(fraction), pending=None, limit_gb=limit_gb, limit_set_live=True)
+    _note(f"GPU memory cap now fraction {fraction:.4f} (Settings changed)")
+    return True
+
+
+def apply_deferred_live_limits(torch_mod=None) -> None:
+    """Apply a lower GPU memory cap that waited for the request to finish."""
+    pending = _live["pending"]
+    torch_mod = torch_mod if torch_mod is not None else sys.modules.get("torch")
+    if pending is None or torch_mod is None:
+        return
+    _set_mps_fraction(torch_mod, *pending)
+
+
+# ---------------------------------------------------------------------------
+# Termination. The host stops workers with SIGTERM (Cancel, idle retirement,
+# quit) and SIGKILLs stragglers. Python's default SIGTERM action ends the
+# process without running `finally` blocks.
+# ---------------------------------------------------------------------------
+
+class WorkerTerminated(SystemExit):
+    """Raised in the main thread when SIGTERM arrives.
+
+    A SystemExit, so `except Exception` handlers let it through and `finally`
+    blocks (closing a partial download, restoring hooks) run on the way out.
+    `serve_ndjson` never turns it into a response.
+    """
+
+
+# How long unwinding may take before the process ends regardless, in case a
+# library swallowed the exception. Started by the handler itself.
+TERMINATION_GRACE_SECONDS = 3.0
+
+
+def _end_by_sigterm() -> None:
+    """End the process by SIGTERM, so the host sees the same status as before."""
+    try:
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    except ValueError:  # not the main thread; SIG_DFL is already in place
+        pass
+    # Aimed at this thread, the signal is delivered before the call returns
+    # (os.kill could be taken by another thread after os._exit had run).
+    signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+    os._exit(128 + signal.SIGTERM)  # only if the signal was blocked
+
+
+def install_termination_handler() -> bool:
+    """Make SIGTERM raise `WorkerTerminated` in the main thread.
+
+    A second SIGTERM while unwinding ends the process at once, as SIGTERM
+    always did. Returns False when called off the main thread (no-op).
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return False
+
+    def handle(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        timer = threading.Timer(TERMINATION_GRACE_SECONDS, _end_by_sigterm)
+        timer.daemon = True
+        timer.start()
+        raise WorkerTerminated(128 + signum)
+
+    signal.signal(signal.SIGTERM, handle)
+    return True
+
+
+def run_sidecar(entry):
+    """Run a sidecar's entry point with clean SIGTERM handling.
+
+    SIGTERM unwinds `entry` (a weight download keeps its resumable `.cellcounter-part`;
+    nothing is half-moved), then the process ends by SIGTERM exactly as it
+    did without the handler. Ordinary `sys.exit` codes pass through. Live
+    limit changes (SIGINFO) are applied while `entry` runs.
+    """
+    install_termination_handler()
+    install_limits_control()
+    try:
+        return entry()
+    except WorkerTerminated:
+        _end_by_sigterm()
 
 
 def _exit_status(code) -> int:
@@ -135,8 +561,20 @@ def serve_ndjson(run_once, after_response=None) -> None:
     Requests are deliberately executed one at a time: Cellpose model objects
     are not documented as thread-safe, and serialization prevents concurrent
     eval calls from multiplying peak model/GPU memory.
+
+    Live limits from Settings (SIGINFO) apply during a request; each request
+    also starts from the current control file, and a lower GPU memory cap
+    that arrived during a request applies after its response.
     """
+    install_limits_control()
+    _live["in_request"] = False
     for raw_line in sys.stdin:
+        # Settings may have changed while this worker waited.
+        try:
+            apply_live_limits()
+        except Exception as exc:  # noqa: BLE001
+            _note(f"could not apply new limits: {exc!r}")
+        _live["in_request"] = True
         request_id = None
         output = io.StringIO()
         exit_code = 0
@@ -151,6 +589,9 @@ def serve_ndjson(run_once, after_response=None) -> None:
             with contextlib.redirect_stdout(output):
                 try:
                     run_once(argv)
+                except WorkerTerminated:
+                    # The host stopped this worker: no response, no next request.
+                    raise
                 except SystemExit as exc:
                     exit_code = _exit_status(exc.code)
                     if exc.code is not None and not isinstance(exc.code, int):
@@ -160,10 +601,11 @@ def serve_ndjson(run_once, after_response=None) -> None:
         except Exception as exc:  # noqa: BLE001
             exit_code = 70
             log(f"[cellpose_detect] worker request failed: {exc!r}")
+            error, hint = memory_limit_failure("worker-request-failed", str(exc))
             output = io.StringIO()
             output.write(json.dumps({
-                "error": "worker-request-failed",
-                "hint": str(exc),
+                "error": error,
+                "hint": hint,
             }, separators=(",", ":")))
 
         response = {
@@ -173,12 +615,17 @@ def serve_ndjson(run_once, after_response=None) -> None:
         }
         sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
         sys.stdout.flush()
+        _live["in_request"] = False
 
         if after_response is not None:
             # Drop this request's input and payload first, so the hook can
             # reclaim them. The model cache lives in the caller's module.
             raw_line = request = argv = output = response = None
             _run_after_response(after_response)
+        # A lower GPU memory cap that arrived during the request, now that
+        # its memory has been handed back.
+        apply_deferred_live_limits()
+        flush_live_notes()
 
 
 def _run_after_response(hook) -> None:
@@ -228,8 +675,13 @@ def release_request_memory() -> None:
 # First-use model loading — visible, bounded network operations.
 # ---------------------------------------------------------------------------
 
-class ModelDownloadError(RuntimeError):
-    """The weights are unavailable; image loading/inference is not the failure."""
+# The weights are unavailable; image loading/inference is not the failure.
+# Defined in `_model_downloads`, so its subclasses are caught here too.
+ModelDownloadError = downloads.ModelDownloadError
+
+
+class WeightsUnusableError(ModelDownloadError):
+    """Downloaded weights still cannot be loaded after one fresh download."""
 
 
 def install_tqdm_progress_bridge() -> None:
@@ -303,48 +755,151 @@ def install_tqdm_progress_bridge() -> None:
 
 
 @contextlib.contextmanager
-def model_loading_progress():
-    """Bound Cellpose's lazy weight-download I/O and distinguish its failures.
+def model_loading_progress(package: str = "cellpose"):
+    """Route Cellpose's lazy weight downloads through `_model_downloads`.
 
-    This worker processes one request at a time. Restore the library hooks on
-    exit so cached-model evaluations and subsequent requests retain its API.
-    No download happens here unless Cellpose itself requests missing weights.
+    While the block runs, ``<package>.utils.download_url_to_file`` is
+    CellCounter's downloader: verified TLS, a resumable ``<file>.cellcounter-part``, and
+    a size check before the file is moved into place. Before that, abandoned
+    downloads are removed from the models folder and pinned weights of the
+    wrong size are moved aside (so Cellpose downloads them again). Yields the
+    models folder.
+
+    This worker processes one request at a time. The library hooks are
+    restored on exit so cached-model evaluations and subsequent requests
+    retain its API. No download happens here unless Cellpose itself requests
+    missing weights. ``package`` is ``"cellpose_omni"`` for Omnipose.
     """
-    from cellpose import utils
-    original_download = getattr(utils, "download_url_to_file", None)
-    original_open = getattr(utils, "urlopen", None)
+    try:
+        root = __import__(package, fromlist=["utils"])
+    except ImportError:
+        root = None
+    utils = getattr(root, "utils", None) or sys.modules.get(package + ".utils")
+    models_module = getattr(root, "models", None) or sys.modules.get(package + ".models")
+    directory = downloads.models_dir(models_module)
+    downloads.restore_default_https_context()
+    downloads.cleanup_stale_files(directory)
+    downloads.quarantine_mismatched_pinned_weights(directory)
+
+    original_download = getattr(utils, "download_url_to_file", None) if utils is not None else None
     if original_download is None:
-        yield
+        yield directory
         return
 
-    def open_with_timeout(*args, **kwargs):
-        # Covers connection and each socket read. A slow but progressing large
-        # checkpoint is allowed to finish; a silent stalled socket is bounded.
-        kwargs.setdefault("timeout", 30)
-        return original_open(*args, **kwargs)
-
-    def download(url, destination, *args, **kwargs):
+    def download(url, destination, progress=True, *args, **kwargs):
         name = os.path.basename(os.fspath(destination))
         log(f"[cellpose_detect] downloading weights for {name} — one-time model setup", flush=True)
         try:
-            value = original_download(url, destination, *args, **kwargs)
-        except Exception as exc:
+            downloads.download_url_to_file(url, destination, progress=progress)
+        except ModelDownloadError as exc:
+            message = f"Could not download the {name} model weights. {exc}"
+            log(f"[cellpose_detect] {message}", flush=True)
+            raise type(exc)(message) from exc
+        except Exception as exc:  # noqa: BLE001
             message = (f"Could not download the {name} model weights. "
                        f"Check your internet connection and retry. {exc}")
             log(f"[cellpose_detect] {message}", flush=True)
             raise ModelDownloadError(message) from exc
         log(f"[cellpose_detect] weights ready: {name}", flush=True)
-        return value
 
-    utils.download_url_to_file = download
-    if original_open is not None:
-        utils.urlopen = open_with_timeout
+    # `cellpose.models` calls `utils.download_url_to_file`; a fork that
+    # imported the function by name is covered too.
+    patched = [utils]
+    if models_module is not None and getattr(models_module, "download_url_to_file", None) is original_download:
+        patched.append(models_module)
+    for module in patched:
+        module.download_url_to_file = download
     try:
-        yield
+        yield directory
     finally:
-        utils.download_url_to_file = original_download
-        if original_open is not None:
-            utils.urlopen = original_open
+        for module in patched:
+            module.download_url_to_file = original_download
+        downloads.restore_default_https_context()
+
+
+def managed_cellpose_weights(models_module, requested: str, *, default: str,
+                             torch_suffixed=(), extra=()) -> list:
+    """Weight files Cellpose downloads into its models folder for `requested`.
+
+    Empty for a user's own model (an existing path, or a name the Cellpose GUI
+    registered in gui_models.txt): those are never moved aside. A name
+    Cellpose does not know falls back to its `default` model, as Cellpose
+    does. Cellpose 3 stores cyto/cyto2/nuclei as `<name>torch_0`.
+    """
+    directory = downloads.models_dir(models_module)
+    if os.path.exists(requested) or requested in downloads.user_registered_models(directory):
+        return []
+    known = set(getattr(models_module, "MODEL_NAMES", None) or ())
+    name = requested if requested in known else default
+    return [f"{name}torch_0" if name in torch_suffixed else name, *extra]
+
+
+def _managed_weight_paths(directory, names) -> list:
+    user_models = downloads.user_registered_models(directory)
+    paths = []
+    for name in names:
+        if name in user_models or downloads.is_download_artifact(name):
+            continue
+        path = os.path.join(os.fspath(directory), name)
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISREG(info.st_mode):  # a symlink is the user's own arrangement
+            paths.append(path)
+    return paths
+
+
+def build_with_weight_recovery(build, managed_names, models_directory):
+    """Return `build()`, recovering once from damaged downloaded weights.
+
+    When construction fails the way a truncated or corrupt checkpoint does
+    (torch zip/PytorchStreamReader errors, UnpicklingError, EOFError, ...),
+    the files in `managed_names` — files Cellpose downloads, never a user's
+    own model — are moved aside to `<name>.corrupt-<timestamp>` and `build()`
+    runs once more, which downloads them again (call this inside
+    `model_loading_progress`). If that fails too, or the same file was
+    already replaced within the last hour, a `WeightsUnusableError` says so.
+    """
+    try:
+        return build()
+    except ModelDownloadError:
+        raise
+    except Exception as first:  # noqa: BLE001
+        if not downloads.is_corrupt_checkpoint_error(first):
+            raise
+        candidates = _managed_weight_paths(models_directory, managed_names)
+        if not candidates:
+            raise
+        names = ", ".join(os.path.basename(path) for path in candidates)
+        recent = [found for found in map(downloads.recently_quarantined, candidates) if found]
+        if recent:
+            raise WeightsUnusableError(
+                f"The {names} model weights cannot be loaded ({first}). They were already "
+                f"downloaded again less than an hour ago (the damaged copy is {recent[0]} in "
+                f"{models_directory}). Check the disk and network, then retry later.") from first
+        log(f"[cellpose_detect] the cached {names} weights could not be loaded ({first!r}); "
+            "downloading them again", flush=True)
+        moved = []
+        for path in candidates:
+            try:
+                moved.append(downloads.quarantine(path, f"loading failed with {type(first).__name__}"))
+            except OSError as exc:
+                raise WeightsUnusableError(
+                    f"The {names} model weights cannot be loaded ({first}), and the damaged "
+                    f"file could not be moved aside ({exc}).") from first
+    try:
+        return build()
+    except ModelDownloadError:
+        raise
+    except Exception as second:  # noqa: BLE001
+        if not downloads.is_corrupt_checkpoint_error(second):
+            raise
+        kept = ", ".join(os.path.basename(path) for path in moved)
+        raise WeightsUnusableError(
+            f"CellCounter downloaded the {names} model weights again, but Cellpose still "
+            f"cannot load them ({second}). The damaged copies are kept as {kept} in "
+            f"{models_directory}.") from second
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +1367,70 @@ def label_crops(masks, label_ids):
         yield label, masks[row0:row1, col0:col1] == label, row0, col0
 
 
+def simplify_chains(chains, tolerance):
+    """``skimage.measure.approximate_polygon(chain, tolerance)`` for many
+    chains at once, with the same result bit for bit.
+
+    Douglas–Peucker splits each segment independently, so every segment of
+    every chain can be handled in one vectorised pass per split level. Each
+    distance uses the same float64 operations in the same order as
+    scikit-image, and ties pick the first point, like ``np.argmax``.
+    """
+    import numpy as np
+
+    if not chains:
+        return []
+    if tolerance <= 0:
+        return list(chains)
+    lens = np.array([len(c) for c in chains], dtype=np.int64)
+    offs = np.zeros(len(chains), dtype=np.int64)
+    np.cumsum(lens[:-1], out=offs[1:])
+    points = np.concatenate(chains)
+    rows = np.ascontiguousarray(points[:, 0])
+    cols = np.ascontiguousarray(points[:, 1])
+    keep = np.zeros(len(points), dtype=bool)
+    keep[offs] = True
+    keep[offs + lens - 1] = True
+    starts, ends = offs.copy(), offs + lens - 1
+    while True:
+        inner = ends - starts >= 2
+        starts, ends = starts[inner], ends[inner]
+        if starts.size == 0:
+            break
+        r0, c0, r1, c1 = rows[starts], cols[starts], rows[ends], cols[ends]
+        dr = r1 - r0
+        dc = c1 - c0
+        angle = -np.arctan2(dr, dc)
+        sin_a = np.sin(angle)
+        cos_a = np.cos(angle)
+        dist = c0 * sin_a + r0 * cos_a
+        counts = ends - starts - 1
+        first = np.zeros(counts.size, dtype=np.int64)
+        np.cumsum(counts[:-1], out=first[1:])
+        seg = np.repeat(np.arange(counts.size), counts)
+        idx = np.arange(int(counts.sum())) - first[seg] + starts[seg] + 1
+        pr, pc = rows[idx], cols[idx]
+        dr0 = pr - r0[seg]
+        dc0 = pc - c0[seg]
+        dr1 = pr - r1[seg]
+        dc1 = pc - c1[seg]
+        seg_dr, seg_dc = dr[seg], dc[seg]
+        perp = np.logical_and(dr0 * seg_dr + dc0 * seg_dc > 0,
+                              -dr1 * seg_dr - dc1 * seg_dc > 0)
+        d = np.where(perp,
+                     np.abs(pr * cos_a[seg] + pc * sin_a[seg] - dist[seg]),
+                     np.minimum(np.sqrt(dc0 ** 2 + dr0 ** 2),
+                                np.sqrt(dc1 ** 2 + dr1 ** 2)))
+        peak = np.maximum.reduceat(d, first)
+        split = peak > tolerance
+        at_peak = np.where(d == peak[seg], np.arange(d.size), d.size)
+        new = (starts + np.minimum.reduceat(at_peak, first) - first + 1)[split]
+        keep[new] = True
+        starts = np.concatenate([new, starts[split]])
+        ends = np.concatenate([ends[split], new])
+    return [points[o:o + n][keep[o:o + n]] for o, n in zip(offs, lens)]
+
+
 def measure_cells(masks, img, args, flows=None, channel_stack=None,
                   channel_names=None) -> list[dict]:
     """Build the list of per-cell dicts matching SidecarPayload's schema.
@@ -939,6 +1558,7 @@ def measure_cells(masks, img, args, flows=None, channel_stack=None,
 
     progress_every = max(50, n_total // 10) if n_total else 1
     cells: list[dict] = []
+    pending_outlines: list = []
 
     small_t = float(getattr(args, "small_threshold", 20))
     large_t = float(getattr(args, "large_threshold", 30))
@@ -1093,10 +1713,9 @@ def measure_cells(masks, img, args, flows=None, channel_stack=None,
                     f"{int(label)} (non-fatal): {exc!r}")
 
         # Per-cell polygon contour for filled overlay rendering.
-        # find_contours returns (row, col) pairs at 0.5 iso-level — flip to
-        # (x=col, y=row) and downsample with Ramer–Douglas–Peucker so a
-        # 1000-point boundary collapses to ≤200 points without losing shape.
-        # The contour is shifted to full-image pixels before simplification.
+        # find_contours returns (row, col) pairs at 0.5 iso-level, shifted
+        # here to full-image pixels. Contours longer than 4 points are
+        # simplified with Ramer–Douglas–Peucker after the loop, all at once.
         if _skimage_ok and sk_find_contours is not None:
             try:
                 contours = sk_find_contours(mask.astype(np.uint8), 0.5)
@@ -1104,22 +1723,42 @@ def measure_cells(masks, img, args, flows=None, channel_stack=None,
                     best = max(contours, key=len) + np.array(
                         [row0, col0], dtype=np.float64)
                     if sk_approx_polygon is not None and len(best) > 4:
-                        approx = sk_approx_polygon(best, tolerance=0.5)
+                        pending_outlines.append((cell_dict, best))
                     else:
-                        approx = best
-                    if len(approx) > 200:
-                        stride = int(math.ceil(len(approx) / 200.0))
-                        approx = approx[::stride]
-                    cell_dict["contour_px"] = [
-                        [float(pt[1]), float(pt[0])] for pt in approx
-                    ]
+                        _set_contour(cell_dict, best)
             except Exception:  # noqa: BLE001
                 pass
 
         cells.append(cell_dict)
 
+    if pending_outlines:
+        chains = [chain for _, chain in pending_outlines]
+        try:
+            simplified = simplify_chains(chains, 0.5)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cellpose_detect] batched outline simplification failed "
+                f"({exc!r}); simplifying one by one")
+            simplified = []
+            for chain in chains:
+                try:
+                    simplified.append(sk_approx_polygon(chain, tolerance=0.5))
+                except Exception:  # noqa: BLE001
+                    simplified.append(None)
+        for (cell_dict, _), approx in zip(pending_outlines, simplified):
+            if approx is not None:
+                _set_contour(cell_dict, approx)
+
     log(f"[cellpose_detect] measured {len(cells)}/{n_total} cells; serializing JSON…")
     return cells
+
+
+def _set_contour(cell_dict, approx):
+    """Store a (row, col) outline as ≤200 (x, y) points."""
+    import math
+    if len(approx) > 200:
+        stride = int(math.ceil(len(approx) / 200.0))
+        approx = approx[::stride]
+    cell_dict["contour_px"] = [[float(pt[1]), float(pt[0])] for pt in approx]
 
 
 # ---------------------------------------------------------------------------

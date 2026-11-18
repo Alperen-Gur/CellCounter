@@ -6,6 +6,9 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
     var modelId: String = "cp-cyto3"
     var modelName: String = "Cellpose cyto3"
     var modelFamily: String = "Cellpose"
+    /// A saved run: the scale this image was segmented at. A job: the scale
+    /// for images without one (0 = none); each image is analysed at its own
+    /// scale (`ImageScale`, `withScale(_:)`).
     var pxPerUm: Double = 1
     var calibrationSource: String = "manual"
     var confidence: Double = 0.5
@@ -28,11 +31,34 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
     var ensembleSecondaryId: String?
     var detectorVersion: String?
     var weightsSHA256: String?
+    /// What actually ran, as the sidecar reported it (versions, device,
+    /// dtype, weights). Nil for runs saved before it was recorded and for
+    /// detectors that do not report it. A record, never an input.
+    var detectorRuntime: DetectorRuntimeInfo?
 
-    func hasSameInputs(as other: Self) -> Bool {
+    /// These settings with what the sidecar reported for this run. The
+    /// reported Cellpose version and weights checksum replace the values
+    /// probed before the run, which may describe another environment or
+    /// another checkpoint; without a report they stay as they were.
+    func recording(_ runtime: DetectorRuntimeInfo?) -> Self {
+        var value = self
+        value.detectorRuntime = runtime
+        if let version = runtime?.cellposeVersion { value.detectorVersion = version }
+        if let digest = runtime?.weightsSHA256 { value.weightsSHA256 = digest }
+        return value
+    }
+
+    /// Whether a run with these settings gives the same result as `other`.
+    /// Where a scale came from does not change what the model sees, so
+    /// `calibrationSource` is not compared; `ignoringScale` leaves out the
+    /// scale too (a job's scale for images without one).
+    func hasSameInputs(as other: Self, ignoringScale: Bool = false) -> Bool {
         var lhs = self, rhs = other
         lhs.detectorVersion = nil; rhs.detectorVersion = nil
         lhs.weightsSHA256 = nil; rhs.weightsSHA256 = nil
+        lhs.detectorRuntime = nil; rhs.detectorRuntime = nil
+        lhs.calibrationSource = ""; rhs.calibrationSource = ""
+        if ignoringScale { lhs.pxPerUm = 0; rhs.pxPerUm = 0 }
         // Omnipose parameters affect only an Omnipose run (or its ensemble
         // member). Nil and the historical defaults represent the same input.
         lhs.omniposeSettings = lhs.usesOmnipose ? (lhs.omniposeSettings ?? .init()) : nil
@@ -43,7 +69,9 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
     var validationError: String? {
         if !manualThreshold.isFinite || manualThreshold < 0 { return "Enter a nonnegative finite intensity threshold." }
         if modelId.isEmpty { return "Choose a model." }
-        if !pxPerUm.isFinite || pxPerUm <= 0 { return "Enter a positive pixel scale." }
+        // 0 is a job without a scale for images that have none; each image
+        // is checked for its own scale before it is analysed.
+        if !pxPerUm.isFinite || pxPerUm < 0 { return "Enter a positive pixel scale." }
         if !confidence.isFinite || !(0...1).contains(confidence) { return "Confidence must be between 0 and 1." }
         if !expectedDiameterUm.isFinite || expectedDiameterUm < 0 { return "Expected diameter must be zero (automatic) or positive." }
         if usesOmnipose, let error = (omniposeSettings ?? .init()).validationError { return error }
@@ -66,8 +94,9 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
             value.ensembleSecondaryId = EnsembleDownloader.secondaryId()
         }
         value.modelFamily = state.models.first(where: { $0.id == state.activeModelId })?.family.rawValue ?? "Custom"
-        value.pxPerUm = state.pxPerUm
-        value.calibrationSource = "manual"
+        // The user's default for images without a scale; 0 when not set.
+        value.pxPerUm = ImageScale.isUsable(state.pxPerUm) ? state.pxPerUm : 0
+        value.calibrationSource = value.pxPerUm > 0 ? ImageScale.defaultSource : ImageScale.unsetSource
         value.confidence = state.confidence
         value.expectedDiameterUm = state.expectedDiameterUm
         if value.usesOmnipose { value.omniposeSettings = state.omniposeSettings }
@@ -82,6 +111,17 @@ nonisolated struct AnalysisRunSettings: Codable, Equatable, Sendable {
         value.zProjection = ChannelStackSettings.zProjection.rawValue
         value.segmentChannel = ChannelStackSettings.segmentChannel
         value.manualThreshold = UserDefaults.standard.double(forKey: ClassicalDetectionService.manualThresholdKey)
+        return value
+    }
+
+    /// These settings for one image: its own scale replaces the job's scale
+    /// for images without one, so the size hint in pixels follows it too.
+    func withScale(_ scale: ImageScale.Resolved?) -> Self {
+        var value = self
+        if let scale {
+            value.pxPerUm = scale.pxPerUm
+            value.calibrationSource = scale.source
+        }
         return value
     }
 

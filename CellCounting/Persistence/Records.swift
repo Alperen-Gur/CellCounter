@@ -11,7 +11,11 @@ final class BatchRecord {
     var displayName: String
     /// The detection model id used for this batch ("cp-cyto3", "yo-s", custom uuid…).
     var modelId: String
-    /// pxPerUm at the time of analysis (calibration is per-batch since microscopes don't change mid-batch).
+    /// The batch's scale for images without one of their own (`ImageScale`);
+    /// 0 when none is set. Each image is analysed at its own scale: its own
+    /// value, else its file's, else this. Images analysed before images had
+    /// their own scale (no `ImageRecord.measuredPxPerUm`) are stored at this
+    /// value, so it is recorded on them before it changes.
     var pxPerUm: Double
     /// Saved thresholds JSON (e.g. [20, 30]).
     var thresholdsData: Data
@@ -112,6 +116,17 @@ final class ImageRecord {
     /// matched by the Library search. Optional with a default so existing
     /// SwiftData rows decode unchanged (auto-migration friendly).
     var notes: String? = nil
+    /// A scale set for this image (typed, scale bar, preset, or an explicit
+    /// override of the file's scale), with its source. Nil: the file's scale
+    /// is used, else the batch's scale for images without one.
+    var scalePxPerUm: Double? = nil
+    var scaleSource: String? = nil
+    /// The scale this image's stored µm values are at, with its source. Nil
+    /// for images analysed before images had their own scale: those are at
+    /// the batch's `pxPerUm`. The scale the model segmented at is the
+    /// detection's `runSettings.pxPerUm`.
+    var measuredPxPerUm: Double? = nil
+    var measuredScaleSource: String? = nil
 
     init(id: UUID = UUID(), fileName: String, originalPath: String,
          widthPx: Int, heightPx: Int) {
@@ -140,6 +155,42 @@ final class ImageRecord {
             : storedURL
     }
     var thumbURL: URL { FileStore.shared.thumbURL(for: id) }
+}
+
+// MARK: - Per-image scale
+
+extension ImageRecord {
+    /// The scale set for this image, if any.
+    var ownScale: ImageScale.Value? { ImageScale.Value(scalePxPerUm, source: scaleSource) }
+
+    /// The scale recorded in the file (high or medium confidence), if any.
+    var fileScale: ImageScale.Value? { ImageScale.Value(sourcePxPerUm, source: sourceCalibrationSource ?? "metadata") }
+
+    /// The scale this image is analysed at next.
+    var effectiveScale: ImageScale.Resolved? {
+        ImageScale.resolve(explicit: ownScale, file: fileScale, fallback: batch?.fallbackScale)
+    }
+
+    /// The scale of the stored measurements, nil when not analysed. Images
+    /// analysed before images had their own scale use the batch's.
+    var measuredScale: ImageScale.Value? {
+        guard detection != nil else { return nil }
+        if let recorded = ImageScale.Value(measuredPxPerUm, source: measuredScaleSource) { return recorded }
+        guard let batch, ImageScale.isUsable(batch.pxPerUm) else { return nil }
+        return ImageScale.Value(pxPerUm: batch.pxPerUm, source: ImageScale.batchSource(batch.pxPerUmSource))
+    }
+
+    /// The scale this image's numbers use now: its measurements' scale once
+    /// analysed, otherwise the scale its analysis will use.
+    var currentScale: ImageScale.Value? { measuredScale ?? effectiveScale?.value }
+
+    /// `currentScale` in px/µm, or 0 when the image has no scale.
+    var currentPxPerUm: Double { currentScale?.pxPerUm ?? 0 }
+}
+
+extension BatchRecord {
+    /// The batch's scale for images without one, if set.
+    var fallbackScale: ImageScale.Value? { ImageScale.Value(pxPerUm, source: pxPerUmSource) }
 }
 
 @Model

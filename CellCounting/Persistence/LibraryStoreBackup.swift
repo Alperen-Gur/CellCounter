@@ -2,10 +2,11 @@ import Foundation
 import SQLite3
 
 /// One-time safety copy of a library's database before this version upgrades
-/// it to keep detection cells in `StoredCellsRecord`.
+/// it: to keep detection cells in `StoredCellsRecord`, or to give each image
+/// its own pixel scale (`ImageRecord.scalePxPerUm` and related columns).
 ///
 /// Older CellCounter versions can still open an upgraded library, but doing
-/// so silently drops the table holding the moved cells. The copy, taken
+/// so silently drops the moved cells and the per-image scales. The copy, taken
 /// before the store is first opened by this version, is what a user restores
 /// to go back. It is made only while no connection to the store is open, is
 /// verified before it counts, and never replaces an existing file. When it
@@ -15,7 +16,10 @@ nonisolated enum LibraryStoreBackup {
     static let upgradedTable = "ZSTOREDCELLSRECORD"
     /// Present in every store that holds detections.
     static let detectionTable = "ZDETECTIONRECORD"
-    static let namePrefix = "store-before-cell-storage-"
+    /// Images, and the column the per-image scale upgrade adds to them.
+    static let imageTable = "ZIMAGERECORD"
+    static let imageScaleColumn = "ZSCALEPXPERUM"
+    static let namePrefix = "store-before-upgrade-"
 
     enum Outcome: Equatable {
         /// No store yet, already upgraded, or nothing the upgrade changes.
@@ -38,7 +42,12 @@ nonisolated enum LibraryStoreBackup {
         switch inspect(storeURL) {
         case .some(let tables):
             // An empty file or a store without detections has nothing to lose.
-            guard tables.contains(detectionTable), !tables.contains(upgradedTable) else { return .notNeeded }
+            guard tables.contains(detectionTable) else { return .notNeeded }
+            let needsCellStorage = !tables.contains(upgradedTable)
+            // Unknown columns count as "not yet upgraded": copying is the safe side.
+            let needsImageScale = tables.contains(imageTable)
+                && !(columns(of: imageTable, in: storeURL)?.contains(imageScaleColumn) ?? false)
+            guard needsCellStorage || needsImageScale else { return .notNeeded }
         case .none:
             // Unreadable here means unknown: copy it anyway. If the copy cannot
             // be verified either, the store is not opened.
@@ -79,6 +88,32 @@ nonisolated enum LibraryStoreBackup {
         }
     }
 
+    /// Column names of `table`, read like `inspect`. Nil when unreadable.
+    static func columns(of table: String, in storeURL: URL) -> Set<String>? {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(storeURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            if let database { sqlite3_close(database) }
+            return nil
+        }
+        defer { sqlite3_close(database) }
+        sqlite3_busy_timeout(database, 2_000)
+        // `table` is one of this type's constants, never user input.
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(\(table))", -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        var names = Set<String>()
+        while true {
+            let step = sqlite3_step(statement)
+            if step == SQLITE_DONE { return names }
+            guard step == SQLITE_ROW else { return nil }
+            // table_info rows: cid, name, type, notnull, dflt_value, pk.
+            if let name = sqlite3_column_text(statement, 1) { names.insert(String(cString: name)) }
+        }
+    }
+
     /// True when the database at `url` passes SQLite's quick check.
     static func passesQuickCheck(_ url: URL) -> Bool {
         var database: OpaquePointer?
@@ -97,7 +132,7 @@ nonisolated enum LibraryStoreBackup {
         return String(cString: text) == "ok" && sqlite3_step(statement) == SQLITE_DONE
     }
 
-    /// `store-before-cell-storage-2026-11-17-091500`, with `-2`, `-3`… when
+    /// `store-before-upgrade-2026-11-17-091500`, with `-2`, `-3`… when
     /// a backup of that name (or one of its sidecars) already exists.
     static func backupBaseName(in backupsDir: URL, now: Date, fileManager fm: FileManager = .default) -> String {
         let formatter = DateFormatter()
@@ -184,10 +219,10 @@ nonisolated enum LibraryStoreBackup {
 
     /// Shown once, after a copy was made and the library was upgraded.
     static func notice(for backup: URL) -> String {
-        "CellCounter has upgraded this library to store cell outlines more compactly. "
+        "CellCounter has upgraded this library (compact cell outlines and a pixel scale for each image). "
             + "Before doing so it saved a copy of the library’s database at \(backup.path). "
             + "Do not open this library with an older version of CellCounter from now on: "
-            + "it would delete the cell outlines saved in the new format. To go back to an older "
+            + "it would drop data saved in the new format. To go back to an older "
             + "version, quit CellCounter and put the copy in place of store.sqlite first "
             + "(work done since the upgrade would be lost)."
     }

@@ -48,6 +48,12 @@ nonisolated struct BatchRecordsSnapshot: Sendable, Equatable {
         var reviewCandidates: [ReviewCandidate]
         var variants: [Variant]
         var annotations: [Annotation]
+        /// Per-image scale fields. Optional on the record, so an archive
+        /// written before they existed opens with nil (the batch's scale).
+        var scalePxPerUm: Double? = nil
+        var scaleSource: String? = nil
+        var measuredPxPerUm: Double? = nil
+        var measuredScaleSource: String? = nil
 
         /// Extension of the library's own copy, matching `ImageRecord.storedURL`.
         var storedExtension: String {
@@ -407,7 +413,9 @@ extension BatchRecordsSnapshot.Image {
                   jobItemId: r.jobItemId, sourceOrder: r.sourceOrder,
                   confidenceOverride: r.confidenceOverride, fileHash: r.fileHash, notes: r.notes,
                   detection: detection, rois: rois, reviewCandidates: reviewCandidates,
-                  variants: variants, annotations: annotations)
+                  variants: variants, annotations: annotations,
+                  scalePxPerUm: r.scalePxPerUm, scaleSource: r.scaleSource,
+                  measuredPxPerUm: r.measuredPxPerUm, measuredScaleSource: r.measuredScaleSource)
     }
 
     @MainActor func makeRecord() -> ImageRecord {
@@ -416,6 +424,10 @@ extension BatchRecordsSnapshot.Image {
         r.importedAt = importedAt
         r.sourcePxPerUm = sourcePxPerUm
         r.sourceCalibrationSource = sourceCalibrationSource
+        r.scalePxPerUm = scalePxPerUm
+        r.scaleSource = scaleSource
+        r.measuredPxPerUm = measuredPxPerUm
+        r.measuredScaleSource = measuredScaleSource
         r.jobItemId = jobItemId
         r.sourceOrder = sourceOrder
         r.confidenceOverride = confidenceOverride

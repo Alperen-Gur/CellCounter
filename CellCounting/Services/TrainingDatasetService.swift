@@ -130,6 +130,9 @@ enum TrainingDatasetService {
                                      "--output", output.path, "--z-project", sample.zProjection]
                 if let channel = sample.segmentChannel { process.arguments! += ["--channel", String(channel)] }
                 if sample.useRGBLuminance { process.arguments!.append("--rgb-luminance") }
+                // Thread limits only: someone is waiting for this preview, so
+                // it keeps normal priority even under Light.
+                process.environment = ModelResourceLimits.current.environment(merging: ProcessInfo.processInfo.environment)
                 process.standardError = errors; process.standardOutput = FileHandle.nullDevice
                 do {
                     try control.start(process)

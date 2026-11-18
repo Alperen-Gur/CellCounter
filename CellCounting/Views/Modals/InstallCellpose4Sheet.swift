@@ -23,11 +23,20 @@ private enum CP4PreInstallState {
     case freshInstall
     case broken(reason: String)
     case alreadyInstalled
+    /// A working Cellpose other than the pinned version (nil: unreadable).
+    case updateAvailable(installed: String?)
+
+    var isUpdate: Bool {
+        if case .updateAvailable = self { return true }
+        return false
+    }
 }
 
 struct InstallCellpose4Sheet: View {
     let onClose: () -> Void
     let onInstalled: () -> Void
+    /// Opened from "Update Cellpose-SAM": start the update right away.
+    var startUpdate: Bool = false
 
     @StateObject private var installer = CellposeSAMInstaller()
     @State private var appeared = false
@@ -39,6 +48,11 @@ struct InstallCellpose4Sheet: View {
             return .broken(reason: reason)
         }
         if case .available = Cellpose4Availability.detect() {
+            // Two small directory listings, once per sheet.
+            let version = CellposeSAMRuntime.installedVersion(venv: FileStore.shared.pythonVenv4Dir)
+            if version != CellposeSAMRuntime.pinnedCellposeVersion {
+                return .updateAvailable(installed: version)
+            }
             return .alreadyInstalled
         }
         return .freshInstall
@@ -69,6 +83,8 @@ struct InstallCellpose4Sheet: View {
                         CP4RunningBody(installer: installer, theme: theme)
                     } else if case .alreadyInstalled = preInstallState {
                         CP4AlreadyDoneBody()
+                    } else if case .updateAvailable(let installed) = preInstallState {
+                        CP4UpdateBody(installed: installed)
                     } else {
                         CP4IdleBody(preInstallState: preInstallState)
                     }
@@ -89,6 +105,9 @@ struct InstallCellpose4Sheet: View {
                     },
                     onCancel: {
                         installer.cancel()
+                        // An update runs over a working install: never delete
+                        // it. The installer keeps it in use if it still imports.
+                        guard !preInstallState.isUpdate else { return }
                         // Wipe the partial venv4 so the user lands in a clean
                         // "needs install" state, not "broken".
                         try? FileManager.default.removeItem(
@@ -112,8 +131,13 @@ struct InstallCellpose4Sheet: View {
             .scaleEffect(appeared ? 1 : 0.98)
         }
         .onAppear {
-            preInstallState = resolvePreInstallState()
+            let resolved = resolvePreInstallState()
+            preInstallState = resolved
             withAnimation(Tokens.Motion.easeSlow) { appeared = true }
+            // One click from Models: the update starts here, in view of its log.
+            if startUpdate, resolved.isUpdate, !installer.isRunning {
+                installer.start()
+            }
         }
         .onKeyPress(.escape) {
             guard !installer.isRunning else { return .ignored }
@@ -152,6 +176,7 @@ private struct CP4Header: View {
         case .broken: return "Reinstall Cellpose-SAM"
         case .alreadyInstalled: return "Cellpose-SAM is installed"
         case .freshInstall: return "Install Cellpose-SAM"
+        case .updateAvailable: return "Update Cellpose-SAM to \(CellposeSAMRuntime.pinnedCellposeVersion)"
         }
     }
 
@@ -162,7 +187,9 @@ private struct CP4Header: View {
         case .alreadyInstalled:
             return "Cellpose-SAM is already set up. You can close this sheet."
         case .freshInstall:
-            return "Cellpose-SAM (cellpose 4.x) runs in a SEPARATE Python environment from Cellpose 3.x — both can coexist. This is a one-time setup."
+            return "Cellpose-SAM (Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion)) runs in a SEPARATE Python environment from Cellpose 3.x — both can coexist. This is a one-time setup."
+        case .updateAvailable(let installed):
+            return "This Mac has Cellpose \(installed ?? "4 (version unknown)"). CellCounter is tested with Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion)."
         }
     }
 
@@ -212,6 +239,49 @@ private struct CP4AlreadyDoneBody: View {
     }
 }
 
+// MARK: — Update body (an older Cellpose is installed)
+
+private struct CP4UpdateBody: View {
+    let installed: String?
+    @Environment(AppTheme.self) private var theme
+
+    private var old: String { installed.map { "Cellpose \($0)" } ?? "the installed Cellpose" }
+    private var pinned: String { CellposeSAMRuntime.pinnedCellposeVersion }
+
+    private var points: [String] {
+        [
+            "Installs Cellpose \(pinned) with PyTorch 2.12, OpenCV 4.13 and NumPy 2, the set CellCounter is tested with. Your model weights are kept.",
+            "Results can differ slightly from runs made with \(old). The Cellpose version, PyTorch and NumPy versions, device and weights file are recorded with every result, so each result shows which version produced it.",
+            "Until you update, analyses keep using \(old). Results you already have are not changed.",
+            "Before anything changes, the current package list is saved next to the environment, so the old setup can be recreated.",
+            "Needs Python 3.12 or later. If the update stops before it changes anything (no network, no suitable Python), \(old) stays in use.",
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(points, id: \.self) { point in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Circle()
+                        .fill(theme.accentColor)
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 5)
+                    Text(point)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Tokens.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Tokens.Radius.md, style: .continuous)
+                .fill(Tokens.bgSunken)
+        )
+    }
+}
+
 // MARK: — Idle body (pre-install)
 
 private struct CP4IdleBody: View {
@@ -219,10 +289,10 @@ private struct CP4IdleBody: View {
     @Environment(AppTheme.self) private var theme
 
     private let packages: [(name: String, desc: String)] = [
-        ("cellpose>=4",  "Cellpose-SAM (CPSAM transformer)"),
-        ("torch",        "deep-learning runtime (~700 MB)"),
-        ("scikit-image", "image post-processing"),
-        ("numpy, pillow","array + image I/O"),
+        ("cellpose 4.2.1.1",           "Cellpose-SAM (CPSAM transformer)"),
+        ("torch 2.12 + torchvision",   "deep-learning runtime (~700 MB)"),
+        ("scikit-image, scipy, opencv","image post-processing"),
+        ("numpy 2, pillow, tifffile",  "array + image I/O"),
     ]
 
     var body: some View {
@@ -421,6 +491,7 @@ private struct CP4Footer: View {
 
     private var primaryLabel: String {
         if case .broken = preInstallState { return "Reinstall" }
+        if preInstallState.isUpdate { return "Update to \(CellposeSAMRuntime.pinnedCellposeVersion)" }
         return "Install Cellpose-SAM"
     }
 

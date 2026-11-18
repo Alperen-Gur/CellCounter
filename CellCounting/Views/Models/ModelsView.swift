@@ -43,11 +43,12 @@ struct ModelsView: View {
     /// Reads the cache, NOT the registry — avoids subprocess on the main
     /// thread during render. Cache is populated on `.onAppear` below.
     private var downloadedCount: Int {
-        allModels.filter { state.installStateCache.get($0.id) == .installed }.count
+        // Unavailable rows share venv4's install state but cannot run.
+        allModels.filter { $0.isSelectable && state.installStateCache.get($0.id) == .installed }.count
     }
     private var diskMB: Int {
         allModels
-            .filter { state.installStateCache.get($0.id) == .installed }
+            .filter { $0.isSelectable && state.installStateCache.get($0.id) == .installed }
             .reduce(0) { $0 + $1.sizeMB }
     }
 
@@ -115,6 +116,9 @@ struct ModelsView: View {
 
                 InstallCellposeBanner(state: state)
                     .padding(.bottom, 16)
+
+                // Offered, never applied by itself (pads itself when shown).
+                CellposeSAMUpdateBanner(state: state)
 
                 ModelsFilterChips(
                     filter: state.modelFilter,
@@ -657,11 +661,23 @@ private struct ModelRow: View {
                 // description stays short (catalog-owned by C2); this line is
                 // an accent-tinted callout the user can't miss before they
                 // accidentally trigger a 3.5 GB install.
-                if model.family == .cellpose4 {
+                if let reason = model.unavailableReason {
+                    // Why the row has no install or activate button.
+                    HStack(spacing: 4) {
+                        Icon("info", size: 11)
+                            .foregroundStyle(Tokens.textSecondary)
+                        Text(reason)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Tokens.textSecondary)
+                    }
+                    .padding(.top, 2)
+                } else if model.family == .cellpose4 {
                     HStack(spacing: 4) {
                         Icon("info", size: 11)
                             .foregroundStyle(theme.accentColor)
-                        Text("~1.15 GB weights + ~2 GB Python deps. ~3.5 GB on first run.")
+                        Text(model.id == "cpsam_v2"
+                             ? "Own ~1.2 GB weights download on first use, plus the shared ~2 GB Python environment."
+                             : "~1.15 GB weights + ~2 GB Python deps. ~3.5 GB on first run.")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(theme.accentColor)
                     }
@@ -931,6 +947,9 @@ private struct ModelRowActionsStatic: View {
         // activation. They're not wired or verified end-to-end yet.
         if model.comingSoon {
             ComingSoonChip()
+        } else if let reason = model.unavailableReason {
+            // Listed but cannot run with what CellCounter installs.
+            UnavailableChip(reason: reason)
         } else {
         // Read from the cache, NOT the registry directly — the registry's
         // `isInstalled` can fork a Python subprocess which would freeze the
@@ -943,7 +962,23 @@ private struct ModelRowActionsStatic: View {
         let cached = state.installStateCache.get(model.id)
         switch cached {
         case .installed:
-            if isActive {
+            if model.family == .cellpose4,
+               CellposeSAMRuntime.needsUpdate(modelId: model.id, status: CellposeSAMRuntime.cachedStatus()) {
+                // The installed (older) Cellpose does not have this model.
+                Button {
+                    state.cellpose4UpdateRequested = true
+                    state.showInstallCellpose4 = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Icon("refresh", size: 11)
+                        Text("Update to use")
+                    }
+                }
+                .appButton(.standard, size: .sm)
+                // The update replaces packages a running analysis may use.
+                .disabled(state.jobScheduler.activeCount > 0)
+                .help("Needs Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion). Updates the Cellpose-SAM environment.")
+            } else if isActive {
                 ActiveChip()
             } else {
                 Button("Activate") {
@@ -1078,6 +1113,23 @@ private struct ComingSoonChip: View {
             .padding(.vertical, 3)
             .background(Capsule().fill(Tokens.bgSunken))
             .overlay(Capsule().strokeBorder(Tokens.border, lineWidth: 0.5))
+    }
+}
+
+/// Neutral chip for a listed model that cannot run here; the reason is on the
+/// row and in the tooltip.
+private struct UnavailableChip: View {
+    let reason: String
+    var body: some View {
+        Text("Unavailable")
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(Tokens.textSecondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Tokens.bgSunken))
+            .overlay(Capsule().strokeBorder(Tokens.border, lineWidth: 0.5))
+            .help(reason)
+            .accessibilityLabel("Unavailable: \(reason)")
     }
 }
 

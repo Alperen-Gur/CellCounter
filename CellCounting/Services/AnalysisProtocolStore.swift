@@ -242,6 +242,9 @@ extension AnalysisProtocol {
         if info.comingSoon {
             return "\u{201c}\(name)\u{201d} was saved with \(info.name), which isn\u{2019}t available in this build yet (\u{201c}coming soon\u{201d}). Every other setting was applied — pick an available model before running detection."
         }
+        if let reason = info.unavailableReason {
+            return "\u{201c}\(name)\u{201d} was saved with \(info.name), which can\u{2019}t run in this build: \(reason) Every other setting was applied — pick an available model before running detection."
+        }
         if info.id == EnsembleDownloader.modelId {
             guard let primary = model.ensemblePrimaryId,
                   let secondary = model.ensembleSecondaryId else {

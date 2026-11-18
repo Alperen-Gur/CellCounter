@@ -21,6 +21,7 @@ _workbench_adaptation.py
 _workbench_metrics.py
 _workbench_models.py
 _workbench_environment.py
+_workbench_resource_limits.py
 _workbench_review.py
 _workbench_sources.py
 _workbench_lineages.py

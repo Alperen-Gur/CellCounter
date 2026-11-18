@@ -481,7 +481,8 @@ struct PDFReportGenerator {
         OverlayPalette.load().cgColor(forBin: index)
     }
 
-    /// Compose the three monospaced footer lines from a provenance block.
+    /// Compose the monospaced footer lines from a provenance block (a fourth
+    /// line records the expected cell size when the run settings are known).
     /// Nil-valued tokens are omitted cleanly so the lines stay tidy when e.g.
     /// the git SHA or weights hash isn't available.
     nonisolated static func provenanceFooterLines(_ p: ProvenanceMetadata) -> [String] {
@@ -491,9 +492,15 @@ struct PDFReportGenerator {
         if let wh = p.weightsHash { line1 += " @ \(String(wh.prefix(8)))" }
         var line2 = "detector: \(p.modelFamily)"
         if let dv = p.detectorVersion { line2 += "@\(dv)" }
+        // torch/numpy/opencv/python, device, dtype and speed patches that ran.
+        if let runtime = p.detectorRuntime?.summary(includingCellpose: p.detectorVersion == nil),
+           !runtime.isEmpty {
+            line2 += " · \(runtime)"
+        }
         line2 += " · \(p.osVersion)"
         let line3 = String(format: "calibration: %.4g px/µm (%@)", p.pxPerUm, p.pxPerUmSource)
-        return [line1, line2, line3]
+        guard let sizeHint = p.sizeHint else { return [line1, line2, line3] }
+        return [line1, line2, line3, "expected cell size: \(SizeHint.summary(sizeHint))"]
     }
 }
 
@@ -547,7 +554,8 @@ struct ReportSnapshot {
         // exactly as ProvenanceMetadata.capture does — so the report body and its
         // provenance footer report the SAME px/µm, thresholds, and confidence.
         let batch = image.batch ?? state.currentBatch
-        let pxPerUm = batch?.pxPerUm ?? state.pxPerUm
+        // The image's own scale, as in ProvenanceMetadata.capture.
+        let pxPerUm = image.currentPxPerUm
         let thresholds = batch?.thresholds ?? state.thresholds
 
         let cutoff = state.effectiveConfidence(for: image)
@@ -634,7 +642,7 @@ struct ReportSnapshot {
             focusScore: focus,
             illuminationResidual: illum,
             f1: f1,
-            calibrationSource: (image.batch ?? state.currentBatch)?.pxPerUmSource ?? "manual",
+            calibrationSource: image.currentScale.map { ImageScale.label($0.source) } ?? "no scale",
             provenance: ProvenanceMetadata.capture(for: image, state: state)
         )
     }

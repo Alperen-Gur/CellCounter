@@ -73,13 +73,19 @@ nonisolated struct SidecarIdleClock: Sendable {
 /// - A worker with a request in flight is never evicted. When every worker
 ///   is busy, a new one is admitted anyway and the pool shrinks back to the
 ///   limit as requests finish.
+/// - Both limits can change while the pool runs (`configure`).
 actor PersistentSidecarPool {
     /// Two lets an ensemble keep both member models loaded between images.
     nonisolated static let defaultMaxWarmWorkers = 2
     /// Unused time after which a worker exits and returns its model memory.
     nonisolated static let defaultIdleTimeout: Duration = .seconds(180)
 
-    static let shared = PersistentSidecarPool()
+    /// Starts with the limits stored in Settings → General → Model resource
+    /// use; `AppState` calls `configure` when they change.
+    static let shared: PersistentSidecarPool = {
+        let limits = ModelResourceLimits.current
+        return PersistentSidecarPool(maxWarmWorkers: limits.maxWarmWorkers, idleTimeout: limits.idleTimeout)
+    }()
 
     typealias Launcher = @Sendable (
         _ key: PersistentSidecarKey,
@@ -106,8 +112,8 @@ actor PersistentSidecarPool {
         }
     }
 
-    private let maxWarmWorkers: Int
-    private let idleTimeout: Duration?
+    private var maxWarmWorkers: Int
+    private var idleTimeout: Duration?
     private let clock: SidecarIdleClock
     private let launcher: Launcher
     private var entries: [PersistentSidecarKey: Entry] = [:]
@@ -129,13 +135,35 @@ actor PersistentSidecarPool {
         self.launcher = launcher
     }
 
+    /// Starts the Python process with the resource limits stored now. Later
+    /// changes reach it live (priority, PyTorch threads, GPU memory cap; see
+    /// `ModelResourceControl`); launch-only parts stay until it is replaced.
     nonisolated static func launchProcessWorker(
         key: PersistentSidecarKey,
         pythonURL: URL,
         scriptURL: URL,
         trackerKind: ChildProcessTracker.Kind
     ) throws -> any PersistentSidecarWorkerHandle {
-        try PersistentSidecarWorker(pythonURL: pythonURL, scriptURL: scriptURL, trackerKind: trackerKind)
+        try PersistentSidecarWorker(pythonURL: pythonURL, scriptURL: scriptURL, trackerKind: trackerKind,
+                                    resourceLimits: .current)
+    }
+
+    /// Changes the limits for later admissions and idle periods.
+    ///
+    /// A lower `maxWarmWorkers` shuts down least recently used idle workers
+    /// above it now; busy workers finish their requests and the pool shrinks
+    /// as they end. A new `idleTimeout` restarts the timer of every idle
+    /// worker with the new duration, counted from now.
+    func configure(maxWarmWorkers: Int, idleTimeout: Duration?) {
+        self.maxWarmWorkers = max(1, maxWarmWorkers)
+        let timeout = idleTimeout.map { max(.zero, $0) }
+        let timeoutChanged = timeout != self.idleTimeout
+        self.idleTimeout = timeout
+        trim(to: self.maxWarmWorkers)
+        guard timeoutChanged else { return }
+        for entry in Array(entries.values) where entry.inFlight == 0 {
+            scheduleIdleRetirement(entry)
+        }
     }
 
     /// Live workers, busy or idle.
@@ -352,6 +380,10 @@ nonisolated enum ReusableSidecarRunner {
 nonisolated private final class PersistentSidecarWorker: PersistentSidecarWorkerHandle, @unchecked Sendable {
     /// How long a gracefully stopped worker may take to exit before SIGTERM.
     private static let shutdownGrace: TimeInterval = 10
+    /// How long a terminated worker may take to exit before SIGKILL. The
+    /// Cellpose sidecars unwind on SIGTERM so a partial weight download stays
+    /// resumable; this bounds a worker that is stuck in native code.
+    private static let terminationGrace: TimeInterval = 3
 
     private struct RequestEnvelope: Encodable {
         let request_id: String
@@ -388,7 +420,8 @@ nonisolated private final class PersistentSidecarWorker: PersistentSidecarWorker
         return healthy && process.isRunning
     }
 
-    init(pythonURL: URL, scriptURL: URL, trackerKind: ChildProcessTracker.Kind) throws {
+    init(pythonURL: URL, scriptURL: URL, trackerKind: ChildProcessTracker.Kind,
+         resourceLimits: ModelResourceLimits) throws {
         process = Process()
         stdoutPipe = Pipe()
         stderrPipe = Pipe()
@@ -396,6 +429,9 @@ nonisolated private final class PersistentSidecarWorker: PersistentSidecarWorker
         stdinHandle = stdinPipe.fileHandleForWriting
         process.executableURL = pythonURL
         process.arguments = [scriptURL.path, "--serve"]
+        // Thread counts, GPU memory cap and priority (Settings → General →
+        // Model resource use), added to the inherited environment.
+        resourceLimits.apply(to: process)
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -462,7 +498,15 @@ nonisolated private final class PersistentSidecarWorker: PersistentSidecarWorker
         let shouldTerminate = healthy && process.isRunning
         healthy = false
         lock.unlock()
-        if shouldTerminate { process.terminate() }
+        if shouldTerminate { sendTerminate() }
+    }
+
+    /// SIGTERM, then SIGKILL if the process is still running after the grace.
+    private func sendTerminate() {
+        process.terminate()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.terminationGrace) { [self] in
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
     }
 
     /// Closing stdin ends the Python request loop, so the interpreter exits
@@ -476,19 +520,19 @@ nonisolated private final class PersistentSidecarWorker: PersistentSidecarWorker
         lock.unlock()
         guard running else { return }
         guard !hasWork else {
-            process.terminate()
+            sendTerminate()
             return
         }
         do {
             try stdinHandle.close()
         } catch {
-            process.terminate()
+            sendTerminate()
             return
         }
         // Holds the worker until the grace period ends so its pipe handlers
         // can still collect the process's final output.
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.shutdownGrace) { [self] in
-            if process.isRunning { process.terminate() }
+            if process.isRunning { sendTerminate() }
         }
     }
 

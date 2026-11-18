@@ -109,6 +109,7 @@ def main(argv=None) -> None:
 
     # Device introspection / explicit override.
     import torch as _torch
+    cc.apply_cpu_thread_limit(_torch)
     override_device, use_gpu_kw = cc.resolve_device(args, _torch)
 
     def _build_model(**extra_kw):
@@ -147,17 +148,25 @@ def main(argv=None) -> None:
     model = _MODEL_CACHE.get(model_key)
     if model is None:
         log(f"[cellpose_detect] loading {model_type} model — first use may download weights", flush=True)
+        def _construct():
+            if args.restore:
+                log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
+                with contextlib.redirect_stdout(sys.stderr):
+                    from cellpose import denoise
+                    return denoise.CellposeDenoiseModel(
+                        gpu=use_gpu_kw, device=override_device,
+                        model_type=model_type, restore_type="denoise_cyto3")
+            return _build_model(model_type=model_type)
+
         try:
-            with cc.model_loading_progress():
-                if args.restore:
-                    log("[cellpose_detect] enabling restore_type='denoise_cyto3'")
-                    with contextlib.redirect_stdout(sys.stderr):
-                        from cellpose import denoise
-                        model = denoise.CellposeDenoiseModel(
-                            gpu=use_gpu_kw, device=override_device,
-                            model_type=model_type, restore_type="denoise_cyto3")
-                else:
-                    model = _build_model(model_type=model_type)
+            with cc.model_loading_progress() as models_dir:
+                # Files Cellpose downloads for this model, which may be
+                # replaced if they turn out to be truncated or corrupt.
+                managed = cc.managed_cellpose_weights(
+                    cp_models, model_type, default="cyto3",
+                    torch_suffixed=("cyto", "cyto2", "nuclei"),
+                    extra=("denoise_cyto3",) if args.restore else ())
+                model = cc.build_with_weight_recovery(_construct, managed, models_dir)
         except cc.ModelDownloadError as exc:
             emit_error("model-download-failed", hint=str(exc), exit_code=4)
             return
@@ -262,13 +271,23 @@ def main(argv=None) -> None:
     # Per-cell measurement loop.
     cells = cc.measure_cells(masks, img, args, flows=flows)
 
+    # What actually ran: versions, device, dtype, weights.
+    try:
+        import _cellpose_runtime
+        image_stats["runtime"] = _cellpose_runtime.runtime_block(
+            model=model, requested_model=args.model, device=resolved_device)
+    except ImportError:
+        pass
+
     cc.emit_payload(width_px, height_px, cells, image_stats)
 
 
 if __name__ == "__main__":
+    # SIGTERM unwinds the request (a weight download keeps its resumable
+    # .cellcounter-part file), then ends the process by SIGTERM as before.
     if "--serve" in sys.argv[1:]:
         # Memory is released after each response is sent, so it never
         # delays a result. The cached model stays loaded.
-        cc.serve_ndjson(main, after_response=cc.release_request_memory)
+        cc.run_sidecar(lambda: cc.serve_ndjson(main, after_response=cc.release_request_memory))
     else:
-        main()
+        cc.run_sidecar(main)

@@ -339,6 +339,14 @@ class ServeTestCase(unittest.TestCase):
     def setUpClass(cls):
         cls._tmp = tempfile.mkdtemp(prefix="cc-serve-test-")
         root = Path(cls._tmp)
+        # Model loading cleans the Cellpose models folder. Point it (and the
+        # subprocesses, which inherit the environment) away from ~/.cellpose.
+        # HOME too: omnipose_detect.configure_model_cache resets the folder to
+        # ~/.cellpose_omni/models. Stopping the patch restores both.
+        (root / "home").mkdir()
+        cls._models_env = patch.dict(os.environ, {"CELLPOSE_LOCAL_MODELS_PATH": str(root / "cellpose-models"),
+                                                  "HOME": str(root / "home")})
+        cls._models_env.start()
         cls.images = write_images(root)
         (root / "fakes").mkdir()
         write_fakes(root / "fakes")
@@ -354,6 +362,7 @@ class ServeTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls._models_env.stop()
         shutil.rmtree(cls._tmp, ignore_errors=True)
 
     def setUp(self):

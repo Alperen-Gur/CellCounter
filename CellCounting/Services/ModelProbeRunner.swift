@@ -11,6 +11,10 @@ nonisolated enum ModelProbeRunner {
         let process = Process()
         process.executableURL = pythonURL
         process.arguments = ["-c", code]
+        // Same thread limits as the model processes it checks, but not their
+        // priority: under Light's background priority a busy Mac could miss
+        // the deadline below and report an installed model as unavailable.
+        process.environment = ModelResourceLimits.current.environment(merging: ProcessInfo.processInfo.environment)
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice

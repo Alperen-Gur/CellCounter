@@ -100,7 +100,11 @@ struct TrainingMaskReview: View {
     private func record(for id: UUID) -> ImageRecord? {
         state.repos.image(id: id)
     }
-    private func calibration(for id: UUID) -> Double { max(0.0001, record(for: id)?.batch?.pxPerUm ?? 1) }
+    /// The image's own scale (each image has one; see `ImageScale`).
+    private func calibration(for id: UUID) -> Double {
+        let scale = record(for: id)?.currentPxPerUm ?? 0
+        return max(0.0001, scale > 0 ? scale : 1)
+    }
     private func loadPreview() async {
         guard let sample else { return }
         let key = previewKey

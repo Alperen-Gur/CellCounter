@@ -165,6 +165,9 @@ final class TrainingService: ObservableObject {
         if let resumeFrom { proc.arguments! += ["--resume", resumeFrom.path] }
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"; proc.environment = environment
+        // Threads, GPU memory cap and priority from Settings → General →
+        // Model resource use, merged into the environment above.
+        ModelResourceLimits.current.apply(to: proc)
         let out = Pipe(), err = Pipe(); proc.standardOutput = out; proc.standardError = err
         let stdoutTask = Task { [weak self] in
             do {

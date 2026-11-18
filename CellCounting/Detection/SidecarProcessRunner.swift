@@ -72,10 +72,15 @@ enum SidecarProcessRunner {
     ///     Invoked on the MainActor with each trimmed, non-empty line as it
     ///     streams in (used by Cellpose to drive the `.ccDetectionStage`
     ///     notification). Pass `nil` to skip line splitting entirely.
+    ///   - modelLimits: start the process with Settings → General → Model
+    ///     resource use (threads, GPU memory cap, priority, live changes).
+    ///     False for interactive app operations such as Workbench requests,
+    ///     which must stay quick under Light.
     static func run(
         pythonURL: URL,
         args: [String],
         trackerKind: ChildProcessTracker.Kind = .detection,
+        modelLimits: Bool = true,
         onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> SidecarOutcome {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SidecarOutcome, Error>) in
@@ -83,6 +88,10 @@ enum SidecarProcessRunner {
                 let process = Process()
                 process.executableURL = pythonURL
                 process.arguments = args
+                // Thread counts, GPU memory cap and priority (Settings →
+                // General → Model resource use), added to the inherited
+                // environment.
+                if modelLimits { ModelResourceLimits.current.apply(to: process) }
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()

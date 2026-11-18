@@ -215,6 +215,7 @@ def main(argv=None) -> None:
         f"omnipose model={model_name}; channels={channels}")
 
     import torch as _torch
+    cc.apply_cpu_thread_limit(_torch)
     override_device, use_gpu_kw = cc.resolve_device(args, _torch)
 
     # --- Build the model (once per worker) ---------------------------------
@@ -225,12 +226,24 @@ def main(argv=None) -> None:
         # is unexpected. Release it before building, so the worker never
         # holds two models.
         _MODEL_CACHE.clear()
+
+        def _construct():
+            return omni_models.CellposeModel(
+                gpu=use_gpu_kw, model_type=model_name, omni=True,
+                nchan=2, nclasses=3, dim=2,
+            )
+
         try:
-            with contextlib.redirect_stdout(sys.stderr):
-                model = omni_models.CellposeModel(
-                    gpu=use_gpu_kw, model_type=model_name, omni=True,
-                    nchan=2, nclasses=3, dim=2,
-                )
+            # cellpose_omni downloads through its own copy of Cellpose's
+            # download_url_to_file, into ~/.cellpose_omni/models. The fork
+            # prints to stdout, which carries only the JSON result.
+            with contextlib.redirect_stdout(sys.stderr), \
+                    cc.model_loading_progress(package="cellpose_omni") as models_dir:
+                model = cc.build_with_weight_recovery(
+                    _construct, [f"{model_name}torch_0"], models_dir)
+        except cc.ModelDownloadError as exc:
+            emit_error("model-download-failed", hint=str(exc), exit_code=4)
+            return
         except Exception as exc:  # noqa: BLE001
             log(f"[cellpose_detect] model load failed: {exc!r}")
             emit_error("model-load-failed", hint=str(exc), exit_code=4)
@@ -318,7 +331,9 @@ def serve() -> None:
 
 
 if __name__ == "__main__":
+    # SIGTERM unwinds the request so `finally` blocks run, then ends the
+    # process by SIGTERM as before.
     if "--serve" in sys.argv[1:]:
-        serve()
+        cc.run_sidecar(serve)
     else:
-        main()
+        cc.run_sidecar(main)

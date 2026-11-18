@@ -23,6 +23,17 @@
 #                            .czi") and several of which have no release for
 #                            older Python minors. A hard failure here must
 #                            never abort an otherwise-good cellpose install.
+#     CC_OPTIONAL_COMPANIONS (optional) requirements passed to every optional
+#                            install, so an optional package cannot move them.
+#                            Default 'numpy<2' (the Cellpose 3.x stack); the
+#                            Cellpose-SAM wrapper passes its whole pinned set.
+#     CC_RECORD_PACKAGES_OF  (optional) a distribution name, e.g. "cellpose".
+#                            Before an existing venv is changed, its
+#                            `pip freeze` is written next to it as
+#                            <venv>-packages-before-<name>-<version>.txt (one
+#                            file per old version, never overwritten).
+#     CC_MIN_PYTHON_MINOR    (optional) minimum Python 3 minor version; an
+#                            older existing venv is kept aside, not reused.
 #     CC_DONE_EXTRA_NOTE     (optional) trailing free-text after the standard banner
 #     _CC_WRAPPER_DIR        directory of the wrapper script (for dev-mode fallback)
 #
@@ -91,8 +102,10 @@ cc_install_run() {
             fi
         done
         if [ -z "${PYTHON_BOOTSTRAP}" ]; then
-            echo "!! Python 3.${CC_MIN_PYTHON_MINOR} or later is required for the Workbench and MCP."
-            echo "   Install a supported Python interpreter, then use Install or repair again."
+            echo "!! Python 3.${CC_MIN_PYTHON_MINOR} or later is required for ${CC_FAMILY_LABEL}."
+            echo "   Install a supported Python interpreter (for example with Homebrew:"
+            echo "   brew install python@3.12), then run the installation again."
+            echo "   Nothing was changed."
             exit 1
         fi
         if [ -d "${VENV_DIR}" ] && ! "${VENV_DIR}/bin/python3" -I -c \
@@ -115,6 +128,22 @@ cc_install_run() {
 
     # shellcheck disable=SC1091
     source "${VENV_DIR}/bin/activate"
+
+    if [ -n "${CC_RECORD_PACKAGES_OF:-}" ]; then
+        # Keep a record of what an existing venv had before this run changes
+        # it. `|| true` throughout: a record must never stop an install.
+        local frozen old_version record
+        frozen="$(python -m pip freeze --all 2>/dev/null || true)"
+        old_version="$(printf '%s\n' "${frozen}" | grep -i "^${CC_RECORD_PACKAGES_OF}==" | head -n 1 | cut -d '=' -f 3 || true)"
+        if [ -n "${old_version}" ]; then
+            record="${VENV_DIR}-packages-before-${CC_RECORD_PACKAGES_OF}-${old_version}.txt"
+            if [ ! -e "${record}" ]; then
+                if printf '%s\n' "${frozen}" > "${record}"; then
+                    echo "==> recorded the current packages (${CC_RECORD_PACKAGES_OF} ${old_version}) in ${record}"
+                fi
+            fi
+        fi
+    fi
 
     echo "==> upgrading pip"
     pip install --upgrade pip
@@ -149,7 +178,8 @@ cc_install_run() {
         echo "==> installing optional vendor format readers (best effort)"
         # shellcheck disable=SC2086 — intentionally word-split
         for _cc_pkg in ${CC_PIP_OPTIONAL_PACKAGES}; do
-            if pip install "${_cc_pkg}" 'numpy<2'; then
+            # shellcheck disable=SC2086 — CC_OPTIONAL_COMPANIONS is word-split
+            if pip install "${_cc_pkg}" ${CC_OPTIONAL_COMPANIONS:-numpy<2}; then
                 echo "    ok:      ${_cc_pkg}"
             else
                 echo "    skipped: ${_cc_pkg} (unavailable for this Python — optional)"

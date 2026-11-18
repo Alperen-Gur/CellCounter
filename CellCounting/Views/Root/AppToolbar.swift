@@ -120,7 +120,11 @@ struct AppToolbar: View {
                 Button("Analysis setup") { state.openAnalysisSetup(for: batch) }.appButton()
             }
             Button { state.showCalibration = true } label: {
-                HStack(spacing: 6) { Icon("ruler"); Text(String(format: "%.1f px/µm", state.currentBatch?.pxPerUm ?? state.pxPerUm)) }
+                // The open image's own scale.
+                HStack(spacing: 6) {
+                    Icon("ruler")
+                    Text(state.currentImage?.currentScale.map { "\(ImageScale.format($0.pxPerUm)) px/µm" } ?? "No scale")
+                }
             }.appButton()
             Button { state.view = .home } label: { Icon("x") }
                 .appButton(.ghost).frame(width: 28, height: 28)

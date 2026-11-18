@@ -30,15 +30,49 @@ struct ProvenanceMetadata: Codable, Sendable {
     let modelFamily: String         // "cellpose" | "cellpose4" | etc.
     let detectorVersion: String?    // cellpose 3.x version OR cpsam version
     let weightsHash: String?        // SHA-256 of the weights file used, if discoverable
+    /// The image's own scale: the scale its µm values are at (`ImageScale`).
     let pxPerUm: Double
-    let pxPerUmSource: String       // "exif-omeXML", "exif-tiff", "preset-Olympus IX73 20×", "manual", "default"
+    /// "exif-tiff", "exif-omeXML", "manual-entry", "scale-bar", "preset-<name>",
+    /// "manual override (file: X px/µm)", "batch:<source>" (the batch's
+    /// scale, including images analysed before images had their own), "unset".
+    let pxPerUmSource: String
     let thresholds: [Double]
     let confidenceFloor: Double
     let backgroundSubtract: Bool
     let watershedSplit: Bool
+    /// Expected cell size the recorded run used, at the run's own calibration.
+    /// Nil for runs saved without settings. Optional so older JSON decodes.
+    let sizeHint: SizeHint.Resolved?
     let timestamp: Date             // when the analysis was exported
     let imageId: String?            // the specific image (UUID) being stamped
     let detectionRanAt: Date?       // when the detection itself was run
+    /// The scale the model segmented the image at, when it differs from
+    /// `pxPerUm` (sizes converted after a scale change without segmenting
+    /// again). Nil otherwise and in older JSON.
+    var segmentedPxPerUm: Double? = nil
+    /// The scale recorded in the image file, when it differs from `pxPerUm`.
+    var filePxPerUm: Double? = nil
+    /// Versions, device, dtype and weights the sidecar reported for this
+    /// result. Nil for detectors that do not report it and for older results.
+    var detectorRuntime: DetectorRuntimeInfo? = nil
+    /// Set for an older result saved as a newer Cellpose-SAM model by a
+    /// Cellpose that does not have it: Cellpose 4.1 loaded `cpsam` for
+    /// `cpsam_v2` and the Cellpose-DINO names, with only a log warning.
+    var modelNote: String? = nil
+
+    /// Cellpose-SAM ids that Cellpose 4.1 and older do not include.
+    nonisolated static let modelsMissingBeforeCellpose42: Set<String> = ["cpsam_v2", "cpdino", "cpdino-vitb"]
+
+    /// The note for `modelNote`; nil when the result records what ran.
+    nonisolated static func substitutedModelNote(modelId: String, detectorVersion: String?,
+                                                 runtime: DetectorRuntimeInfo?) -> String? {
+        guard runtime == nil, modelsMissingBeforeCellpose42.contains(modelId) else { return nil }
+        guard let version = detectorVersion else {
+            return "recorded before CellCounter checked model names; if Cellpose 4.1 or older ran this result, it used cpsam (Cellpose-SAM), not \(modelId)"
+        }
+        guard version.hasPrefix("4.0") || version.hasPrefix("4.1") else { return nil }
+        return "Cellpose \(version) does not include \(modelId); it ran cpsam (Cellpose-SAM) for this result"
+    }
 
     // MARK: — Capture
 
@@ -56,13 +90,21 @@ struct ProvenanceMetadata: Codable, Sendable {
         let family = run.flatMap { ModelFamily(rawValue: $0.modelFamily) } ?? info?.family ?? .custom
         let modelName = run?.modelName ?? info?.name ?? modelId
 
-        // pxPerUm — prefer the batch's value (per-batch calibration), fall
-        // back to the global. pxPerUmSource lives on BatchRecord (see Records.swift).
+        // Each image has its own scale: the scale its µm values are at
+        // (`ImageRecord.currentScale`). Without an image, the batch's scale
+        // for images without one.
         let batch = image?.batch ?? state.currentBatch
-        let pxPerUm = batch?.pxPerUm ?? state.pxPerUm
-        let pxSource = batch?.pxPerUmSource ?? "default"
+        let pxPerUm: Double
+        let pxSource: String
+        if let image {
+            pxPerUm = image.currentScale?.pxPerUm ?? 0
+            pxSource = image.currentScale?.source ?? ImageScale.unsetSource
+        } else {
+            pxPerUm = batch?.pxPerUm ?? state.pxPerUm
+            pxSource = batch?.pxPerUmSource ?? (pxPerUm > 0 ? ImageScale.defaultSource : ImageScale.unsetSource)
+        }
 
-        return ProvenanceMetadata(
+        var metadata = ProvenanceMetadata(
             originalRunSettings: run,
             sourceSHA256: image?.fileHash,
             analysisSettingsSource: run == nil ? "legacy-unknown" : "saved-run",
@@ -73,18 +115,32 @@ struct ProvenanceMetadata: Codable, Sendable {
             modelId: modelId,
             modelName: modelName,
             modelFamily: family.rawValue,
-            detectorVersion: run?.detectorVersion,
-            weightsHash: run?.weightsSHA256,
+            // What the sidecar reported it ran, when recorded; otherwise the
+            // values probed before the run (older results).
+            detectorVersion: run?.detectorRuntime?.cellposeVersion ?? run?.detectorVersion,
+            weightsHash: run?.detectorRuntime?.weightsSHA256 ?? run?.weightsSHA256,
             pxPerUm: pxPerUm,
             pxPerUmSource: pxSource,
             thresholds: batch?.thresholds ?? state.thresholds,
             confidenceFloor: image.map { state.effectiveConfidence(for: $0) } ?? state.confidence,
             backgroundSubtract: run?.backgroundSubtract ?? false,
             watershedSplit: run?.watershedSplit ?? false,
+            sizeHint: run.map { SizeHint.resolve($0) },
             timestamp: Date(),
             imageId: image?.id.uuidString,
             detectionRanAt: image?.detection?.ranAt
         )
+        if let segmented = run?.pxPerUm, ImageScale.isUsable(segmented), !ImageScale.same(segmented, pxPerUm) {
+            metadata.segmentedPxPerUm = segmented
+        }
+        if let file = image?.fileScale?.pxPerUm, !ImageScale.same(file, pxPerUm) {
+            metadata.filePxPerUm = file
+        }
+        metadata.detectorRuntime = run?.detectorRuntime
+        metadata.modelNote = Self.substitutedModelNote(modelId: modelId,
+                                                       detectorVersion: metadata.detectorVersion,
+                                                       runtime: run?.detectorRuntime)
+        return metadata
     }
 
     // MARK: — Serialisation
@@ -104,19 +160,37 @@ struct ProvenanceMetadata: Codable, Sendable {
         lines.append("# model_id: \(modelId)")
         lines.append("# model_name: \(modelName)")
         lines.append("# model_family: \(modelFamily)")
+        if let modelNote { lines.append("# model_note: \(modelNote)") }
         if let dv = detectorVersion { lines.append("# detector_version: \(dv)") }
         if let wh = weightsHash { lines.append("# weights_hash: \(wh)") }
+        // cellpose/torch/numpy/opencv/python versions, device, dtype, weights.
+        lines.append(contentsOf: detectorRuntime?.csvHeaderLines ?? [])
         lines.append("# pxPerUm: \(String(format: "%g", pxPerUm))")
         lines.append("# pxPerUm_source: \(pxPerUmSource)")
+        if let segmentedPxPerUm { lines.append("# segmented_pxPerUm: \(String(format: "%g", segmentedPxPerUm))") }
+        if let filePxPerUm { lines.append("# file_pxPerUm: \(String(format: "%g", filePxPerUm))") }
         lines.append("# confidence_floor: \(String(format: "%.4f", confidenceFloor))")
         let binsStr = "[" + thresholds.map(\.trimmedString).joined(separator: ",") + "]"
         lines.append("# thresholds: \(binsStr)")
         lines.append("# background_subtract: \(backgroundSubtract ? "true" : "false")")
         lines.append("# watershed_split: \(watershedSplit ? "true" : "false")")
+        lines.append(contentsOf: sizeHintCSVLines)
         lines.append("# exported_at: \(iso.string(from: timestamp))")
         if let id = imageId { lines.append("# image_id: \(id)") }
         if let ran = detectionRanAt { lines.append("# detection_ran_at: \(iso.string(from: ran))") }
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// `expected_diameter_source` is "automatic" (size-class midpoint, or no
+    /// rescaling where the model does not use the midpoint) or "explicit".
+    /// µm and px are what the detector used; px includes the 15 px minimum.
+    var sizeHintCSVLines: [String] {
+        guard let sizeHint else { return [] }
+        var lines = ["# expected_diameter_source: \(sizeHint.source)"]
+        if sizeHint.behavior == .unused { lines.append("# expected_diameter_used: false") }
+        if let um = sizeHint.diameterUm { lines.append("# expected_diameter_um: \(String(format: "%g", um))") }
+        if let px = sizeHint.diameterPx { lines.append("# expected_diameter_px: \(String(format: "%.1f", px))") }
+        return lines
     }
 
     /// Compact markdown footer for the lab-journal PDF / report.md.
@@ -128,12 +202,21 @@ struct ProvenanceMetadata: Codable, Sendable {
         parts.append("- OS: \(osVersion)")
         parts.append("- Model: \(modelName) [\(modelId), family=\(modelFamily)]" +
                      (detectorVersion.map { " · detector \($0)" } ?? ""))
+        if let modelNote { parts.append("- Note: \(modelNote)") }
         if let wh = weightsHash {
             let short = String(wh.prefix(12))
-            parts.append("- Weights: \(short)…")
+            parts.append("- Weights: \(short)…" + (detectorRuntime?.weightsFile.map { " (\($0))" } ?? ""))
+        }
+        if let summary = detectorRuntime?.summary, !summary.isEmpty {
+            parts.append("- Runtime: \(summary)")
         }
         parts.append(String(format: "- Calibration: %.4g px/µm (%@)", pxPerUm, pxPerUmSource))
+        if let segmentedPxPerUm {
+            parts.append(String(format: "- Segmented at %.4g px/µm, measured at %.4g px/µm", segmentedPxPerUm, pxPerUm))
+        }
+        if let filePxPerUm { parts.append(String(format: "- The image file records %.4g px/µm", filePxPerUm)) }
         parts.append(String(format: "- Confidence floor: %.3f", confidenceFloor))
+        if let sizeHint { parts.append("- Expected cell size: \(SizeHint.summary(sizeHint))") }
         return parts.joined(separator: "\n") + "\n"
     }
 
@@ -207,9 +290,16 @@ struct ProvenanceMetadata: Codable, Sendable {
             let url = home.appendingPathComponent(".cellpose/models/\(modelName)")
             return url
         case .cellpose4:
-            // CPSAM ships a single big checkpoint "cpsam".
-            let url = home.appendingPathComponent(".cellpose/models/cpsam")
-            return url
+            // Pre-run estimate only: the sidecar reports the checksum of the
+            // file it actually loaded, which replaces this one. The catalog id
+            // is the checkpoint name (cpsam, cpsam_v2); Cellpose reads them
+            // from CELLPOSE_LOCAL_MODELS_PATH when set, as the sidecar
+            // inherits this process's environment.
+            let name = modelId.hasPrefix("cp4-") ? String(modelId.dropFirst(4)) : modelId
+            let override = ProcessInfo.processInfo.environment["CELLPOSE_LOCAL_MODELS_PATH"]
+            let folder = override.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? home.appendingPathComponent(".cellpose/models", isDirectory: true)
+            return folder.appendingPathComponent(name)
         // Classical has no weights at all (that's the point), and the ensemble
         // composes other families rather than owning a checkpoint. Omnipose,
         // StarDist, SAM, and custom models each manage their own checkpoint

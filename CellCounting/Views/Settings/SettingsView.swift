@@ -23,6 +23,15 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.bg)
         .focusedSceneValue(\.cellCounterShortcuts, shortcutActions)
+        // "Resource Use Settings…" in menus opens General directly.
+        .onAppear { openRequestedSection() }
+        .onChange(of: state.settingsSectionRequest) { openRequestedSection() }
+    }
+    private func openRequestedSection() {
+        guard let requested = state.settingsSectionRequest else { return }
+        section = requested
+        sectionSearch = ""
+        state.settingsSectionRequest = nil
     }
     private var shortcutActions: ScreenShortcutActions {
         var actions = ScreenShortcutActions()
@@ -47,7 +56,7 @@ enum SettingsSection: String, CaseIterable {
         case .appearance:  return "Appearance"
         case .bins:        return "Default bins"
         case .conditions:  return "Conditions"
-        case .calibration: return "Calibration presets"
+        case .calibration: return "Pixel scale"
         case .models:      return "Models"
         case .output:      return "Output folder"
         case .shortcuts:   return "Shortcuts"
@@ -69,11 +78,11 @@ enum SettingsSection: String, CaseIterable {
 
     var searchTerms: String {
         switch self {
-        case .general: return "General default model background preprocessing rolling ball parallel preparation watershed mask versions saved segmentations storage"
+        case .general: return "General default model expected cell size diameter size hint segmentation scale background preprocessing rolling ball parallel preparation model resource use CPU cores threads memory limit RAM GPU performance responsive slow priority light balanced maximum speed fast watershed mask versions saved segmentations storage"
         case .appearance: return "Appearance theme colors dark light overlay"
         case .bins: return "Default bins size thresholds"
         case .conditions: return "Conditions groups experiments labels"
-        case .calibration: return "Calibration presets pixels micrometers objective scale"
+        case .calibration: return "Calibration presets pixel scale default pixels micrometers px/µm objective scale bar"
         case .models: return "Models storage disk download runtime Python GPU"
         case .output: return "Output folder export CSV separator timestamp"
         case .shortcuts: return "Shortcuts keyboard keys commands"
@@ -257,10 +266,10 @@ private struct GeneralSection: View {
     /// built-in models when nothing is installed yet so the menu is never empty.
     private var selectableModels: [DetectionModelInfo] {
         let installed = allModels.filter {
-            !$0.comingSoon && state.detectorRegistry.isInstalled($0.id, models: state.models)
+            $0.isSelectable && state.detectorRegistry.isInstalled($0.id, models: state.models)
         }
         var list = installed.isEmpty
-            ? allModels.filter { $0.builtIn && !$0.comingSoon }
+            ? allModels.filter { $0.builtIn && $0.isSelectable }
             : installed
         if !list.contains(where: { $0.id == defaultModel }),
            let current = allModels.first(where: { $0.id == defaultModel }) {
@@ -285,6 +294,7 @@ private struct GeneralSection: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
+            ExpectedCellSizeSettings(state: state)
             SetRow(label: "Image preparation",
                    desc: "Prepare the next image during analysis when memory allows") {
                 Menu {
@@ -332,7 +342,215 @@ private struct GeneralSection: View {
                         .frame(width: 48, alignment: .trailing)
                 }
             }
+            ModelResourceSettings(state: state)
             MaskVersionsSettings(state: state)
+        }
+    }
+}
+
+// MARK: - Expected cell size
+
+/// Default expected cell size for new analyses (`cc-expected-diameter`;
+/// 0 = automatic). Each analysis keeps its own copy in its run settings.
+private struct ExpectedCellSizeSettings: View {
+    @Bindable var state: AppState
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    private var isAutomatic: Bool { SizeHint.isAutomatic(state.expectedDiameterUm) }
+    private var midpoint: Double { SizeHint.automaticDiameterUm(thresholds: state.thresholds) }
+
+    /// Custom chosen but no diameter entered yet. The default applies to every
+    /// model, and for Omnipose or Classical any value changes segmentation, so
+    /// choosing Custom stores nothing until a diameter is typed.
+    @State private var choosingCustom = false
+
+    private var mode: Binding<Int> {
+        Binding(get: { isAutomatic && !choosingCustom ? 0 : 1 }, set: { selection in
+            if selection == 0 {
+                state.expectedDiameterUm = 0
+                choosingCustom = false
+            } else if isAutomatic {
+                choosingCustom = true
+                focused = true
+            }
+            text = isAutomatic ? "" : SizeHint.format(state.expectedDiameterUm)
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Expected cell size")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(Tokens.text)
+                    Text("Default for new analyses. Automatic uses the midpoint of the default size classes, \(SizeHint.format(midpoint)) µm.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Tokens.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                SegmentedPicker(value: mode, options: [(value: 0, label: "Automatic"), (value: 1, label: "Custom")])
+                if !isAutomatic || choosingCustom {
+                    TextField(SizeHint.format(midpoint), text: $text)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 64)
+                        .focused($focused)
+                        .onSubmit { commit() }
+                        .onChange(of: focused) { if !focused { commit() } }
+                    Text("µm").font(.system(size: 12)).foregroundStyle(Tokens.textTertiary)
+                }
+                Button("Reset") { state.expectedDiameterUm = 0; text = ""; choosingCustom = false }
+                    .disabled(isAutomatic && !choosingCustom)
+                    .help("Return to automatic")
+            }
+            SizeHintDetails(expectedDiameterUm: state.expectedDiameterUm, thresholds: state.thresholds,
+                            pxPerUm: state.pxPerUm, fontSize: 11.5)
+        }
+        .padding(.vertical, 14)
+        .overlay(alignment: .bottom) { Rectangle().fill(Tokens.divider).frame(height: 0.5) }
+        .onAppear { text = isAutomatic ? "" : SizeHint.format(state.expectedDiameterUm) }
+        .onChange(of: state.expectedDiameterUm) { _, value in
+            if !focused { text = SizeHint.isAutomatic(value) ? "" : SizeHint.format(value) }
+        }
+    }
+
+    /// Blank returns to automatic; an invalid entry restores the stored value.
+    private func commit() {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if let value = Double(trimmed), value.isFinite, value > 0 {
+            state.expectedDiameterUm = value
+        } else if trimmed.isEmpty {
+            state.expectedDiameterUm = 0
+        }
+        // Leaving the field empty returns to Automatic.
+        if isAutomatic { choosingCustom = false }
+        text = isAutomatic ? "" : SizeHint.format(state.expectedDiameterUm)
+    }
+}
+
+// MARK: - Model resource use
+
+/// Performance: how much CPU and memory the model processes may use
+/// (`cc-model-resources` plus the two Custom values). An app-wide setting;
+/// the same choice is in the Processing screen, the analysis setup sheet and
+/// the app menu. Changes reach running models without a reload.
+private struct ModelResourceSettings: View {
+    @Bindable var state: AppState
+
+    private let machine = MachineResources.current
+
+    private var presetBinding: Binding<ModelResourcePreset> {
+        Binding(get: { state.modelResourcePreset },
+                set: { state.selectModelResourcePreset($0) })
+    }
+
+    /// What a preset means, with its numbers on this Mac.
+    private func explanation(_ preset: ModelResourcePreset) -> String {
+        let limits = ModelResourceLimits.resolve(ModelResourceChoice(preset: preset), machine: machine)
+        return "\(preset.purpose). \(limits.summary)."
+    }
+
+    private var coresBinding: Binding<Int> {
+        Binding(get: { state.modelResourceLimits.cpuThreads ?? machine.cpuCores },
+                set: { state.modelResourceCustomCores = $0 })
+    }
+
+    private var memoryBinding: Binding<Int> {
+        Binding(get: { state.modelResourceLimits.memoryLimitGB ?? machine.customMemoryRangeGB.upperBound },
+                set: { state.modelResourceCustomMemoryGB = $0 })
+    }
+
+    private var footnote: String {
+        let limits = state.modelResourceLimits
+        guard limits.memoryLimitGB != nil, limits.mpsLowWatermarkRatio != nil else {
+            return "No GPU memory cap. \(limits.loadedModelsDescription)"
+        }
+        guard limits.hasHardMemoryCap else {
+            return "PyTorch models (Cellpose, Cellpose-SAM, Omnipose, SAM) free cached GPU memory "
+                + "above this level, but a run is never stopped for memory; Light and Custom set a hard cap. "
+                + "\(limits.loadedModelsDescription)"
+        }
+        return "The memory limit caps GPU memory for PyTorch models (Cellpose, Cellpose-SAM, Omnipose, SAM) "
+            + "and sets how many models stay loaded. \(limits.loadedModelsDescription) "
+            + "macOS cannot hard-cap a process's RAM."
+    }
+
+    var body: some View {
+        let limits = state.modelResourceLimits
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Performance".uppercased())
+                .tracking(0.04 * 13)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Tokens.textSecondary)
+                .padding(.top, 22)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Model resource use")
+                            .font(.system(size: 13.5, weight: .medium))
+                            .foregroundStyle(Tokens.text)
+                        Text("How much of this Mac the models may use while they analyse images. Applies to the whole app.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Tokens.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    SegmentedPicker(value: presetBinding,
+                                    options: ModelResourcePreset.allCases.map { (value: $0, label: $0.label) })
+                        .help(limits.summary)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach([ModelResourcePreset.light, .balanced, .maximum], id: \.self) { preset in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(preset.label)
+                                .font(.system(size: 12, weight: preset == state.modelResourcePreset ? .semibold : .regular))
+                                .foregroundStyle(Tokens.text)
+                                .frame(width: 64, alignment: .leading)
+                            Text(explanation(preset))
+                                .font(.system(size: 12))
+                                .foregroundStyle(Tokens.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                if state.modelResourcePreset == .custom {
+                    HStack(spacing: 20) {
+                        Stepper(value: coresBinding, in: machine.cpuCoreRange) {
+                            Text("CPU cores: \(coresBinding.wrappedValue) of \(machine.cpuCores)")
+                        }
+                        Stepper(value: memoryBinding, in: machine.customMemoryRangeGB) {
+                            Text("Memory limit: \(memoryBinding.wrappedValue) GB")
+                        }
+                    }
+                    .font(.system(size: 12.5).monospacedDigit())
+                    .fixedSize()
+                    Text("Custom: \(limits.summary).")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Tokens.textSecondary)
+                    if memoryBinding.wrappedValue < ModelResourceLimits.cellposeSAMMemoryGB {
+                        Label("Cellpose-SAM needs about \(ModelResourceLimits.cellposeSAMMemoryGB) GB; with less it may stop with a memory-limit error.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Tokens.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Text(footnote)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label("You can switch while an analysis runs, without reloading the model: priority and CPU cores change at once, a lower memory cap after the current image. Other limits apply when a model next starts.",
+                      systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Tokens.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 14)
+            .overlay(alignment: .bottom) { Rectangle().fill(Tokens.divider).frame(height: 0.5) }
         }
     }
 }
@@ -1012,8 +1230,47 @@ private struct CalibrationSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SectionHeading(title: "Calibration presets",
-                           subtitle: "Reusable scale settings, one per microscope + objective.")
+            SectionHeading(title: "Pixel scale",
+                           subtitle: "Each image has its own scale. A scale recorded in an image's file is always used unless you override it for that image.")
+
+            // The user's default for images without a scale; there is no built-in one.
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Default for images without a scale")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Tokens.text)
+                    Text(state.pxPerUm > 0
+                         ? "\(ImageScale.format(state.pxPerUm)) px/µm (yours). New batches use it for images whose file has no scale; you see it in Analysis setup."
+                         : "Not set. Images without a scale in their file need one before analysis.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Tokens.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                TextField("px/µm", value: Binding(get: { state.pxPerUm > 0 ? state.pxPerUm : 0 },
+                                                   set: { if $0.isFinite, $0 > 0 { state.pxPerUm = $0 } }),
+                          format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+                if state.pxPerUm > 0 {
+                    Button("Clear") { state.pxPerUm = 0 }
+                        .appButton(.ghost, size: .sm)
+                        .help("No default: images without a scale must get one in Analysis setup.")
+                }
+            }
+            .padding(.vertical, 12)
+
+            Text("Calibration presets")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Tokens.text)
+                .padding(.top, 6)
+            Text(presets.isEmpty
+                 ? "None yet. After measuring a scale bar or typing a value in Calibrate, choose “Save as preset” and name it after your microscope and objective."
+                 : "Your saved scales, one per microscope and objective. A preset applies to images without a scale unless you choose to override a file's scale.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Tokens.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 10)
 
             VStack(spacing: 0) {
                 ForEach(presets) { preset in
@@ -1132,7 +1389,8 @@ private struct CalibrationPresetEditor: View {
         }
         .onAppear {
             name = existing?.name ?? ""
-            pxPerUmText = existing.map { String(format: "%.2f", $0.pxPerUm) } ?? ""
+            // Full precision: a rounded value saved back would change the preset.
+            pxPerUmText = existing.map { ImageScale.format($0.pxPerUm) } ?? ""
         }
     }
 }
@@ -1149,18 +1407,21 @@ private struct CalibrationRow: View {
                 Text(preset.name)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Tokens.text)
-                Text(String(format: "%.1f px / µm", preset.pxPerUm))
+                Text("\(ImageScale.format(preset.pxPerUm)) px / µm")
                     .font(.system(size: 11.5, design: .monospaced))
                     .foregroundStyle(Tokens.textTertiary)
+                // Presets older versions added to every library were measured
+                // on another lab's microscope.
+                if CalibrationPreset.wasShipped(name: preset.name, pxPerUm: preset.pxPerUm) {
+                    Text(CalibrationPreset.shippedNote)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tokens.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 0)
-            if preset.isDefault {
-                Text("Default")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(theme.accentColor)
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(Capsule().fill(theme.accentSoft))
-            }
+            // No "Default" badge: presets never apply on their own. The default
+            // for images without a scale is set above.
             Button("Edit", action: onEdit)
                 .appButton(.ghost, size: .sm)
             Button(action: onDelete) { Icon("trash", size: 12) }

@@ -92,6 +92,12 @@ jobs:
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_training_dataset.py
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_assay_worker.py
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_detection_startup.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_model_downloads.py
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_cell_measurement.py
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_serve_modes.py
           /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_sam_serving.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_resource_limits.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s shared/python/tests -p test_workbench_resource_limits.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_cellpose_accel.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s CellCounting/python/tests -p test_cellpose_runtime.py
+          /tmp/cellcounter-test-env/bin/python -m unittest discover -s shared/python/tests -p test_workbench_cellpose_input.py

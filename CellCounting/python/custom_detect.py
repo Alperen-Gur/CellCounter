@@ -221,17 +221,25 @@ def run_cellpose(args, channels) -> None:
         f"custom cellpose checkpoint={args.model}")
 
     import torch as _torch
+    cc.apply_cpu_thread_limit(_torch)
     override_device, use_gpu_kw = cc.resolve_device(args, _torch)
 
     model_key = _model_key("cellpose", args.model, str(override_device), bool(use_gpu_kw))
     model = _cached_model(model_key)
     if model is None:
         try:
-            try:
-                model = cp_models.CellposeModel(gpu=use_gpu_kw,
-                                                pretrained_model=args.model)
-            except TypeError:
-                model = cp_models.CellposeModel(pretrained_model=args.model)
+            # A user's checkpoint needs no download, but should Cellpose fall
+            # back to a built-in model, that download is verified and
+            # resumable too. The user's file itself is never moved aside.
+            with cc.model_loading_progress():
+                try:
+                    model = cp_models.CellposeModel(gpu=use_gpu_kw,
+                                                    pretrained_model=args.model)
+                except TypeError:
+                    model = cp_models.CellposeModel(pretrained_model=args.model)
+        except cc.ModelDownloadError as exc:
+            emit_error("model-download-failed", hint=str(exc), exit_code=4)
+            return
         except Exception as exc:  # noqa: BLE001
             log(f"[cellpose_detect] custom checkpoint load failed: {exc!r}")
             emit_error(
@@ -289,6 +297,14 @@ def run_cellpose(args, channels) -> None:
     masks = cc.apply_watershed_if_requested(masks, args)
     image_stats.update(cc.compute_colony_stats(masks, args, height_px, width_px))
     cells = cc.measure_cells(masks, img, args, flows=flows)
+    # What actually ran: versions, device, dtype, the checkpoint's checksum.
+    try:
+        import _cellpose_runtime
+        image_stats["runtime"] = _cellpose_runtime.runtime_block(
+            model=model, requested_model=os.path.basename(args.model),
+            device=resolved_device, weights_path=args.model)
+    except ImportError:
+        pass
     cc.emit_payload(width_px, height_px, cells, image_stats)
 
 
@@ -423,7 +439,9 @@ def serve() -> None:
 
 
 if __name__ == "__main__":
+    # SIGTERM unwinds the request so `finally` blocks run, then ends the
+    # process by SIGTERM as before.
     if "--serve" in sys.argv[1:]:
-        serve()
+        cc.run_sidecar(serve)
     else:
-        main()
+        cc.run_sidecar(main)

@@ -238,6 +238,8 @@ struct ReviewQueueScalingTests {
         #expect(repos.pendingReviewCandidateCount() == 0)
 
         _ = try library(imageCount: 2, repository: repos)
+        // No presets are shipped; a user's own preset survives the reset.
+        repos.upsertCalibrationPreset(CalibrationPresetRecord(name: "Lab scope · 10×", pxPerUm: 4.1666))
         // Exercise the exact database operation used by Reset without touching
         // FileStore.shared or any real image/thumbnail directories.
         try repos.deleteAllLibraryRecords()
@@ -291,6 +293,8 @@ struct ReviewQueueScalingTests {
         repos.context.insert(GroundTruthAnnotation(imageId: imageID, cx: 10, cy: 10))
         repos.context.insert(SegmentationVariantRecord(image: image, detectorId: "test",
                                                        label: "Detached fixture", cells: []))
+        // No presets are shipped; a user's own preset survives the reset.
+        repos.context.insert(CalibrationPresetRecord(name: "Lab scope · 10×", pxPerUm: 4.1666))
         try repos.context.save()
 
         try repos.deleteAllLibraryRecords()

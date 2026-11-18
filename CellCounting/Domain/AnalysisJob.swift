@@ -23,7 +23,27 @@ nonisolated struct AnalysisJobItem: Codable, Identifiable, Sendable, Equatable {
     var error: String?
     var duration: Double?
     var estimatedBytes: Int64 = 0
+    /// The scale recorded in the file (high or medium confidence): read when
+    /// the item is created, or copied from the imported image. Nil for files
+    /// without one, and for microscope formats until they are imported.
+    var filePxPerUm: Double?
+    var fileScaleSource: String?
+    /// A scale set for this image in Analysis setup. It is copied to the
+    /// image when the image is imported or the setup is committed.
+    var scalePxPerUm: Double?
+    var scaleSource: String?
     var fileName: String { displayName ?? URL(fileURLWithPath: sourcePath).lastPathComponent }
+
+    var fileScale: ImageScale.Value? { ImageScale.Value(filePxPerUm, source: fileScaleSource ?? "metadata") }
+    var ownScale: ImageScale.Value? {
+        get { ImageScale.Value(scalePxPerUm, source: scaleSource) }
+        set { scalePxPerUm = newValue?.pxPerUm; scaleSource = newValue?.source }
+    }
+    /// A microscope file whose scale is known only once it is imported.
+    var scaleReadOnImport: Bool {
+        imageId == nil && filePxPerUm == nil
+            && ImageLoader.isVendorExtension((sourcePath as NSString).pathExtension)
+    }
 
     init(url: URL, imageId: UUID? = nil, knownHash: String? = nil,
          knownHashStamp: ImportFileStamp? = nil, displayName: String? = nil) {
@@ -49,6 +69,13 @@ nonisolated struct AnalysisJobItem: Codable, Identifiable, Sendable, Equatable {
             estimatedBytes = estimate.isFinite && estimate < Double(Int64.max)
                 ? max(estimatedBytes, Int64(estimate)) : Int64.max
         } else { estimatedBytes = 0 }
+        // The file's own scale, read the way import reads it, so Analysis
+        // setup can show every image's scale before the images are imported.
+        if imageId == nil, !ImageLoader.isVendorExtension(url.pathExtension),
+           let scale = EXIFCalibration.usableScale(at: url) {
+            filePxPerUm = scale.pxPerUm
+            fileScaleSource = scale.source
+        }
         status = imageId == nil ? .pending : .ready
     }
 
@@ -69,6 +96,9 @@ extension AnalysisJobItem {
         var knownHash: String? = nil
         var knownHashStamp: ImportFileStamp? = nil
         var displayName: String? = nil
+        /// An imported image's file scale and own scale, copied to the item.
+        var fileScale: ImageScale.Value? = nil
+        var ownScale: ImageScale.Value? = nil
     }
 
     /// Builds one item per source, in order, off the caller's actor: each
@@ -79,8 +109,14 @@ extension AnalysisJobItem {
     static func make(_ sources: [Source]) async -> [AnalysisJobItem] {
         sources.map { source in
             autoreleasepool {
-                AnalysisJobItem(url: source.url, imageId: source.imageId, knownHash: source.knownHash,
-                                knownHashStamp: source.knownHashStamp, displayName: source.displayName)
+                var item = AnalysisJobItem(url: source.url, imageId: source.imageId, knownHash: source.knownHash,
+                                           knownHashStamp: source.knownHashStamp, displayName: source.displayName)
+                if let file = source.fileScale {
+                    item.filePxPerUm = file.pxPerUm
+                    item.fileScaleSource = file.source
+                }
+                if let own = source.ownScale { item.ownScale = own }
+                return item
             }
         }
     }

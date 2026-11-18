@@ -208,12 +208,8 @@ final class Repositories {
     // MARK: — Seeding
 
     private func seedDefaultsIfNeeded() {
-        let calibCount = (try? context.fetchCount(FetchDescriptor<CalibrationPresetRecord>())) ?? 0
-        if calibCount == 0 {
-            for p in CalibrationPreset.builtIn {
-                context.insert(CalibrationPresetRecord(name: p.name, pxPerUm: p.pxPerUm, isDefault: p.isDefault))
-            }
-        }
+        // No calibration presets are seeded: a px/µm value is only right for
+        // the microscope it was measured on (`CalibrationPreset`).
         let binCount = (try? context.fetchCount(FetchDescriptor<BinPresetRecord>())) ?? 0
         if binCount == 0 {
             context.insert(BinPresetRecord(name: "Keratinocytes — early passage", thresholds: [18, 26]))
@@ -637,7 +633,8 @@ final class Repositories {
                                                 plainJSON: stored, cellCount: cellCount,
                                                 meanConfidence: meanConfidence ?? -1,
                                                 contentHash: hash)
-        variant.measurementPxPerUm = image.batch?.pxPerUm
+        // The scale the image's current measurements are at (`measuredScale`).
+        variant.measurementPxPerUm = image.measuredScale?.pxPerUm ?? image.batch?.pxPerUm
         variant.runSettingsData = image.detection?.runSettingsData
         variant.imageStatsData = image.detection?.imageStatsData
         variant.detectionRanAt = image.detection?.ranAt
@@ -686,7 +683,9 @@ final class Repositories {
 
         let oldCount = detection.summaryCellCount
         var rescaled = false
-        if let oldScale = variantScale, let newScale = image.batch?.pxPerUm,
+        // A version measured at another scale is converted to the scale the
+        // image's measurements use now; its outlines (pixels) are kept.
+        if let oldScale = variantScale, let newScale = image.measuredScale?.pxPerUm ?? image.batch?.pxPerUm,
            oldScale > 0, newScale > 0, oldScale != newScale {
             let ratio = oldScale / newScale
             for index in cells.indices {

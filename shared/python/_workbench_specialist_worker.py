@@ -208,6 +208,14 @@ def main():
                           "supportsTraining": False, "pythonVersion": sys.version.split()[0],
                           "notes": ["Compatibility probe checks the installed API; checkpoint architecture and decoder compatibility are checked during explicit inference."]}
             elif request["mode"] == "infer":
+                # CellCounter's Model resource use, also when changed during
+                # this run; nothing is added to the result.
+                try:
+                    from _workbench_resource_limits import activate as follow_resource_limits
+                except ImportError:
+                    follow_resource_limits = None
+                if follow_resource_limits is not None:
+                    follow_resource_limits()
                 result = {**metadata, **_infer(request, output, api)}
             else:
                 raise ValueError("Specialist adapters support compatibility probe, environment capture and inference only.")

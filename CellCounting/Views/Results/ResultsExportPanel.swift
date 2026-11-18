@@ -376,7 +376,8 @@ struct ResultsExportPanel: View {
         let heightPx = image.heightPx
         let fileName = image.fileName
         let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
-        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
+        // The image's own scale.
+        let pxPerUm = image.currentPxPerUm
         let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
         Task { @MainActor in
             defer { SecurityBookmarks.stop(scoped) }
@@ -409,7 +410,9 @@ struct ResultsExportPanel: View {
         let cells = detection.cells
         let fileName = image.fileName
         let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
-        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
+        // The image's own scale, its source and the scale it was segmented at.
+        let scale = ExportService.summaryScale(for: image)
+        let pxPerUm = scale?.pxPerUm ?? 0
         let sep = csvSeparator.isEmpty ? "," : csvSeparator
         let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
         Task { @MainActor in
@@ -423,6 +426,8 @@ struct ResultsExportPanel: View {
                                                    confidence: conf,
                                                    modelId: modelId,
                                                    separator: sep,
+                                                   scaleSource: scale?.source,
+                                                   segmentedPxPerUm: scale?.segmentedPxPerUm,
                                                    to: url)
                 }.value
                 flashSaved(url.path)
@@ -444,7 +449,7 @@ struct ResultsExportPanel: View {
         let imageURL = image.displayURL
         let cells = detection.cells
         let thresholds = image.batch?.thresholds ?? state.currentBatch?.thresholds ?? state.thresholds
-        let pxPerUm = image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
+        let pxPerUm = image.currentPxPerUm
         let overlay = overlayMode
         let scoped = exportFolder.isEmpty ? nil : SecurityBookmarks.resolve("cc-export-folder-bookmark")
         Task { @MainActor in

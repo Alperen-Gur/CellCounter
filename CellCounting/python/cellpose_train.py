@@ -15,6 +15,8 @@ from pathlib import Path
 import sys
 
 from _training_dataset import validate_manifest, load_dataset, evaluate_masks, file_hash
+from _model_downloads import is_corrupt_checkpoint_error, is_download_artifact
+import _cellpose_common as cc
 
 shared_runtime = Path(__file__).resolve().parents[2] / "shared" / "python"
 if shared_runtime.is_dir():
@@ -29,6 +31,7 @@ def run(args):
         raise ValueError("Fine-tuning requires the installed Cellpose 3.x environment")
     import numpy as np
     import torch
+    cc.apply_cpu_thread_limit(torch)
     from cellpose import models, train
     from _imageio import load_planes
     if args.epochs < 6 or args.batch_size < 1 or not math.isfinite(args.lr) or args.lr <= 0:
@@ -47,12 +50,23 @@ def run(args):
         if not alias:
             raise ValueError("Choose a Cellpose 3.x base model or a registered Cellpose 3.x checkpoint")
         # Do not initiate an implicit model download from the training wizard.
+        # Partial (.cellcounter-part, older .part), moved-aside (.corrupt-*)
+        # and temporary download files are never weights. A truncated or
+        # damaged base model is reported when loading it fails, below.
         candidates = list(Path(models.MODEL_DIR).glob(alias + "*"))
-        candidates = [p for p in candidates if p.is_file() and p.stat().st_size >= 1024 and not p.name.endswith(".npy")]
+        candidates = [p for p in candidates if p.is_file() and p.stat().st_size >= 1024
+                      and not p.name.endswith(".npy") and not is_download_artifact(p.name)]
         if not candidates:
             raise ValueError(f"Install {alias} in Models before training")
         pretrained = str(sorted(candidates)[0])
-    model = models.CellposeModel(gpu=device.type != "cpu", device=device, pretrained_model=pretrained)
+    try:
+        model = models.CellposeModel(gpu=device.type != "cpu", device=device, pretrained_model=pretrained)
+    except Exception as exc:
+        # Detection replaces damaged downloaded weights (build_with_weight_recovery).
+        if args.resume or not is_corrupt_checkpoint_error(exc):
+            raise
+        raise ValueError(f"The downloaded {alias} weights are incomplete. Run one detection "
+                         f"with {alias} to download them again, then train.") from exc
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     best = output.with_suffix(".best")
@@ -115,6 +129,10 @@ def main(argv=None):
     parser.add_argument("--device", choices=["auto", "cpu"], default="auto")
     parser.add_argument("--early-stop", type=int, choices=[0, 1], default=1)
     args = parser.parse_args(argv)
+    # Settings → General → Model resource use changed during training
+    # (SIGINFO): PyTorch's thread count and a higher or removed GPU memory
+    # cap apply at once; a lower cap waits for the next training run.
+    cc.install_limits_control()
     output = Path(args.output)
     if output.exists() or output.with_suffix(".json").exists():
         print(json.dumps({"error": "Choose a new output path; an existing checkpoint will not be overwritten"}), flush=True)
@@ -125,6 +143,11 @@ def main(argv=None):
         success = True
         return 0
     except Exception as exc:
+        if cc.is_memory_limit_error(exc):
+            # Settings → General → Model resource use caps PyTorch GPU memory.
+            print(f"training stopped: {exc}", file=sys.stderr, flush=True)
+            print(json.dumps({"error": cc.memory_limit_hint(), "code": cc.MEMORY_LIMIT_ERROR}), flush=True)
+            return 2
         print(json.dumps({"error": str(exc)}), flush=True)
         return 2
     finally:

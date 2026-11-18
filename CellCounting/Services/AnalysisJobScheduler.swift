@@ -73,11 +73,23 @@ final class AnalysisJobScheduler {
         try await persist()
         return job.id
     }
-    func updateDraft(_ id: UUID, settings: AnalysisRunSettings, preset: AnalysisTaskPreset) async throws {
+    /// Saves a draft. A change to anything but the scale analyses every image
+    /// again. Each image has its own scale: `itemScales` sets the scale chosen
+    /// for single images (a nil value removes it), and `scaleResets` lists the
+    /// items whose scale changed, which are analysed again. Without
+    /// `scaleResets`, a changed job scale analyses every image again.
+    func updateDraft(_ id: UUID, settings: AnalysisRunSettings, preset: AnalysisTaskPreset,
+                     itemScales: [UUID: ImageScale.Value?] = [:],
+                     scaleResets: Set<UUID>? = nil) async throws {
         guard let index = index(id), [.draft, .paused, .failed, .completed, .cancelled].contains(jobs[index].status) else { return }
         if let error = settings.validationError { throw messageError(error) }
-        if !jobs[index].settings.hasSameInputs(as: settings) {
-            for item in jobs[index].items.indices {
+        let previous = jobs[index].settings
+        let resetAll = !previous.hasSameInputs(as: settings, ignoringScale: true)
+            || (scaleResets == nil && previous.pxPerUm != settings.pxPerUm)
+        for item in jobs[index].items.indices {
+            let itemId = jobs[index].items[item].id
+            if let change = itemScales[itemId] { jobs[index].items[item].ownScale = change }
+            if resetAll || scaleResets?.contains(itemId) == true {
                 jobs[index].items[item].status = jobs[index].items[item].imageId == nil ? .pending : .ready
                 jobs[index].items[item].duration = nil
                 jobs[index].items[item].error = nil

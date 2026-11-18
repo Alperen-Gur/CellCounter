@@ -11,7 +11,10 @@ import Foundation
 ///     generic protocol-with-knobs hurts readability for negligible code
 ///     savings.
 ///
-/// "Install" means `pip install cellpose>=4 …` into venv4. The ~1.15 GB CPSAM
+/// "Install" means `pip install` of the tested, pinned set
+/// (`CellposeSAMRuntime.pinnedPackages`, Cellpose 4.2.1.1) into venv4. Any
+/// other importable Cellpose 4.x still counts as installed, with an update
+/// offered in Models (`CellposeSAMRuntime.Status`). The ~1.15 GB CPSAM
 /// transformer weights are NOT fetched here — cellpose 4 downloads them lazily
 /// on the first `CellposeModel()` construction. C1's `cellpose4_detect.py`
 /// surfaces that download to the UI via the existing ccDetectionStage pipeline,
@@ -43,6 +46,13 @@ struct CellposeSAMDownloader: ModelDownloader {
         return await Task.detached(priority: .utility) {
             guard let python = Self.probePythonURL(directory: directory, sentinel: sentinel, script: script) else { return false }
             let ok = Self.runPythonImportCheck(pythonURL: python)
+            // Which Cellpose it is, for the "update available" check. Read
+            // before publishing the verdict, so the two never disagree.
+            if ok {
+                CellposeSAMRuntime.refreshCachedVersion(venv: directory)
+            } else {
+                CellposeSAMRuntime.forgetCachedVersion()
+            }
             UserDefaults.standard.set(ok, forKey: Self.importableCacheKey)
             return ok
         }.value
@@ -74,19 +84,30 @@ struct CellposeSAMDownloader: ModelDownloader {
             throw CellposeSAMDownloaderError.venvMissing(msg)
         }
 
-        // Fast path: already importable.
+        // Fast path: the pinned Cellpose is already importable. Any other
+        // version is installed over by the pinned set below: this runs only
+        // when the user asked to install.
+        let venv4 = await MainActor.run { FileStore.shared.pythonVenv4Dir }
         if await Self.isCellposeSAMImportable(pythonURL: python) {
-            await MainActor.run {
-                progress.append("cellpose 4 already importable; nothing to install")
-                progress.stage = .ready
+            let installed = await Task.detached(priority: .utility) {
+                CellposeSAMRuntime.refreshCachedVersion(venv: venv4)
+            }.value
+            if installed == CellposeSAMRuntime.pinnedCellposeVersion {
+                await MainActor.run {
+                    progress.append("Cellpose \(installed ?? "") already installed; nothing to install")
+                    progress.stage = .ready
+                }
+                return
             }
-            return
+            await MainActor.run {
+                progress.append("Cellpose \(installed ?? "(unknown version)") is installed; "
+                                + "installing the tested set with Cellpose \(CellposeSAMRuntime.pinnedCellposeVersion)")
+            }
         }
 
         try await Self.runPipInstall(
             pythonURL: python,
-            packages: ["cellpose>=4", "numpy<2", "scipy", "scikit-image",
-                       "tifffile", "torch"],
+            packages: CellposeSAMRuntime.pinnedPackages,
             progress: progress
         )
 
@@ -97,8 +118,10 @@ struct CellposeSAMDownloader: ModelDownloader {
             await MainActor.run {
                 progress.append("optional reader: pip install \(package)")
             }
+            // With the whole pinned set, so a reader cannot move numpy (or
+            // anything else) off its pin.
             try? await Self.runPipInstall(pythonURL: python,
-                                          packages: [package, "numpy<2"],
+                                          packages: [package] + CellposeSAMRuntime.pinnedPackages,
                                           progress: progress)
         }
 
@@ -123,6 +146,7 @@ struct CellposeSAMDownloader: ModelDownloader {
         // across any future cp4 model ids we add. We never touch the
         // ~/.cellpose/models/ weights cache here.
         UserDefaults.standard.removeObject(forKey: Self.importableCacheKey)
+        CellposeSAMRuntime.forgetCachedVersion()
     }
 
     // MARK: - diskUsageBytes
@@ -187,6 +211,7 @@ struct CellposeSAMDownloader: ModelDownloader {
         // reported as installed. Both keys are distinct from the 3.x ones.
         try? Data().write(to: FileStore.shared.cellpose4InstallIncompleteSentinel)
         UserDefaults.standard.set(false, forKey: Cellpose4Availability.importableCacheKey)
+        CellposeSAMRuntime.forgetCachedVersion()
 
         let venvPath = FileStore.shared.pythonVenv4Dir.path
         let scriptsDir = FileStore.shared.pythonDir.path
@@ -256,29 +281,23 @@ struct CellposeSAMDownloader: ModelDownloader {
         if useCache, let cached = UserDefaults.standard.object(forKey: importableCacheKey) as? Bool {
             return cached
         }
-        let ok = await Task.detached(priority: .utility) {
-            runPythonImportCheck(pythonURL: pythonURL)
+        let ok = await Task.detached(priority: .utility) { () -> Bool in
+            let ok = runPythonImportCheck(pythonURL: pythonURL)
+            // <venv>/bin/python3 → <venv>: keep the cached version in step.
+            let venv = pythonURL.deletingLastPathComponent().deletingLastPathComponent()
+            if ok {
+                CellposeSAMRuntime.refreshCachedVersion(venv: venv)
+            } else {
+                CellposeSAMRuntime.forgetCachedVersion()
+            }
+            return ok
         }.value
         UserDefaults.standard.set(ok, forKey: importableCacheKey)
         return ok
     }
 
     nonisolated private static func runPythonImportCheck(pythonURL: URL) -> Bool {
-        let probe = """
-        import sys
-        try:
-            import cellpose
-            v = getattr(cellpose, 'version', None) or ''
-            if not isinstance(v, str):
-                v = str(v)
-            major = int(v.split('.')[0]) if v else 0
-            if major >= 4:
-                sys.exit(0)
-            sys.exit(2)
-        except Exception:
-            sys.exit(1)
-        """
-        return ModelProbeRunner.run(pythonURL: pythonURL, code: probe)
+        CellposeSAMRuntime.isImportable(pythonURL: pythonURL)
     }
 
     /// Stream `python -m pip install …` lines into `progress`. Functionally
@@ -421,18 +440,19 @@ extension CellposeSAMDetectionService {
         knownModelIds.contains(id)
     }
 
-    /// Every checkpoint the cellpose 4.x `pretrained_model=` constructor
-    /// accepts, per https://cellpose.readthedocs.io/en/latest/models.html
-    /// (verified against that page). All four share the SAME `venv4/` install
-    /// and differ only in the weights cellpose downloads on first use — so
-    /// adding one costs no new dependency and no licence change.
+    /// Every checkpoint name Cellpose 4.2.1.1 knows (`models.MODEL_NAMES`).
+    /// They share the `venv4/` install and differ in the weights Cellpose
+    /// downloads on first use; the Cellpose-DINO two also need `dinov3`,
+    /// which is not installed, so their catalog rows are unavailable. They
+    /// stay known ids so saved results and settings still resolve.
     ///
     /// The id IS the `pretrained_model` string. `cellpose4_detect.py` strips
-    /// any `cp4-`/`cellpose4-` prefix and passes the rest straight through.
+    /// any `cp4-`/`cellpose4-` prefix and refuses a name the installed
+    /// Cellpose does not know (4.1.1 knew only `cpsam`).
     static let knownModelIds: Set<String> = [
         "cpsam",        // original CellposeSAM (SAM-ViTL)
-        "cpsam_v2",     // revised CellposeSAM — better on low-contrast regions
-        "cpdino",       // CellposeDINO (DINOv3-ViTL), adjustable tile size
-        "cpdino-vitb",  // CellposeDINO (DINOv3-ViTB), smaller and faster
+        "cpsam_v2",     // revised CellposeSAM; not in 4.1.1, Cellpose's default in 4.2.1.1
+        "cpdino",       // CellposeDINO (DINOv3-ViTL); needs dinov3, unavailable
+        "cpdino-vitb",  // CellposeDINO (DINOv3-ViTB); needs dinov3, unavailable
     ]
 }

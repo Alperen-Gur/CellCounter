@@ -35,6 +35,8 @@ enum ExportService {
         let imageURL: URL
         let cells: [DetectedCell]
         let confidence: Double
+        /// The image's own scale for its scale bar; nil uses the batch call's.
+        var pxPerUm: Double? = nil
     }
 
     struct BatchAnnotatedFolderResult: Sendable {
@@ -108,7 +110,7 @@ enum ExportService {
                         imageURL: image.imageURL,
                         cells: image.cells,
                         thresholds: thresholds,
-                        pxPerUm: pxPerUm,
+                        pxPerUm: image.pxPerUm ?? pxPerUm,
                         overlayMode: overlayMode,
                         confidence: image.confidence,
                         to: destination)
@@ -200,7 +202,8 @@ enum ExportService {
         // summary writer resolves each row's own override against this fallback.
         let globalConf = state.confidence
         let modelId = state.currentBatch?.modelId ?? state.activeModelId
-        let pxPerUm = image.batch?.pxPerUm ?? state.pxPerUm
+        // The image's own scale (each image has one; see `ImageScale`).
+        let pxPerUm = image.currentPxPerUm
         let thresholds = image.batch?.thresholds ?? state.thresholds
         // Pass-18 (Lane R): capture provenance once and thread it through every
         // writer below. `ProvenanceMetadata.capture` is MainActor-bound (reads
@@ -279,7 +282,7 @@ enum ExportService {
             do {
                 try writePerImageSummaryCSV(batch: batch,
                                             thresholds: thresholds,
-                                            pxPerUm: pxPerUm,
+                                            pxPerUm: batch.pxPerUm,
                                             confidence: globalConf,
                                             separator: ",",
                                             provenance: provenance,
@@ -472,11 +475,14 @@ enum ExportService {
                                          modelId: String,
                                          separator: String = ",",
                                          provenance: ProvenanceMetadata? = nil,
+                                         scaleSource: String? = nil,
+                                         segmentedPxPerUm: Double? = nil,
                                          to url: URL) throws {
         let localTiming = LocalPerformanceRecorder.shared.begin(.exportPrepare)
         defer { localTiming?.finish() }
 
         let bins = BinMath.bins(from: thresholds)
+        // `pxPerUm` is this image's own scale: diameter_um = diameter_px / pxPerUm.
         let header = ["id", "cx_px", "cy_px", "diameter_um", "diameter_px", "bin_label", "confidence",
                       "area_um2", "perimeter_um", "circularity", "eccentricity",
                       "mean_intensity", "integrated_density",
@@ -497,7 +503,9 @@ enum ExportService {
         lines.append(configHeaderComment(thresholds: thresholds,
                                           pxPerUm: pxPerUm,
                                           confidence: confidence ?? 0.0,
-                                          modelId: modelId))
+                                          modelId: modelId,
+                                          scaleSource: scaleSource ?? provenance?.pxPerUmSource,
+                                          segmentedPxPerUm: segmentedPxPerUm ?? provenance?.segmentedPxPerUm))
         lines.append(header.joined(separator: separator))
 
         // Pass-15: filter rows by the effective confidence cutoff. The CSV is
@@ -578,14 +586,26 @@ enum ExportService {
     /// of every CSV (and at the head of `RoiSet.config.txt`) so the analysis is
     /// self-describing. Format:
     ///   `# confidence=0.85; bins=[20,30]; model=cellpose-cyto3; pxPerUm=2.6`
+    /// followed, when known, by `; pxPerUm_source=exif-tiff` and, when the
+    /// model segmented at another scale, `; segmented_pxPerUm=4.1666`.
     nonisolated static func configHeaderComment(thresholds: [Double],
                                     pxPerUm: Double,
                                     confidence: Double,
-                                    modelId: String) -> String {
+                                    modelId: String,
+                                    scaleSource: String? = nil,
+                                    segmentedPxPerUm: Double? = nil) -> String {
         let binsStr = "[" + thresholds.map(\.trimmedString).joined(separator: ",") + "]"
         let confStr = String(format: "%.2f", confidence)
         let pxStr   = String(format: "%g", pxPerUm)
-        return "# confidence=\(confStr); bins=\(binsStr); model=\(modelId); pxPerUm=\(pxStr)"
+        var line = "# confidence=\(confStr); bins=\(binsStr); model=\(modelId); pxPerUm=\(pxStr)"
+        if let scaleSource, !scaleSource.isEmpty {
+            // Semicolons separate the fields; keep a preset's name readable.
+            line += "; pxPerUm_source=\(scaleSource.replacingOccurrences(of: ";", with: ","))"
+        }
+        if let segmentedPxPerUm, ImageScale.isUsable(segmentedPxPerUm), !ImageScale.same(segmentedPxPerUm, pxPerUm) {
+            line += "; segmented_pxPerUm=\(String(format: "%g", segmentedPxPerUm))"
+        }
+        return line
     }
 
     // MARK: — Annotated PNG
@@ -930,7 +950,8 @@ enum ExportService {
                 detection: image.detection.map {
                     PerImageSummaryInput.Detection(cells: $0.cells, imageStats: $0.imageStats,
                                                    detectorId: $0.detectorId, ranAt: $0.ranAt)
-                })
+                },
+                scale: summaryScale(for: image))
         }
         try writePerImageSummaryCSVCore(images: inputs,
                                         modelId: batch.modelId,
@@ -956,6 +977,30 @@ enum ExportService {
         let importedAt: Date
         let confidenceOverride: Double?
         let detection: Detection?
+        var scale: SummaryScale? = nil
+    }
+
+    /// One image's scale in the summary: the scale its µm values are at, its
+    /// source, and the scale the model segmented at when that differs.
+    nonisolated struct SummaryScale: Sendable, Equatable {
+        var pxPerUm: Double
+        var source: String
+        var segmentedPxPerUm: Double? = nil
+
+        init(pxPerUm: Double, source: String, segmentedPxPerUm: Double? = nil) {
+            self.pxPerUm = pxPerUm
+            self.source = source
+            if let segmentedPxPerUm, ImageScale.isUsable(segmentedPxPerUm),
+               !ImageScale.same(segmentedPxPerUm, pxPerUm) {
+                self.segmentedPxPerUm = segmentedPxPerUm
+            }
+        }
+    }
+
+    @MainActor static func summaryScale(for image: ImageRecord) -> SummaryScale? {
+        guard let scale = image.currentScale else { return nil }
+        return SummaryScale(pxPerUm: scale.pxPerUm, source: scale.source,
+                            segmentedPxPerUm: image.detection?.runSettings?.pxPerUm)
     }
 
     /// Off-main-safe body of `writePerImageSummaryCSV`: identical columns and
@@ -971,7 +1016,8 @@ enum ExportService {
         let rows = images.enumerated().map {
             PerImageSummaryRow(index: $0.offset, fileName: $0.element.fileName,
                                importedAt: $0.element.importedAt,
-                               confidenceOverride: $0.element.confidenceOverride)
+                               confidenceOverride: $0.element.confidenceOverride,
+                               scale: $0.element.scale)
         }
         try writePerImageSummaryCSVCore(rows: rows, detection: { images[$0.index].detection },
                                         modelId: modelId, thresholds: thresholds, pxPerUm: pxPerUm,
@@ -986,6 +1032,7 @@ enum ExportService {
         let fileName: String
         let importedAt: Date
         let confidenceOverride: Double?
+        var scale: SummaryScale? = nil
     }
 
     /// Stored, still-encoded values of one image, captured on the main actor.
@@ -1000,6 +1047,7 @@ enum ExportService {
         let importedAt: Date
         let confidenceOverride: Double?
         let detection: Detection?
+        var scale: SummaryScale? = nil
 
         /// Same values `DetectionRecord.cells` / `.imageStats` return.
         nonisolated func decodedDetection() -> PerImageSummaryInput.Detection? {
@@ -1032,7 +1080,8 @@ enum ExportService {
                         PerImageSummaryRaw.Detection(cellsData: $0.cellsData,
                                                      imageStatsData: $0.imageStatsData,
                                                      detectorId: $0.detectorId, ranAt: $0.ranAt)
-                    }))
+                    },
+                    scale: summaryScale(for: image)))
             }
             start = end
             await Task.yield()
@@ -1071,7 +1120,8 @@ enum ExportService {
         let rows = raws.enumerated().map {
             PerImageSummaryRow(index: $0.offset, fileName: $0.element.fileName,
                                importedAt: $0.element.importedAt,
-                               confidenceOverride: $0.element.confidenceOverride)
+                               confidenceOverride: $0.element.confidenceOverride,
+                               scale: $0.element.scale)
         }
         try writePerImageSummaryCSVCore(rows: rows, detection: { raws[$0.index].decodedDetection() },
                                         modelId: modelId, thresholds: thresholds, pxPerUm: pxPerUm,
@@ -1110,6 +1160,10 @@ enum ExportService {
             "confluency", "n_colonies", "mean_colony_size", "largest_colony",
             "focus_score", "illumination_residual",
             "model_used", "ran_at",
+            // Each image's own scale (mean_diameter is in µm at this scale),
+            // where it came from, and the scale the model segmented at when
+            // that differs (sizes converted without segmenting again).
+            "px_per_um", "px_per_um_source", "segmented_px_per_um",
         ]
 
         let isoFormatter: ISO8601DateFormatter = {
@@ -1256,6 +1310,9 @@ enum ExportService {
                     stat(stats, "illumination_residual", decimals: 4),
                     csvEscape(modelUsed, separator: separator),
                     csvEscape(ranAt, separator: separator),
+                    sortedRow.scale.map { String(format: "%g", $0.pxPerUm) } ?? "",
+                    csvEscape(sortedRow.scale?.source ?? "", separator: separator),
+                    (sortedRow.scale?.segmentedPxPerUm).map { String(format: "%g", $0) } ?? "",
                 ]
                 lines.append(row.joined(separator: separator))
             }

@@ -23,10 +23,20 @@ struct AnalysisStateStrip: View {
                     }
                 }
                 HStack(spacing: 10) {
+                    // This image's own scale: the one its numbers are at.
+                    if let scale = image.currentScale {
+                        Text(ImageScale.caption(scale))
+                            .foregroundStyle(Tokens.textSecondary)
+                            .help("Every size of this image in µm uses this scale (\(scale.source)).")
+                    } else {
+                        Text("No scale").foregroundStyle(Tokens.warning)
+                            .help(ImageScale.missingMessage)
+                    }
                     if let run {
                         Text("Run: channel \(run.segmentChannel < 0 ? "composite" : String(run.segmentChannel + 1)) · Z \(run.zProjection)")
-                        Text(String(format: "%.3g px/µm at analysis", run.pxPerUm))
-                            .help(run.calibrationSource)
+                        Text("Cell size: " + SizeHint.summary(SizeHint.resolve(run)))
+                            .lineLimit(1)
+                            .help("Expected cell size used to scale the image for segmentation")
                     } else if detection != nil {
                         Text("Original channel, projection and preprocessing were not recorded.")
                     } else {
@@ -35,9 +45,30 @@ struct AnalysisStateStrip: View {
                     Spacer(minLength: 0)
                     if let status = state.jobStatus(for: image.id) { Text(status).foregroundStyle(Color.accentColor) }
                 }.foregroundStyle(Tokens.textTertiary)
-                if let run, let batch = image.batch, abs(batch.pxPerUm - run.pxPerUm) > 0.000001 {
-                    Text(String(format: "Measurements recalibrated to %.3g px/µm · original run calibration retained", batch.pxPerUm))
+                if let note = ImageScale.segmentationNote(segmented: run?.pxPerUm, measured: image.measuredScale?.pxPerUm) {
+                    Text(note + " · outlines kept from the earlier scale")
                         .foregroundStyle(Tokens.warning)
+                        .help("Sizes were converted to the new scale without segmenting again. Re-run to segment at the new scale.")
+                }
+                if let notice = ImageScale.notice(measured: image.measuredScale, effective: image.effectiveScale) {
+                    HStack(spacing: 10) {
+                        Label(notice.text, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(Tokens.warning)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                        Button("Re-run at \(ImageScale.format(image.effectiveScale?.pxPerUm ?? 0)) px/µm") {
+                            state.reRunDetection(on: image, useSavedSettings: true)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .disabled(!state.canRerunSavedImage(image))
+                        if case .fileDisagrees(let measured, _) = notice {
+                            Button("Keep \(ImageScale.format(measured))") { state.keepMeasuredScale(of: image) }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Color.accentColor)
+                                .help("Keep these numbers and record \(ImageScale.format(measured)) px/µm as your override of the file's scale.")
+                        }
+                    }
                 }
             }
             .font(.system(size: 10.5))

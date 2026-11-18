@@ -415,7 +415,9 @@ private struct ShortcutsGrid: View {
     var body: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)
         LazyVGrid(columns: columns, spacing: 10) {
-            ShortcutTile(icon: "ruler", label: "Calibrate scale", sub: "px / µm") {
+            // The default only applies to images without a scale in their file.
+            ShortcutTile(icon: "ruler", label: "Pixel scale",
+                         sub: state.pxPerUm > 0 ? "Default \(ImageScale.format(state.pxPerUm)) px/µm" : "Files' own scales · no default") {
                 state.showCalibration = true
             }
             ShortcutTile(icon: "cpu", label: state.activeModelName, sub: "Active model") {
@@ -766,6 +768,8 @@ struct ProcessingView: View {
                 state.view = .home
             } label: { Text("Cancel") }
                 .appButton(.standard)
+            // Switch while this runs; the model picks it up at once.
+            ModelResourceMenu(state: state)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {

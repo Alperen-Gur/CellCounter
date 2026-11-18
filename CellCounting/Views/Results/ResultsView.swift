@@ -259,10 +259,15 @@ struct ResultsView: View {
         state.currentBatch?.thresholds ?? state.thresholds
     }
 
-    /// Calibration is analysis provenance. Once a batch exists its persisted
-    /// value must win over the mutable default used for future imports.
+    /// Calibration is analysis provenance: the open image's own scale (the
+    /// one its measurements are at), never the default for future imports.
     private var batchPxPerUm: Double {
-        state.currentBatch?.pxPerUm ?? state.pxPerUm
+        state.currentImage?.currentPxPerUm ?? 0
+    }
+
+    /// The open image's scale, its source, and the scale it was segmented at.
+    private var currentImageScale: ExportService.SummaryScale? {
+        state.currentImage.flatMap { ExportService.summaryScale(for: $0) }
     }
 
     private func exportAnnotatedPNG() {
@@ -313,6 +318,7 @@ struct ResultsView: View {
         let imageFileName = image.fileName
         let thresholds = batchThresholds
         let pxPerUm = batchPxPerUm
+        let scale = currentImageScale
         let overlay = overlayMode
         pngPanel.begin { resp in
             guard resp == .OK, let pngURL = pngPanel.url else { return }
@@ -343,7 +349,8 @@ struct ResultsView: View {
                         try ExportService.writeCSVCore(cells: cells, imageFileName: imageFileName,
                                                        thresholds: thresholds, pxPerUm: pxPerUm,
                                                        confidence: conf, modelId: modelId,
-                                                       separator: ",", to: csvURL)
+                                                       separator: ",", scaleSource: scale?.source,
+                                                       segmentedPxPerUm: scale?.segmentedPxPerUm, to: csvURL)
                         await state.flashExport("Saved · \(pngURL.lastPathComponent) + \(csvURL.lastPathComponent)", isError: false)
                     } catch {
                         await state.flashExport("Export failed: \(error.localizedDescription)", isError: true)
@@ -772,8 +779,9 @@ private struct RealImageViewer: View {
         state.currentBatch?.thresholds ?? state.thresholds
     }
 
+    /// This image's own scale: the one its measurements are at (0 = none).
     private var batchPxPerUm: Double {
-        image.batch?.pxPerUm ?? state.currentBatch?.pxPerUm ?? state.pxPerUm
+        image.currentPxPerUm
     }
 
     private var cellsLoadKey: DetectionCellsLoadKey {
@@ -1004,9 +1012,12 @@ private struct RealImageViewer: View {
                     .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
             }
 
-            ScaleBar(pxPerUm: batchPxPerUm, fitScale: scale)
-                .padding(.leading, 16)
-                .padding(.bottom, 14)
+            // No scale bar for an image without a scale.
+            if batchPxPerUm > 0 {
+                ScaleBar(pxPerUm: batchPxPerUm, fitScale: scale)
+                    .padding(.leading, 16)
+                    .padding(.bottom, 14)
+            }
         }
         .frame(width: drawW, height: drawH)
         .onAppear { syncAnnotations() }
@@ -1781,7 +1792,7 @@ private struct ResultsSidebar: View {
                       confidence: image.map { ResultsDerivedValues.shared.effectiveConfidence(for: $0, state: state) }
                           ?? state.confidence,
                       regions: (image?.rois ?? []).map(ReviewRegion.init),
-                      pxPerUm: image?.batch?.pxPerUm ?? state.pxPerUm)
+                      pxPerUm: image?.currentPxPerUm ?? state.pxPerUm)
     }
 
     /// Fresh key for the asynchronous reload, which re-reads it after awaits.
@@ -2477,6 +2488,9 @@ private struct ExpectedDiameterPanel: View {
     @FocusState private var focused: Bool
 
     private var isAuto: Bool { state.expectedDiameterUm <= 0 }
+    private var activeFamily: String {
+        state.models.first(where: { $0.id == state.activeModelId })?.family.rawValue ?? "Custom"
+    }
 
     /// Auto (0) ↔ Custom (1) selection derived from the stored value.
     private var modeBinding: Binding<Int> {
@@ -2500,12 +2514,12 @@ private struct ExpectedDiameterPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SectionHeader(title: "Expected cell diameter")
+            SectionHeader(title: "Expected cell size")
 
             // The key decoupling explanation — copy switches with the mode.
             Text(isAuto
-                 ? "Auto derives the size prior from your size bins (current behavior) — so editing bins can re-steer segmentation."
-                 : "Segmentation uses this diameter and ignores the size bins — the recommended fix when cells are large or uniform. Applies on the next detection / re-run (⌘R).")
+                 ? "Automatic uses the midpoint of the size classes, so editing them also changes segmentation. Applies to the next detection or re-run (⌘R)."
+                 : "Segmentation uses this diameter instead of the size classes. Applies to the next detection or re-run (⌘R).")
                 .font(.system(size: 11))
                 .foregroundStyle(Tokens.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2515,7 +2529,7 @@ private struct ExpectedDiameterPanel: View {
             HStack(spacing: 10) {
                 SegmentedPicker(
                     value: modeBinding,
-                    options: [(value: 0, label: "Auto"), (value: 1, label: "Custom")]
+                    options: [(value: 0, label: "Automatic"), (value: 1, label: "Custom")]
                 )
                 Spacer(minLength: 0)
                 if !isAuto {
@@ -2542,6 +2556,12 @@ private struct ExpectedDiameterPanel: View {
                         .foregroundStyle(Tokens.textTertiary)
                 }
             }
+
+            SizeHintDetails(expectedDiameterUm: state.expectedDiameterUm,
+                            thresholds: state.currentBatch?.thresholds ?? state.thresholds,
+                            pxPerUm: state.currentImage?.effectiveScale?.pxPerUm ?? state.pxPerUm,
+                            behavior: SizeHint.behavior(modelFamily: activeFamily, modelId: state.activeModelId))
+                .padding(.top, 10)
 
             // Cellpose-SAM discoverability (light touch — no model restructuring).
             HStack(alignment: .top, spacing: 6) {
@@ -2671,33 +2691,29 @@ private struct DistributionPanel: View {
 
 // MARK: — Scale panel
 
+/// The open image's own scale and where it came from, and the scales in use
+/// in the batch. A px/µm value says nothing about the objective on another
+/// microscope, so no objective is guessed from it.
 private struct ScalePanel: View {
     @Bindable var state: AppState
     @Environment(AppTheme.self) private var theme
 
-    /// Pass-16: derive the objective label from the actual calibration instead
-    /// of hardcoding "20×". Maps the Olympus IX73 preset ladder
-    /// (1.3 / 2.6 / 5.2 / 10.4 px/µm = 5× / 10× / 20× / 40×) with ±25% tolerance.
-    static func objectiveLabel(for pxPerUm: Double) -> String {
-        let presets: [(Double, String)] = [
-            (1.3, "5×"), (2.6, "10×"), (5.2, "20×"), (10.4, "40×"),
-        ]
-        if let match = presets.first(where: { abs(pxPerUm - $0.0) / $0.0 < 0.25 }) {
-            return "\(match.1) objective"
-        }
-        return "custom"
-    }
-
     var body: some View {
-        let pxPerUm = state.currentBatch?.pxPerUm ?? state.pxPerUm
-        HStack {
+        let scale = state.currentImage?.currentScale
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Scale")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Tokens.textTertiary)
-                Text(String(format: "%.1f px / µm · %@", pxPerUm, Self.objectiveLabel(for: pxPerUm)))
+                Text(scale.map(ImageScale.caption) ?? "No scale")
                     .font(.system(size: 12.5, design: .monospaced))
-                    .foregroundStyle(Tokens.text)
+                    .foregroundStyle(scale == nil ? Tokens.warning : Tokens.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let batch = state.currentBatch {
+                    Text("Batch: \(state.scaleSummary(for: batch).overview)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Tokens.textTertiary)
+                }
             }
             Spacer()
             Button("Calibrate…") { state.showCalibration = true }
@@ -3390,7 +3406,7 @@ private struct GroundTruthPanel: View {
             guard resp == .OK, let folder = panel.url else { return }
             let jsonURL = folder.appendingPathComponent("\(base).annotations.json")
             let csvURL  = folder.appendingPathComponent("\(base).annotations.csv")
-            let pxPerUm = img.batch?.pxPerUm ?? state.pxPerUm
+            let pxPerUm = img.currentPxPerUm
             try? ExportService.writeAnnotationsJSON(image: img,
                                                     annotations: anns,
                                                     pxPerUm: pxPerUm,

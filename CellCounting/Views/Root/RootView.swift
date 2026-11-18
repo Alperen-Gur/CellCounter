@@ -46,8 +46,9 @@ struct RootView: View {
                 let updatesOpenBatch = state.currentBatch != nil
                     && (state.view == .results || state.view == .batch)
                 CalibrationSheet(
+                    // The open image's own scale, or the user's default (0 = not set).
                     current: updatesOpenBatch
-                        ? (state.currentBatch?.pxPerUm ?? state.pxPerUm)
+                        ? (state.currentImage?.currentPxPerUm ?? 0)
                         : state.pxPerUm,
                     // Bug #11: pass current image URL so "Draw on scale bar" tab can show the real image
                     imageURL: updatesOpenBatch ? state.currentImage?.storedURL : nil,
@@ -55,10 +56,19 @@ struct RootView: View {
                     // Pass-13: hand the repo through so the "Use preset" tab
                     // can list user-saved presets and create new ones inline.
                     repos: state.repos,
+                    loadContext: {
+                        state.currentBatch.flatMap {
+                            state.scaleChangeContext(for: $0, currentImageId: state.currentImage?.id)
+                        }
+                    },
+                    onApply: { plan, resegment in
+                        guard let batchId = state.currentBatch?.id else { return }
+                        state.applyScaleChange(plan, batchId: batchId, resegment: resegment)
+                    },
                     onClose: { state.showCalibration = false },
                     onSave: { newValue, source in
-                        state.applyCalibration(newValue, source: source,
-                                               updateCurrentBatch: updatesOpenBatch)
+                        // Home: the default for images without a scale only.
+                        state.applyCalibration(newValue, source: source, updateCurrentBatch: false)
                     })
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(50)
@@ -88,8 +98,12 @@ struct RootView: View {
             // mutually exclusive at any given moment.
             if state.showInstallCellpose4 {
                 InstallCellpose4Sheet(
-                    onClose: { state.showInstallCellpose4 = false },
-                    onInstalled: { state.refreshDetector() })
+                    onClose: {
+                        state.showInstallCellpose4 = false
+                        state.cellpose4UpdateRequested = false
+                    },
+                    onInstalled: { state.refreshDetector() },
+                    startUpdate: state.cellpose4UpdateRequested)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(55)
             }
@@ -108,6 +122,18 @@ struct RootView: View {
                 }
                 .transition(.opacity)
                 .zIndex(80)
+            }
+            // Model resource use changed while a model runs: what applied now
+            // and what waits for the next image.
+            if let notice = state.modelResourceNotice {
+                VStack {
+                    Spacer()
+                    ExportFeedbackToast(message: notice, isError: false)
+                        .padding(.bottom, 48)
+                }
+                .allowsHitTesting(false)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(90)
             }
             if state.libraries.isSwitching {
                 LibrarySwitchingOverlay(name: state.libraries.switchingTargetName)
@@ -134,6 +160,7 @@ struct RootView: View {
         .animation(.easeOut(duration: 0.24), value: state.showInstallCellpose4)
         .animation(.easeOut(duration: 0.24), value: showShortcuts)
         .animation(.easeOut(duration: 0.20), value: state.showDuplicateImportSheet)
+        .animation(.easeOut(duration: 0.20), value: state.modelResourceNotice)
         .animation(.easeInOut(duration: 0.24), value: state.view)
         .animation(.easeInOut(duration: 0.18), value: fullScreenEdit)
         .onChange(of: state.view) { _, newView in

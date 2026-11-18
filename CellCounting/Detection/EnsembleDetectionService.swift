@@ -295,10 +295,13 @@ struct EnsembleDetectionService: DetectionService {
                              + "(\(match.onlyA.count) only \(primaryModelId), "
                              + "\(match.onlyB.count) only \(secondaryModelId))"])
 
+        // One record per result: the primary's runtime (its geometry is kept),
+        // else the secondary's. Each names its own `requested_model`.
         return DetectionResult(cells: cells,
                                imageWidth: a.imageWidth,
                                imageHeight: a.imageHeight,
-                               imageStats: stats)
+                               imageStats: stats,
+                               runtime: a.runtime ?? b.runtime)
     }
 
     /// Copy a `DetectionInput` with a different model id. `DetectionInput` has
@@ -380,7 +383,7 @@ struct EnsembleDownloader: ModelDownloader {
 
     /// Model ids that may serve as an ensemble member.
     static func eligibleMembers(from models: [DetectionModelInfo]) -> [DetectionModelInfo] {
-        models.filter { $0.family != .ensemble && $0.family != .all && !$0.comingSoon }
+        models.filter { $0.family != .ensemble && $0.family != .all && $0.isSelectable }
     }
 
     // MARK: — ModelDownloader

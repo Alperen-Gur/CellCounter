@@ -2,8 +2,11 @@ import contextlib
 import importlib
 import io
 import json
+import os
 from pathlib import Path
+import socket
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -13,51 +16,55 @@ import _cellpose_common as cc
 
 
 class DetectionStartupTests(unittest.TestCase):
-    def fake_utils(self, fail=False):
-        opened = []
-        utils = types.ModuleType('cellpose.utils')
-        def open_url(*args, **kwargs):
-            opened.append(kwargs.get('timeout'))
-            if fail:
-                raise TimeoutError('socket stopped responding')
-            return object()
-        def download(url, destination, progress=True):
-            utils.urlopen(url)
-            return 'saved'
-        utils.urlopen = open_url
-        utils.download_url_to_file = download
-        return utils, opened
+    def setUp(self):
+        # Model loading cleans the Cellpose models folder; keep it off the
+        # real ~/.cellpose. No test here reaches the network.
+        models = tempfile.TemporaryDirectory()
+        self.addCleanup(models.cleanup)
+        self.models_dir = models.name
+        patcher = patch.dict(os.environ, {'CELLPOSE_LOCAL_MODELS_PATH': models.name,
+                                          # Keep weight checksums out of the real caches folder.
+                                          'CELLCOUNTER_WEIGHTS_HASH_CACHE': os.path.join(models.name, 'weights-sha256.json'),
+                                          'no_proxy': '*', 'NO_PROXY': '*'})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_download_timeout_progress_and_hooks_restore_without_network(self):
-        utils, opened = self.fake_utils()
-        original_download, original_open = utils.download_url_to_file, utils.urlopen
-        logs = io.StringIO()
+    def fake_utils(self):
+        utils = types.ModuleType('cellpose.utils')
+        def download(url, destination, progress=True):
+            raise AssertionError("Cellpose's own downloader must not run")
+        utils.download_url_to_file = download
+        return utils
+
+    def test_cellcounter_downloader_replaces_cellposes_and_hooks_restore(self):
+        utils = self.fake_utils()
+        original_download = utils.download_url_to_file
         package = types.ModuleType('cellpose')
         package.utils = utils
-        with patch.dict(sys.modules, {'cellpose': package}), contextlib.redirect_stderr(logs):
-            with cc.model_loading_progress():
-                result = utils.download_url_to_file('https://unused.invalid/cyto3', '/tmp/cyto3')
-        self.assertEqual(result, 'saved')
-        self.assertEqual(opened, [30])
+        with patch.dict(sys.modules, {'cellpose': package}), contextlib.redirect_stderr(io.StringIO()):
+            with cc.model_loading_progress() as directory:
+                self.assertIsNot(utils.download_url_to_file, original_download)
+                self.assertEqual(directory, self.models_dir)
         self.assertIs(utils.download_url_to_file, original_download)
-        self.assertIs(utils.urlopen, original_open)
-        self.assertIn('one-time model setup', logs.getvalue())
-        self.assertIn('weights ready: cyto3', logs.getvalue())
 
     def test_download_failure_stays_distinct_and_never_claims_ready(self):
-        utils, opened = self.fake_utils(fail=True)
-        original_download, original_open = utils.download_url_to_file, utils.urlopen
+        utils = self.fake_utils()
+        original_download = utils.download_url_to_file
         package = types.ModuleType('cellpose')
         package.utils = utils
+        with socket.socket() as probe:  # a local port nobody listens on
+            probe.bind(('127.0.0.1', 0))
+            port = probe.getsockname()[1]
         logs = io.StringIO()
         with patch.dict(sys.modules, {'cellpose': package}), contextlib.redirect_stderr(logs):
             with self.assertRaisesRegex(cc.ModelDownloadError, 'internet connection and retry'):
                 with cc.model_loading_progress():
-                    utils.download_url_to_file('https://unused.invalid/cyto3', '/tmp/cyto3')
-        self.assertEqual(opened, [30])
+                    utils.download_url_to_file(f'http://127.0.0.1:{port}/cyto3',
+                                               os.path.join(self.models_dir, 'cyto3'))
+        self.assertIn('one-time model setup', logs.getvalue())
         self.assertNotIn('weights ready', logs.getvalue())
         self.assertIs(utils.download_url_to_file, original_download)
-        self.assertIs(utils.urlopen, original_open)
+        self.assertEqual(os.listdir(self.models_dir), [])
 
     def test_byte_progress_is_idempotent_and_partial_close_is_not_success(self):
         class Bar:
@@ -112,7 +119,7 @@ class DetectionStartupTests(unittest.TestCase):
                 return (np.zeros(image.shape, dtype=np.int32), None)
         package = types.ModuleType('cellpose')
         package.models = types.SimpleNamespace(CellposeModel=Model)
-        package.utils, _ = self.fake_utils()
+        package.utils = self.fake_utils()
         torch = types.SimpleNamespace(__version__='fixture',
             backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)),
             cuda=types.SimpleNamespace(is_available=lambda: False))

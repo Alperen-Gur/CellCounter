@@ -558,9 +558,11 @@ def _launch(store, document, worker):
     sync_directory(path)
     script = Path(__file__).resolve().with_name("_workbench_job_worker.py")
     # Only inherit runtime necessities, not shell/Python injection settings.
+    # CC_LIMITS_FILE locates CellCounter's Model resource use for the model
+    # runs this worker starts (`_workbench_models._environment`).
     environment = {key: value for key, value in os.environ.items()
                    if key in ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
-                              "LANG", "LC_ALL", "VIRTUAL_ENV", "CONDA_PREFIX")}
+                              "LANG", "LC_ALL", "VIRTUAL_ENV", "CONDA_PREFIX", "CC_LIMITS_FILE")}
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     flags = ((getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
              if os.name == "nt" else 0)

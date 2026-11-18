@@ -98,6 +98,13 @@ final class ChildProcessTracker {
         kinds[key] = kind
         live.insert(key)
 
+        // Light runs model processes in the background state. Launch QoS
+        // cannot express it, so it is applied as soon as the process is known.
+        if kind != .install, ModelResourceControl.isModelProcess(process), process.isRunning,
+           ModelResourceLimits.current.runsInBackground {
+            ModelResourceControl.setBackground(true, pid: process.processIdentifier)
+        }
+
         // Chain into the existing termination handler if any. We append our
         // cleanup; we don't replace it.
         let prior = process.terminationHandler
@@ -118,6 +125,26 @@ final class ChildProcessTracker {
 
     /// Installer callers use this to avoid mutating an interpreter in use.
     var hasRunningProcesses: Bool { registry.values.contains { $0.isRunning } }
+
+    /// Running processes started with Model resource use limits (detection
+    /// workers, one-shot sidecars, the assay worker, training). Installers
+    /// and Workbench operations are never among them.
+    var runningModelProcessCount: Int {
+        registry.values.filter { $0.isRunning && ModelResourceControl.isModelProcess($0) }.count
+    }
+
+    /// Applies a new Model resource use choice to every running model
+    /// process: sets or clears the background state, then asks each to
+    /// re-read the live control file (thread count, GPU memory cap). Call
+    /// after `ModelResourceControl.publish`. Never stops a process.
+    func applyModelResourceLimits(background: Bool) {
+        for (key, process) in registry where kinds[key] != .install && process.isRunning
+            && ModelResourceControl.isModelProcess(process) {
+            let pid = process.processIdentifier
+            ModelResourceControl.setBackground(background, pid: pid)
+            ModelResourceControl.notify(pid: pid)
+        }
+    }
 
     /// Terminate every tracked Process. Called from the willTerminate hook
     /// and from explicit "Cancel all detections" paths.

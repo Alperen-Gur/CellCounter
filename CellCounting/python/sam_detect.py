@@ -72,7 +72,20 @@ def log(*args, **kwargs) -> None:
     print(*args, file=sys.stderr, **kwargs)
 
 
+def _common():
+    """The shared sidecar helpers (`_cellpose_common`), imported on first use."""
+    _ensure_sidecar_path()
+    import _cellpose_common
+    return _cellpose_common
+
+
 def emit_error(error: str, hint: str = "", exit_code: int = 2) -> None:
+    # A PyTorch GPU out-of-memory failure is reported as `memory-limit`, as
+    # in the other sidecars. Reporting the original error must never fail.
+    try:
+        error, hint = _common().memory_limit_failure(error, hint)
+    except ImportError:
+        pass
     payload = {"error": error}
     if hint:
         payload["hint"] = hint
@@ -146,6 +159,9 @@ def load_predictor(model_type: str, device=None):
     _MODEL_CACHE.clear()
     _PROMPT_EMBEDDINGS.clear()
     from micro_sam import util
+    # micro_sam has imported torch; apply the host's CPU thread limit before
+    # the model loads (once per process).
+    _common().apply_cpu_thread_limit()
 
     log(f"[sam_detect] loading predictor for model_type={model_type} ...")
     kwargs = {"model_type": model_type}
@@ -668,4 +684,6 @@ if __name__ == "__main__":
     if "--serve" in sys.argv[1:]:
         serve()
     else:
+        # Live limit changes from Settings apply to a one-shot run too.
+        _common().install_limits_control()
         main()

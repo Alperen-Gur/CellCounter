@@ -93,9 +93,14 @@ struct SplitTouchingButton: View {
                 var settings = savedSettings?.modelId == state.activeModelId
                     ? (savedSettings ?? AnalysisRunSettings.capture(state: state))
                     : AnalysisRunSettings.capture(state: state)
-                if savedSettings?.modelId != state.activeModelId {
-                    settings.pxPerUm = image.batch?.pxPerUm ?? state.pxPerUm
+                // Segmented at the image's own scale, as every analysis is.
+                if let problem = ImageScale.mismatch(explicit: image.ownScale, file: image.fileScale) {
+                    throw DetectionError.sidecarFailed(exitCode: -1, stderr: problem)
                 }
+                guard let scale = image.effectiveScale else {
+                    throw DetectionError.sidecarFailed(exitCode: -1, stderr: ImageScale.missingMessage)
+                }
+                settings = settings.withScale(scale)
                 settings.watershedSplit = true
                 if let error = settings.validationError {
                     throw DetectionError.sidecarFailed(exitCode: -1, stderr: error)
@@ -114,13 +119,20 @@ struct SplitTouchingButton: View {
                       image.detection?.cellsRevision == detectionRevision else {
                     throw CancellationError()
                 }
+                let stored = state.cellsAtImageScale(result.cells, for: image, measuredAt: settings.pxPerUm,
+                                                     source: settings.calibrationSource)
                 state.repos.saveDetection(
-                    state.cellsAtBatchScale(result.cells, for: image, measuredAt: settings.pxPerUm),
+                    stored.cells,
                     detectorId: "\(type(of: svc))/\(settings.modelId)+watershed",
                     for: image,
                     imageStats: result.imageStats,
-                    runSettings: settings
+                    // This run's own runtime, not the saved one it replaces.
+                    runSettings: settings.recording(result.runtime),
+                    save: false
                 )
+                image.measuredPxPerUm = stored.scale.pxPerUm
+                image.measuredScaleSource = stored.scale.source
+                try state.repos.context.save()
                 NotificationCenter.default.post(
                     name: Notification.Name("ccCorrectionsChanged"),
                     object: nil

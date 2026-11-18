@@ -138,13 +138,17 @@ struct DetectionResult {
     /// Keys: "focus_score", "illumination_residual", plus any colony-pipeline keys.
     /// Nil for legacy sidecars that don't emit this block.
     let imageStats: [String: Double]?
+    /// What ran (`image_stats.runtime` from a Cellpose sidecar); nil for
+    /// detectors that do not report it.
+    let runtime: DetectorRuntimeInfo?
 
     init(cells: [DetectedCell], imageWidth: Int, imageHeight: Int,
-         imageStats: [String: Double]? = nil) {
+         imageStats: [String: Double]? = nil, runtime: DetectorRuntimeInfo? = nil) {
         self.cells = cells
         self.imageWidth = imageWidth
         self.imageHeight = imageHeight
         self.imageStats = imageStats
+        self.runtime = runtime
     }
 }
 

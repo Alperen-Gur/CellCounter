@@ -29,6 +29,8 @@ private struct BatchExportImageSnapshot: Sendable {
     let imageURL: URL
     let cellsData: Data
     let confidence: Double
+    /// The image's own scale, for its scale bar.
+    let pxPerUm: Double
 }
 
 /// Per-image figures kept between refreshes, so a refresh decodes metrics
@@ -104,7 +106,8 @@ private func beginAnnotatedBatchExport(
             fileName: image.fileName,
             imageURL: image.displayURL,
             cellsData: detection.cellsData,
-            confidence: state.effectiveConfidence(for: image))
+            confidence: state.effectiveConfidence(for: image),
+            pxPerUm: image.currentPxPerUm)
     }
     guard !snapshots.isEmpty else {
         completion(.failure(ExportError.noAnalyzedImages))
@@ -138,7 +141,8 @@ private func beginAnnotatedBatchExport(
                                 fileName: snapshot.fileName,
                                 imageURL: snapshot.imageURL,
                                 cells: DetectionRecord.decodeCellsData(snapshot.cellsData),
-                                confidence: snapshot.confidence)
+                                confidence: snapshot.confidence,
+                                pxPerUm: snapshot.pxPerUm)
                         })
                 }.value
                 completion(.success(result))
@@ -673,7 +677,9 @@ private struct HeaderRow: View {
         guard let batch = state.currentBatch else { return "" }
         let modelName = state.models.first(where: { $0.id == batch.modelId })?.name ?? batch.modelId
         let when = shortBatchDate(batch.createdAt)
-        return "\(totalImages) image\(totalImages == 1 ? "" : "s") · started \(when) · \(modelName)"
+        // The scales in use: each image has its own ("2 scales").
+        let scales = state.scaleSummary(for: batch).overview
+        return "\(totalImages) image\(totalImages == 1 ? "" : "s") · started \(when) · \(modelName) · \(scales)"
     }
 
     var body: some View {

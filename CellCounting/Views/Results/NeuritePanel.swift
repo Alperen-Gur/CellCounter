@@ -177,7 +177,8 @@ struct NeuritePanel: View {
         let startSource = currentSource
         // PIXELS PER MICROMETRE — forwarded to `--px-per-um` verbatim. Never
         // the reciprocal `pixel_size_um`; see NeuriteRunner's header note.
-        let pxPerUm = state.pxPerUm
+        // The open image's own scale (each image has one).
+        let pxPerUm = state.currentImage.map(\.currentPxPerUm).flatMap { $0 > 0 ? $0 : nil } ?? state.pxPerUm
         let somas = cells
         let radius = somaRadiusUm
 

@@ -90,6 +90,9 @@ enum PythonRuntime {
         "_workbench_distributed.py",
         "_workbench_distribution_runner.py",
         "_workbench_environment.py",
+        // Model resource use for Workbench model runs; `_workbench_models`
+        // and both model workers import it.
+        "_workbench_resource_limits.py",
         "_workbench_host_registry.py",
         "_workbench_runtimes.py",
         "_workbench_plugin_worker.py",
@@ -121,6 +124,9 @@ enum PythonRuntime {
         // Both `cellpose_detect.py` and `cellpose4_detect.py` import this
         // module — if it's missing from the staged dir, neither sidecar runs.
         "_cellpose_common.py",
+        // Verified, resumable weight downloads for every Cellpose-family
+        // sidecar; `_cellpose_common` and `cellpose_train` import it.
+        "_model_downloads.py",
         "_preprocessing.py",
         "_watershed.py",
         "_colony.py",
@@ -131,6 +137,12 @@ enum PythonRuntime {
         // Pass-16: Cellpose-SAM (4.x) sidecar — C1 ships this file.
         // Listed here as a best-effort copy; missing-helpers are non-fatal.
         "cellpose4_detect.py",
+        // Bit-identical Cellpose 4.2.1.1 post-processing speedups, imported by
+        // `cellpose4_detect.py` (optional: the sidecar runs stock without it).
+        "_cellpose_accel.py",
+        // Versions, device, dtype and weights checksum recorded with every
+        // Cellpose result (`image_stats.runtime`); optional like the above.
+        "_cellpose_runtime.py",
         // Omnipose — bacteria / filamentous cells. Runs in its own venv_omni/
         // (see OmniposeDownloader) but the script itself stages here with all
         // the others, because every sidecar resolves via `stagedScriptURL`.

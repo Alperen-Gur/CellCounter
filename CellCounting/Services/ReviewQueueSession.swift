@@ -67,7 +67,7 @@ struct ReviewItem: Identifiable {
     var hasCurrentCalibration: Bool {
         guard hasLiveOwners, let batch = image.batch,
               !batch.isDeleted, batch.modelContext != nil else { return false }
-        return batch.pxPerUm == pxPerUm
+        return image.currentPxPerUm == pxPerUm
     }
 
     init?(_ candidate: ReviewCandidateRecord, image: ImageRecord, detection: DetectionRecord) {
@@ -86,7 +86,8 @@ struct ReviewItem: Identifiable {
         cell = candidate.fallbackCell
         self.image = image
         self.detection = detection
-        pxPerUm = batch.pxPerUm
+        // The scale this image's measurements are at (each image has its own).
+        pxPerUm = image.currentPxPerUm > 0 ? image.currentPxPerUm : batch.pxPerUm
         fileName = image.fileName
         widthPx = image.widthPx
         heightPx = image.heightPx

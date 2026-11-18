@@ -9,7 +9,46 @@ nonisolated struct SidecarPayload: Decodable, Sendable {
     let height: Int
     let cells: [SidecarCell]
     /// Per-image stats blob (C2 colony + C3 QC). Optional for backward compat.
+    /// Only its numeric values; `runtime` is decoded separately below.
     let image_stats: [String: Double]?
+    /// `image_stats.runtime`: what ran (Cellpose sidecars). Nil when absent
+    /// or unreadable; a damaged block never fails the payload.
+    let runtime: DetectorRuntimeInfo?
+
+    private enum CodingKeys: String, CodingKey { case width, height, cells, image_stats }
+
+    private nonisolated struct StatKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        width = try container.decode(Int.self, forKey: .width)
+        height = try container.decode(Int.self, forKey: .height)
+        cells = try container.decode([SidecarCell].self, forKey: .cells)
+        guard container.contains(.image_stats), try !container.decodeNil(forKey: .image_stats) else {
+            image_stats = nil
+            runtime = nil
+            return
+        }
+        let stats = try container.nestedContainer(keyedBy: StatKey.self, forKey: .image_stats)
+        var numbers: [String: Double] = [:]
+        var runtime: DetectorRuntimeInfo?
+        for key in stats.allKeys {
+            if key.stringValue == "runtime" {
+                runtime = try? stats.decode(DetectorRuntimeInfo.self, forKey: key)
+            } else if let value = try? stats.decode(Double.self, forKey: key) {
+                // Non-numeric values are not image statistics; skip them
+                // rather than failing the whole result.
+                numbers[key.stringValue] = value
+            }
+        }
+        image_stats = numbers
+        self.runtime = runtime
+    }
 }
 
 /// Per-cell JSON produced by every detection script.
@@ -78,6 +117,7 @@ nonisolated struct DecodedSidecarResult: Sendable {
     let imageWidth: Int
     let imageHeight: Int
     let imageStats: [String: Double]?
+    var runtime: DetectorRuntimeInfo? = nil
 }
 
 extension SidecarPayload {
@@ -106,7 +146,8 @@ extension SidecarPayload {
         return DetectionResult(cells: r.cells,
                                imageWidth: r.imageWidth,
                                imageHeight: r.imageHeight,
-                               imageStats: r.imageStats)
+                               imageStats: r.imageStats,
+                               runtime: r.runtime)
     }
 
     /// Synchronous variant for callers outside the detection services (runs on
@@ -116,7 +157,8 @@ extension SidecarPayload {
         return DetectionResult(cells: r.cells,
                                imageWidth: r.imageWidth,
                                imageHeight: r.imageHeight,
-                               imageStats: r.imageStats)
+                               imageStats: r.imageStats,
+                               runtime: r.runtime)
     }
 
     @concurrent
@@ -193,6 +235,7 @@ extension SidecarPayload {
         return DecodedSidecarResult(cells: cells,
                                     imageWidth: decoded.width,
                                     imageHeight: decoded.height,
-                                    imageStats: decoded.image_stats)
+                                    imageStats: decoded.image_stats,
+                                    runtime: decoded.runtime)
     }
 }
