@@ -9,6 +9,7 @@ authors:
     family-names: Gur
     email: alguer@ethz.ch
     affiliation: ETH Zürich
+    orcid: "https://orcid.org/0009-0002-4925-8494"
 repository-code: "https://github.com/Alperen-Gur/Cellographer"
 license: MIT
 keywords:
